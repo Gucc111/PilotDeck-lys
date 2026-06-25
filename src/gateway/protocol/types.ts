@@ -341,6 +341,7 @@ export type AlwaysOnApplyInput = {
   projectKey: string;
   workCycleId: string;
   projectName: string;
+  planIds?: string[];
 };
 
 export type AlwaysOnApplyResult = {

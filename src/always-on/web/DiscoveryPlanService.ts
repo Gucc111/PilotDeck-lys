@@ -179,7 +179,6 @@ export function normalizeDiscoveryPlanRecord(record: Record<string, unknown> | n
     gatewayStatus === "executing" ? "running" :
     gatewayStatus === "superseded" ? "archived" :
     gatewayStatus === "applying" ? "completed" :
-    gatewayStatus === "applied" ? "archived" :
     gatewayStatus === "apply_failed" ? "completed" :
     gatewayStatus;
 
@@ -204,6 +203,10 @@ export function normalizeDiscoveryPlanRecord(record: Record<string, unknown> | n
     structureVersion:
       typeof record?.structureVersion === "number" ? record.structureVersion : STRUCTURE_VERSION,
     workCycleId: normalizeString(record?.workCycleId) || undefined,
+    executionCommitShas: normalizeStringList(record?.executionCommitShas),
+    dependsOnPlanIds: normalizeStringList(record?.dependsOnPlanIds),
+    dependencyReasons: normalizeStringList(record?.dependencyReasons),
+    dependencyAnalysisStatus: normalizeString(record?.dependencyAnalysisStatus) || undefined,
     workspace: normalizeWorkspaceRef(record?.workspace),
   };
 }
@@ -306,6 +309,160 @@ function buildOverview(
   };
 }
 
+function isResolvedPlan(plan: WebPlanRecord): boolean {
+  return plan.status === "applied" || plan.status === "archived";
+}
+
+function normalizePlanSelection(
+  cycle: { planIds: string[] },
+  plans: WebPlanRecord[],
+  planIds?: string[],
+): string[] {
+  if (planIds === undefined) {
+    return plans
+      .filter((plan) => cycle.planIds.includes(plan.id) && !isResolvedPlan(plan))
+      .map((plan) => plan.id);
+  }
+  const selected = new Set<string>();
+  for (const id of planIds) {
+    const normalized = normalizeString(id);
+    if (normalized) selected.add(normalized);
+  }
+  return [...selected];
+}
+
+function executionMap(executions: CycleExecutionRecord[]): Map<string, CycleExecutionRecord> {
+  const byPlanId = new Map<string, CycleExecutionRecord>();
+  for (const execution of executions) {
+    if (!byPlanId.has(execution.planId)) {
+      byPlanId.set(execution.planId, execution);
+    }
+  }
+  return byPlanId;
+}
+
+function validateApplySelection(
+  cycle: { planIds: string[]; executions?: CycleExecutionRecord[] },
+  plans: WebPlanRecord[],
+  selectedPlanIds: string[],
+  explicitSelection: boolean,
+): { legacyWorkspaceApply: boolean } {
+  if (selectedPlanIds.length === 0) {
+    throw makeError("Select at least one plan to apply", "INVALID_SELECTION");
+  }
+
+  const activePlans = plans.filter((plan) => cycle.planIds.includes(plan.id) && !isResolvedPlan(plan));
+  const planById = new Map(activePlans.map((plan) => [plan.id, plan]));
+  for (const planId of selectedPlanIds) {
+    const plan = planById.get(planId);
+    if (!plan) {
+      throw makeError(`Plan ${planId} is not an active plan in this cycle`, "INVALID_SELECTION");
+    }
+    if (plan.status !== "completed" && plan.status !== "completed_no_report") {
+      throw makeError(`Plan ${planId} must be completed before it can be applied`, "INVALID_SELECTION");
+    }
+  }
+
+  const executions = cycle.executions ?? [];
+  if (executions.some((execution) => execution.dependencyAnalysisStatus === "failed")) {
+    throw makeError(
+      "Cycle contains a plan whose dependency analysis failed; discard the entire cycle instead.",
+      "INVALID_SELECTION",
+    );
+  }
+
+  if (executions.length === 0) {
+    if (explicitSelection) {
+      throw makeError(
+        "Legacy cycles without execution metadata only support whole-cycle apply.",
+        "INVALID_SELECTION",
+      );
+    }
+    return { legacyWorkspaceApply: true };
+  }
+
+  const byPlanId = executionMap(executions);
+  if (activePlans.some((plan) => !byPlanId.has(plan.id))) {
+    throw makeError(
+      "Cycle mixes plans with and without execution metadata and cannot be applied safely.",
+      "INVALID_SELECTION",
+    );
+  }
+
+  const selected = new Set(selectedPlanIds);
+  for (const planId of selectedPlanIds) {
+    const execution = byPlanId.get(planId);
+    if (!execution || execution.status !== "completed") {
+      throw makeError(`Plan ${planId} has no successful execution to apply`, "INVALID_SELECTION");
+    }
+    const missing = execution.dependsOnPlanIds.filter((dependencyId) => !selected.has(dependencyId));
+    if (missing.length > 0) {
+      throw makeError(
+        `Plan ${planId} depends on unselected plan(s): ${missing.join(", ")}`,
+        "INVALID_SELECTION",
+      );
+    }
+  }
+
+  return { legacyWorkspaceApply: false };
+}
+
+function validateArchiveSelection(
+  cycle: { planIds: string[]; executions?: CycleExecutionRecord[] },
+  plans: WebPlanRecord[],
+  selectedPlanIds: string[],
+): { archiveWholeCycle: boolean } {
+  if (selectedPlanIds.length === 0) {
+    throw makeError("Select at least one plan to archive", "INVALID_SELECTION");
+  }
+
+  const activePlans = plans.filter((plan) => cycle.planIds.includes(plan.id) && !isResolvedPlan(plan));
+  const activeIds = new Set(activePlans.map((plan) => plan.id));
+  for (const planId of selectedPlanIds) {
+    if (!activeIds.has(planId)) {
+      throw makeError(`Plan ${planId} is not an active plan in this cycle`, "INVALID_SELECTION");
+    }
+  }
+
+  const selected = new Set(selectedPlanIds);
+  const archiveWholeCycle = activePlans.every((plan) => selected.has(plan.id));
+  if (archiveWholeCycle) return { archiveWholeCycle: true };
+
+  const executions = cycle.executions ?? [];
+  if (executions.some((execution) => execution.dependencyAnalysisStatus === "failed")) {
+    throw makeError(
+      "Cycle contains a plan whose dependency analysis failed; only whole-cycle archive is allowed.",
+      "INVALID_SELECTION",
+    );
+  }
+
+  const byPlanId = executionMap(executions);
+  const completedWithoutMetadata = activePlans.filter((plan) => (
+    (plan.status === "completed" || plan.status === "completed_no_report") &&
+    !byPlanId.has(plan.id)
+  ));
+  if (completedWithoutMetadata.length > 0) {
+    throw makeError(
+      "Legacy completed plans without execution metadata only support whole-cycle archive.",
+      "INVALID_SELECTION",
+    );
+  }
+
+  for (const plan of activePlans) {
+    if (selected.has(plan.id)) continue;
+    const execution = byPlanId.get(plan.id);
+    const removedDependencies = (execution?.dependsOnPlanIds ?? []).filter((dependencyId) => selected.has(dependencyId));
+    if (removedDependencies.length > 0) {
+      throw makeError(
+        `Plan ${plan.id} depends on plan(s) selected for archive: ${removedDependencies.join(", ")}`,
+        "INVALID_SELECTION",
+      );
+    }
+  }
+
+  return { archiveWholeCycle: false };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -341,6 +498,12 @@ export class DiscoveryPlanService {
 
     const cycleIndex = await readCycleIndex(projectDir);
     const cycleWorkspaceMap = new Map(cycleIndex.cycles.map((c) => [c.id, c.workspace]));
+    const executionByPlanId = new Map<string, CycleExecutionRecord>();
+    for (const cycle of cycleIndex.cycles) {
+      for (const execution of cycle.executions ?? []) {
+        executionByPlanId.set(execution.planId, execution);
+      }
+    }
 
     const plans = await Promise.all(
       store.plans.map(async (plan) => {
@@ -352,6 +515,13 @@ export class DiscoveryPlanService {
         if (!overview.workspace && plan.workCycleId) {
           overview.workspace = cycleWorkspaceMap.get(plan.workCycleId);
         }
+        const execution = executionByPlanId.get(plan.id);
+        if (execution) {
+          overview.executionCommitShas = [...execution.commitShas];
+          overview.dependsOnPlanIds = [...execution.dependsOnPlanIds];
+          overview.dependencyReasons = [...execution.dependencyReasons];
+          overview.dependencyAnalysisStatus = execution.dependencyAnalysisStatus;
+        }
         return overview;
       }),
     );
@@ -359,11 +529,7 @@ export class DiscoveryPlanService {
     return { plans: sortDiscoveryPlans(plans) };
   }
 
-  /**
-   * Archive an entire work cycle: dispose its workspace and mark all
-   * associated plans as archived.
-   */
-  async archiveCycle(projectName: string, cycleId: string) {
+  async archiveCycle(projectName: string, cycleId: string, planIds?: string[]) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const projectDir = this.projectDir(projectRoot);
     const cycleIndex = await readCycleIndex(projectDir);
@@ -374,7 +540,32 @@ export class DiscoveryPlanService {
       throw makeError("Cannot archive a cycle that is currently being applied", "INVALID_STATE");
     }
 
-    if (cycle.workspace?.cwd && this.deps.workspace) {
+    if (cycle.status !== "active") {
+      throw makeError(
+        `Cycle must be active to archive plans (current: ${cycle.status})`,
+        "INVALID_STATE",
+      );
+    }
+
+    const store = await readPlanStore(projectDir);
+    const selectedPlanIds = normalizePlanSelection(cycle, store.plans, planIds);
+    const { archiveWholeCycle } = validateArchiveSelection(cycle, store.plans, selectedPlanIds);
+    const now = new Date().toISOString();
+
+    for (const plan of store.plans) {
+      if (selectedPlanIds.includes(plan.id) && !isResolvedPlan(plan)) {
+        plan.status = "archived";
+        plan.updatedAt = now;
+      }
+    }
+    await writePlanStore(projectDir, store);
+
+    const hasRemainingPlan = store.plans.some((plan) => (
+      cycle.planIds.includes(plan.id) && !isResolvedPlan(plan)
+    ));
+    const shouldCloseCycle = archiveWholeCycle || !hasRemainingPlan;
+
+    if (shouldCloseCycle && cycle.workspace?.cwd && this.deps.workspace) {
       try {
         await this.deps.workspace.disposeWorkspace(
           cycle.workspace.strategy,
@@ -386,21 +577,13 @@ export class DiscoveryPlanService {
       }
     }
 
-    cycle.status = "archived";
-    cycle.archivedAt = new Date().toISOString();
+    if (shouldCloseCycle) {
+      cycle.status = "archived";
+      cycle.archivedAt = now;
+    }
     await writeCycleIndex(projectDir, cycleIndex);
 
-    const store = await readPlanStore(projectDir);
-    const now = new Date().toISOString();
-    for (const plan of store.plans) {
-      if (cycle.planIds.includes(plan.id) && plan.status !== "archived") {
-        plan.status = "archived";
-        plan.updatedAt = now;
-      }
-    }
-    await writePlanStore(projectDir, store);
-
-    if (this.deps.state) {
+    if (shouldCloseCycle && this.deps.state) {
       try {
         await this.deps.state.clearActiveWorkCycleId(projectRoot);
       } catch {
@@ -408,7 +591,7 @@ export class DiscoveryPlanService {
       }
     }
 
-    return { archived: true };
+    return { archived: true, planIds: selectedPlanIds };
   }
 
   /**
@@ -416,7 +599,7 @@ export class DiscoveryPlanService {
    * agent loop is triggered via `gateway.alwaysOnApply` — the caller
    * (discovery-plans.js) fires that RPC after this method returns.
    */
-  async queueCycleApply(projectName: string, cycleId: string) {
+  async queueCycleApply(projectName: string, cycleId: string, planIds?: string[]) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const projectDir = this.projectDir(projectRoot);
     const cycleIndex = await readCycleIndex(projectDir);
@@ -438,13 +621,14 @@ export class DiscoveryPlanService {
     }
 
     const store = await readPlanStore(projectDir);
-    const cyclePlans = store.plans.filter((p) => cycle.planIds.includes(p.id));
-    const hasCompleted = cyclePlans.some(
-      (p) => p.status === "completed" || p.status === "completed_no_report",
+    const selectedPlanIds = normalizePlanSelection(cycle, store.plans, planIds);
+    const { legacyWorkspaceApply } = validateApplySelection(
+      cycle,
+      store.plans,
+      selectedPlanIds,
+      planIds !== undefined,
     );
-    if (!hasCompleted) {
-      throw makeError("Cycle has no completed plans to apply", "INVALID_STATE");
-    }
+    const cyclePlans = store.plans.filter((p) => selectedPlanIds.includes(p.id));
 
     cycle.status = "applying";
     await writeCycleIndex(projectDir, cycleIndex);
@@ -460,13 +644,15 @@ export class DiscoveryPlanService {
       status: "queued",
       timestamp: now,
       startedAt: now,
-      metadata: { cycleId: cycle.id, source: "apply" },
+      metadata: { cycleId: cycle.id, planIds: selectedPlanIds, source: "apply" },
     });
 
     return {
       cycle,
       projectRoot,
       executionToken,
+      planIds: selectedPlanIds,
+      legacyWorkspaceApply,
     };
   }
 
@@ -476,7 +662,7 @@ export class DiscoveryPlanService {
   async updateCycleExecution(
     projectName: string,
     cycleId: string,
-    updates: { status: string; executionSessionId?: string; executionToken?: string },
+    updates: { status: string; executionSessionId?: string; executionToken?: string; planIds: string[] },
   ) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const projectDir = this.projectDir(projectRoot);
@@ -508,9 +694,10 @@ export class DiscoveryPlanService {
 
       if (finalStatus === "applied") {
         const store = await readPlanStore(projectDir);
+        const selected = new Set(updates.planIds);
         for (const plan of store.plans) {
-          if (cycle.planIds.includes(plan.id) && plan.status !== "archived") {
-            plan.status = "archived";
+          if (cycle.planIds.includes(plan.id) && !isResolvedPlan(plan)) {
+            plan.status = selected.has(plan.id) ? "applied" : "archived";
             plan.updatedAt = now;
           }
         }
@@ -526,7 +713,7 @@ export class DiscoveryPlanService {
       }
     }
 
-    return { cycle };
+    return { cycle, planIds: updates.planIds };
   }
 
   /**
@@ -586,6 +773,22 @@ export class DiscoveryPlanService {
 // Cycle store I/O
 // ---------------------------------------------------------------------------
 
+type CycleExecutionRecord = {
+  executionId: string;
+  runId: string;
+  planId: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string;
+  baseCommit: string;
+  beforeHead: string;
+  afterHead: string;
+  commitShas: string[];
+  dependsOnPlanIds: string[];
+  dependencyReasons: string[];
+  dependencyAnalysisStatus: string;
+};
+
 type CycleIndex = {
   schemaVersion: number;
   cycles: Array<{
@@ -594,6 +797,7 @@ type CycleIndex = {
     status: string;
     workspace: { strategy: string; cwd: string; metadata?: Record<string, string> };
     planIds: string[];
+    executions?: CycleExecutionRecord[];
     createdAt: string;
     createdByRunId?: string;
     appliedAt?: string;
@@ -609,7 +813,7 @@ async function readCycleIndex(projectDir: string): Promise<CycleIndex> {
     const raw = await fs.readFile(filePath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && Array.isArray(parsed.cycles)) {
-      return parsed as CycleIndex;
+      return normalizeCycleIndex(parsed as CycleIndex);
     }
     return { ...EMPTY_CYCLE_INDEX };
   } catch (error) {
@@ -618,6 +822,23 @@ async function readCycleIndex(projectDir: string): Promise<CycleIndex> {
     }
     throw error;
   }
+}
+
+function normalizeCycleIndex(index: CycleIndex): CycleIndex {
+  return {
+    schemaVersion: 1,
+    cycles: index.cycles.map((cycle) => ({
+      ...cycle,
+      planIds: Array.isArray(cycle.planIds) ? [...cycle.planIds] : [],
+      executions: (cycle.executions ?? []).map((execution) => ({
+        ...execution,
+        commitShas: normalizeStringList(execution.commitShas),
+        dependsOnPlanIds: normalizeStringList(execution.dependsOnPlanIds),
+        dependencyReasons: normalizeStringList(execution.dependencyReasons),
+        dependencyAnalysisStatus: normalizeString(execution.dependencyAnalysisStatus, "clean"),
+      })),
+    })),
+  };
 }
 
 async function writeCycleIndex(projectDir: string, index: CycleIndex): Promise<void> {

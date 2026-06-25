@@ -108,28 +108,34 @@ export async function getProjectWorkCycles(projectName) {
   return getService().getCyclesOverview(projectName);
 }
 
-export async function archiveWorkCycle(projectName, cycleId) {
-  return getService().archiveCycle(projectName, cycleId);
+export async function archiveWorkCycle(projectName, cycleId, planIds) {
+  return getService().archiveCycle(projectName, cycleId, planIds);
 }
 
-export async function applyWorkCycle(projectName, cycleId) {
-  const result = await getService().queueCycleApply(projectName, cycleId);
+export async function applyWorkCycle(projectName, cycleId, planIds) {
+  const result = await getService().queueCycleApply(projectName, cycleId, planIds);
 
   const gw = await getPilotDeckGateway();
 
   let applyResult;
   try {
-    applyResult = await gw.alwaysOnApply({
+    const applyInput = {
       projectKey: result.projectRoot,
       workCycleId: cycleId,
       projectName,
-    });
+    };
+    if (!result.legacyWorkspaceApply) {
+      applyInput.planIds = result.planIds;
+    }
+    applyResult = await gw.alwaysOnApply(applyInput);
   } catch (err) {
     await getService().updateCycleExecution(projectName, cycleId, {
       status: 'failed',
+      planIds: result.planIds,
     });
     return {
       cycle: result.cycle,
+      planIds: result.planIds,
       error: { code: 'apply_error', message: (err && err.message) || 'Apply failed' },
     };
   }
@@ -137,16 +143,19 @@ export async function applyWorkCycle(projectName, cycleId) {
   if (applyResult.error) {
     await getService().updateCycleExecution(projectName, cycleId, {
       status: 'failed',
+      planIds: result.planIds,
     });
-    return { cycle: result.cycle, error: applyResult.error };
+    return { cycle: result.cycle, planIds: result.planIds, error: applyResult.error };
   }
 
   const finalResult = await getService().updateCycleExecution(projectName, cycleId, {
     status: 'completed',
     executionSessionId: applyResult.sessionKey,
+    planIds: result.planIds,
   });
   return {
     cycle: finalResult.cycle,
+    planIds: result.planIds,
     sessionKey: applyResult.sessionKey,
   };
 }

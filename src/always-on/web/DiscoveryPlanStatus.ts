@@ -17,6 +17,7 @@ export type WebPlanStatus =
   | "failed"
   | "completed"
   | "completed_no_report"
+  | "applied"
   | "archived";
 
 export type WebPlanRecord = {
@@ -40,6 +41,10 @@ export type WebPlanRecord = {
   structureVersion: number;
   lastExecutionSource?: string;
   workCycleId?: string;
+  executionCommitShas?: string[];
+  dependsOnPlanIds?: string[];
+  dependencyReasons?: string[];
+  dependencyAnalysisStatus?: string;
   /** @deprecated Retained for migration only. */
   workspace?: {
     strategy: string;
@@ -56,6 +61,21 @@ export type WebCycleRecord = {
     cwd: string;
   };
   planIds: string[];
+  executions?: Array<{
+    executionId: string;
+    runId: string;
+    planId: string;
+    status: string;
+    startedAt: string;
+    finishedAt: string;
+    baseCommit: string;
+    beforeHead: string;
+    afterHead: string;
+    commitShas: string[];
+    dependsOnPlanIds: string[];
+    dependencyReasons: string[];
+    dependencyAnalysisStatus: string;
+  }>;
   createdAt: string;
   appliedAt?: string;
   archivedAt?: string;
@@ -87,6 +107,7 @@ export const PLAN_STATUS_ORDER: Record<string, number> = {
   failed: 4,
   completed: 5,
   completed_no_report: 5,
+  applied: 6,
   archived: 7,
 };
 
@@ -95,7 +116,7 @@ export function computeExecutionStatus(
   session: WebPlanSession,
   isSessionActive: (sessionId: string) => boolean,
 ): string {
-  if (plan.status === "archived") return "";
+  if (plan.status === "archived" || plan.status === "applied") return "";
 
   if (plan.executionSessionId && isSessionActive(plan.executionSessionId)) {
     return "running";
@@ -132,7 +153,7 @@ export function computePlanStatus(
   session: WebPlanSession,
   isSessionActive: (sessionId: string) => boolean,
 ): string {
-  if (plan.status === "archived") return "archived";
+  if (plan.status === "archived" || plan.status === "applied") return plan.status;
   const execStatus = computeExecutionStatus(plan, session, isSessionActive);
   if (execStatus) return execStatus;
   return normalizeString(plan.status, "ready");

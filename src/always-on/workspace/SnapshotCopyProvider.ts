@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { WorkspaceHandle } from "../protocol/types.js";
 import type { WorkspaceProvider, WorkspacePrepareInput, WorkspacePublishOutput } from "./WorkspaceProvider.js";
+import { initializeTemporaryGitRepository } from "./WorkspaceGit.js";
 
 export type SnapshotCopyProviderOptions = {
   baseDir: string;
@@ -51,6 +52,10 @@ export class SnapshotCopyProvider implements WorkspaceProvider {
 
     await mkdir(resolve(target, ".."), { recursive: true });
     const strategy = await this.copy(input.projectRoot, target);
+    const baseCommit = await initializeTemporaryGitRepository(
+      target,
+      `always-on snapshot base ${input.runId}`,
+    );
 
     return {
       runId: input.runId,
@@ -60,6 +65,7 @@ export class SnapshotCopyProvider implements WorkspaceProvider {
       metadata: {
         copyStrategy: strategy,
         baseSize: String(sizeBytes),
+        baseCommit,
       },
     };
   }

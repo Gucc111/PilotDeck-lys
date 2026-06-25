@@ -184,10 +184,15 @@ function getDiscoveryPlanErrorStatus(error) {
   if (error?.code === 'NOT_FOUND') {
     return 404;
   }
-  if (error?.code === 'UNSUPPORTED_STRATEGY') {
+  if (error?.code === 'UNSUPPORTED_STRATEGY' || error?.code === 'INVALID_SELECTION') {
     return 400;
   }
-  if (error?.code === 'INVALID_STATE' || error?.code === 'MISSING_PLAN_BODY' || error?.code === 'MISSING_WORKSPACE') {
+  if (
+    error?.code === 'INVALID_STATE' ||
+    error?.code === 'MISSING_PLAN_BODY' ||
+    error?.code === 'MISSING_WORKSPACE' ||
+    error?.code === 'plan_already_executed'
+  ) {
     return 409;
   }
   if (error?.code === 'ALREADY_RUNNING') {
@@ -285,7 +290,8 @@ router.post('/:projectName/work-cycles/:cycleId/apply', async (req, res) => {
     if (!projectName) return res.status(400).json({ error: 'projectName is required' });
     if (!cycleId) return res.status(400).json({ error: 'cycleId is required' });
 
-    const result = await applyWorkCycle(projectName, cycleId);
+    const planIds = Array.isArray(req.body?.planIds) ? req.body.planIds : undefined;
+    const result = await applyWorkCycle(projectName, cycleId, planIds);
     return res.json(result);
   } catch (error) {
     return res.status(getDiscoveryPlanErrorStatus(error)).json({
@@ -301,7 +307,8 @@ router.post('/:projectName/work-cycles/:cycleId/archive', async (req, res) => {
     if (!projectName) return res.status(400).json({ error: 'projectName is required' });
     if (!cycleId) return res.status(400).json({ error: 'cycleId is required' });
 
-    const result = await archiveWorkCycle(projectName, cycleId);
+    const planIds = Array.isArray(req.body?.planIds) ? req.body.planIds : undefined;
+    const result = await archiveWorkCycle(projectName, cycleId, planIds);
     return res.json(result);
   } catch (error) {
     return res.status(getDiscoveryPlanErrorStatus(error)).json({

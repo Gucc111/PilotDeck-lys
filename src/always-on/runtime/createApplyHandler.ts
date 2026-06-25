@@ -56,8 +56,37 @@ export function createApplyHandler(
 
     const planStore = new DiscoveryPlanStore(paths);
     const planIndex = await planStore.readIndex();
+    const defaultPlanIds = planIndex.plans
+      .filter((plan) => (
+        cycle.planIds.includes(plan.id) &&
+        plan.status !== "applied" &&
+        plan.status !== "archived"
+      ))
+      .map((plan) => plan.id);
+    const selectedPlanIds = new Set(input.planIds ?? defaultPlanIds);
+    const resolvedPlanIds = input.planIds ?? ((cycle.executions ?? []).length > 0 ? defaultPlanIds : undefined);
+    const defaultPlanIdSet = new Set(defaultPlanIds);
+    if (selectedPlanIds.size === 0 || [...selectedPlanIds].some((planId) => !defaultPlanIdSet.has(planId))) {
+      return {
+        sessionKey: "",
+        error: {
+          code: "invalid_selection",
+          message: "Selected plans must be active plans in the cycle.",
+        },
+      };
+    }
+    const executionPlanIds = new Set((cycle.executions ?? []).map((execution) => execution.planId));
+    if ((cycle.executions ?? []).length > 0 && defaultPlanIds.some((planId) => !executionPlanIds.has(planId))) {
+      return {
+        sessionKey: "",
+        error: {
+          code: "missing_execution_metadata",
+          message: "Cycle mixes active plans with and without execution commit metadata.",
+        },
+      };
+    }
     const cyclePlans = planIndex.plans
-      .filter((p) => cycle.planIds.includes(p.id))
+      .filter((p) => cycle.planIds.includes(p.id) && selectedPlanIds.has(p.id))
       .map((p) => ({ id: p.id, title: p.title }));
 
     const baseConfig = deps.alwaysOnConfig ?? defaultAlwaysOnConfig();
@@ -86,6 +115,7 @@ export function createApplyHandler(
       runId,
       cycle,
       plans: cyclePlans,
+      planIds: resolvedPlanIds,
       projectName: input.projectName,
       projectRoot: input.projectKey,
     });

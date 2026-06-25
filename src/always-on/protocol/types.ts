@@ -59,11 +59,32 @@ export type DiscoveryPlanStatus =
   | "completed"
   | "completed_no_report"
   | "failed"
+  | "applied"
   | "archived";
 
 export type WorkCycleStatus = "active" | "applying" | "applied" | "archived";
 
 export type WorkspaceStrategyId = "git-worktree" | "snapshot-copy";
+
+export type WorkCycleExecutionStatus = "completed" | "failed";
+
+export type WorkCycleDependencyAnalysisStatus = "clean" | "dependent" | "failed";
+
+export type WorkCycleExecutionRecord = {
+  executionId: string;
+  runId: string;
+  planId: string;
+  status: WorkCycleExecutionStatus;
+  startedAt: string;
+  finishedAt: string;
+  baseCommit: string;
+  beforeHead: string;
+  afterHead: string;
+  commitShas: string[];
+  dependsOnPlanIds: string[];
+  dependencyReasons: string[];
+  dependencyAnalysisStatus: WorkCycleDependencyAnalysisStatus;
+};
 
 export type WorkspaceHandle = {
   runId: string;
@@ -106,6 +127,7 @@ export type WorkCycleRecord = {
     metadata: Record<string, string>;
   };
   planIds: string[];
+  executions?: WorkCycleExecutionRecord[];
   createdAt: string;
   createdByRunId: string;
   appliedAt?: string;
@@ -130,6 +152,7 @@ export type DiscoveryRunHistoryEvent = {
   outcome: AlwaysOnDiscoveryOutcome;
   planId?: string;
   workCycleId?: string;
+  executionCommitShas?: string[];
   workspace?: { strategy: WorkspaceStrategyId; handle: string };
   error?: { code: string; message: string };
 };

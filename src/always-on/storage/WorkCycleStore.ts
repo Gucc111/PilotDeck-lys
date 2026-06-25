@@ -6,6 +6,7 @@ import type {
   AlwaysOnDiscoveryState,
   DiscoveryPlanIndex,
   WorkCycleIndex,
+  WorkCycleExecutionRecord,
   WorkCycleRecord,
   WorkCycleStatus,
   WorkspaceHandle,
@@ -35,7 +36,7 @@ export class WorkCycleStore {
         parsed.schemaVersion === 1 &&
         Array.isArray(parsed.cycles)
       ) {
-        return parsed as WorkCycleIndex;
+        return normalizeIndex(parsed as WorkCycleIndex);
       }
     } catch {
       // fall through
@@ -79,6 +80,7 @@ export class WorkCycleStore {
         metadata: { ...handle.metadata },
       },
       planIds: [],
+      executions: [],
       createdAt: now.toISOString(),
       createdByRunId: runId,
     };
@@ -147,6 +149,7 @@ export class WorkCycleStore {
         metadata: { ...handle.metadata },
       },
       planIds,
+      executions: [],
       createdAt: new Date().toISOString(),
       createdByRunId: ws.runId,
     };
@@ -184,6 +187,47 @@ export class WorkCycleStore {
     return record;
   }
 
+  async findExecutionByPlanId(planId: string): Promise<WorkCycleExecutionRecord | undefined> {
+    const index = await this.readIndex();
+    for (const cycle of index.cycles) {
+      const execution = cycle.executions?.find((entry) => entry.planId === planId);
+      if (execution) return cloneExecution(execution);
+    }
+    return undefined;
+  }
+
+  async recordExecution(
+    cycleId: string,
+    execution: WorkCycleExecutionRecord,
+  ): Promise<WorkCycleRecord | undefined> {
+    const index = await this.readIndex();
+    const cycle = index.cycles.find((c) => c.id === cycleId);
+    if (!cycle) return undefined;
+    cycle.executions = cycle.executions ?? [];
+    if (cycle.executions.some((entry) => entry.planId === execution.planId)) {
+      throw new Error(`Plan ${execution.planId} already has an execution record.`);
+    }
+    cycle.executions.push(cloneExecution(execution));
+    await this.writeIndex(index);
+    return cloneCycle(cycle);
+  }
+
+  async updateExecutionDependencies(
+    cycleId: string,
+    executionId: string,
+    update: Pick<WorkCycleExecutionRecord, "dependsOnPlanIds" | "dependencyReasons" | "dependencyAnalysisStatus">,
+  ): Promise<WorkCycleRecord | undefined> {
+    const index = await this.readIndex();
+    const cycle = index.cycles.find((c) => c.id === cycleId);
+    const execution = cycle?.executions?.find((entry) => entry.executionId === executionId);
+    if (!cycle || !execution) return undefined;
+    execution.dependsOnPlanIds = [...update.dependsOnPlanIds];
+    execution.dependencyReasons = [...update.dependencyReasons];
+    execution.dependencyAnalysisStatus = update.dependencyAnalysisStatus;
+    await this.writeIndex(index);
+    return cloneCycle(cycle);
+  }
+
   async updateStatus(
     cycleId: string,
     status: WorkCycleStatus,
@@ -203,6 +247,34 @@ export class WorkCycleStore {
 function cloneIndex(index: WorkCycleIndex): WorkCycleIndex {
   return {
     schemaVersion: 1,
-    cycles: index.cycles.map((c) => ({ ...c, planIds: [...c.planIds] })),
+    cycles: index.cycles.map(cloneCycle),
+  };
+}
+
+function normalizeIndex(index: WorkCycleIndex): WorkCycleIndex {
+  return {
+    schemaVersion: 1,
+    cycles: Array.isArray(index.cycles) ? index.cycles.map(cloneCycle) : [],
+  };
+}
+
+function cloneCycle(cycle: WorkCycleRecord): WorkCycleRecord {
+  return {
+    ...cycle,
+    workspace: {
+      ...cycle.workspace,
+      metadata: { ...cycle.workspace.metadata },
+    },
+    planIds: [...cycle.planIds],
+    executions: (cycle.executions ?? []).map(cloneExecution),
+  };
+}
+
+function cloneExecution(execution: WorkCycleExecutionRecord): WorkCycleExecutionRecord {
+  return {
+    ...execution,
+    commitShas: [...execution.commitShas],
+    dependsOnPlanIds: [...execution.dependsOnPlanIds],
+    dependencyReasons: [...execution.dependencyReasons],
   };
 }

@@ -148,6 +148,7 @@ export class AlwaysOnManager {
     projectKey: string;
     workCycleId: string;
     projectName: string;
+    planIds?: string[];
   }): Promise<{ sessionKey: string; error?: { code: string; message: string } }> {
     const runtime = this.runtimes.find((r) => r.projectKey === input.projectKey);
     if (!runtime) {
@@ -157,6 +158,7 @@ export class AlwaysOnManager {
       workCycleId: input.workCycleId,
       projectRoot: input.projectKey,
       projectName: input.projectName,
+      planIds: input.planIds,
     });
   }
 }

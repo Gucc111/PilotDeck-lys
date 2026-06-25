@@ -14,6 +14,7 @@ import type {
   DiscoveryFireResult,
   DiscoveryPlanRecord,
   DiscoveryRunHistoryEvent,
+  WorkCycleExecutionRecord,
   WorkCycleRecord,
   WorkspaceHandle,
 } from "../protocol/types.js";
@@ -24,6 +25,15 @@ import { DiscoveryReportStore } from "../storage/DiscoveryReportStore.js";
 import { DiscoveryStateStore } from "../storage/DiscoveryStateStore.js";
 import { WorkCycleStore } from "../storage/WorkCycleStore.js";
 import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
+import {
+  analyzeExecutionDependencies,
+  commitDirtyWorkspace,
+  generatePatchForCommits,
+  getHeadCommit,
+  getStatusPorcelain,
+  isGitRepository,
+  listCommitsBetween,
+} from "../workspace/WorkspaceGit.js";
 import type { AlwaysOnRunContextRegistry, ExecutionRunContext, DiscoveryRunContext, WorkspaceRunContext, ReportRunContext } from "./AlwaysOnRunContextRegistry.js";
 import { generateWorkspaceDiff } from "../workspace/WorkspaceApply.js";
 import { buildDiscoveryPrompt, buildExecutionPrompt, buildWorkspacePrompt, buildReportPrompt, buildApplyPrompt } from "./discoveryPrompts.js";
@@ -246,16 +256,91 @@ export class DiscoveryFire {
     runId: string;
     cycle: WorkCycleRecord;
     plans: Array<{ id: string; title: string }>;
+    planIds?: string[];
     projectName: string;
     projectRoot: string;
   }): Promise<{ events: GatewayEvent[]; error?: { code: string; message: string }; sessionKey: string }> {
     const { cycle, projectRoot } = input;
 
-    const diff = await generateWorkspaceDiff(
-      cycle.workspace.strategy,
-      cycle.workspace.cwd,
-      projectRoot,
-    );
+    const selectedPlanIds = new Set(input.planIds ?? cycle.planIds);
+    const executions = cycle.executions ?? [];
+    const commitScoped = executions.length > 0;
+    const selectedExecutions = executions.filter((execution) => selectedPlanIds.has(execution.planId));
+    const selectedCommitShas = selectedExecutions.flatMap((execution) => execution.commitShas);
+
+    if (!commitScoped && input.planIds !== undefined) {
+      return {
+        events: [],
+        sessionKey: "",
+        error: {
+          code: "invalid_selection",
+          message: "Legacy cycles without execution metadata only support whole-cycle apply.",
+        },
+      };
+    }
+
+    if (commitScoped && executions.some((execution) => execution.dependencyAnalysisStatus === "failed")) {
+      return {
+        events: [],
+        sessionKey: "",
+        error: {
+          code: "dependency_analysis_failed",
+          message: "Cycle contains a plan whose dependency analysis failed.",
+        },
+      };
+    }
+
+    if (commitScoped && selectedExecutions.length !== selectedPlanIds.size) {
+      return {
+        events: [],
+        sessionKey: "",
+        error: {
+          code: "missing_execution_metadata",
+          message: "Selected plans do not all have execution commit metadata.",
+        },
+      };
+    }
+
+    for (const execution of selectedExecutions) {
+      if (execution.status !== "completed") {
+        return {
+          events: [],
+          sessionKey: "",
+          error: {
+            code: "invalid_selection",
+            message: `Plan ${execution.planId} has no successful execution to apply.`,
+          },
+        };
+      }
+      const missingDependencies = execution.dependsOnPlanIds.filter(
+        (dependencyId) => !selectedPlanIds.has(dependencyId),
+      );
+      if (missingDependencies.length > 0) {
+        return {
+          events: [],
+          sessionKey: "",
+          error: {
+            code: "invalid_selection",
+            message: `Plan ${execution.planId} depends on unselected plan(s): ${missingDependencies.join(", ")}`,
+          },
+        };
+      }
+    }
+
+    const selectedPatch = commitScoped
+      ? await generatePatchForCommits(cycle.workspace.cwd, selectedCommitShas)
+      : "";
+    const diff = commitScoped
+      ? {
+          diff: selectedPatch,
+          fileCount: (selectedPatch.match(/^diff --git /gm) ?? []).length,
+          truncated: false,
+        }
+      : await generateWorkspaceDiff(
+          cycle.workspace.strategy,
+          cycle.workspace.cwd,
+          projectRoot,
+        );
 
     const sessionKey = DiscoveryFire.deriveApplySessionKey(this.deps.projectKey, input.runId);
     this.emitEvent(input.runId, "apply_started", { outcome: "executed" });
@@ -278,10 +363,15 @@ export class DiscoveryFire {
             title: input.plans.map((p) => p.title).join("; "),
             workspace: { cwd: cycle.workspace.cwd, strategy: cycle.workspace.strategy },
           },
+          selectedPlanIds: [...selectedPlanIds],
+          selectedCommitShas,
+          commitScoped,
           projectName: input.projectName,
           projectRoot,
           diff,
-          branchName: cycle.workspace.metadata?.branchName as string | undefined,
+          branchName: commitScoped
+            ? undefined
+            : cycle.workspace.metadata?.branchName as string | undefined,
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",
@@ -326,6 +416,21 @@ export class DiscoveryFire {
         finishedAt: startedAt.toISOString(),
         planId,
         error: { code: "plan_not_found", message: `Plan ${planId} not found` },
+      };
+    }
+
+    const existingExecution = await this.deps.cycleStore.findExecutionByPlanId(planId);
+    if (existingExecution) {
+      return {
+        outcome: "failed",
+        runId,
+        startedAt: startedAt.toISOString(),
+        finishedAt: startedAt.toISOString(),
+        planId,
+        error: {
+          code: "plan_already_executed",
+          message: `Plan ${planId} already has an execution record and cannot be rerun.`,
+        },
       };
     }
 
@@ -401,26 +506,55 @@ export class DiscoveryFire {
     this.emitEvent(runId, "execution_started", { planId, title: planRecord.title });
 
     let executionError: { code?: string; message: string } | undefined;
+    let executionCommitShas: string[] = [];
+    let executionGitState: { baseCommit: string; beforeHead: string } | undefined;
     try {
-      const events = await this.drainTurn({
-        sessionKey: executionSessionKey,
-        channelKey: EXECUTION_CHANNEL,
-        runId: `${runId}.execute`,
-        message: buildExecutionPrompt({
-          plan: planRecord,
-          planMarkdown,
-          workspaceCwd: workspace.cwd,
-          workspaceStrategy: workspace.strategy,
-          language: this.deps.config.language,
-        }),
-        mode: "bypassPermissions",
-        persistEvents: true,
-      });
-      executionError = pickFirstError(events);
+      executionGitState = await this.prepareExecutionGitState({ workspace, cycle: workCycle });
+    } catch (error) {
+      executionError = {
+        code: error instanceof AlwaysOnError ? error.code : "execution_git_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    try {
+      if (!executionError) {
+        const events = await this.drainTurn({
+          sessionKey: executionSessionKey,
+          channelKey: EXECUTION_CHANNEL,
+          runId: `${runId}.execute`,
+          message: buildExecutionPrompt({
+            plan: planRecord,
+            planMarkdown,
+            workspaceCwd: workspace.cwd,
+            workspaceStrategy: workspace.strategy,
+            language: this.deps.config.language,
+          }),
+          mode: "bypassPermissions",
+          persistEvents: true,
+        });
+        executionError = pickFirstError(events);
+      }
     } finally {
       this.deps.runContexts.unregister(executionSessionKey);
       this.deps.sessionOverrides.delete(executionSessionKey);
       await this.deps.gateway.closeSession({ sessionKey: executionSessionKey, reason: "always-on/done" }).catch(() => undefined);
+    }
+
+    if (executionGitState) {
+      const recorded = await this.recordExecutionCommits({
+        cycle: workCycle,
+        workspace,
+        planId,
+        runId,
+        startedAt,
+        baseCommit: executionGitState.baseCommit,
+        beforeHead: executionGitState.beforeHead,
+        status: executionError ? "failed" : "completed",
+      });
+      executionCommitShas = recorded.commitShas;
+      if (recorded.error && !executionError) {
+        executionError = recorded.error;
+      }
     }
 
     if (executionError) {
@@ -429,7 +563,7 @@ export class DiscoveryFire {
       const reportFilePath = await this.writeFallbackReport({ runId, plan: planRecord, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), reason: `execution_failed: ${executionError.message}`, workspaceStrategy: workspace.strategy, workspaceHandle: workspace.cwd });
       await this.deps.planStore.updateStatus(planId, { status: "failed", reportFilePath, workCycleId: workCycle.id });
       await this.deps.stateStore.markFireCompleted({ outcome: "failed", runId, planId, now: finishedAt });
-      await this.deps.reportStore.appendHistory({ ...baseHistory, outcome: "failed", finishedAt: finishedAt.toISOString(), workCycleId: workCycle.id, workspace: { strategy: workspace.strategy, handle: workspace.cwd }, error: { code: executionError.code ?? "execution_failed", message: executionError.message } });
+      await this.deps.reportStore.appendHistory({ ...baseHistory, outcome: "failed", finishedAt: finishedAt.toISOString(), workCycleId: workCycle.id, executionCommitShas, workspace: { strategy: workspace.strategy, handle: workspace.cwd }, error: { code: executionError.code ?? "execution_failed", message: executionError.message } });
       return { outcome: "failed", runId, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), planId, workspace, reportFilePath, error: { code: executionError.code ?? "execution_failed", message: executionError.message } };
     }
 
@@ -460,7 +594,7 @@ export class DiscoveryFire {
         sessionKey: reportSessionKey,
         channelKey: REPORT_CHANNEL,
         runId: `${runId}.report`,
-        message: buildReportPrompt({ plan: planRecord, planMarkdown, workspaceCwd: workspace.cwd, workspaceStrategy: workspace.strategy, language: this.deps.config.language }),
+        message: buildReportPrompt({ plan: planRecord, planMarkdown, workspaceCwd: workspace.cwd, workspaceStrategy: workspace.strategy, executionCommitShas, language: this.deps.config.language }),
         mode: "bypassPermissions",
         persistEvents: true,
       });
@@ -507,7 +641,7 @@ export class DiscoveryFire {
 
     await this.deps.planStore.updateStatus(planId, { status: planStatus, reportFilePath, workCycleId: workCycle.id });
     await this.deps.stateStore.markFireCompleted({ outcome, runId, planId, now: finishedAt });
-    await this.deps.reportStore.appendHistory({ ...baseHistory, outcome, finishedAt: finishedAt.toISOString(), workCycleId: workCycle.id, workspace: { strategy: workspace.strategy, handle: workspace.cwd }, error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined });
+    await this.deps.reportStore.appendHistory({ ...baseHistory, outcome, finishedAt: finishedAt.toISOString(), workCycleId: workCycle.id, executionCommitShas, workspace: { strategy: workspace.strategy, handle: workspace.cwd }, error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined });
 
     return { outcome, runId, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), planId, workspace, reportFilePath, error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined };
   }
@@ -722,28 +856,57 @@ export class DiscoveryFire {
     this.emitEvent(runId, "execution_started", { planId: planRecord.id, title: planRecord.title });
 
     let executionError: { code?: string; message: string } | undefined;
+    let executionCommitShas: string[] = [];
+    let executionGitState: { baseCommit: string; beforeHead: string } | undefined;
     try {
-      const events = await this.drainTurn({
-        sessionKey: executionSessionKey,
-        channelKey: EXECUTION_CHANNEL,
-        runId: `${runId}.execute`,
-        message: buildExecutionPrompt({
-          plan: planRecord,
-          planMarkdown: discoveryCtx.plan.markdown,
-          workspaceCwd: workspace.cwd,
-          workspaceStrategy: workspace.strategy,
-          language: this.deps.config.language,
-        }),
-        mode: "bypassPermissions",
-        persistEvents: true,
-      });
-      executionError = pickFirstError(events);
+      executionGitState = await this.prepareExecutionGitState({ workspace, cycle: workCycle });
+    } catch (error) {
+      executionError = {
+        code: error instanceof AlwaysOnError ? error.code : "execution_git_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    try {
+      if (!executionError) {
+        const events = await this.drainTurn({
+          sessionKey: executionSessionKey,
+          channelKey: EXECUTION_CHANNEL,
+          runId: `${runId}.execute`,
+          message: buildExecutionPrompt({
+            plan: planRecord,
+            planMarkdown: discoveryCtx.plan.markdown,
+            workspaceCwd: workspace.cwd,
+            workspaceStrategy: workspace.strategy,
+            language: this.deps.config.language,
+          }),
+          mode: "bypassPermissions",
+          persistEvents: true,
+        });
+        executionError = pickFirstError(events);
+      }
     } finally {
       this.deps.runContexts.unregister(executionSessionKey);
       this.deps.sessionOverrides.delete(executionSessionKey);
       await this.deps.gateway
         .closeSession({ sessionKey: executionSessionKey, reason: "always-on/done" })
         .catch(() => undefined);
+    }
+
+    if (executionGitState) {
+      const recorded = await this.recordExecutionCommits({
+        cycle: workCycle,
+        workspace,
+        planId: planRecord.id,
+        runId,
+        startedAt,
+        baseCommit: executionGitState.baseCommit,
+        beforeHead: executionGitState.beforeHead,
+        status: executionError ? "failed" : "completed",
+      });
+      executionCommitShas = recorded.commitShas;
+      if (recorded.error && !executionError) {
+        executionError = recorded.error;
+      }
     }
 
     if (executionError) {
@@ -775,6 +938,7 @@ export class DiscoveryFire {
         outcome: "failed",
         finishedAt: finishedAt.toISOString(),
         workCycleId: workCycle.id,
+        executionCommitShas,
         workspace: { strategy: workspace.strategy, handle: workspace.cwd },
         error: { code: executionError.code ?? "execution_failed", message: executionError.message },
       });
@@ -828,6 +992,7 @@ export class DiscoveryFire {
           planMarkdown: discoveryCtx.plan.markdown,
           workspaceCwd: workspace.cwd,
           workspaceStrategy: workspace.strategy,
+          executionCommitShas,
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",
@@ -903,6 +1068,7 @@ export class DiscoveryFire {
       outcome,
       finishedAt: finishedAt.toISOString(),
       workCycleId: workCycle.id,
+      executionCommitShas,
       workspace: { strategy: workspace.strategy, handle: workspace.cwd },
       error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined,
     });
@@ -1035,6 +1201,110 @@ export class DiscoveryFire {
         "workspace_unavailable",
         `workspace cwd ${workspace.cwd} is outside the configured Always-On workspace bases.`,
       );
+    }
+  }
+
+  private async prepareExecutionGitState(input: {
+    workspace: WorkspaceHandle;
+    cycle: WorkCycleRecord;
+  }): Promise<{ baseCommit: string; beforeHead: string }> {
+    const { workspace, cycle } = input;
+    if (!(await isGitRepository(workspace.cwd))) {
+      throw new AlwaysOnError(
+        "workspace_unavailable",
+        `workspace ${workspace.cwd} is not a git repository; Always-On execution commits cannot be tracked.`,
+      );
+    }
+    const beforeHead = await getHeadCommit(workspace.cwd);
+    const baseCommit =
+      workspace.metadata.baseCommit ||
+      cycle.workspace.metadata?.baseCommit ||
+      cycle.executions?.[0]?.baseCommit ||
+      beforeHead;
+    return { baseCommit, beforeHead };
+  }
+
+  private async recordExecutionCommits(input: {
+    cycle: WorkCycleRecord;
+    workspace: WorkspaceHandle;
+    planId: string;
+    runId: string;
+    startedAt: Date;
+    baseCommit: string;
+    beforeHead: string;
+    status: "completed" | "failed";
+  }): Promise<{ commitShas: string[]; error?: { code?: string; message: string } }> {
+    try {
+      await commitDirtyWorkspace(
+        input.workspace.cwd,
+        `chore(always-on): capture execution ${input.runId}`,
+      );
+      const remainingStatus = await getStatusPorcelain(input.workspace.cwd);
+      if (remainingStatus) {
+        return {
+          commitShas: [],
+          error: {
+            code: "workspace_dirty_after_commit",
+            message: `Workspace still has uncommitted changes after execution commit: ${remainingStatus}`,
+          },
+        };
+      }
+
+      const afterHead = await getHeadCommit(input.workspace.cwd);
+      const commitShas = await listCommitsBetween(
+        input.workspace.cwd,
+        input.beforeHead,
+        afterHead,
+      );
+      const previousExecutions = input.cycle.executions ?? [];
+      let dependencyAnalysis: Pick<
+        WorkCycleExecutionRecord,
+        "dependsOnPlanIds" | "dependencyReasons" | "dependencyAnalysisStatus"
+      >;
+      try {
+        dependencyAnalysis = await analyzeExecutionDependencies({
+          workspaceCwd: input.workspace.cwd,
+          baseCommit: input.baseCommit,
+          previousExecutions: previousExecutions.map((entry) => ({
+            planId: entry.planId,
+            commitShas: entry.commitShas,
+          })),
+          currentCommitShas: commitShas,
+        });
+      } catch (error) {
+        dependencyAnalysis = {
+          dependsOnPlanIds: previousExecutions.map((entry) => entry.planId),
+          dependencyReasons: [
+            `Dependency analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+          dependencyAnalysisStatus: "failed",
+        };
+      }
+
+      const execution: WorkCycleExecutionRecord = {
+        executionId: input.runId,
+        runId: input.runId,
+        planId: input.planId,
+        status: input.status,
+        startedAt: input.startedAt.toISOString(),
+        finishedAt: this.deps.now().toISOString(),
+        baseCommit: input.baseCommit,
+        beforeHead: input.beforeHead,
+        afterHead,
+        commitShas,
+        ...dependencyAnalysis,
+      };
+      await this.deps.cycleStore.recordExecution(input.cycle.id, execution);
+      input.cycle.executions = [...previousExecutions, execution];
+      return { commitShas };
+    } catch (error) {
+      return {
+        commitShas: [],
+        error: {
+          code: error instanceof AlwaysOnError ? error.code : "execution_commit_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
     }
   }
 

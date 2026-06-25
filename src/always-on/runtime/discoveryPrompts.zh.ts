@@ -154,7 +154,9 @@ export function buildExecutionPromptZh(input: BuildExecutionPromptInput): string
     "## 执行步骤",
     "1. 按顺序执行 Execution Steps 中的各项步骤。",
     "2. 运行 Verification 列表中的检查项并记录结果。",
-    "3. 回复执行总结及验证结果。",
+    "3. 回复前在隔离工作区执行 `git status --porcelain`。",
+    "4. 如果存在本地改动, 执行 `git add -A` 并使用简短消息提交这些改动。",
+    "5. 回复执行总结及验证结果。",
   ].join("\n");
 }
 
@@ -170,7 +172,13 @@ export function buildReportPromptZh(input: BuildReportPromptInput): string {
     input.planMarkdown.trim(),
     "",
     "## 执行步骤",
-    "1. 查看工作区中的变更 (如 `git diff --stat`、`ls`、阅读相关文件)。",
+    ...(input.executionCommitShas?.length
+      ? [
+          `1. 使用 \`git show --stat ${input.executionCommitShas.join(" ")}\` 查看 execution commits, 并检查相关文件。`,
+        ]
+      : [
+          "1. 查看工作区中的变更 (如 `git diff --stat`、`ls`、阅读相关文件)。",
+        ]),
     "2. 总结执行情况: 执行了哪些步骤、修改了哪些文件、命令输出、验证结果。",
     `3. 调用 \`${ALWAYS_ON_REPORT_TOOL_NAME}\` 恰好一次, 提交完整的工作报告 markdown。`,
     "",
@@ -203,16 +211,40 @@ export function buildApplyPromptZh(input: BuildApplyPromptInput): string {
     lines.push(`工作区分支: ${branchName}`);
   }
 
+  if (input.commitScoped) {
+    lines.push(
+      "",
+      "选中的 plan id:",
+      ...(input.selectedPlanIds?.length ? input.selectedPlanIds.map((id) => `  - ${id}`) : ["  - 无"]),
+      "",
+      "选中的 execution commits（按应用顺序）:",
+      ...(input.selectedCommitShas?.length ? input.selectedCommitShas.map((sha) => `  - ${sha}`) : ["  - 无改动 execution"]),
+    );
+  }
+
   lines.push(
     "",
     "## 合并方式",
     "",
+    ...(input.commitScoped
+      ? [
+          "只应用下方提供的选中 execution 补丁。",
+          "不要合并整个隔离工作区分支, 也不要检查或应用属于未选 plan 的改动。",
+          "",
+        ]
+      : []),
     "根据实际情况选择最佳的合并策略。你可以完全使用 git 和 shell 工具。",
-    "常见方式 (根据情况选择):",
-    "  - `git merge` / `git merge --no-ff` 如果工作区在命名分支上",
-    "  - `git cherry-pick` 针对单个提交",
-    "  - `git diff` + `git apply` 基于补丁的应用",
-    "  - 使用 Edit/Write 工具直接编辑文件, 适用于精确的小范围变更",
+    ...(input.commitScoped
+      ? [
+          "以下方补丁为唯一改动来源。可使用 git 应用补丁, 或通过精确文件编辑复现补丁。",
+        ]
+      : [
+          "常见方式 (根据情况选择):",
+          "  - `git merge` / `git merge --no-ff` 如果工作区在命名分支上",
+          "  - `git cherry-pick` 针对单个提交",
+          "  - `git diff` + `git apply` 基于补丁的应用",
+          "  - 使用 Edit/Write 工具直接编辑文件, 适用于精确的小范围变更",
+        ]),
     "",
     "如果遇到冲突, 请智能解决——不要盲目覆盖。",
     "如果无法解决冲突, 保留标准冲突标记 (<<<< / ==== / >>>>)。",

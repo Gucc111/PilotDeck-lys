@@ -198,7 +198,9 @@ export function buildExecutionPrompt(input: BuildExecutionPromptInput): string {
     "## What to do",
     "1. Execute the Execution Steps in order.",
     "2. Run the Verification list and record results.",
-    "3. Respond with a summary of what was done and the verification outcomes.",
+    "3. Before responding, run `git status --porcelain` in the isolated workspace.",
+    "4. If there are local changes, run `git add -A` and commit them with a concise message.",
+    "5. Respond with a summary of what was done and the verification outcomes.",
   ].join("\n");
 }
 
@@ -207,6 +209,7 @@ export type BuildReportPromptInput = {
   planMarkdown: string;
   workspaceCwd: string;
   workspaceStrategy: string;
+  executionCommitShas?: string[];
   language?: string;
 };
 
@@ -223,7 +226,13 @@ export function buildReportPrompt(input: BuildReportPromptInput): string {
     input.planMarkdown.trim(),
     "",
     "## What to do",
-    "1. Review the workspace to see what changed (e.g. `git diff --stat`, `ls`, read relevant files).",
+    ...(input.executionCommitShas?.length
+      ? [
+          `1. Review the execution commits with \`git show --stat ${input.executionCommitShas.join(" ")}\` and inspect relevant files.`,
+        ]
+      : [
+          "1. Review the workspace to see what changed (e.g. `git diff --stat`, `ls`, read relevant files).",
+        ]),
     "2. Summarize the execution: what steps were performed, which files were changed, command outputs, and verification results.",
     `3. Call \`${ALWAYS_ON_REPORT_TOOL_NAME}\` exactly once with the full work-report markdown.`,
     "",
@@ -235,6 +244,9 @@ export function buildReportPrompt(input: BuildReportPromptInput): string {
 
 export type BuildApplyPromptInput = {
   plan: { title: string; id: string; workspace?: { cwd: string; strategy: string } };
+  selectedPlanIds?: string[];
+  selectedCommitShas?: string[];
+  commitScoped?: boolean;
   projectName: string;
   projectRoot: string;
   diff: WorkspaceDiff;
@@ -266,16 +278,40 @@ export function buildApplyPrompt(input: BuildApplyPromptInput): string {
     lines.push(`Workspace branch: ${branchName}`);
   }
 
+  if (input.commitScoped) {
+    lines.push(
+      "",
+      "Selected plan ids:",
+      ...(input.selectedPlanIds?.length ? input.selectedPlanIds.map((id) => `  - ${id}`) : ["  - none"]),
+      "",
+      "Selected execution commits, in apply order:",
+      ...(input.selectedCommitShas?.length ? input.selectedCommitShas.map((sha) => `  - ${sha}`) : ["  - no-op execution"]),
+    );
+  }
+
   lines.push(
     "",
     "## Merge approach",
     "",
+    ...(input.commitScoped
+      ? [
+          "Apply only the selected execution patch included below.",
+          "Do not merge the isolated workspace branch or inspect/apply changes belonging to unselected plans.",
+          "",
+        ]
+      : []),
     "Choose the best merge strategy based on the situation. You have full access to git and shell tools.",
-    "Common approaches (pick whichever fits):",
-    "  - `git merge` / `git merge --no-ff` if the workspace is on a named branch",
-    "  - `git cherry-pick` for individual commits",
-    "  - `git diff` + `git apply` for patch-based application",
-    "  - Direct file edits via Edit/Write tools for surgical changes",
+    ...(input.commitScoped
+      ? [
+          "Use the supplied patch as the source of truth. Apply it with git or reproduce it through precise file edits.",
+        ]
+      : [
+          "Common approaches (pick whichever fits):",
+          "  - `git merge` / `git merge --no-ff` if the workspace is on a named branch",
+          "  - `git cherry-pick` for individual commits",
+          "  - `git diff` + `git apply` for patch-based application",
+          "  - Direct file edits via Edit/Write tools for surgical changes",
+        ]),
     "",
     "If you encounter conflicts, resolve them intelligently — do not blindly overwrite.",
     "If you cannot resolve a conflict, leave standard conflict markers (<<<< / ==== / >>>>).",
