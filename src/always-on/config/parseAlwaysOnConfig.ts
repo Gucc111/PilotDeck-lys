@@ -32,6 +32,12 @@ export type AlwaysOnExecutionConfig = {
   timeoutMinutes: number;
 };
 
+export type AlwaysOnMemoryConfig = {
+  enabled: boolean;
+  extractionThreshold: number;
+  consolidationThreshold: number;
+};
+
 export type AlwaysOnProjectConfig = {
   enabled: boolean;
 };
@@ -45,6 +51,7 @@ export type AlwaysOnConfig = {
   dormancy: AlwaysOnDormancyConfig;
   workspace: AlwaysOnWorkspaceConfig;
   execution: AlwaysOnExecutionConfig;
+  memory: AlwaysOnMemoryConfig;
   projects: Record<string, AlwaysOnProjectConfig>;
 };
 
@@ -86,6 +93,11 @@ export function defaultAlwaysOnConfig(): AlwaysOnConfig {
       maxToolCalls: 200,
       timeoutMinutes: 20,
     },
+    memory: {
+      enabled: true,
+      extractionThreshold: 3,
+      consolidationThreshold: 15,
+    },
     projects: {},
   };
 }
@@ -97,6 +109,7 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "dormancy",
   "workspace",
   "execution",
+  "memory",
   "projects",
 ]);
 
@@ -199,6 +212,9 @@ export function parseAlwaysOnConfig(
   }
   if (raw.execution !== undefined) {
     parseExecution(raw.execution, result.execution, diagnostics);
+  }
+  if (raw.memory !== undefined) {
+    parseMemory(raw.memory, result.memory, diagnostics);
   }
   if (raw.projects !== undefined) {
     result.projects = parseProjects(raw.projects, diagnostics);
@@ -393,6 +409,36 @@ function parseExecution(
     raw.timeoutMinutes,
     target.timeoutMinutes,
     "alwaysOn.execution.timeoutMinutes",
+    diagnostics,
+  );
+}
+
+function parseMemory(
+  raw: unknown,
+  target: AlwaysOnMemoryConfig,
+  diagnostics: PilotConfigDiagnostic[],
+): void {
+  if (!isRecord(raw)) {
+    diagnostics.push({
+      code: "ALWAYS_ON_MEMORY_INVALID",
+      severity: "fatal",
+      message: "alwaysOn.memory must be an object.",
+      path: "alwaysOn.memory",
+      recoverable: false,
+    });
+    return;
+  }
+  target.enabled = booleanField(raw, "enabled", target.enabled);
+  target.extractionThreshold = positiveInteger(
+    raw.extractionThreshold,
+    target.extractionThreshold,
+    "alwaysOn.memory.extractionThreshold",
+    diagnostics,
+  );
+  target.consolidationThreshold = positiveInteger(
+    raw.consolidationThreshold,
+    target.consolidationThreshold,
+    "alwaysOn.memory.consolidationThreshold",
     diagnostics,
   );
 }

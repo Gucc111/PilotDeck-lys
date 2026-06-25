@@ -6,6 +6,9 @@ export type {
   AlwaysOnChannelLease,
   AlwaysOnEventPhase,
   AlwaysOnPhaseEvent,
+  PreferenceEvent,
+  PreferenceEventPlan,
+  PreferencePlanOutcome,
   DiscoveryPlanIndex,
   DiscoveryPlanRecord,
   DiscoveryPlanStatus,
@@ -32,6 +35,7 @@ export {
   type AlwaysOnPromptLanguage,
   type AlwaysOnDormancyConfig,
   type AlwaysOnExecutionConfig,
+  type AlwaysOnMemoryConfig,
   type AlwaysOnProjectConfig,
   type AlwaysOnTriggerConfig,
   type AlwaysOnWorkspaceConfig,
@@ -48,6 +52,18 @@ export { DiscoveryPlanStore } from "./storage/DiscoveryPlanStore.js";
 export { WorkCycleStore } from "./storage/WorkCycleStore.js";
 export { DiscoveryReportStore } from "./storage/DiscoveryReportStore.js";
 export { AlwaysOnEventStore } from "./storage/AlwaysOnEventStore.js";
+export { PreferenceEventStore } from "./storage/PreferenceEventStore.js";
+export {
+  PreferenceExtractor,
+  preparePreferenceMemory,
+  readPreferences,
+  type LoggerLike as PreferenceLoggerLike,
+  type PreferenceExtractionInput,
+  type PreferenceExtractionResult,
+  type PreferenceExtractorDependencies,
+  type PreferenceLlmOptions,
+  type PreparePreferenceMemoryInput,
+} from "./memory/PreferenceExtractor.js";
 export {
   parsePlanMarkdown,
   PLAN_REQUIRED_SECTIONS,

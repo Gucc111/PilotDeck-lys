@@ -14,6 +14,7 @@ import {
 } from "./AlwaysOnRuntime.js";
 import { SessionConfigOverrides } from "./SessionConfigOverrides.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
+import type { PreferenceLlmOptions } from "../memory/PreferenceExtractor.js";
 
 export type CreateAlwaysOnManagerOptions = {
   config: AlwaysOnConfig;
@@ -27,6 +28,7 @@ export type CreateAlwaysOnManagerOptions = {
   onWorktreeRemoved?: (cwd: string) => void;
   onTurnEvent?: DiscoveryFireDependencies["onTurnEvent"];
   telemetry?: TelemetryClient;
+  preferenceLlm?: PreferenceLlmOptions;
 };
 
 /**
@@ -83,6 +85,7 @@ export class AlwaysOnManager {
           onWorktreeRemoved: options.onWorktreeRemoved,
           onTurnEvent: options.onTurnEvent,
           telemetry: options.telemetry,
+          preferenceLlm: options.preferenceLlm,
           runContexts: this.runContexts,
           sessionOverrides: this.sessionOverrides,
           skipToolCreation: true,

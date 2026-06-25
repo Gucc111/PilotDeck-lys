@@ -13,37 +13,28 @@ import type {
 } from "./discoveryPrompts.js";
 
 export function buildDiscoveryPromptZh(input: BuildDiscoveryPromptInput): string {
-  const codeAccessLines: string[] = input.workspace
-    ? [
-        `隔离工作区路径: ${input.workspace.cwd}`,
-        `工作区策略: ${input.workspace.strategy}`,
-        "此工作区是项目的隔离快照——可在其中自由使用 read_file / glob / bash。",
-        `请勿 cd 到工作区外部的项目根目录 (${input.projectRoot})。`,
-      ]
-    : [
-        `可使用 read_file / glob / bash 自由读取项目根目录: ${input.projectRoot}`,
-      ];
-
-  const headerLine = input.workspace
-    ? `你正在为项目执行自主 Always-On 发现任务: ${input.projectRoot} (当前在隔离工作区中: ${input.workspace.cwd})`
-    : `你正在为项目执行自主 Always-On 发现任务: ${input.projectRoot}`;
+  const rootPath = input.workspace?.cwd ?? input.projectRoot;
+  const headerLine = `你正在为项目执行自主 Always-On 发现任务: ${rootPath}`;
 
   const lines: string[] = [
     headerLine,
     "",
     "目标: 最多提出一个有价值的任务。",
-    "任务范围包括但不限于: 丰富或补充内容、完成未竟工作、优化结构或布局、",
-    "修复错误、提升用户体验, 以及用户在聊天记录中讨论过的任何有价值的事项。",
-    "每个计划必须包含至少一个可自动验证的检查步骤",
-    "(如: 文件存在、内容匹配预期模式、页面无错误渲染等)。",
-    "如果未发现可执行的任务, 不要调用任何工具——仅以简短说明回复原因即可。",
     "",
-    "权限: 本轮运行在 `bypassPermissions` 模式下——所有工具调用均自动允许。",
-    ...codeAccessLines,
+    "发现流程:",
+    "1. 首先理解项目的性质、领域和用户的工作目标 (浏览目录结构和关键文件)。",
+    "2. 结合聊天记录和项目上下文, 预测用户的潜在需求, 发掘项目中值得推进的任务。",
+    "",
+    "当存在多个潜在任务时, 优先选择能实质性推进用户核心工作目标的任务,",
+    "而非表面性的修补、格式美化或细节订正。",
+    "站在用户的角度思考: 如果有一个主动帮手, 用户最希望它推进什么方向的工作?",
+    "",
+    "仅当项目为空或确实没有任何可改进之处时, 才可以不提出计划。",
   ];
 
   lines.push("", ...formatChatDigestSectionZh(input.chatDigest));
   lines.push("", ...formatExistingPlansSectionZh(input.existingPlans));
+  lines.push("", ...formatPreferencesSectionZh(input.preferences));
 
   lines.push(
     "",
@@ -74,7 +65,7 @@ export function buildDiscoveryPromptZh(input: BuildDiscoveryPromptInput): string
 function formatChatDigestSectionZh(digest?: ChatDigest): string[] {
   if (!digest || digest.sessions.length === 0) {
     return [
-      "未找到近期用户对话。请浏览工作区内容以发现有价值的任务。",
+      "未找到近期用户对话。请深入理解项目内容与目标, 优先发掘能实质性推进项目核心方向的任务, 而非仅修补细节。",
     ];
   }
 
@@ -82,7 +73,7 @@ function formatChatDigestSectionZh(digest?: ChatDigest): string[] {
     "## 近期用户对话",
     "",
     "以下是近期用户-智能体对话的结构化摘要。",
-    "这些是用户关注点的主要信号来源。",
+    "其中可能揭示用户的深层目标、工作重心与关注方向, 而不仅仅是短期待办。",
     `如需查看某个会话的完整对话, 请使用 sessionId 调用 \`${ALWAYS_ON_CHAT_HISTORY_TOOL_NAME}\`。`,
     "",
   ];
@@ -100,18 +91,61 @@ function formatChatDigestSectionZh(digest?: ChatDigest): string[] {
   return lines;
 }
 
+function formatPreferencesSectionZh(preferences?: string): string[] {
+  if (!preferences?.trim()) return [];
+  return [
+    "## Always-On 用户偏好",
+    "",
+    "以下偏好来自历史计划的处置结果。",
+    "避免提出与用户拒绝倾向一致的任务, 但不要将用户曾接受的任务类型视为唯一方向——",
+    "保持自由探索, 主动发现用户可能尚未意识到的需求。",
+    "",
+    preferences.trim(),
+  ];
+}
+
 function formatExistingPlansSectionZh(plans?: ExistingPlanSummary[]): string[] {
-  if (!plans || plans.length === 0) {
-    return [];
+  if (!plans || plans.length === 0) return [];
+
+  const active = plans.filter((plan) => (
+    plan.status === "ready" ||
+    plan.status === "executing" ||
+    plan.status === "completed" ||
+    plan.status === "completed_no_report"
+  ));
+  const applied = plans.filter((plan) => plan.status === "applied");
+  const dismissed = plans.filter((plan) => plan.status === "archived" || plan.status === "failed");
+  const lines: string[] = [];
+
+  if (active.length > 0) {
+    lines.push("## 待处理的累积计划 (已完成但尚未被应用或归档, 请勿重复这些主题)", "");
+    for (const plan of active) {
+      lines.push(`- [${plan.status}] "${plan.title}"`);
+      if (plan.summary) lines.push(`  摘要: ${plan.summary}`);
+    }
   }
 
-  const lines: string[] = [
-    "## 已有 Always-On 计划 (请勿重复这些主题)",
-    "",
-  ];
+  if (applied.length > 0) {
+    lines.push("", "## 用户已采纳并应用到原项目的计划 (请勿重复这些主题)", "");
+    for (const plan of applied) {
+      lines.push(`- "${plan.title}"`);
+      if (plan.summary) lines.push(`  摘要: ${plan.summary}`);
+    }
+  }
 
-  for (const plan of plans) {
-    lines.push(`- [${plan.status}] "${plan.title}" (dedupeKey: ${plan.dedupeKey})`);
+  if (dismissed.length > 0) {
+    lines.push(
+      "",
+      "## 用户已抛弃的计划",
+      "",
+      "以下计划曾被用户抛弃或执行失败。不要提出完全相同的方案,",
+      "但如果该方向仍有价值, 你可以用不同的角度或更优的方式重新提出。",
+      "",
+    );
+    for (const plan of dismissed) {
+      lines.push(`- [${plan.status}] "${plan.title}"`);
+      if (plan.summary) lines.push(`  摘要: ${plan.summary}`);
+    }
   }
 
   return lines;

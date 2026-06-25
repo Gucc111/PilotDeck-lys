@@ -16,6 +16,7 @@ import {
 export type ExistingPlanSummary = {
   id: string;
   title: string;
+  summary?: string;
   dedupeKey: string;
   status: string;
 };
@@ -33,44 +34,36 @@ export type BuildDiscoveryPromptInput = {
   chatDigest?: ChatDigest;
   /** Summaries of previously created Always-On plans. */
   existingPlans?: ExistingPlanSummary[];
+  /** Learned user preferences from past plan outcomes. */
+  preferences?: string;
   /** Prompt language override. Defaults to English when absent. */
   language?: string;
 };
 
 export function buildDiscoveryPrompt(input: BuildDiscoveryPromptInput): string {
   if (input.language === "zh-CN") return buildDiscoveryPromptZh(input);
-  const codeAccessLines: string[] = input.workspace
-    ? [
-        `Isolated workspace cwd: ${input.workspace.cwd}`,
-        `Workspace strategy: ${input.workspace.strategy}.`,
-        "This workspace is an isolated snapshot of the project — read / glob / bash freely inside it.",
-        `Do NOT cd outside the workspace to the project root (${input.projectRoot}).`,
-      ]
-    : [
-        `Read the project root at ${input.projectRoot} using read_file / glob / bash freely.`,
-      ];
-
-  const headerLine = input.workspace
-    ? `You are running an autonomous Always-On discovery for project: ${input.projectRoot} (working inside isolated workspace: ${input.workspace.cwd})`
-    : `You are running an autonomous Always-On discovery for project: ${input.projectRoot}`;
+  const rootPath = input.workspace?.cwd ?? input.projectRoot;
+  const headerLine = `You are running an autonomous Always-On discovery for project: ${rootPath}`;
 
   const lines: string[] = [
     headerLine,
     "",
     "Goal: identify AT MOST ONE worthwhile task to propose.",
-    "Tasks may include enriching or adding content, completing unfinished work,",
-    "improving structure or layout, fixing errors, enhancing user experience,",
-    "or anything valuable discussed in user chat history.",
-    "Each plan must include at least one automatically-checkable verification step",
-    "(e.g. file exists, content matches expected pattern, page renders without error).",
-    "If nothing actionable is found, do not call any tool — just respond with a short note explaining why.",
     "",
-    "Permissions: this turn runs in `bypassPermissions` mode — every tool call is auto-allowed.",
-    ...codeAccessLines,
+    "Discovery process:",
+    "1. First understand the project's nature, domain, and the user's work objectives (browse directory structure and key files).",
+    "2. Combine chat history and project context to anticipate user needs and uncover latent tasks worth pursuing.",
+    "",
+    "When multiple potential tasks exist, prefer those that substantively advance the user's core work objectives",
+    "over superficial fixes, formatting polish, or minor corrections.",
+    "Think from the user's perspective: if they had a proactive assistant, what kind of work would they most want it to push forward?",
+    "",
+    "Only skip proposing a plan if the project is empty or truly has nothing to improve.",
   ];
 
   lines.push("", ...formatChatDigestSection(input.chatDigest));
   lines.push("", ...formatExistingPlansSection(input.existingPlans));
+  lines.push("", ...formatPreferencesSection(input.preferences));
 
   lines.push(
     "",
@@ -101,7 +94,7 @@ export function buildDiscoveryPrompt(input: BuildDiscoveryPromptInput): string {
 function formatChatDigestSection(digest?: ChatDigest): string[] {
   if (!digest || digest.sessions.length === 0) {
     return [
-      "No recent user conversations found. Explore the workspace contents to find a worthwhile task.",
+      "No recent user conversations found. Explore the project deeply to understand its purpose, and prioritize tasks that substantively advance its core direction over minor fixes.",
     ];
   }
 
@@ -109,7 +102,7 @@ function formatChatDigestSection(digest?: ChatDigest): string[] {
     "## Recent user conversations",
     "",
     "Below is a structured digest of recent user-agent chat sessions.",
-    "These are primary signals for what the user cares about.",
+    "These may reveal the user's deeper goals, priorities, and direction of work — not just short-term to-dos.",
     `To see the full conversation of a session, call \`${ALWAYS_ON_CHAT_HISTORY_TOOL_NAME}\` with its sessionId.`,
     "",
   ];
@@ -127,18 +120,69 @@ function formatChatDigestSection(digest?: ChatDigest): string[] {
   return lines;
 }
 
+function formatPreferencesSection(preferences?: string): string[] {
+  if (!preferences?.trim()) return [];
+  return [
+    "## Always-On user preferences",
+    "",
+    "The following preferences were learned from past plan outcomes.",
+    "Avoid proposing tasks aligned with rejected preferences, but do not confine yourself to previously accepted types —",
+    "maintain freedom to explore and surface needs the user may not yet be aware of.",
+    "",
+    preferences.trim(),
+  ];
+}
+
 function formatExistingPlansSection(plans?: ExistingPlanSummary[]): string[] {
-  if (!plans || plans.length === 0) {
-    return [];
+  if (!plans || plans.length === 0) return [];
+
+  const active = plans.filter((plan) => (
+    plan.status === "ready" ||
+    plan.status === "executing" ||
+    plan.status === "completed" ||
+    plan.status === "completed_no_report"
+  ));
+  const applied = plans.filter((plan) => plan.status === "applied");
+  const dismissed = plans.filter((plan) => plan.status === "archived" || plan.status === "failed");
+  const lines: string[] = [];
+
+  if (active.length > 0) {
+    lines.push(
+      "## Pending accumulated plans (completed but not yet applied or archived -- do NOT duplicate these topics)",
+      "",
+    );
+    for (const plan of active) {
+      lines.push(`- [${plan.status}] "${plan.title}"`);
+      if (plan.summary) lines.push(`  Summary: ${plan.summary}`);
+    }
   }
 
-  const lines: string[] = [
-    "## Existing Always-On plans (do NOT duplicate these topics)",
-    "",
-  ];
+  if (applied.length > 0) {
+    lines.push(
+      "",
+      "## Plans the user has accepted and applied to the project (do NOT duplicate these topics)",
+      "",
+    );
+    for (const plan of applied) {
+      lines.push(`- "${plan.title}"`);
+      if (plan.summary) lines.push(`  Summary: ${plan.summary}`);
+    }
+  }
 
-  for (const plan of plans) {
-    lines.push(`- [${plan.status}] "${plan.title}" (dedupeKey: ${plan.dedupeKey})`);
+  if (dismissed.length > 0) {
+    lines.push(
+      "",
+      "## Plans rejected or abandoned by the user",
+      "",
+      "These plans were rejected or abandoned by the user, or failed during execution.",
+      "Do not propose the exact same approach,",
+      "but if the direction is still valuable, you may re-propose with a different angle or improved approach.",
+      "",
+    );
+    for (const plan of dismissed) {
+      lines.push(`- [${plan.status}] "${plan.title}"`);
+      if (plan.summary) lines.push(`  Summary: ${plan.summary}`);
+    }
   }
 
   return lines;

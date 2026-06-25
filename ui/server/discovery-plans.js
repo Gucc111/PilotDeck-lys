@@ -29,6 +29,7 @@ import {
 } from '../../src/always-on/workspace/WorkspaceApply.js';
 import { resolveAlwaysOnPaths } from '../../src/always-on/storage/AlwaysOnPaths.js';
 import { DiscoveryStateStore } from '../../src/always-on/storage/DiscoveryStateStore.js';
+import { PreferenceEventStore } from '../../src/always-on/storage/PreferenceEventStore.js';
 
 // ---------------------------------------------------------------------------
 // Wire dependencies for the service
@@ -60,6 +61,20 @@ function getService() {
         });
         const store = new DiscoveryStateStore(paths);
         await store.clearActiveWorkCycleId(new Date());
+      },
+    },
+    preferenceEvents: {
+      forProject: (projectRoot) => {
+        const paths = resolveAlwaysOnPaths({
+          pilotHome,
+          projectKey: projectRoot,
+        });
+        return new PreferenceEventStore(paths.preferenceEventsFile);
+      },
+    },
+    logger: {
+      warn: (message, data) => {
+        console.warn(`${message}${data ? ` ${JSON.stringify(data)}` : ''}`);
       },
     },
   });

@@ -201,6 +201,26 @@ export type AlwaysOnPhaseEvent = {
   error?: { code: string; message: string };
 };
 
+export type PreferencePlanOutcome = "applied" | "archived";
+
+export type PreferenceEventPlan = {
+  id: string;
+  title: string;
+  summary: string;
+  dedupeKey: string;
+  outcome: PreferencePlanOutcome;
+};
+
+export type PreferenceEvent = {
+  schemaVersion: 2;
+  eventId: string;
+  timestamp: string;
+  action: "apply" | "archive";
+  cycleId: string;
+  plans: PreferenceEventPlan[];
+  indexed: boolean;
+};
+
 export type DiscoveryFireResult =
   | {
       outcome: "no_plan";

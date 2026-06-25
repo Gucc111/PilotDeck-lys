@@ -7,6 +7,8 @@ import {
   DiscoveryPlanService,
   type DiscoveryPlanServiceDeps,
 } from "../../src/always-on/web/DiscoveryPlanService.js";
+import { PreferenceEventStore } from "../../src/always-on/storage/PreferenceEventStore.js";
+import type { PreferenceEvent } from "../../src/always-on/protocol/types.js";
 
 type PlanSeed = {
   id: string;
@@ -26,14 +28,17 @@ type Fixture = {
   service: DiscoveryPlanService;
   disposed: string[];
   cleared: string[];
+  warnings: string[];
   readPlans(): Promise<Array<Record<string, unknown>>>;
   readCycles(): Promise<Array<Record<string, unknown>>>;
+  readPreferenceEvents(): Promise<PreferenceEvent[]>;
   cleanup(): Promise<void>;
 };
 
 async function createFixture(input: {
   plans: PlanSeed[];
   executions?: ExecutionSeed[];
+  preferenceWriteFails?: boolean;
 }): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-plan-service-"));
   const pilotHome = join(root, "pilot-home");
@@ -103,6 +108,13 @@ async function createFixture(input: {
 
   const disposed: string[] = [];
   const cleared: string[] = [];
+  const warnings: string[] = [];
+  const preferenceEventsFile = join(projectDir, "memory", "preference-events.jsonl");
+  class FailingPreferenceEventStore extends PreferenceEventStore {
+    override async appendEvent(): Promise<void> {
+      throw new Error("preference write failed");
+    }
+  }
   const deps: DiscoveryPlanServiceDeps = {
     pilotHome,
     resolveProjectId: () => "project-id",
@@ -126,6 +138,16 @@ async function createFixture(input: {
         cleared.push(rootPath);
       },
     },
+    preferenceEvents: {
+      forProject: () => input.preferenceWriteFails
+        ? new FailingPreferenceEventStore(preferenceEventsFile)
+        : new PreferenceEventStore(preferenceEventsFile),
+    },
+    logger: {
+      warn: (message) => {
+        warnings.push(message);
+      },
+    },
   };
 
   return {
@@ -134,6 +156,7 @@ async function createFixture(input: {
     service: new DiscoveryPlanService(deps),
     disposed,
     cleared,
+    warnings,
     async readPlans() {
       const parsed = JSON.parse(await readFile(join(projectDir, "plans", "index.json"), "utf8"));
       return parsed.plans;
@@ -141,6 +164,9 @@ async function createFixture(input: {
     async readCycles() {
       const parsed = JSON.parse(await readFile(join(projectDir, "cycles", "index.json"), "utf8"));
       return parsed.cycles;
+    },
+    async readPreferenceEvents() {
+      return new PreferenceEventStore(preferenceEventsFile).readAll();
     },
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
@@ -197,6 +223,12 @@ describe("DiscoveryPlanService plan selection", () => {
 
       const partial = await fixture.service.archiveCycle("project", "cycle-1", ["b"]);
       assert.deepEqual(partial.planIds, ["b"]);
+      assert.deepEqual(
+        (await fixture.readPreferenceEvents()).map((event) => (
+          event.plans.map((plan) => `${plan.id}:${plan.outcome}`)
+        )),
+        [["b:archived"]],
+      );
       assert.deepEqual(fixture.disposed, []);
       assert.equal((await fixture.readCycles())[0]?.status, "active");
 
@@ -204,6 +236,10 @@ describe("DiscoveryPlanService plan selection", () => {
       assert.equal(fixture.disposed.length, 1);
       assert.equal(fixture.cleared.length, 1);
       assert.equal((await fixture.readCycles())[0]?.status, "archived");
+      assert.deepEqual(
+        (await fixture.readPreferenceEvents()).map((event) => event.plans.map((plan) => plan.id)),
+        [["b"], ["a"]],
+      );
     } finally {
       await fixture.cleanup();
     }
@@ -254,6 +290,7 @@ describe("DiscoveryPlanService plan selection", () => {
       });
       assert.equal((await fixture.readCycles())[0]?.status, "active");
       assert.deepEqual(fixture.disposed, []);
+      assert.deepEqual(await fixture.readPreferenceEvents(), []);
     } finally {
       await fixture.cleanup();
     }
@@ -308,6 +345,79 @@ describe("DiscoveryPlanService plan selection", () => {
       assert.equal(fixture.cleared.length, 1);
       const overview = await fixture.service.getPlansOverview("project");
       assert.equal(overview.plans.find((plan) => plan.id === "a")?.status, "applied");
+      const events = await fixture.readPreferenceEvents();
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.action, "apply");
+      assert.deepEqual(
+        events[0]?.plans.map((plan) => `${plan.id}:${plan.outcome}`),
+        ["a:applied", "b:archived"],
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("records all selected plans as applied for whole-cycle apply", async () => {
+    const fixture = await createFixture({
+      plans: [
+        { id: "a", status: "completed" },
+        { id: "b", status: "completed_no_report" },
+      ],
+      executions: [{ planId: "a" }, { planId: "b" }],
+    });
+    try {
+      const queued = await fixture.service.queueCycleApply("project", "cycle-1");
+      await fixture.service.updateCycleExecution("project", "cycle-1", {
+        status: "completed",
+        planIds: queued.planIds,
+      });
+      const [event] = await fixture.readPreferenceEvents();
+      assert.deepEqual(
+        event?.plans.map((plan) => `${plan.id}:${plan.outcome}`),
+        ["a:applied", "b:applied"],
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("keeps archive successful when preference persistence fails", async () => {
+    const fixture = await createFixture({
+      plans: [{ id: "a", status: "completed" }],
+      executions: [{ planId: "a" }],
+      preferenceWriteFails: true,
+    });
+    try {
+      const result = await fixture.service.archiveCycle("project", "cycle-1", ["a"]);
+      assert.deepEqual(result.planIds, ["a"]);
+      assert.equal((await fixture.readPlans())[0]?.status, "archived");
+      assert.equal(fixture.warnings.length, 1);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("keeps apply successful when preference persistence fails and does not duplicate finalize events", async () => {
+    const fixture = await createFixture({
+      plans: [{ id: "a", status: "completed" }],
+      executions: [{ planId: "a" }],
+      preferenceWriteFails: true,
+    });
+    try {
+      const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
+      const result = await fixture.service.updateCycleExecution("project", "cycle-1", {
+        status: "completed",
+        planIds: queued.planIds,
+      });
+      assert.equal(result.cycle.status, "applied");
+      assert.equal((await fixture.readPlans())[0]?.status, "applied");
+      assert.equal(fixture.warnings.length, 1);
+
+      await fixture.service.updateCycleExecution("project", "cycle-1", {
+        status: "completed",
+        planIds: queued.planIds,
+      });
+      assert.equal(fixture.warnings.length, 1);
     } finally {
       await fixture.cleanup();
     }

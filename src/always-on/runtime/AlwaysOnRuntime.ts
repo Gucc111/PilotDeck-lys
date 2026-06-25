@@ -31,10 +31,12 @@ import { DiscoveryFire, type DiscoveryFireDependencies } from "./DiscoveryFire.j
 import { DiscoveryScheduler } from "./DiscoveryScheduler.js";
 import { SessionConfigOverrides } from "./SessionConfigOverrides.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
+import type { LoggerLike, PreferenceLlmOptions } from "../memory/PreferenceExtractor.js";
+import { PreferenceEventStore } from "../storage/PreferenceEventStore.js";
 
 export type AlwaysOnRuntimeLogger = {
-  info: (message: string, data?: Record<string, unknown>) => void;
-  warn: (message: string, data?: Record<string, unknown>) => void;
+  info: (message: string, data?: unknown) => void;
+  warn: (message: string, data?: unknown) => void;
 };
 
 export type CreateAlwaysOnRuntimeOptions = {
@@ -65,6 +67,7 @@ export type CreateAlwaysOnRuntimeOptions = {
   /** When true, the runtime skips internal tool creation (manager owns tools). */
   skipToolCreation?: boolean;
   telemetry?: TelemetryClient;
+  preferenceLlm?: PreferenceLlmOptions;
 };
 
 const NOOP_LOGGER: AlwaysOnRuntimeLogger = {
@@ -112,6 +115,7 @@ export class AlwaysOnRuntime {
   private readonly onWorktreeRemoved?: (cwd: string) => void;
   private readonly onTurnEvent?: DiscoveryFireDependencies["onTurnEvent"];
   private readonly telemetry?: TelemetryClient;
+  private readonly preferenceLlm?: PreferenceLlmOptions;
 
   private gateway?: Gateway;
   private fire?: DiscoveryFire;
@@ -143,6 +147,7 @@ export class AlwaysOnRuntime {
     this.onWorktreeRemoved = options.onWorktreeRemoved;
     this.onTurnEvent = options.onTurnEvent;
     this.telemetry = options.telemetry;
+    this.preferenceLlm = options.preferenceLlm;
     this.workspaceRegistry = options.workspaceRegistry ?? this.buildDefaultWorkspaceRegistry();
 
     this.tools = options.skipToolCreation
@@ -207,9 +212,11 @@ export class AlwaysOnRuntime {
       eventStore: this.eventStore,
       uuid: this.uuid,
       now: this.now,
-      logger: this.logger,
+      logger: this.logger as LoggerLike,
       onTurnEvent: this.onTurnEvent,
       telemetry: this.telemetry,
+      preferenceEventStore: new PreferenceEventStore(this.paths.preferenceEventsFile),
+      preferenceLlm: this.preferenceLlm,
     });
     this.scheduler = new DiscoveryScheduler({
       config: this.config,

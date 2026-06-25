@@ -43,6 +43,12 @@ import {
 } from "./SessionConfigOverrides.js";
 import type { PermissionRule } from "../../permission/index.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
+import type { PreferenceEventStore } from "../storage/PreferenceEventStore.js";
+import {
+  preparePreferenceMemory,
+  type LoggerLike,
+  type PreferenceLlmOptions,
+} from "../memory/PreferenceExtractor.js";
 
 export type DiscoveryFireDependencies = {
   config: AlwaysOnConfig;
@@ -59,9 +65,11 @@ export type DiscoveryFireDependencies = {
   eventStore: AlwaysOnEventStore;
   uuid: () => string;
   now: () => Date;
-  logger?: { info: (msg: string, data?: Record<string, unknown>) => void; warn: (msg: string, data?: Record<string, unknown>) => void };
+  logger?: LoggerLike;
   onTurnEvent?: (sessionKey: string, channelKey: string, event: GatewayEvent) => void;
   telemetry?: TelemetryClient;
+  preferenceEventStore?: PreferenceEventStore;
+  preferenceLlm?: PreferenceLlmOptions;
 };
 
 export type DiscoveryFireRunInput = {
@@ -703,9 +711,21 @@ export class DiscoveryFire {
     const existingPlans = planIndex.plans.map((p) => ({
       id: p.id,
       title: p.title,
+      summary: p.summary,
       dedupeKey: p.dedupeKey,
       status: p.status,
     }));
+
+    const preferences = await preparePreferenceMemory({
+      enabled: this.deps.config.memory.enabled,
+      extractionThreshold: this.deps.config.memory.extractionThreshold,
+      consolidationThreshold: this.deps.config.memory.consolidationThreshold,
+      preferencesFile: this.deps.paths.preferencesFile,
+      eventStore: this.deps.preferenceEventStore,
+      llm: this.deps.preferenceLlm,
+      language: this.deps.config.language,
+      logger: this.deps.logger,
+    });
 
     let discoveryEvents: GatewayEvent[];
     try {
@@ -723,6 +743,7 @@ export class DiscoveryFire {
             : undefined,
           chatDigest,
           existingPlans,
+          preferences,
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",

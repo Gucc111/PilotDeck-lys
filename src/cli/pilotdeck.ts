@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
-import { createAlwaysOnManager, createApplyHandler, SessionConfigOverrides, type AlwaysOnManager, type AlwaysOnConfig } from "../always-on/index.js";
+import {
+  createAlwaysOnManager,
+  createApplyHandler,
+  SessionConfigOverrides,
+  type AlwaysOnManager,
+  type AlwaysOnConfig,
+  type PreferenceLlmOptions,
+} from "../always-on/index.js";
 import { createCronManager, type CronManager, type CronConfig } from "../cron/index.js";
 import { connectRemoteGatewayIfAvailable, type Gateway, type GatewayEvent, type GatewaySubmitTurnInput } from "../gateway/index.js";
 import {
@@ -21,6 +28,7 @@ import { startPilotDeckServer } from "./pilotdeckServer.js";
 import { installGlobalProxy, reinstallGlobalProxy } from "./proxy.js";
 import { createShutdownAndExit } from "./shutdownCoordinator.js";
 import { createTelemetryCollector } from "../telemetry/index.js";
+import type { PilotConfig } from "../pilot/config/types.js";
 
 await installGlobalProxy();
 
@@ -47,11 +55,16 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     let deferredBroadcast: ((name: string, payload?: unknown) => void) | undefined;
     const sessionOverrides = new SessionConfigOverrides();
 
+    const formatAlwaysOnLogData = (data: unknown): string => {
+      if (!data) return "";
+      if (data instanceof Error) return ` ${data.message}`;
+      return ` ${JSON.stringify(data)}`;
+    };
     const alwaysOnLogger = {
-      info: (message: string, data?: Record<string, unknown>) =>
-        console.log(`[always-on] ${message}${data ? ` ${JSON.stringify(data)}` : ""}`),
-      warn: (message: string, data?: Record<string, unknown>) =>
-        console.warn(`[always-on] ${message}${data ? ` ${JSON.stringify(data)}` : ""}`),
+      info: (message: string, data?: unknown) =>
+        console.log(`[always-on] ${message}${formatAlwaysOnLogData(data)}`),
+      warn: (message: string, data?: unknown) =>
+        console.warn(`[always-on] ${message}${formatAlwaysOnLogData(data)}`),
     };
     const cronLogger = {
       info: (message: string, data?: Record<string, unknown>) =>
@@ -60,7 +73,24 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         console.warn(`[cron] ${message}${data ? ` ${JSON.stringify(data)}` : ""}`),
     };
 
-    function buildAlwaysOn(config: AlwaysOnConfig | undefined): AlwaysOnManager | undefined {
+    function buildPreferenceLlm(fullConfig: PilotConfig): PreferenceLlmOptions | undefined {
+      const selection = fullConfig.agent.model;
+      const provider = fullConfig.model.providers[selection.provider];
+      if (!provider) return undefined;
+      return {
+        baseUrl: provider.url,
+        model: selection.model,
+        apiKey: provider.apiKey,
+        protocol: provider.protocol,
+        headers: provider.headers,
+        timeoutMs: provider.timeoutMs,
+      };
+    }
+
+    function buildAlwaysOn(
+      config: AlwaysOnConfig | undefined,
+      fullConfig: PilotConfig,
+    ): AlwaysOnManager | undefined {
       if (!config?.enabled) return undefined;
       return createAlwaysOnManager({
         config,
@@ -68,6 +98,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         sessionOverrides,
         logger: alwaysOnLogger,
         telemetry,
+        preferenceLlm: buildPreferenceLlm(fullConfig),
         onWorktreeCreated: (runId, cwd) => {
           deferredBroadcast?.("worktree_created", { runId, cwd });
         },
@@ -102,7 +133,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       });
     }
 
-    alwaysOn = buildAlwaysOn(snapshot.config.alwaysOn);
+    alwaysOn = buildAlwaysOn(snapshot.config.alwaysOn, snapshot.config);
     cron = buildCron(snapshot.config.cron);
 
     const {
@@ -159,7 +190,15 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         telemetry.setEnabled(event.nextSnapshot.config.telemetry?.enabled ?? false);
       }
 
-      const aoChanged = event.changedPaths.some((p) => p.startsWith("alwaysOn.") || p === "alwaysOn");
+      const aoChanged = event.changedPaths.some((p) => (
+        p.startsWith("alwaysOn.") ||
+        p === "alwaysOn" ||
+        p.startsWith("agent.model.") ||
+        p === "agent.model" ||
+        p.startsWith("model.providers.") ||
+        p === "model.providers" ||
+        p === "model"
+      ));
       const cronChanged = event.changedPaths.some((p) => p.startsWith("cron.") || p === "cron");
       const proxyChanged = event.changedPaths.some((p) => p.startsWith("proxy.") || p === "proxy");
       const adapterChanged = event.changedPaths.some((p) => p.startsWith("adapters."));
@@ -204,7 +243,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         cron = undefined;
       }
 
-      if (aoChanged) alwaysOn = buildAlwaysOn(config.alwaysOn);
+      if (aoChanged) alwaysOn = buildAlwaysOn(config.alwaysOn, config);
       if (cronChanged) cron = buildCron(config.cron);
 
       if (aoChanged && alwaysOn) {

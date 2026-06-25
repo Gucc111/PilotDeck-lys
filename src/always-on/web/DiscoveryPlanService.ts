@@ -13,6 +13,8 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { resolve, isAbsolute, join } from "node:path";
+import type { PreferenceEvent } from "../protocol/types.js";
+import type { PreferenceEventStore } from "../storage/PreferenceEventStore.js";
 import {
   computeExecutionStatus,
   computePlanStatus,
@@ -116,6 +118,12 @@ export type DiscoveryPlanServiceDeps = {
   events: RunEventSink;
   workspace?: WorkspaceManager;
   state?: StateManager;
+  preferenceEvents?: {
+    forProject: (projectRoot: string) => PreferenceEventStore;
+  };
+  logger?: {
+    warn: (message: string, data?: Record<string, unknown>) => void;
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -591,6 +599,24 @@ export class DiscoveryPlanService {
       }
     }
 
+    await this.appendPreferenceEvent(projectRoot, {
+      schemaVersion: 2,
+      eventId: randomUUID(),
+      timestamp: now,
+      action: "archive",
+      cycleId,
+      plans: store.plans
+        .filter((plan) => selectedPlanIds.includes(plan.id))
+        .map((plan) => ({
+          id: plan.id,
+          title: plan.title,
+          summary: normalizeString(plan.summary),
+          dedupeKey: plan.dedupeKey,
+          outcome: "archived" as const,
+        })),
+      indexed: false,
+    });
+
     return { archived: true, planIds: selectedPlanIds };
   }
 
@@ -695,6 +721,9 @@ export class DiscoveryPlanService {
       if (finalStatus === "applied") {
         const store = await readPlanStore(projectDir);
         const selected = new Set(updates.planIds);
+        const affectedPlans = store.plans.filter(
+          (plan) => cycle.planIds.includes(plan.id) && !isResolvedPlan(plan),
+        );
         for (const plan of store.plans) {
           if (cycle.planIds.includes(plan.id) && !isResolvedPlan(plan)) {
             plan.status = selected.has(plan.id) ? "applied" : "archived";
@@ -710,6 +739,22 @@ export class DiscoveryPlanService {
             // Best effort — state cleanup should not block apply finalization.
           }
         }
+
+        await this.appendPreferenceEvent(projectRoot, {
+          schemaVersion: 2,
+          eventId: randomUUID(),
+          timestamp: now,
+          action: "apply",
+          cycleId,
+          plans: affectedPlans.map((plan) => ({
+            id: plan.id,
+            title: plan.title,
+            summary: normalizeString(plan.summary),
+            dedupeKey: plan.dedupeKey,
+            outcome: selected.has(plan.id) ? "applied" : "archived",
+          })),
+          indexed: false,
+        });
       }
     }
 
@@ -762,6 +807,19 @@ export class DiscoveryPlanService {
   async readStore(projectName: string): Promise<PlanIndex> {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     return readPlanStore(this.projectDir(projectRoot));
+  }
+
+  private async appendPreferenceEvent(projectRoot: string, event: PreferenceEvent): Promise<void> {
+    if (!this.deps.preferenceEvents || event.plans.length === 0) return;
+    try {
+      await this.deps.preferenceEvents.forProject(projectRoot).appendEvent(event);
+    } catch (error) {
+      this.deps.logger?.warn("[always-on/memory] failed to persist preference event", {
+        projectRoot,
+        action: event.action,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 

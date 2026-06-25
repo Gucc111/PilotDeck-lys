@@ -23,6 +23,9 @@ export type AlwaysOnPaths = {
   discoveryLockFile: string;
   worktreesDir: string;
   snapshotsDir: string;
+  memoryDir: string;
+  preferenceEventsFile: string;
+  preferencesFile: string;
 };
 
 export function resolveAlwaysOnPaths(input: {
@@ -40,6 +43,7 @@ export function resolveAlwaysOnPaths(input: {
   const snapshotsBaseDir = resolveBaseDir(input.snapshotsBaseDir, resolve(rootDir, "snapshots"));
   const worktreesDir = resolve(worktreesBaseDir, projectId);
   const snapshotsDir = resolve(snapshotsBaseDir, projectId);
+  const memoryDir = resolve(projectDir, "memory");
 
   return {
     pilotHome,
@@ -60,6 +64,9 @@ export function resolveAlwaysOnPaths(input: {
     discoveryLockFile: resolve(projectDir, "locks", "discovery.lock"),
     worktreesDir,
     snapshotsDir,
+    memoryDir,
+    preferenceEventsFile: resolve(memoryDir, "preference-events.jsonl"),
+    preferencesFile: resolve(memoryDir, "preferences.md"),
   };
 }
 
