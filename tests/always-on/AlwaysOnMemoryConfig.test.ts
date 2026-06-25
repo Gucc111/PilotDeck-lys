@@ -6,9 +6,8 @@ import {
 } from "../../src/always-on/config/parseAlwaysOnConfig.js";
 
 describe("Always-On memory config", () => {
-  it("is enabled by default with extraction and consolidation thresholds", () => {
+  it("has extraction and consolidation thresholds by default", () => {
     assert.deepEqual(defaultAlwaysOnConfig().memory, {
-      enabled: true,
       extractionThreshold: 3,
       consolidationThreshold: 15,
     });
@@ -18,16 +17,33 @@ describe("Always-On memory config", () => {
     const diagnostics: Parameters<typeof parseAlwaysOnConfig>[1] = [];
     const config = parseAlwaysOnConfig({
       memory: {
-        enabled: false,
         extractionThreshold: 5,
         consolidationThreshold: 20,
       },
     }, diagnostics);
     assert.deepEqual(config?.memory, {
-      enabled: false,
       extractionThreshold: 5,
       consolidationThreshold: 20,
     });
     assert.deepEqual(diagnostics, []);
+  });
+
+  it("emits warning for removed enabled field", () => {
+    const diagnostics: Parameters<typeof parseAlwaysOnConfig>[1] = [];
+    const config = parseAlwaysOnConfig({
+      memory: {
+        enabled: false,
+        extractionThreshold: 3,
+        consolidationThreshold: 15,
+      },
+    }, diagnostics);
+    assert.deepEqual(config?.memory, {
+      extractionThreshold: 3,
+      consolidationThreshold: 15,
+    });
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].code, "ALWAYS_ON_FIELD_REMOVED");
+    assert.equal(diagnostics[0].severity, "warning");
+    assert.equal(diagnostics[0].recoverable, true);
   });
 });

@@ -127,8 +127,6 @@ export class AlwaysOnRuntime {
     this.paths = resolveAlwaysOnPaths({
       pilotHome: options.pilotHome,
       projectKey: this.projectKey,
-      worktreesBaseDir: options.config.workspace.gitWorktreeBaseDir,
-      snapshotsBaseDir: options.config.workspace.snapshotBaseDir,
     });
     this.logger = options.logger ?? NOOP_LOGGER;
     this.now = options.now ?? (() => new Date());

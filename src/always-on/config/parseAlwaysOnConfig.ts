@@ -13,27 +13,17 @@ export type AlwaysOnTriggerConfig = {
 };
 
 export type AlwaysOnDormancyConfig = {
-  enabled: boolean;
   debounceMs: number;
   ignoreGlobs: string[];
 };
 
 export type AlwaysOnWorkspaceConfig = {
-  gitWorktreeBaseDir?: string;
-  snapshotBaseDir?: string;
   snapshotMaxBytes: number;
-  gitLfs: boolean;
   maxPlansPerCycle: number;
 };
 
-export type AlwaysOnExecutionConfig = {
-  maxTurns: number;
-  maxToolCalls: number;
-  timeoutMinutes: number;
-};
 
 export type AlwaysOnMemoryConfig = {
-  enabled: boolean;
   extractionThreshold: number;
   consolidationThreshold: number;
 };
@@ -50,7 +40,6 @@ export type AlwaysOnConfig = {
   trigger: AlwaysOnTriggerConfig;
   dormancy: AlwaysOnDormancyConfig;
   workspace: AlwaysOnWorkspaceConfig;
-  execution: AlwaysOnExecutionConfig;
   memory: AlwaysOnMemoryConfig;
   projects: Record<string, AlwaysOnProjectConfig>;
 };
@@ -79,22 +68,14 @@ export function defaultAlwaysOnConfig(): AlwaysOnConfig {
       preferChannel: "web",
     },
     dormancy: {
-      enabled: true,
       debounceMs: 2000,
       ignoreGlobs: [...DEFAULT_IGNORE_GLOBS],
     },
     workspace: {
       snapshotMaxBytes: DEFAULT_SNAPSHOT_MAX_BYTES,
-      gitLfs: false,
       maxPlansPerCycle: 3,
     },
-    execution: {
-      maxTurns: 30,
-      maxToolCalls: 200,
-      timeoutMinutes: 20,
-    },
     memory: {
-      enabled: true,
       extractionThreshold: 3,
       consolidationThreshold: 15,
     },
@@ -108,7 +89,6 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "trigger",
   "dormancy",
   "workspace",
-  "execution",
   "memory",
   "projects",
 ]);
@@ -117,9 +97,16 @@ const VALID_LANGUAGES = new Set<string>(["en", "zh-CN"]);
 
 const REMOVED_TOP_LEVEL_KEYS: Record<string, string> = {
   discovery:
-    "alwaysOn.discovery wrapper has been removed. Lift trigger / dormancy / workspace / execution / projects to alwaysOn.<key>.",
+    "alwaysOn.discovery wrapper has been removed. Lift trigger / dormancy / workspace / projects to alwaysOn.<key>.",
   plan: "alwaysOn.plan section has been removed. plan-per-fire is fixed at 1 by protocol.",
   cron: "Always-On cron is no longer part of this module.",
+  execution:
+    "alwaysOn.execution section has been removed. Execution limits are controlled by the Gateway/Agent runtime.",
+};
+
+const REMOVED_DORMANCY_KEYS: Record<string, string> = {
+  enabled:
+    "alwaysOn.dormancy.enabled has been removed. Dormancy is always active.",
 };
 
 const REMOVED_WORKSPACE_KEYS: Record<string, string> = {
@@ -131,11 +118,17 @@ const REMOVED_WORKSPACE_KEYS: Record<string, string> = {
     "alwaysOn.workspace.retainSuccessfulEnvs has been removed. Workspaces are always retained for manual inspection.",
   retainFailedEnvs:
     "alwaysOn.workspace.retainFailedEnvs has been removed. Workspaces are always retained for manual inspection.",
+  gitWorktreeBaseDir:
+    "alwaysOn.workspace.gitWorktreeBaseDir has been removed. Worktree base is fixed at <pilotHome>/always-on/worktrees.",
+  snapshotBaseDir:
+    "alwaysOn.workspace.snapshotBaseDir has been removed. Snapshot base is fixed at <pilotHome>/always-on/snapshots.",
+  gitLfs:
+    "alwaysOn.workspace.gitLfs has been removed. Git LFS handling is not supported.",
 };
 
-const REMOVED_EXECUTION_KEYS: Record<string, string> = {
-  permissionMode:
-    "alwaysOn.execution.permissionMode has been removed. Execution turns always run in bypassPermissions mode inside the isolated workspace.",
+const REMOVED_MEMORY_KEYS: Record<string, string> = {
+  enabled:
+    "alwaysOn.memory.enabled has been removed. Preference memory is always active.",
 };
 
 const REMOVED_PROJECT_KEYS: Record<string, string> = {
@@ -183,10 +176,10 @@ export function parseAlwaysOnConfig(
     if (removalReason) {
       diagnostics.push({
         code: "ALWAYS_ON_FIELD_REMOVED",
-        severity: "fatal",
+        severity: "warning",
         message: removalReason,
         path: `alwaysOn.${key}`,
-        recoverable: false,
+        recoverable: true,
       });
       continue;
     }
@@ -209,9 +202,6 @@ export function parseAlwaysOnConfig(
   }
   if (raw.workspace !== undefined) {
     parseWorkspace(raw.workspace, result.workspace, diagnostics);
-  }
-  if (raw.execution !== undefined) {
-    parseExecution(raw.execution, result.execution, diagnostics);
   }
   if (raw.memory !== undefined) {
     parseMemory(raw.memory, result.memory, diagnostics);
@@ -297,7 +287,18 @@ function parseDormancy(
     });
     return;
   }
-  target.enabled = booleanField(raw, "enabled", target.enabled);
+  for (const key of Object.keys(raw)) {
+    const removed = REMOVED_DORMANCY_KEYS[key];
+    if (removed) {
+      diagnostics.push({
+        code: "ALWAYS_ON_FIELD_REMOVED",
+        severity: "warning",
+        message: removed,
+        path: `alwaysOn.dormancy.${key}`,
+        recoverable: true,
+      });
+    }
+  }
   target.debounceMs = nonNegativeInteger(
     raw.debounceMs,
     target.debounceMs,
@@ -342,73 +343,23 @@ function parseWorkspace(
     if (removed) {
       diagnostics.push({
         code: "ALWAYS_ON_FIELD_REMOVED",
-        severity: "fatal",
+        severity: "warning",
         message: removed,
         path: `alwaysOn.workspace.${key}`,
-        recoverable: false,
+        recoverable: true,
       });
     }
   }
-  target.gitWorktreeBaseDir = optionalString(raw.gitWorktreeBaseDir, target.gitWorktreeBaseDir);
-  target.snapshotBaseDir = optionalString(raw.snapshotBaseDir, target.snapshotBaseDir);
   target.snapshotMaxBytes = positiveInteger(
     raw.snapshotMaxBytes,
     target.snapshotMaxBytes,
     "alwaysOn.workspace.snapshotMaxBytes",
     diagnostics,
   );
-  target.gitLfs = booleanField(raw, "gitLfs", target.gitLfs);
   target.maxPlansPerCycle = positiveInteger(
     raw.maxPlansPerCycle,
     target.maxPlansPerCycle,
     "alwaysOn.workspace.maxPlansPerCycle",
-    diagnostics,
-  );
-}
-
-function parseExecution(
-  raw: unknown,
-  target: AlwaysOnExecutionConfig,
-  diagnostics: PilotConfigDiagnostic[],
-): void {
-  if (!isRecord(raw)) {
-    diagnostics.push({
-      code: "ALWAYS_ON_EXECUTION_INVALID",
-      severity: "fatal",
-      message: "alwaysOn.execution must be an object.",
-      path: "alwaysOn.execution",
-      recoverable: false,
-    });
-    return;
-  }
-  for (const key of Object.keys(raw)) {
-    const removed = REMOVED_EXECUTION_KEYS[key];
-    if (removed) {
-      diagnostics.push({
-        code: "ALWAYS_ON_FIELD_REMOVED",
-        severity: "fatal",
-        message: removed,
-        path: `alwaysOn.execution.${key}`,
-        recoverable: false,
-      });
-    }
-  }
-  target.maxTurns = positiveInteger(
-    raw.maxTurns,
-    target.maxTurns,
-    "alwaysOn.execution.maxTurns",
-    diagnostics,
-  );
-  target.maxToolCalls = positiveInteger(
-    raw.maxToolCalls,
-    target.maxToolCalls,
-    "alwaysOn.execution.maxToolCalls",
-    diagnostics,
-  );
-  target.timeoutMinutes = positiveInteger(
-    raw.timeoutMinutes,
-    target.timeoutMinutes,
-    "alwaysOn.execution.timeoutMinutes",
     diagnostics,
   );
 }
@@ -428,7 +379,18 @@ function parseMemory(
     });
     return;
   }
-  target.enabled = booleanField(raw, "enabled", target.enabled);
+  for (const key of Object.keys(raw)) {
+    const removed = REMOVED_MEMORY_KEYS[key];
+    if (removed) {
+      diagnostics.push({
+        code: "ALWAYS_ON_FIELD_REMOVED",
+        severity: "warning",
+        message: removed,
+        path: `alwaysOn.memory.${key}`,
+        recoverable: true,
+      });
+    }
+  }
   target.extractionThreshold = positiveInteger(
     raw.extractionThreshold,
     target.extractionThreshold,
@@ -478,10 +440,10 @@ function parseProjects(
       if (removed) {
         diagnostics.push({
           code: "ALWAYS_ON_FIELD_REMOVED",
-          severity: "fatal",
+          severity: "warning",
           message: removed,
           path: `alwaysOn.projects.${rootKey}.${innerKey}`,
-          recoverable: false,
+          recoverable: true,
         });
       } else if (innerKey !== "enabled") {
         diagnostics.push({
@@ -503,13 +465,6 @@ function parseProjects(
 function booleanField(record: Record<string, unknown>, key: string, fallback: boolean): boolean {
   const value = record[key];
   if (typeof value === "boolean") {
-    return value;
-  }
-  return fallback;
-}
-
-function optionalString(value: unknown, fallback: string | undefined): string | undefined {
-  if (typeof value === "string" && value.length > 0) {
     return value;
   }
   return fallback;

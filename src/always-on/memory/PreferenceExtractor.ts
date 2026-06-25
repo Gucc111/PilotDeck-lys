@@ -44,7 +44,6 @@ export type PreferenceExtractorDependencies = {
 };
 
 export type PreparePreferenceMemoryInput = {
-  enabled: boolean;
   extractionThreshold: number;
   consolidationThreshold: number;
   preferencesFile: string;
@@ -227,8 +226,6 @@ export class PreferenceExtractor {
 export async function preparePreferenceMemory(
   input: PreparePreferenceMemoryInput,
 ): Promise<string | undefined> {
-  if (!input.enabled) return undefined;
-
   if (input.eventStore && input.llm) {
     try {
       const unindexedCount = await input.eventStore.countUnindexed();

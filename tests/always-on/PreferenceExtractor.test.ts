@@ -220,7 +220,6 @@ describe("preparePreferenceMemory", () => {
       }) as typeof fetch;
 
       await preparePreferenceMemory({
-        enabled: true,
         extractionThreshold: 3,
         consolidationThreshold: 15,
         preferencesFile: join(root, "preferences.md"),
@@ -232,7 +231,6 @@ describe("preparePreferenceMemory", () => {
 
       await store.appendEvent(event("three"));
       await preparePreferenceMemory({
-        enabled: true,
         extractionThreshold: 3,
         consolidationThreshold: 15,
         preferencesFile: join(root, "preferences.md"),
@@ -246,23 +244,16 @@ describe("preparePreferenceMemory", () => {
     }
   });
 
-  it("injects existing preferences without an LLM and skips all work when disabled", async () => {
+  it("injects existing preferences without an LLM", async () => {
     const root = await mkdtemp(join(tmpdir(), "pilotdeck-preference-existing-"));
     try {
       const preferencesFile = join(root, "preferences.md");
       await writeFile(preferencesFile, "## Existing", "utf-8");
       assert.equal(await preparePreferenceMemory({
-        enabled: true,
         extractionThreshold: 3,
         consolidationThreshold: 15,
         preferencesFile,
       }), "## Existing");
-      assert.equal(await preparePreferenceMemory({
-        enabled: false,
-        extractionThreshold: 3,
-        consolidationThreshold: 15,
-        preferencesFile,
-      }), undefined);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

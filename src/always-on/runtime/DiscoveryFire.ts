@@ -717,7 +717,6 @@ export class DiscoveryFire {
     }));
 
     const preferences = await preparePreferenceMemory({
-      enabled: this.deps.config.memory.enabled,
       extractionThreshold: this.deps.config.memory.extractionThreshold,
       consolidationThreshold: this.deps.config.memory.consolidationThreshold,
       preferencesFile: this.deps.paths.preferencesFile,
@@ -782,9 +781,7 @@ export class DiscoveryFire {
         runId,
         now: finishedAt,
       });
-      if (this.deps.config.dormancy.enabled) {
-        await this.deps.stateStore.setDormant(finishedAt);
-      }
+      await this.deps.stateStore.setDormant(finishedAt);
       await this.deps.reportStore.appendHistory({
         ...baseHistory,
         finishedAt: finishedAt.toISOString(),

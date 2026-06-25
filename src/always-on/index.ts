@@ -34,7 +34,6 @@ export {
   type AlwaysOnConfig,
   type AlwaysOnPromptLanguage,
   type AlwaysOnDormancyConfig,
-  type AlwaysOnExecutionConfig,
   type AlwaysOnMemoryConfig,
   type AlwaysOnProjectConfig,
   type AlwaysOnTriggerConfig,
