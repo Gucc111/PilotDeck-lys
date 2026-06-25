@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parseDocument } from "yaml";
-import { parseAlwaysOnConfig } from "../../always-on/config/parseAlwaysOnConfig.js";
+import { parseAlwaysOnConfig } from "../../always-on/config/index.js";
 import { parseCronConfig } from "../../cron/config/parseCronConfig.js";
 import { parseModelConfig } from "../../model/config/parseModelConfig.js";
 import { isRecord } from "../../model/config/schema.js";

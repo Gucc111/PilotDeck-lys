@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import type { AlwaysOnConfig } from "../config/index.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { GateBlockReason } from "../protocol/types.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";

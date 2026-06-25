@@ -1,4 +1,4 @@
-import type { AlwaysOnConfig } from "../../always-on/config/parseAlwaysOnConfig.js";
+import type { AlwaysOnConfig } from "../../always-on/config/index.js";
 import type { CronConfig } from "../../cron/config/parseCronConfig.js";
 import type { ModelConfig } from "../../model/protocol/canonical.js";
 import type { RouterConfig } from "../../router/config/schema.js";

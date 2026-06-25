@@ -1,6 +1,6 @@
 import type { Gateway } from "../../gateway/index.js";
 import type { PilotDeckToolDefinition } from "../../tool/index.js";
-import type { AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import type { AlwaysOnConfig } from "../config/index.js";
 import type { CreateAlwaysOnDiscoveryPlanToolOptions } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { createAlwaysOnDiscoveryPlanTool } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { createAlwaysOnReportTool } from "../tool/AlwaysOnReportTool.js";

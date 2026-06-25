@@ -1,87 +1,30 @@
 import { resolve } from "node:path";
 import { isRecord } from "../../model/config/schema.js";
 import type { PilotConfigDiagnostic } from "../../pilot/config/types.js";
-
-export type AlwaysOnTriggerConfig = {
-  enabled: boolean;
-  tickIntervalMinutes: number;
-  cooldownMinutes: number;
-  dailyBudget: number;
-  heartbeatStaleSeconds: number;
-  recentUserMsgMinutes: number;
-  preferChannel: string;
-};
-
-export type AlwaysOnDormancyConfig = {
-  debounceMs: number;
-  ignoreGlobs: string[];
-};
-
-export type AlwaysOnWorkspaceConfig = {
-  snapshotMaxBytes: number;
-  maxPlansPerCycle: number;
-};
-
-
-export type AlwaysOnMemoryConfig = {
-  extractionThreshold: number;
-  consolidationThreshold: number;
-};
-
-export type AlwaysOnProjectConfig = {
-  enabled: boolean;
-};
-
-export type AlwaysOnPromptLanguage = "en" | "zh-CN";
-
-export type AlwaysOnConfig = {
-  enabled: boolean;
-  language?: AlwaysOnPromptLanguage;
-  trigger: AlwaysOnTriggerConfig;
-  dormancy: AlwaysOnDormancyConfig;
-  workspace: AlwaysOnWorkspaceConfig;
-  memory: AlwaysOnMemoryConfig;
-  projects: Record<string, AlwaysOnProjectConfig>;
-};
-
-export const DEFAULT_IGNORE_GLOBS: string[] = [
-  "**/.git/**",
-  "**/node_modules/**",
-  "**/.pilotdeck/**",
-  "**/.pilotdeck-always-on/**",
-  "**/dist/**",
-  "**/.DS_Store",
-];
-
-const DEFAULT_SNAPSHOT_MAX_BYTES = 1024 * 1024 * 1024; // 1 GiB
-
-export function defaultAlwaysOnConfig(): AlwaysOnConfig {
-  return {
-    enabled: false,
-    trigger: {
-      enabled: false,
-      tickIntervalMinutes: 5,
-      cooldownMinutes: 60,
-      dailyBudget: 4,
-      heartbeatStaleSeconds: 90,
-      recentUserMsgMinutes: 5,
-      preferChannel: "web",
-    },
-    dormancy: {
-      debounceMs: 2000,
-      ignoreGlobs: [...DEFAULT_IGNORE_GLOBS],
-    },
-    workspace: {
-      snapshotMaxBytes: DEFAULT_SNAPSHOT_MAX_BYTES,
-      maxPlansPerCycle: 3,
-    },
-    memory: {
-      extractionThreshold: 3,
-      consolidationThreshold: 15,
-    },
-    projects: {},
-  };
-}
+import type {
+  AlwaysOnConfig,
+  AlwaysOnDormancyConfig,
+  AlwaysOnMemoryConfig,
+  AlwaysOnProjectConfig,
+  AlwaysOnPromptLanguage,
+  AlwaysOnTriggerConfig,
+  AlwaysOnWorkspaceConfig,
+} from "./types.js";
+import { defaultAlwaysOnConfig } from "./defaults.js";
+import {
+  REMOVED_DORMANCY_KEYS,
+  REMOVED_MEMORY_KEYS,
+  REMOVED_PROJECT_KEYS,
+  REMOVED_TOP_LEVEL_KEYS,
+  REMOVED_WORKSPACE_KEYS,
+} from "./removed.js";
+import {
+  booleanField,
+  nonNegativeInteger,
+  nonNegativeNumber,
+  positiveInteger,
+  positiveNumber,
+} from "./validators.js";
 
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "enabled",
@@ -94,49 +37,6 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
 ]);
 
 const VALID_LANGUAGES = new Set<string>(["en", "zh-CN"]);
-
-const REMOVED_TOP_LEVEL_KEYS: Record<string, string> = {
-  discovery:
-    "alwaysOn.discovery wrapper has been removed. Lift trigger / dormancy / workspace / projects to alwaysOn.<key>.",
-  plan: "alwaysOn.plan section has been removed. plan-per-fire is fixed at 1 by protocol.",
-  cron: "Always-On cron is no longer part of this module.",
-  execution:
-    "alwaysOn.execution section has been removed. Execution limits are controlled by the Gateway/Agent runtime.",
-};
-
-const REMOVED_DORMANCY_KEYS: Record<string, string> = {
-  enabled:
-    "alwaysOn.dormancy.enabled has been removed. Dormancy is always active.",
-};
-
-const REMOVED_WORKSPACE_KEYS: Record<string, string> = {
-  strategy:
-    "alwaysOn.workspace.strategy has been removed. WorkspaceProviderRegistry selects the strategy automatically.",
-  maxConcurrentEnvs:
-    "alwaysOn.workspace.maxConcurrentEnvs has been removed. Always-On runs at most one isolated workspace per project; subsequent fires reuse it.",
-  retainSuccessfulEnvs:
-    "alwaysOn.workspace.retainSuccessfulEnvs has been removed. Workspaces are always retained for manual inspection.",
-  retainFailedEnvs:
-    "alwaysOn.workspace.retainFailedEnvs has been removed. Workspaces are always retained for manual inspection.",
-  gitWorktreeBaseDir:
-    "alwaysOn.workspace.gitWorktreeBaseDir has been removed. Worktree base is fixed at <pilotHome>/always-on/worktrees.",
-  snapshotBaseDir:
-    "alwaysOn.workspace.snapshotBaseDir has been removed. Snapshot base is fixed at <pilotHome>/always-on/snapshots.",
-  gitLfs:
-    "alwaysOn.workspace.gitLfs has been removed. Git LFS handling is not supported.",
-};
-
-const REMOVED_MEMORY_KEYS: Record<string, string> = {
-  enabled:
-    "alwaysOn.memory.enabled has been removed. Preference memory is always active.",
-};
-
-const REMOVED_PROJECT_KEYS: Record<string, string> = {
-  sessionKey:
-    "alwaysOn.projects.<root>.sessionKey is no longer accepted. The runtime derives sessionKey from projectKey + runId.",
-  workspace:
-    "alwaysOn.projects.<root>.workspace per-project override is no longer accepted. WorkspaceProviderRegistry resolves provider automatically.",
-};
 
 export function parseAlwaysOnConfig(
   raw: unknown,
@@ -460,102 +360,4 @@ function parseProjects(
     projects[normalizedKey] = { enabled };
   }
   return projects;
-}
-
-function booleanField(record: Record<string, unknown>, key: string, fallback: boolean): boolean {
-  const value = record[key];
-  if (typeof value === "boolean") {
-    return value;
-  }
-  return fallback;
-}
-
-function positiveNumber(
-  value: unknown,
-  fallback: number,
-  path: string,
-  diagnostics: PilotConfigDiagnostic[],
-): number {
-  if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    diagnostics.push({
-      code: "ALWAYS_ON_NUMBER_INVALID",
-      severity: "warning",
-      message: `${path} must be a positive number; falling back to ${fallback}.`,
-      path,
-      recoverable: true,
-    });
-    return fallback;
-  }
-  return value;
-}
-
-function nonNegativeNumber(
-  value: unknown,
-  fallback: number,
-  path: string,
-  diagnostics: PilotConfigDiagnostic[],
-): number {
-  if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    diagnostics.push({
-      code: "ALWAYS_ON_NUMBER_INVALID",
-      severity: "warning",
-      message: `${path} must be a non-negative number; falling back to ${fallback}.`,
-      path,
-      recoverable: true,
-    });
-    return fallback;
-  }
-  return value;
-}
-
-function positiveInteger(
-  value: unknown,
-  fallback: number,
-  path: string,
-  diagnostics: PilotConfigDiagnostic[],
-): number {
-  if (value === undefined) return fallback;
-  if (
-    typeof value !== "number" ||
-    !Number.isFinite(value) ||
-    !Number.isInteger(value) ||
-    value <= 0
-  ) {
-    diagnostics.push({
-      code: "ALWAYS_ON_NUMBER_INVALID",
-      severity: "warning",
-      message: `${path} must be a positive integer; falling back to ${fallback}.`,
-      path,
-      recoverable: true,
-    });
-    return fallback;
-  }
-  return value;
-}
-
-function nonNegativeInteger(
-  value: unknown,
-  fallback: number,
-  path: string,
-  diagnostics: PilotConfigDiagnostic[],
-): number {
-  if (value === undefined) return fallback;
-  if (
-    typeof value !== "number" ||
-    !Number.isFinite(value) ||
-    !Number.isInteger(value) ||
-    value < 0
-  ) {
-    diagnostics.push({
-      code: "ALWAYS_ON_NUMBER_INVALID",
-      severity: "warning",
-      message: `${path} must be a non-negative integer; falling back to ${fallback}.`,
-      path,
-      recoverable: true,
-    });
-    return fallback;
-  }
-  return value;
 }

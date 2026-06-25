@@ -38,7 +38,7 @@ export {
   type AlwaysOnProjectConfig,
   type AlwaysOnTriggerConfig,
   type AlwaysOnWorkspaceConfig,
-} from "./config/parseAlwaysOnConfig.js";
+} from "./config/index.js";
 export {
   resolveAlwaysOnPaths,
   planMarkdownPath,

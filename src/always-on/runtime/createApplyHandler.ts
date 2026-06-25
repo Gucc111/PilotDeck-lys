@@ -11,7 +11,7 @@ import { DiscoveryReportStore } from "../storage/DiscoveryReportStore.js";
 import { AlwaysOnEventStore } from "../storage/AlwaysOnEventStore.js";
 import { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
 import { AlwaysOnRunContextRegistry } from "./AlwaysOnRunContextRegistry.js";
-import { defaultAlwaysOnConfig, type AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import { defaultAlwaysOnConfig, type AlwaysOnConfig } from "../config/index.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
 
 export type CreateApplyHandlerDeps = {

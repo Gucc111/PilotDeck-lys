@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Gateway } from "../../gateway/index.js";
 import type { PilotDeckToolDefinition } from "../../tool/index.js";
-import type { AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import type { AlwaysOnConfig } from "../config/index.js";
 import { resolveAlwaysOnPaths, type AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
 import { DiscoveryPlanStore } from "../storage/DiscoveryPlanStore.js";
 import { WorkCycleStore } from "../storage/WorkCycleStore.js";

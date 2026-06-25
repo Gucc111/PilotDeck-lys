@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import type { Gateway, GatewayChannelKey, GatewayEvent } from "../../gateway/index.js";
 import { getPilotProjectChatDir } from "../../pilot/paths.js";
 import { buildChatDigest } from "../context/ChatDigestBuilder.js";
-import type { AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import type { AlwaysOnConfig } from "../config/index.js";
 import { buildFallbackReport, parseReportMarkdown, type ReportMetadata } from "../contracts/ReportContract.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type {
