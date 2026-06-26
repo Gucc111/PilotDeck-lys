@@ -14,11 +14,3 @@ export function getAlwaysOnDiscoveryLockPath(projectRoot) {
 export function getAlwaysOnDiscoveryStatePath(projectRoot) {
   return path.join(getAlwaysOnRoot(projectRoot), 'state.json');
 }
-
-export function getAlwaysOnRunHistoryPath(projectRoot) {
-  return path.join(getAlwaysOnRoot(projectRoot), 'run-history.jsonl');
-}
-
-export function getAlwaysOnRunsDir(projectRoot) {
-  return path.join(getAlwaysOnRoot(projectRoot), 'runs');
-}

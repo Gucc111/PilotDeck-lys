@@ -121,12 +121,6 @@ async function createFixture(input: {
     paths: { extractProjectDirectory: async () => projectRoot },
     sessions: { getSessions: async () => ({ sessions: [] }) },
     activity: { isSessionActive: () => false },
-    events: {
-      appendRunEvent: async () => undefined,
-      appendRunLog: async () => undefined,
-      appendRunLogEvent: async () => undefined,
-      formatLogLine: () => "",
-    },
     workspace: {
       applyWorktreeChanges: async () => ({ applied: true }),
       disposeWorkspace: async (_strategy, cwd) => {

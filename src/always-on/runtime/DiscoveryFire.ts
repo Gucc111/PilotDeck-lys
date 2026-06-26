@@ -13,7 +13,6 @@ import type {
   AlwaysOnEventPhase,
   DiscoveryFireResult,
   DiscoveryPlanRecord,
-  DiscoveryRunHistoryEvent,
   WorkCycleExecutionRecord,
   WorkCycleRecord,
   WorkspaceHandle,
@@ -383,7 +382,6 @@ export class DiscoveryFire {
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",
-        persistEvents: true,
       });
       const error = pickFirstError(events);
       if (error) {
@@ -456,14 +454,6 @@ export class DiscoveryFire {
 
     await this.deps.planStore.updateStatus(planId, { status: "ready" });
 
-    const baseHistory: DiscoveryRunHistoryEvent = {
-      schemaVersion: 1,
-      runId,
-      planId,
-      startedAt: startedAt.toISOString(),
-      outcome: "no_plan",
-    };
-
     const state = await this.deps.stateStore.read(startedAt);
 
     // Phase 2: Workspace
@@ -480,7 +470,6 @@ export class DiscoveryFire {
       const message = error instanceof Error ? error.message : String(error);
       this.emitEvent(runId, "run_failed", { planId, error: { code, message }, outcome: "failed", telemetryPhase: "workspace" });
       await this.deps.stateStore.markFireCompleted({ outcome: "failed", runId, planId, now: finishedAt });
-      await this.deps.reportStore.appendHistory({ ...baseHistory, outcome: "failed", finishedAt: finishedAt.toISOString(), error: { code, message } });
       return { outcome: "failed", runId, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), planId, error: { code, message } };
     }
 
@@ -538,7 +527,6 @@ export class DiscoveryFire {
             language: this.deps.config.language,
           }),
           mode: "bypassPermissions",
-          persistEvents: true,
         });
         executionError = pickFirstError(events);
       }
@@ -571,7 +559,6 @@ export class DiscoveryFire {
       const reportFilePath = await this.writeFallbackReport({ runId, plan: planRecord, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), reason: `execution_failed: ${executionError.message}`, workspaceStrategy: workspace.strategy, workspaceHandle: workspace.cwd });
       await this.deps.planStore.updateStatus(planId, { status: "failed", reportFilePath, workCycleId: workCycle.id });
       await this.deps.stateStore.markFireCompleted({ outcome: "failed", runId, planId, now: finishedAt });
-      await this.deps.reportStore.appendHistory({ ...baseHistory, outcome: "failed", finishedAt: finishedAt.toISOString(), workCycleId: workCycle.id, executionCommitShas, workspace: { strategy: workspace.strategy, handle: workspace.cwd }, error: { code: executionError.code ?? "execution_failed", message: executionError.message } });
       return { outcome: "failed", runId, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), planId, workspace, reportFilePath, error: { code: executionError.code ?? "execution_failed", message: executionError.message } };
     }
 
@@ -604,7 +591,6 @@ export class DiscoveryFire {
         runId: `${runId}.report`,
         message: buildReportPrompt({ plan: planRecord, planMarkdown, workspaceCwd: workspace.cwd, workspaceStrategy: workspace.strategy, executionCommitShas, language: this.deps.config.language }),
         mode: "bypassPermissions",
-        persistEvents: true,
       });
       reportError = pickFirstError(reportEvents);
     } finally {
@@ -649,7 +635,6 @@ export class DiscoveryFire {
 
     await this.deps.planStore.updateStatus(planId, { status: planStatus, reportFilePath, workCycleId: workCycle.id });
     await this.deps.stateStore.markFireCompleted({ outcome, runId, planId, now: finishedAt });
-    await this.deps.reportStore.appendHistory({ ...baseHistory, outcome, finishedAt: finishedAt.toISOString(), workCycleId: workCycle.id, executionCommitShas, workspace: { strategy: workspace.strategy, handle: workspace.cwd }, error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined });
 
     return { outcome, runId, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), planId, workspace, reportFilePath, error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined };
   }
@@ -658,13 +643,6 @@ export class DiscoveryFire {
     const { runId, startedAt } = input;
 
     const state = await this.deps.stateStore.read(startedAt);
-
-    const baseHistory: DiscoveryRunHistoryEvent = {
-      schemaVersion: 1,
-      runId,
-      startedAt: startedAt.toISOString(),
-      outcome: "no_plan",
-    };
 
     // ── Phase 1: Discovery (bypassPermissions) ──
     this.emitEvent(runId, "discovery_started");
@@ -762,7 +740,7 @@ export class DiscoveryFire {
         error: { code: discoveryError.code ?? "discovery_failed", message: discoveryError.message },
         outcome: "failed",
       });
-      await this.markFailedNoPlan(runId, discoveryError, finishedAt, baseHistory);
+      await this.markFailedNoPlan(runId, finishedAt);
       return {
         outcome: "failed",
         runId,
@@ -782,11 +760,6 @@ export class DiscoveryFire {
         now: finishedAt,
       });
       await this.deps.stateStore.setDormant(finishedAt);
-      await this.deps.reportStore.appendHistory({
-        ...baseHistory,
-        finishedAt: finishedAt.toISOString(),
-        outcome: "no_plan",
-      });
       return {
         outcome: "no_plan",
         runId,
@@ -821,13 +794,6 @@ export class DiscoveryFire {
         runId,
         planId: planRecord.id,
         now: finishedAt,
-      });
-      await this.deps.reportStore.appendHistory({
-        ...baseHistory,
-        planId: planRecord.id,
-        outcome: "failed",
-        finishedAt: finishedAt.toISOString(),
-        error: { code, message },
       });
       return {
         outcome: "failed",
@@ -898,7 +864,6 @@ export class DiscoveryFire {
             language: this.deps.config.language,
           }),
           mode: "bypassPermissions",
-          persistEvents: true,
         });
         executionError = pickFirstError(events);
       }
@@ -950,16 +915,6 @@ export class DiscoveryFire {
         workCycleId: workCycle.id,
       });
       await this.deps.stateStore.markFireCompleted({ outcome: "failed", runId, planId: planRecord.id, now: finishedAt });
-      await this.deps.reportStore.appendHistory({
-        ...baseHistory,
-        planId: planRecord.id,
-        outcome: "failed",
-        finishedAt: finishedAt.toISOString(),
-        workCycleId: workCycle.id,
-        executionCommitShas,
-        workspace: { strategy: workspace.strategy, handle: workspace.cwd },
-        error: { code: executionError.code ?? "execution_failed", message: executionError.message },
-      });
       return {
         outcome: "failed",
         runId,
@@ -1014,7 +969,6 @@ export class DiscoveryFire {
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",
-        persistEvents: true,
       });
       reportError = pickFirstError(reportEvents);
     } finally {
@@ -1079,16 +1033,6 @@ export class DiscoveryFire {
       runId,
       planId: planRecord.id,
       now: finishedAt,
-    });
-    await this.deps.reportStore.appendHistory({
-      ...baseHistory,
-      planId: planRecord.id,
-      outcome,
-      finishedAt: finishedAt.toISOString(),
-      workCycleId: workCycle.id,
-      executionCommitShas,
-      workspace: { strategy: workspace.strategy, handle: workspace.cwd },
-      error: reportError ? { code: reportError.code ?? "report_degraded", message: reportError.message } : undefined,
     });
 
     return {
@@ -1332,8 +1276,6 @@ export class DiscoveryFire {
     runId: string;
     message: string;
     mode: "default" | "bypassPermissions";
-    /** When true, each event is appended to the run events log on disk. */
-    persistEvents?: boolean;
   }): Promise<GatewayEvent[]> {
     const events: GatewayEvent[] = [];
     for await (const event of this.deps.gateway.submitTurn({
@@ -1353,11 +1295,6 @@ export class DiscoveryFire {
     })) {
       events.push(event);
       this.deps.onTurnEvent?.(input.sessionKey, input.channelKey, event);
-      if (input.persistEvents) {
-        await this.deps.reportStore
-          .appendRunEvent(input.runId, event as unknown as Record<string, unknown>)
-          .catch(() => undefined);
-      }
     }
     return events;
   }
@@ -1390,20 +1327,12 @@ export class DiscoveryFire {
 
   private async markFailedNoPlan(
     runId: string,
-    error: { code?: string; message: string },
     finishedAt: Date,
-    baseHistory: DiscoveryRunHistoryEvent,
   ): Promise<void> {
     await this.deps.stateStore.markFireCompleted({
       outcome: "failed",
       runId,
       now: finishedAt,
-    });
-    await this.deps.reportStore.appendHistory({
-      ...baseHistory,
-      outcome: "failed",
-      finishedAt: finishedAt.toISOString(),
-      error: { code: error.code ?? "discovery_failed", message: error.message },
     });
   }
 }

@@ -13,7 +13,6 @@ export type {
   DiscoveryPlanRecord,
   DiscoveryPlanStatus,
   DiscoveryPlanWorkspaceRef,
-  DiscoveryRunHistoryEvent,
   DiscoveryFireResult,
   GateBlockReason,
   GateResult,
@@ -43,7 +42,6 @@ export {
   resolveAlwaysOnPaths,
   planMarkdownPath,
   reportMarkdownPath,
-  runEventsPath,
   type AlwaysOnPaths,
 } from "./storage/AlwaysOnPaths.js";
 export { DiscoveryStateStore, defaultDiscoveryState, getDayKey } from "./storage/DiscoveryStateStore.js";
@@ -181,7 +179,6 @@ export {
 } from "./web/DiscoveryPlanStatus.js";
 export { DiscoveryPlanService, normalizeDiscoveryPlanRecord, type DiscoveryPlanServiceDeps, type StateManager } from "./web/DiscoveryPlanService.js";
 export { buildDiscoveryContext, type DiscoveryContextDeps } from "./web/DiscoveryPlanContext.js";
-export { AlwaysOnRunHistoryService, type AlwaysOnRunHistoryServiceDeps, type RunHistoryEntry, type RunHistoryDetailEntry } from "./web/AlwaysOnRunHistoryService.js";
 export { GitWorktreeProvider, type GitWorktreeProviderOptions } from "./workspace/GitWorktreeProvider.js";
 export { SnapshotCopyProvider, type SnapshotCopyProviderOptions } from "./workspace/SnapshotCopyProvider.js";
 export { WorkspaceProviderRegistry } from "./workspace/WorkspaceProviderRegistry.js";

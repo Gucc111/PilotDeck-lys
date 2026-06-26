@@ -15,8 +15,6 @@ export type AlwaysOnPaths = {
   cyclesDir: string;
   cycleIndexFile: string;
   reportsDir: string;
-  runsDir: string;
-  runHistoryFile: string;
   eventsFile: string;
   locksDir: string;
   discoveryLockFile: string;
@@ -52,8 +50,6 @@ export function resolveAlwaysOnPaths(input: {
     cyclesDir: resolve(projectDir, "cycles"),
     cycleIndexFile: resolve(projectDir, "cycles", "index.json"),
     reportsDir: resolve(projectDir, "reports"),
-    runsDir: resolve(projectDir, "runs"),
-    runHistoryFile: resolve(projectDir, "run-history.jsonl"),
     eventsFile: resolve(projectDir, "events.jsonl"),
     locksDir: resolve(projectDir, "locks"),
     discoveryLockFile: resolve(projectDir, "locks", "discovery.lock"),
@@ -71,10 +67,6 @@ export function planMarkdownPath(paths: AlwaysOnPaths, planId: string): string {
 
 export function reportMarkdownPath(paths: AlwaysOnPaths, runId: string): string {
   return resolve(paths.reportsDir, `${sanitizeId(runId)}.md`);
-}
-
-export function runEventsPath(paths: AlwaysOnPaths, runId: string): string {
-  return resolve(paths.runsDir, `${sanitizeId(runId)}.events.jsonl`);
 }
 
 function sanitizeId(value: string): string {

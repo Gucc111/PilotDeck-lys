@@ -144,19 +144,6 @@ export type DiscoveryPlanIndex = {
   plans: DiscoveryPlanRecord[];
 };
 
-export type DiscoveryRunHistoryEvent = {
-  schemaVersion: 1;
-  runId: string;
-  startedAt: string;
-  finishedAt?: string;
-  outcome: AlwaysOnDiscoveryOutcome;
-  planId?: string;
-  workCycleId?: string;
-  executionCommitShas?: string[];
-  workspace?: { strategy: WorkspaceStrategyId; handle: string };
-  error?: { code: string; message: string };
-};
-
 export type GateBlockReason =
   | "disabled"
   | "project_disabled"

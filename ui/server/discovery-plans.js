@@ -13,12 +13,6 @@ import {
   getProjectCronJobsOverview,
   getSessions,
 } from './projects.js';
-import { appendAlwaysOnRunEvent } from './services/always-on-run-history.js';
-import {
-  appendAlwaysOnRunLog,
-  appendAlwaysOnRunLogEvent,
-  formatAlwaysOnPlanLogLine,
-} from './services/always-on-run-logs.js';
 import { resolvePilotHome, resolveProjectStorageId } from './utils/pilotPaths.js';
 
 import { DiscoveryPlanService } from '../../src/always-on/web/DiscoveryPlanService.js';
@@ -43,12 +37,6 @@ function getService() {
     paths: { extractProjectDirectory },
     sessions: { getSessions },
     activity: { isSessionActive: isClaudeSDKSessionActive },
-    events: {
-      appendRunEvent: appendAlwaysOnRunEvent,
-      appendRunLog: appendAlwaysOnRunLog,
-      appendRunLogEvent: appendAlwaysOnRunLogEvent,
-      formatLogLine: formatAlwaysOnPlanLogLine,
-    },
     workspace: {
       applyWorktreeChanges: applyWorktreeToProject,
       disposeWorkspace: disposeWorkspaceImpl,

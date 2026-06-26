@@ -57,25 +57,6 @@ const EMPTY_STORE: PlanIndex = { version: INDEX_VERSION, plans: [] };
 // Dependencies — callers inject these so the service stays testable
 // ---------------------------------------------------------------------------
 
-/** Emits run-history events + run log lines. */
-export type RunEventSink = {
-  appendRunEvent(
-    projectRoot: string,
-    event: Record<string, unknown>,
-  ): Promise<unknown>;
-  appendRunLog(
-    projectRoot: string,
-    runId: string,
-    lines: string[],
-  ): Promise<void>;
-  appendRunLogEvent(
-    projectRoot: string,
-    runId: string,
-    event: Record<string, unknown>,
-  ): Promise<void>;
-  formatLogLine(entry: Record<string, unknown>): string;
-};
-
 export type ProjectPathResolver = {
   /** Resolve a display-name / encoded project name to the absolute root. */
   extractProjectDirectory(projectName: string): Promise<string>;
@@ -115,7 +96,6 @@ export type DiscoveryPlanServiceDeps = {
   paths: ProjectPathResolver;
   sessions: SessionLister;
   activity: SessionActivityChecker;
-  events: RunEventSink;
   workspace?: WorkspaceManager;
   state?: StateManager;
   preferenceEvents?: {
@@ -659,19 +639,7 @@ export class DiscoveryPlanService {
     cycle.status = "applying";
     await writeCycleIndex(projectDir, cycleIndex);
 
-    const now = new Date().toISOString();
     const executionToken = randomUUID();
-
-    await this.deps.events.appendRunEvent(projectRoot, {
-      runId: executionToken,
-      kind: "cycle-apply",
-      sourceId: cycle.id,
-      title: `Apply cycle: ${cyclePlans.map((p) => p.title).join(", ")}`,
-      status: "queued",
-      timestamp: now,
-      startedAt: now,
-      metadata: { cycleId: cycle.id, planIds: selectedPlanIds, source: "apply" },
-    });
 
     return {
       cycle,
