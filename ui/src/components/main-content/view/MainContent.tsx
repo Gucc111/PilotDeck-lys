@@ -168,8 +168,9 @@ function MainContent({
   const applyAndLaunchCycle = useCallback(async (
     projectName: string,
     cycleId: string,
+    planIds?: string[],
   ) => {
-    const response = await api.applyWorkCycle(projectName, cycleId);
+    const response = await api.applyWorkCycle(projectName, cycleId, planIds);
     const payload = await readJsonPayload<{ cycle?: { id: string }; sessionKey?: string; executionToken?: string; error?: { code: string; message: string } | string }>(response);
     if (!response.ok || !payload) {
       const errMsg = typeof payload?.error === 'string' ? payload.error : payload?.error?.message;

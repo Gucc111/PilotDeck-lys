@@ -66,7 +66,10 @@ export type DiscoveryPlanStatus =
   | 'completed'
   | 'completed_no_report'
   | 'failed'
+  | 'applied'
   | 'archived';
+
+export type WorkCycleDependencyAnalysisStatus = 'clean' | 'dependent' | 'failed';
 
 export interface DiscoveryPlanOverview {
   id: string;
@@ -74,10 +77,17 @@ export interface DiscoveryPlanOverview {
   createdAt: string;
   updatedAt: string;
   status: DiscoveryPlanStatus;
+  summary?: string;
+  rationale?: string;
+  dedupeKey?: string;
   executionSessionId?: string;
+  executionCommitShas?: string[];
   workCycleId?: string;
   sourceRunId?: string;
   sourceDiscoverySessionId?: string;
+  dependsOnPlanIds?: string[];
+  dependencyReasons?: string[];
+  dependencyAnalysisStatus?: WorkCycleDependencyAnalysisStatus;
 }
 
 export interface ProjectDiscoveryPlansResponse {
@@ -103,7 +113,7 @@ export interface WorkCycleOverview {
     afterHead?: string;
     dependsOnPlanIds: string[];
     dependencyReasons: string[];
-    dependencyAnalysisStatus: string;
+    dependencyAnalysisStatus: WorkCycleDependencyAnalysisStatus;
     lastRunId?: string;
     updatedAt: string;
   }>;

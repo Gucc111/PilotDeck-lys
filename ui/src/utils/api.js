@@ -197,13 +197,15 @@ export const api = {
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/report`),
   projectWorkCycles: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles`),
-  applyWorkCycle: (projectName, cycleId) =>
+  applyWorkCycle: (projectName, cycleId, planIds) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles/${encodeURIComponent(cycleId)}/apply`, {
       method: 'POST',
+      ...(Array.isArray(planIds) ? { body: JSON.stringify({ planIds }) } : {}),
     }),
-  archiveWorkCycle: (projectName, cycleId) =>
+  archiveWorkCycle: (projectName, cycleId, planIds) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles/${encodeURIComponent(cycleId)}/archive`, {
       method: 'POST',
+      ...(Array.isArray(planIds) ? { body: JSON.stringify({ planIds }) } : {}),
     }),
   sessions: (projectName, limit = 5, offset = 0) =>
     authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),

@@ -37,6 +37,7 @@ type PlanDisplayStatus =
   | 'completedWaiting'
   | 'completedNoReport'
   | 'failed'
+  | 'applied'
   | 'archived';
 
 function mapPlanStatus(status: DiscoveryPlanStatus): PlanDisplayStatus {
@@ -53,6 +54,8 @@ function mapPlanStatus(status: DiscoveryPlanStatus): PlanDisplayStatus {
       return 'completedNoReport';
     case 'failed':
       return 'failed';
+    case 'applied':
+      return 'applied';
     case 'archived':
       return 'archived';
     default:
@@ -67,6 +70,7 @@ const PLAN_STATUS_STYLE: Record<PlanDisplayStatus, string> = {
   completedWaiting: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
   completedNoReport: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
   failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  applied: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
   archived: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
 };
 
@@ -77,6 +81,7 @@ const PLAN_STATUS_LABEL: Record<PlanDisplayStatus, { key: string; defaultValue: 
   completedWaiting: { key: 'plansCron.status.completedWaiting', defaultValue: 'Completed' },
   completedNoReport: { key: 'plansCron.status.completedNoReport', defaultValue: 'Report Unavailable' },
   failed: { key: 'plansCron.status.failed', defaultValue: 'Failed' },
+  applied: { key: 'plansCron.status.applied', defaultValue: 'Applied' },
   archived: { key: 'plansCron.status.archived', defaultValue: 'Archived' },
 };
 
@@ -97,6 +102,19 @@ const CRON_STATUS_LABEL: Record<'scheduled' | 'running', { key: string; defaultV
 type UnifiedItem =
   | { kind: 'plan'; data: DiscoveryPlanOverview; projectName: string; projectDisplayName: string; projectKey: string }
   | { kind: 'cron'; data: CronJobOverview; projectName: string; projectDisplayName: string; projectKey: string };
+
+type ProjectGroup = {
+  displayName: string;
+  items: UnifiedItem[];
+  activeCycle?: WorkCycleOverview;
+};
+
+type CyclePlanState = NonNullable<WorkCycleOverview['plans']>[string];
+
+type SelectionCheck = {
+  enabled: boolean;
+  reason: string;
+};
 
 // ---------------------------------------------------------------------------
 // Time formatting
@@ -120,18 +138,140 @@ function formatAbsoluteTime(iso: string | number): string {
 // ---------------------------------------------------------------------------
 
 const COL = {
+  select: 'w-[32px] shrink-0',
   title: 'min-w-0 flex-1 max-w-[380px]',
   createdAt: 'w-[150px] shrink-0',
   status: 'w-[160px] shrink-0',
   actions: 'w-[140px] shrink-0',
 } as const;
 
+const RESOLVED_PLAN_STATUSES = new Set<DiscoveryPlanStatus>(['applied', 'archived']);
+
+function selectionKey(projectName: string, cycleId: string): string {
+  return `${projectName}::${cycleId}`;
+}
+
+function isResolvedStatus(status?: string): boolean {
+  return status === 'applied' || status === 'archived';
+}
+
+function getCyclePlanIds(cycle?: WorkCycleOverview): string[] {
+  if (!cycle) return [];
+  const fromPlans = cycle.plans ? Object.keys(cycle.plans) : [];
+  return fromPlans.length > 0 ? fromPlans : cycle.planIds;
+}
+
+function getCyclePlanState(cycle: WorkCycleOverview | undefined, planId: string): CyclePlanState | undefined {
+  return cycle?.plans?.[planId];
+}
+
+function getPlanStatus(plan: DiscoveryPlanOverview, cycle?: WorkCycleOverview): DiscoveryPlanStatus {
+  return getCyclePlanState(cycle, plan.id)?.status ?? plan.status;
+}
+
+function getPlanCommitShas(plan: DiscoveryPlanOverview, cycle?: WorkCycleOverview): string[] {
+  return getCyclePlanState(cycle, plan.id)?.commitShas ?? plan.executionCommitShas ?? [];
+}
+
+function getPlanDependencies(plan: DiscoveryPlanOverview, cycle?: WorkCycleOverview): string[] {
+  return getCyclePlanState(cycle, plan.id)?.dependsOnPlanIds ?? plan.dependsOnPlanIds ?? [];
+}
+
+function hasDependencyAnalysisFailure(cycle: WorkCycleOverview | undefined, plans: DiscoveryPlanOverview[]): boolean {
+  const states = Object.values(cycle?.plans ?? {});
+  if (states.length > 0) {
+    return states.some((state) => state.dependencyAnalysisStatus === 'failed');
+  }
+  return plans.some((plan) => plan.dependencyAnalysisStatus === 'failed');
+}
+
+function isCompletedForApply(plan: DiscoveryPlanOverview, cycle?: WorkCycleOverview): boolean {
+  const status = getPlanStatus(plan, cycle);
+  return status === 'completed' || status === 'completed_no_report';
+}
+
+function getCurrentCyclePlans(
+  plans: DiscoveryPlanOverview[],
+  cycle?: WorkCycleOverview,
+): DiscoveryPlanOverview[] {
+  if (!cycle) return [];
+  const cyclePlanIds = new Set(getCyclePlanIds(cycle));
+  return plans.filter((plan) => {
+    if (!cyclePlanIds.has(plan.id)) return false;
+    if (plan.workCycleId && plan.workCycleId !== cycle.id) return false;
+    if (RESOLVED_PLAN_STATUSES.has(plan.status) || isResolvedStatus(getCyclePlanState(cycle, plan.id)?.status)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function evaluateApplySelection(
+  cycle: WorkCycleOverview | undefined,
+  plans: DiscoveryPlanOverview[],
+  selectedPlanIds: Set<string>,
+): SelectionCheck {
+  if (!cycle) return { enabled: false, reason: 'No active work cycle.' };
+  if (cycle.status !== 'active') return { enabled: false, reason: 'Work cycle is not active.' };
+  if (selectedPlanIds.size === 0) return { enabled: false, reason: 'Select at least one plan.' };
+  const selectedPlans = plans.filter((plan) => selectedPlanIds.has(plan.id));
+  if (selectedPlans.length !== selectedPlanIds.size) {
+    return { enabled: false, reason: 'Selection contains a plan outside the current cycle.' };
+  }
+  if (hasDependencyAnalysisFailure(cycle, plans)) {
+    return { enabled: false, reason: 'Dependency analysis failed for this cycle.' };
+  }
+  for (const plan of selectedPlans) {
+    if (!isCompletedForApply(plan, cycle)) {
+      return { enabled: false, reason: 'Selected plans must be completed.' };
+    }
+    if (getPlanCommitShas(plan, cycle).length === 0) {
+      return { enabled: false, reason: 'Selected plans must have commits.' };
+    }
+    const missing = getPlanDependencies(plan, cycle).filter((dependencyId) => !selectedPlanIds.has(dependencyId));
+    if (missing.length > 0) {
+      return { enabled: false, reason: 'Selected plans are missing dependencies.' };
+    }
+  }
+  return { enabled: true, reason: '' };
+}
+
+function evaluateArchiveSelection(
+  cycle: WorkCycleOverview | undefined,
+  plans: DiscoveryPlanOverview[],
+  selectedPlanIds: Set<string>,
+): SelectionCheck {
+  if (!cycle) return { enabled: false, reason: 'No active work cycle.' };
+  if (cycle.status !== 'active') return { enabled: false, reason: 'Work cycle is not active.' };
+  if (selectedPlanIds.size === 0) return { enabled: false, reason: 'Select at least one plan.' };
+  const selectedPlans = plans.filter((plan) => selectedPlanIds.has(plan.id));
+  if (selectedPlans.length !== selectedPlanIds.size) {
+    return { enabled: false, reason: 'Selection contains a plan outside the current cycle.' };
+  }
+
+  const allSelected = plans.length > 0 && plans.every((plan) => selectedPlanIds.has(plan.id));
+  if (hasDependencyAnalysisFailure(cycle, plans)) {
+    return allSelected
+      ? { enabled: true, reason: '' }
+      : { enabled: false, reason: 'Archive all remaining plans when dependency analysis failed.' };
+  }
+
+  for (const plan of plans) {
+    if (selectedPlanIds.has(plan.id)) continue;
+    const removedDependencies = getPlanDependencies(plan, cycle).filter((dependencyId) => selectedPlanIds.has(dependencyId));
+    if (removedDependencies.length > 0) {
+      return { enabled: false, reason: 'Remaining plans depend on the selected archive plans.' };
+    }
+  }
+  return { enabled: true, reason: '' };
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 type PlansAndCronJobsProps = {
-  onApplyWorkCycle?: (projectName: string, cycleId: string) => Promise<void>;
+  onApplyWorkCycle?: (projectName: string, cycleId: string, planIds?: string[]) => Promise<void>;
   onOpenPlanDetail?: (planId: string, projectName: string, projectDisplayName: string, sourceRunId: string, projectKey: string) => void;
 };
 
@@ -147,6 +287,7 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
   const [cycleBusy, setCycleBusy] = useState<string | null>(null);
   const [confirmingArchiveCycle, setConfirmingArchiveCycle] = useState<string | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+  const [selectedPlanIdsByCycle, setSelectedPlanIdsByCycle] = useState<Map<string, Set<string>>>(new Map());
 
   const toggleSection = (key: string) => {
     setCollapsedSections((prev) => {
@@ -218,15 +359,21 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
     const projectMap = new Map<string, Project>();
     for (const p of projects) projectMap.set(p.name, p);
 
-    const result = new Map<string, { displayName: string; items: UnifiedItem[] }>();
+    const result = new Map<string, ProjectGroup>();
 
     for (const [projectName, plans] of plansByProject) {
       const project = projectMap.get(projectName);
       const displayName = project?.displayName || projectName;
+      const cycles = cyclesByProject.get(projectName) ?? [];
+      const activeCycle = cycles.find((c) => c.status === 'active' || c.status === 'applying');
+      const currentPlans = getCurrentCyclePlans(plans, activeCycle);
+      if (currentPlans.length === 0) continue;
       if (!result.has(projectName)) {
-        result.set(projectName, { displayName, items: [] });
+        result.set(projectName, { displayName, items: [], activeCycle });
+      } else {
+        result.get(projectName)!.activeCycle = activeCycle;
       }
-      for (const plan of plans) {
+      for (const plan of currentPlans) {
         result.get(projectName)!.items.push({
           kind: 'plan',
           data: plan,
@@ -275,13 +422,46 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
     }
 
     return result;
-  }, [projects, plansByProject, cronJobs]);
+  }, [projects, plansByProject, cyclesByProject, cronJobs]);
 
   const totalItems = useMemo(() => {
     let count = 0;
     for (const group of grouped.values()) count += group.items.length;
     return count;
   }, [grouped]);
+
+  useEffect(() => {
+    const validIdsBySelectionKey = new Map<string, Set<string>>();
+    for (const [projectName, group] of grouped.entries()) {
+      if (!group.activeCycle) continue;
+      const planIds = group.items
+        .filter((item): item is Extract<UnifiedItem, { kind: 'plan' }> => item.kind === 'plan')
+        .map((item) => item.data.id);
+      if (planIds.length > 0) {
+        validIdsBySelectionKey.set(selectionKey(projectName, group.activeCycle.id), new Set(planIds));
+      }
+    }
+
+    setSelectedPlanIdsByCycle((prev) => {
+      let changed = false;
+      const next = new Map<string, Set<string>>();
+      for (const [key, selectedIds] of prev.entries()) {
+        const validIds = validIdsBySelectionKey.get(key);
+        if (!validIds) {
+          changed = true;
+          continue;
+        }
+        const filtered = new Set([...selectedIds].filter((planId) => validIds.has(planId)));
+        if (filtered.size !== selectedIds.size) changed = true;
+        if (filtered.size > 0) next.set(key, filtered);
+      }
+      return changed ? next : prev;
+    });
+  }, [grouped]);
+
+  useEffect(() => {
+    setConfirmingArchiveCycle(null);
+  }, [selectedPlanIdsByCycle]);
 
   const toggleProject = (key: string) => {
     setCollapsedProjects((prev) => {
@@ -291,6 +471,21 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
       return next;
     });
   };
+
+  const updateCycleSelection = useCallback((
+    key: string,
+    updater: (current: Set<string>) => Set<string>,
+  ) => {
+    setConfirmingArchiveCycle(null);
+    setSelectedPlanIdsByCycle((prev) => {
+      const current = new Set(prev.get(key) ?? []);
+      const selected = updater(current);
+      const next = new Map(prev);
+      if (selected.size === 0) next.delete(key);
+      else next.set(key, selected);
+      return next;
+    });
+  }, []);
 
   return (
     <div className="w-full space-y-5 px-8 py-5">
@@ -334,7 +529,7 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
         </div>
       ) : (
         <div className="space-y-4">
-          {[...grouped.entries()].map(([projectKey, { displayName, items }]) => {
+          {[...grouped.entries()].map(([projectKey, { displayName, items, activeCycle }]) => {
             const isCollapsed = collapsedProjects.has(projectKey);
             const label =
               projectKey === '__unassigned__'
@@ -366,27 +561,55 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                 </button>
 
                 {!isCollapsed && (() => {
-                  const planItems = items.filter((i) => i.kind === 'plan');
-                  const cronItems = items.filter((i) => i.kind === 'cron');
-                  const cycles = cyclesByProject.get(projectKey) ?? [];
-                  const activeCycle = cycles.find((c) => c.status === 'active' || c.status === 'applying');
-                  const hasCompletedPlan = planItems.some((p) => {
-                    const s = (p.data as DiscoveryPlanOverview).status;
-                    return s === 'completed' || s === 'completed_no_report';
-                  });
-                  const canApply = !!activeCycle && activeCycle.status === 'active' && hasCompletedPlan;
-                  const canArchive = !!activeCycle && activeCycle.status === 'active';
+                  const planItems = items.filter((i): i is Extract<UnifiedItem, { kind: 'plan' }> => i.kind === 'plan');
+                  const cronItems = items.filter((i): i is Extract<UnifiedItem, { kind: 'cron' }> => i.kind === 'cron');
+                  const planRecords = planItems.map((item) => item.data);
+                  const activeSelectionKey = activeCycle ? selectionKey(projectKey, activeCycle.id) : '';
+                  const selectedPlanIds = activeSelectionKey
+                    ? selectedPlanIdsByCycle.get(activeSelectionKey) ?? new Set<string>()
+                    : new Set<string>();
+                  const selectedPlanIdList = planRecords
+                    .filter((plan) => selectedPlanIds.has(plan.id))
+                    .map((plan) => plan.id);
+                  const selectedCount = selectedPlanIdList.length;
+                  const allPlansSelected = planRecords.length > 0 && selectedCount === planRecords.length;
+                  const partiallySelected = selectedCount > 0 && !allPlansSelected;
+                  const applyCheck = evaluateApplySelection(activeCycle, planRecords, selectedPlanIds);
+                  const archiveCheck = evaluateArchiveSelection(activeCycle, planRecords, selectedPlanIds);
                   const isApplying = activeCycle?.status === 'applying';
                   const busy = !!activeCycle && cycleBusy === activeCycle.id;
+                  const applyDisabled = busy || !applyCheck.enabled;
+                  const archiveDisabled = busy || !archiveCheck.enabled;
+                  const applyLabel = t('plansCron.actions.applySelected', { defaultValue: 'Apply Selected' });
+                  const archiveLabel = t('plansCron.actions.archiveCycle', { defaultValue: 'Archive' });
+                  const applyDisabledReason = busy ? t('plansCron.cycleStatus.applying', { defaultValue: 'Applying…' }) : applyCheck.reason;
+                  const archiveDisabledReason = busy ? t('plansCron.cycleStatus.applying', { defaultValue: 'Applying…' }) : archiveCheck.reason;
+
+                  const toggleAllPlans = () => {
+                    if (!activeSelectionKey) return;
+                    updateCycleSelection(activeSelectionKey, (current) => {
+                      const allSelected = planRecords.length > 0 && planRecords.every((plan) => current.has(plan.id));
+                      return allSelected ? new Set<string>() : new Set(planRecords.map((plan) => plan.id));
+                    });
+                  };
+
+                  const togglePlan = (planId: string) => {
+                    if (!activeSelectionKey) return;
+                    updateCycleSelection(activeSelectionKey, (current) => {
+                      if (current.has(planId)) current.delete(planId);
+                      else current.add(planId);
+                      return current;
+                    });
+                  };
 
                   const handleApply = async () => {
-                    if (!activeCycle || busy) return;
+                    if (!activeCycle || applyDisabled) return;
                     setCycleBusy(activeCycle.id);
                     try {
                       if (onApplyWorkCycle) {
-                        await onApplyWorkCycle(projectKey, activeCycle.id);
+                        await onApplyWorkCycle(projectKey, activeCycle.id, selectedPlanIdList);
                       } else {
-                        const res = await api.applyWorkCycle(projectKey, activeCycle.id);
+                        const res = await api.applyWorkCycle(projectKey, activeCycle.id, selectedPlanIdList);
                         if (!res.ok) {
                           const body = await res.json().catch(() => ({})) as { error?: string };
                           throw new Error(body?.error || `HTTP ${res.status}`);
@@ -401,10 +624,10 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                   };
 
                   const handleArchive = async () => {
-                    if (!activeCycle || busy) return;
+                    if (!activeCycle || archiveDisabled) return;
                     setCycleBusy(activeCycle.id);
                     try {
-                      const res = await api.archiveWorkCycle(projectKey, activeCycle.id);
+                      const res = await api.archiveWorkCycle(projectKey, activeCycle.id, selectedPlanIdList);
                       if (!res.ok) {
                         const body = await res.json().catch(() => ({})) as { error?: string };
                         throw new Error(body?.error || `HTTP ${res.status}`);
@@ -437,27 +660,43 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                                   {t('plansCron.cycleStatus.applying', { defaultValue: 'Applying…' })}
                                 </span>
                               )}
-                              {canApply && !isApplying && (
+                              {!isApplying && (
                                 <button
                                   type="button"
-                                  disabled={busy}
+                                  disabled={applyDisabled}
                                   onClick={() => void handleApply()}
-                                  className="inline-flex h-7 items-center rounded-md bg-emerald-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50 dark:bg-emerald-700 dark:hover:bg-emerald-600"
+                                  title={applyDisabledReason || applyLabel}
+                                  aria-label={applyDisabledReason ? `${applyLabel}: ${applyDisabledReason}` : applyLabel}
+                                  className={cn(
+                                    'inline-flex h-7 items-center rounded-md px-2.5 text-[11px] font-medium transition disabled:cursor-not-allowed',
+                                    applyDisabled
+                                      ? 'bg-neutral-200 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-500'
+                                      : 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600',
+                                  )}
                                 >
                                   {busy ? (
                                     <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
                                   ) : (
-                                    t('plansCron.actions.applyCycle', { defaultValue: 'Apply All' })
+                                    applyLabel
                                   )}
                                 </button>
                               )}
-                              {canArchive && !confirmingArchive && (
+                              {!confirmingArchive && (
                                 <button
                                   type="button"
-                                  disabled={busy}
-                                  onClick={() => setConfirmingArchiveCycle(activeCycle!.id)}
-                                  className="inline-flex h-7 items-center rounded-md border border-neutral-200 px-2 text-neutral-500 transition hover:border-red-300 hover:text-red-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-red-700 dark:hover:text-red-400"
-                                  title={t('plansCron.actions.archiveCycle', { defaultValue: 'Archive' })}
+                                  disabled={archiveDisabled}
+                                  onClick={() => {
+                                    if (!activeCycle || archiveDisabled) return;
+                                    setConfirmingArchiveCycle(activeCycle.id);
+                                  }}
+                                  className={cn(
+                                    'inline-flex h-7 items-center rounded-md border px-2 transition disabled:cursor-not-allowed',
+                                    archiveDisabled
+                                      ? 'border-neutral-200 text-neutral-300 dark:border-neutral-800 dark:text-neutral-600'
+                                      : 'border-neutral-200 text-neutral-500 hover:border-red-300 hover:text-red-600 dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-red-700 dark:hover:text-red-400',
+                                  )}
+                                  title={archiveDisabledReason || archiveLabel}
+                                  aria-label={archiveDisabledReason ? `${archiveLabel}: ${archiveDisabledReason}` : archiveLabel}
                                 >
                                   <Archive className="h-3.5 w-3.5" strokeWidth={1.75} />
                                 </button>
@@ -466,14 +705,15 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                                 <div className="flex items-center gap-1">
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    disabled={archiveDisabled}
                                     onClick={() => void handleArchive()}
-                                    className="inline-flex h-7 items-center rounded-md bg-red-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-red-700 disabled:opacity-50"
+                                    title={archiveDisabledReason || archiveLabel}
+                                    className="inline-flex h-7 items-center rounded-md bg-red-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-500 dark:disabled:bg-neutral-800 dark:disabled:text-neutral-500"
                                   >
                                     {busy ? (
                                       <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
                                     ) : (
-                                      t('plansCron.actions.archiveCycle', { defaultValue: 'Archive' })
+                                      archiveLabel
                                     )}
                                   </button>
                                   <button
@@ -488,7 +728,13 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                             </div>
                           }
                         >
-                          <ColumnHeaders t={t} />
+                          <ColumnHeaders
+                            t={t}
+                            selectable
+                            allSelected={allPlansSelected}
+                            partiallySelected={partiallySelected}
+                            onToggleAll={toggleAllPlans}
+                          />
                           <div className="divide-y divide-neutral-100 dark:divide-neutral-900">
                             {planItems.map((item) => (
                               <ItemRow
@@ -497,6 +743,8 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                                 t={t}
                                 onRefresh={refresh}
                                 onOpenPlanDetail={onOpenPlanDetail}
+                                selected={selectedPlanIds.has(item.data.id)}
+                                onToggleSelected={() => togglePlan(item.data.id)}
                               />
                             ))}
                           </div>
@@ -583,9 +831,33 @@ function SubSection({
 // Column headers (shared between Plans and Cron Jobs sub-sections)
 // ---------------------------------------------------------------------------
 
-function ColumnHeaders({ t }: { t: (key: string, opts?: Record<string, string>) => string }) {
+function ColumnHeaders({
+  t,
+  selectable = false,
+  allSelected = false,
+  partiallySelected = false,
+  onToggleAll,
+}: {
+  t: (key: string, opts?: Record<string, string>) => string;
+  selectable?: boolean;
+  allSelected?: boolean;
+  partiallySelected?: boolean;
+  onToggleAll?: () => void;
+}) {
   return (
     <div className="flex items-center gap-4 border-b border-neutral-200 bg-neutral-50 px-5 py-2 dark:border-neutral-800 dark:bg-neutral-900/50">
+      {selectable && (
+        <div className={COL.select}>
+          <input
+            type="checkbox"
+            checked={allSelected}
+            aria-checked={partiallySelected ? 'mixed' : allSelected}
+            aria-label={t('plansCron.selection.selectAll', { defaultValue: 'Select all plans' })}
+            onChange={onToggleAll}
+            className="h-3.5 w-3.5 rounded border-neutral-300 text-blue-600 focus:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-900"
+          />
+        </div>
+      )}
       <div className={COL.title}>
         <span className="text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
           {t('plansCron.columns.title', { defaultValue: 'Title' })}
@@ -619,11 +891,15 @@ function ItemRow({
   t,
   onRefresh,
   onOpenPlanDetail,
+  selected = false,
+  onToggleSelected,
 }: {
   item: UnifiedItem;
   t: (key: string, opts?: Record<string, string>) => string;
   onRefresh: () => Promise<void>;
   onOpenPlanDetail?: (planId: string, projectName: string, projectDisplayName: string, sourceRunId: string, projectKey: string) => void;
+  selected?: boolean;
+  onToggleSelected?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
 
@@ -724,6 +1000,18 @@ function ItemRow({
 
   return (
     <div className="flex items-center gap-4 px-5 py-2.5 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/40">
+      {isPlan && (
+        <div className={COL.select}>
+          <input
+            type="checkbox"
+            checked={selected}
+            aria-label={`${t('plansCron.selection.selectPlan', { defaultValue: 'Select plan' })}: ${title}`}
+            onChange={onToggleSelected}
+            className="h-3.5 w-3.5 rounded border-neutral-300 text-blue-600 focus:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-900"
+          />
+        </div>
+      )}
+
       {/* Title */}
       <div className={cn(COL.title, 'truncate text-[13px] text-neutral-900 dark:text-neutral-100')} title={fullTitle}>
         {isPlan && onOpenPlanDetail ? (

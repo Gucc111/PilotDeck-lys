@@ -78,7 +78,12 @@
       "runNow": "Run Now",
       "stop": "Stop",
       "applyCycle": "Apply All",
+      "applySelected": "Apply Selected",
       "archiveCycle": "Archive"
+    },
+    "selection": {
+      "selectAll": "Select all plans",
+      "selectPlan": "Select plan"
     },
     "type": {
       "plan": "Plan",
@@ -89,7 +94,9 @@
       "preparingWorkspace": "Preparing Workspace",
       "executing": "Executing",
       "completedWaiting": "Completed",
+      "completedNoReport": "Report Unavailable",
       "failed": "Failed",
+      "applied": "Applied",
       "archived": "Archived",
       "scheduled": "Scheduled",
       "running": "Running"

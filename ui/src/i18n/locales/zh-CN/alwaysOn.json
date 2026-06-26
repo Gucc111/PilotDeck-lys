@@ -78,7 +78,12 @@
       "runNow": "立即运行",
       "stop": "停止",
       "applyCycle": "全部应用",
+      "applySelected": "应用所选",
       "archiveCycle": "归档"
+    },
+    "selection": {
+      "selectAll": "选择全部计划",
+      "selectPlan": "选择计划"
     },
     "type": {
       "plan": "计划",
@@ -89,7 +94,9 @@
       "preparingWorkspace": "正在创建隔离环境",
       "executing": "正在执行",
       "completedWaiting": "执行完成",
+      "completedNoReport": "报告不可用",
       "failed": "执行失败",
+      "applied": "已应用",
       "archived": "已归档",
       "scheduled": "已安排",
       "running": "运行中"
