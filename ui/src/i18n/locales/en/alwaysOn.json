@@ -70,6 +70,7 @@
       "type": "Type",
       "createdAt": "Created",
       "status": "Status",
+      "dependencyGraph": "Dependency Graph",
       "actions": "Actions"
     },
     "actions": {

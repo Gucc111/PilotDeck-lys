@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AlertCircle,
@@ -145,6 +145,9 @@ const COL = {
   actions: 'w-[140px] shrink-0',
 } as const;
 
+const GRAPH_NODE_WIDTH = 176;
+const GRAPH_NODE_HEIGHT = 38;
+
 const RESOLVED_PLAN_STATUSES = new Set<DiscoveryPlanStatus>(['applied', 'archived']);
 
 function selectionKey(projectName: string, cycleId: string): string {
@@ -264,6 +267,97 @@ function evaluateArchiveSelection(
     }
   }
   return { enabled: true, reason: '' };
+}
+
+type GraphNode = {
+  plan: DiscoveryPlanOverview;
+  x: number;
+  y: number;
+  depth: number;
+};
+
+type GraphEdge = {
+  from: string;
+  to: string;
+};
+
+function truncateGraphLabel(value: string, maxLength = 30): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function buildGraphLayout(
+  plans: DiscoveryPlanOverview[],
+  cycle?: WorkCycleOverview,
+): { nodes: GraphNode[]; edges: GraphEdge[]; width: number; height: number } {
+  const planIds = new Set(plans.map((plan) => plan.id));
+  const planById = new Map(plans.map((plan) => [plan.id, plan]));
+  const dependencyMap = new Map<string, string[]>();
+  for (const plan of plans) {
+    dependencyMap.set(
+      plan.id,
+      getPlanDependencies(plan, cycle).filter((dependencyId) => planIds.has(dependencyId)),
+    );
+  }
+
+  const depthCache = new Map<string, number>();
+  const visiting = new Set<string>();
+  const depthFor = (planId: string): number => {
+    if (depthCache.has(planId)) return depthCache.get(planId)!;
+    if (visiting.has(planId)) return 0;
+    visiting.add(planId);
+    const dependencies = dependencyMap.get(planId) ?? [];
+    const depth = dependencies.length === 0
+      ? 0
+      : Math.max(...dependencies.map((dependencyId) => depthFor(dependencyId))) + 1;
+    visiting.delete(planId);
+    depthCache.set(planId, depth);
+    return depth;
+  };
+
+  for (const plan of plans) depthFor(plan.id);
+
+  const layers = new Map<number, DiscoveryPlanOverview[]>();
+  for (const plan of plans) {
+    const depth = depthCache.get(plan.id) ?? 0;
+    const layer = layers.get(depth) ?? [];
+    layer.push(plan);
+    layers.set(depth, layer);
+  }
+
+  const nodes: GraphNode[] = [];
+  const layerGapX = 220;
+  const nodeGapY = 58;
+  for (const [depth, layerPlans] of [...layers.entries()].sort(([left], [right]) => left - right)) {
+    layerPlans
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .forEach((plan, index) => {
+        nodes.push({
+          plan,
+          depth,
+          x: 28 + depth * layerGapX,
+          y: 34 + index * nodeGapY,
+        });
+      });
+  }
+
+  const maxDepth = Math.max(0, ...nodes.map((node) => node.depth));
+  const maxLayerSize = Math.max(1, ...[...layers.values()].map((layer) => layer.length));
+  const edges: GraphEdge[] = [];
+  for (const [planId, dependencies] of dependencyMap.entries()) {
+    if (!planById.has(planId)) continue;
+    for (const dependencyId of dependencies) {
+      if (planById.has(dependencyId)) edges.push({ from: dependencyId, to: planId });
+    }
+  }
+
+  return {
+    nodes,
+    edges,
+    width: Math.max(320, 56 + maxDepth * layerGapX + GRAPH_NODE_WIDTH),
+    height: Math.max(150, 68 + maxLayerSize * nodeGapY),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -728,25 +822,38 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                             </div>
                           }
                         >
-                          <ColumnHeaders
-                            t={t}
-                            selectable
-                            allSelected={allPlansSelected}
-                            partiallySelected={partiallySelected}
-                            onToggleAll={toggleAllPlans}
-                          />
-                          <div className="divide-y divide-neutral-100 dark:divide-neutral-900">
-                            {planItems.map((item) => (
-                              <ItemRow
-                                key={`plan-${item.data.id}`}
-                                item={item}
+                          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]">
+                            <div className="min-w-0">
+                              <ColumnHeaders
                                 t={t}
-                                onRefresh={refresh}
-                                onOpenPlanDetail={onOpenPlanDetail}
-                                selected={selectedPlanIds.has(item.data.id)}
-                                onToggleSelected={() => togglePlan(item.data.id)}
+                                selectable
+                                showActions={false}
+                                allSelected={allPlansSelected}
+                                partiallySelected={partiallySelected}
+                                onToggleAll={toggleAllPlans}
                               />
-                            ))}
+                              <div className="divide-y divide-neutral-100 dark:divide-neutral-900">
+                                {planItems.map((item) => (
+                                  <ItemRow
+                                    key={`plan-${item.data.id}`}
+                                    item={item}
+                                    t={t}
+                                    onRefresh={refresh}
+                                    onOpenPlanDetail={onOpenPlanDetail}
+                                    selected={selectedPlanIds.has(item.data.id)}
+                                    showActions={false}
+                                    onToggleSelected={() => togglePlan(item.data.id)}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                            <DependencyGraph
+                              plans={planRecords}
+                              cycle={activeCycle}
+                              selectedPlanIds={selectedPlanIds}
+                              label={t('plansCron.columns.dependencyGraph', { defaultValue: 'Dependency Graph' })}
+                              onTogglePlan={togglePlan}
+                            />
                           </div>
                         </SubSection>
                       )}
@@ -834,12 +941,14 @@ function SubSection({
 function ColumnHeaders({
   t,
   selectable = false,
+  showActions = true,
   allSelected = false,
   partiallySelected = false,
   onToggleAll,
 }: {
   t: (key: string, opts?: Record<string, string>) => string;
   selectable?: boolean;
+  showActions?: boolean;
   allSelected?: boolean;
   partiallySelected?: boolean;
   onToggleAll?: () => void;
@@ -873,11 +982,185 @@ function ColumnHeaders({
           {t('plansCron.columns.status', { defaultValue: 'Status' })}
         </span>
       </div>
-      <div className={COL.actions}>
-        <span className="text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-          {t('plansCron.columns.actions', { defaultValue: 'Actions' })}
-        </span>
+      {showActions && (
+        <div className={COL.actions}>
+          <span className="text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+            {t('plansCron.columns.actions', { defaultValue: 'Actions' })}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DependencyGraph({
+  plans,
+  cycle,
+  selectedPlanIds,
+  label,
+  onTogglePlan,
+}: {
+  plans: DiscoveryPlanOverview[];
+  cycle?: WorkCycleOverview;
+  selectedPlanIds: Set<string>;
+  label: string;
+  onTogglePlan: (planId: string) => void;
+}) {
+  const markerId = useId().replace(/:/g, '');
+  const layout = useMemo(() => buildGraphLayout(plans, cycle), [plans, cycle]);
+  const nodeById = useMemo(
+    () => new Map(layout.nodes.map((node) => [node.plan.id, node])),
+    [layout.nodes],
+  );
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [drag, setDrag] = useState<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+
+  const viewportHeight = Math.max(170, Math.min(300, layout.height + 24));
+
+  const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDrag({
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: pan.x,
+      originY: pan.y,
+    });
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setPan({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    });
+  };
+
+  const handlePointerEnd = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (drag?.pointerId === event.pointerId) setDrag(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  return (
+    <div className="border-t border-neutral-200 bg-neutral-50/40 dark:border-neutral-800 dark:bg-neutral-900/20 xl:border-l xl:border-t-0">
+      <div className="border-b border-neutral-200 px-3 py-2 text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        {label}
       </div>
+      <svg
+        role="img"
+        aria-label={label}
+        className={cn(
+          'block w-full select-none touch-none bg-white dark:bg-neutral-950',
+          drag ? 'cursor-grabbing' : 'cursor-grab',
+        )}
+        style={{ height: viewportHeight }}
+        viewBox={`0 0 360 ${viewportHeight}`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+      >
+        <defs>
+          <marker
+            id={markerId}
+            markerHeight="8"
+            markerWidth="8"
+            orient="auto"
+            refX="7"
+            refY="4"
+          >
+            <path d="M0,0 L8,4 L0,8 Z" className="fill-neutral-400 dark:fill-neutral-600" />
+          </marker>
+        </defs>
+        <rect width="360" height={viewportHeight} className="fill-transparent" />
+        <g transform={`translate(${pan.x} ${pan.y})`}>
+          {layout.edges.map((edge) => {
+            const from = nodeById.get(edge.from);
+            const to = nodeById.get(edge.to);
+            if (!from || !to) return null;
+            const startX = from.x + GRAPH_NODE_WIDTH;
+            const startY = from.y + GRAPH_NODE_HEIGHT / 2;
+            const endX = to.x;
+            const endY = to.y + GRAPH_NODE_HEIGHT / 2;
+            const curve = Math.max(42, (endX - startX) / 2);
+            return (
+              <path
+                key={`${edge.from}->${edge.to}`}
+                d={`M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX - 8} ${endY}`}
+                className="fill-none stroke-neutral-300 dark:stroke-neutral-700"
+                markerEnd={`url(#${markerId})`}
+                strokeWidth="1.4"
+              />
+            );
+          })}
+          {layout.nodes.map((node) => {
+            const selected = selectedPlanIds.has(node.plan.id);
+            const title = node.plan.title || node.plan.id;
+            return (
+              <g
+                key={node.plan.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`Select graph plan: ${title}`}
+                data-plan-node={node.plan.id}
+                data-selected={selected ? 'true' : 'false'}
+                className="cursor-pointer outline-none"
+                transform={`translate(${node.x} ${node.y})`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onTogglePlan(node.plan.id)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  onTogglePlan(node.plan.id);
+                }}
+              >
+                <rect
+                  width={GRAPH_NODE_WIDTH}
+                  height={GRAPH_NODE_HEIGHT}
+                  rx="6"
+                  className={cn(
+                    'stroke transition-colors',
+                    selected
+                      ? 'fill-blue-50 stroke-blue-500 dark:fill-blue-950/70 dark:stroke-blue-400'
+                      : 'fill-white stroke-neutral-200 dark:fill-neutral-900 dark:stroke-neutral-700',
+                  )}
+                />
+                <circle
+                  cx="15"
+                  cy="19"
+                  r="4"
+                  className={selected ? 'fill-blue-500 dark:fill-blue-400' : 'fill-neutral-300 dark:fill-neutral-600'}
+                />
+                <text
+                  x="27"
+                  y="17"
+                  className={cn(
+                    'fill-neutral-900 text-[10px] font-medium dark:fill-neutral-100',
+                    selected && 'fill-blue-700 dark:fill-blue-300',
+                  )}
+                >
+                  {truncateGraphLabel(title)}
+                </text>
+                <text
+                  x="27"
+                  y="29"
+                  className="fill-neutral-400 text-[9px] dark:fill-neutral-500"
+                >
+                  {node.plan.status}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
     </div>
   );
 }
@@ -892,6 +1175,7 @@ function ItemRow({
   onRefresh,
   onOpenPlanDetail,
   selected = false,
+  showActions = true,
   onToggleSelected,
 }: {
   item: UnifiedItem;
@@ -899,6 +1183,7 @@ function ItemRow({
   onRefresh: () => Promise<void>;
   onOpenPlanDetail?: (planId: string, projectName: string, projectDisplayName: string, sourceRunId: string, projectKey: string) => void;
   selected?: boolean;
+  showActions?: boolean;
   onToggleSelected?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -1039,72 +1324,73 @@ function ItemRow({
         </span>
       </div>
 
-      {/* Actions */}
-      <div className={cn(COL.actions, 'flex items-center gap-1.5')}>
-        {isPlan ? (
-          <>
-            {showRetry && (
+      {showActions && (
+        <div className={cn(COL.actions, 'flex items-center gap-1.5')}>
+          {isPlan ? (
+            <>
+              {showRetry && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleRetry()}
+                  className="inline-flex h-7 items-center rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
+                >
+                  {busy ? (
+                    <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+                  ) : (
+                    t('plansCron.actions.retry', { defaultValue: 'Retry' })
+                  )}
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              {cronIsRunning ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleCronStop()}
+                  className="inline-flex h-7 items-center gap-1 rounded-md bg-red-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
+                >
+                  {busy ? (
+                    <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+                  ) : (
+                    <>
+                      <Square className="h-3 w-3" strokeWidth={2} />
+                      {t('plansCron.actions.stop', { defaultValue: 'Stop' })}
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleCronRunNow()}
+                  className="inline-flex h-7 items-center gap-1 rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
+                >
+                  {busy ? (
+                    <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
+                  ) : (
+                    <>
+                      <Play className="h-3 w-3" strokeWidth={2} />
+                      {t('plansCron.actions.runNow', { defaultValue: 'Run Now' })}
+                    </>
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void handleRetry()}
-                className="inline-flex h-7 items-center rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
+                onClick={() => void handleCronDelete()}
+                className="inline-flex h-7 items-center rounded-md border border-neutral-200 px-2 text-neutral-500 transition hover:border-red-300 hover:text-red-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-red-700 dark:hover:text-red-400"
+                title={t('plansCron.actions.delete', { defaultValue: 'Delete' })}
               >
-                {busy ? (
-                  <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-                ) : (
-                  t('plansCron.actions.retry', { defaultValue: 'Retry' })
-                )}
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
               </button>
-            )}
-          </>
-        ) : (
-          <>
-            {cronIsRunning ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void handleCronStop()}
-                className="inline-flex h-7 items-center gap-1 rounded-md bg-red-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
-              >
-                {busy ? (
-                  <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-                ) : (
-                  <>
-                    <Square className="h-3 w-3" strokeWidth={2} />
-                    {t('plansCron.actions.stop', { defaultValue: 'Stop' })}
-                  </>
-                )}
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void handleCronRunNow()}
-                className="inline-flex h-7 items-center gap-1 rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-700 dark:hover:bg-blue-600"
-              >
-                {busy ? (
-                  <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />
-                ) : (
-                  <>
-                    <Play className="h-3 w-3" strokeWidth={2} />
-                    {t('plansCron.actions.runNow', { defaultValue: 'Run Now' })}
-                  </>
-                )}
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void handleCronDelete()}
-              className="inline-flex h-7 items-center rounded-md border border-neutral-200 px-2 text-neutral-500 transition hover:border-red-300 hover:text-red-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-red-700 dark:hover:text-red-400"
-              title={t('plansCron.actions.delete', { defaultValue: 'Delete' })}
-            >
-              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-            </button>
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

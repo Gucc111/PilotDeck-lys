@@ -126,6 +126,12 @@ function archiveButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /Archive/ }) as HTMLButtonElement;
 }
 
+function graphNode(planId: string): Element {
+  const node = document.querySelector(`[data-plan-node="${planId}"]`);
+  if (!node) throw new Error(`Missing graph node ${planId}`);
+  return node;
+}
+
 describe('PlansAndCronJobs selection behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -150,7 +156,9 @@ describe('PlansAndCronJobs selection behavior', () => {
       ],
     );
 
-    await screen.findByText('Current Cycle Plan');
+    await waitFor(() => {
+      expect(screen.getAllByText('Current Cycle Plan').length).toBeGreaterThan(0);
+    });
 
     expect(screen.queryByText('Old Cycle Plan')).toBeNull();
     expect(screen.queryByText('Applied Plan')).toBeNull();
@@ -177,6 +185,36 @@ describe('PlansAndCronJobs selection behavior', () => {
 
     fireEvent.click(screen.getByLabelText('Select plan: Plan A'));
     await waitFor(() => expect(applyButton().disabled).toBe(false));
+  });
+
+  it('replaces the plan Actions column with a selectable dependency graph', async () => {
+    setup(
+      [
+        makePlan('plan-a', 'Plan A'),
+        makePlan('plan-b', 'Plan B'),
+      ],
+      [
+        makeCycle({
+          'plan-a': makePlanState({ commitShas: ['commit-a'] }),
+          'plan-b': makePlanState({ commitShas: ['commit-b'], dependsOnPlanIds: ['plan-a'] }),
+        }),
+      ],
+    );
+
+    await waitForPlans();
+
+    expect(screen.queryByText('Actions')).toBeNull();
+    expect(screen.getByText('Dependency Graph')).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Select plan: Plan B'));
+    await waitFor(() => {
+      expect(graphNode('plan-b').getAttribute('data-selected')).toBe('true');
+    });
+
+    fireEvent.click(screen.getByLabelText('Select graph plan: Plan A'));
+    await waitFor(() => {
+      expect((screen.getByLabelText('Select plan: Plan A') as HTMLInputElement).checked).toBe(true);
+    });
   });
 
   it('disables archive when remaining plans would lose a dependency', async () => {

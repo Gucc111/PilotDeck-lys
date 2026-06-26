@@ -70,6 +70,7 @@
       "type": "类型",
       "createdAt": "创建时间",
       "status": "状态",
+      "dependencyGraph": "依赖图",
       "actions": "操作"
     },
     "actions": {
