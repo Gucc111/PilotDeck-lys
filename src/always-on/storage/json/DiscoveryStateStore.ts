@@ -1,12 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import type {
   AlwaysOnCurrentWorkspaceRef,
   AlwaysOnDiscoveryOutcome,
   AlwaysOnDiscoveryState,
   WorkspaceStrategyId,
-} from "../protocol/types.js";
-import type { AlwaysOnPaths } from "./AlwaysOnPaths.js";
+} from "../../protocol/types.js";
+import type { AlwaysOnPaths } from "../AlwaysOnPaths.js";
+import { atomicWriteJson, readJsonSafe } from "./JsonStoreBase.js";
 
 export function getDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -25,27 +24,16 @@ export class DiscoveryStateStore {
   constructor(private readonly paths: AlwaysOnPaths) {}
 
   async read(now: Date): Promise<AlwaysOnDiscoveryState> {
-    let raw: string;
-    try {
-      raw = await readFile(this.paths.stateFile, "utf-8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return defaultDiscoveryState(now);
-      }
-      throw error;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return defaultDiscoveryState(now);
-    }
-    return resetDailyBudgetIfNeeded(normalizeState(parsed, now), now);
+    const state = await readJsonSafe(
+      this.paths.stateFile,
+      () => defaultDiscoveryState(now),
+      (parsed) => normalizeState(parsed, now),
+    );
+    return resetDailyBudgetIfNeeded(state, now);
   }
 
   async write(state: AlwaysOnDiscoveryState): Promise<void> {
-    await mkdir(dirname(this.paths.stateFile), { recursive: true });
-    await writeFile(this.paths.stateFile, JSON.stringify(state, null, 2), "utf-8");
+    await atomicWriteJson(this.paths.stateFile, state);
   }
 
   async markFireStarted(runId: string, now: Date): Promise<AlwaysOnDiscoveryState> {

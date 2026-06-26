@@ -3,8 +3,8 @@ import type { AlwaysOnConfig } from "../config/index.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { GateBlockReason } from "../protocol/types.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import { DiscoveryStateStore } from "../storage/DiscoveryStateStore.js";
-import { WorkCycleStore } from "../storage/WorkCycleStore.js";
+import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
+import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
 import type { ChannelLeaseRegistry } from "./ChannelLeaseRegistry.js";
 import {
   acquireDiscoveryLock,

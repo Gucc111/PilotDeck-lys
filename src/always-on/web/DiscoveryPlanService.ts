@@ -1,20 +1,30 @@
 /**
  * Discovery plan lifecycle service.
  *
- * Extracted from `ui/server/discovery-plans.js`. Owns:
- *   - plan store read/write/normalize
- *   - queue / update / archive operations (with guards)
- *   - run event + log emission
- *   - overview building
+ * Owns:
+ *   - plan overview building + normalization (DiscoveryPlanRecord → WebPlanRecord)
+ *   - queue / update / archive business logic (with guards)
+ *   - preference event emission
  *
- * Depends on injectable I/O adapters so tests can substitute stubs.
+ * All data access is delegated to Runtime Store instances supplied via `createStores`.
  */
 
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
-import { resolve, isAbsolute, join } from "node:path";
-import type { PreferenceEvent } from "../protocol/types.js";
-import type { PreferenceEventStore } from "../storage/PreferenceEventStore.js";
+import type {
+  DiscoveryPlanIndex,
+  DiscoveryPlanRecord,
+  DiscoveryPlanStatus,
+  WorkCycleIndex,
+  WorkCycleRecord,
+  WorkCycleExecutionRecord,
+  WorkCycleStatus,
+  PreferenceEvent,
+} from "../protocol/types.js";
+import type { PreferenceEventStore } from "../storage/log/PreferenceEventStore.js";
+import type { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
+import type { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
+import type { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
+import type { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
 import {
   computeExecutionStatus,
   computePlanStatus,
@@ -23,14 +33,11 @@ import {
   pickLatestIsoTimestamp,
   sortDiscoveryPlans,
   toIsoTimestamp,
-  toTimestampValue,
-  truncateText,
   type WebPlanContextRefs,
   type WebPlanRecord,
   type WebPlanSession,
 } from "./DiscoveryPlanStatus.js";
 
-// Re-export so callers only need one import for the full service.
 export {
   computeExecutionStatus,
   computePlanStatus,
@@ -43,22 +50,13 @@ export {
 // Constants
 // ---------------------------------------------------------------------------
 
-const INDEX_VERSION = 1;
 const STRUCTURE_VERSION = 1;
-
-type PlanIndex = {
-  version: number;
-  plans: WebPlanRecord[];
-};
-
-const EMPTY_STORE: PlanIndex = { version: INDEX_VERSION, plans: [] };
 
 // ---------------------------------------------------------------------------
 // Dependencies — callers inject these so the service stays testable
 // ---------------------------------------------------------------------------
 
 export type ProjectPathResolver = {
-  /** Resolve a display-name / encoded project name to the absolute root. */
   extractProjectDirectory(projectName: string): Promise<string>;
 };
 
@@ -90,9 +88,15 @@ export type StateManager = {
   clearActiveWorkCycleId(projectRoot: string): Promise<void>;
 };
 
+export type ProjectStores = {
+  planStore: DiscoveryPlanStore;
+  cycleStore: WorkCycleStore;
+  stateStore: DiscoveryStateStore;
+  reportStore: DiscoveryReportStore;
+};
+
 export type DiscoveryPlanServiceDeps = {
-  pilotHome: string;
-  resolveProjectId: (projectRoot: string) => string;
+  createStores: (projectRoot: string) => ProjectStores;
   paths: ProjectPathResolver;
   sessions: SessionLister;
   activity: SessionActivityChecker;
@@ -107,28 +111,7 @@ export type DiscoveryPlanServiceDeps = {
 };
 
 // ---------------------------------------------------------------------------
-// Paths (mirrors ui/server/discovery-plans.js helpers)
-// ---------------------------------------------------------------------------
-
-function resolveProjectDir(pilotHome: string, resolveProjectId: (root: string) => string, projectRoot: string): string {
-  const projectId = resolveProjectId(resolve(projectRoot));
-  return join(pilotHome, "always-on", "projects", projectId);
-}
-
-function indexPath(projectDir: string): string {
-  return join(projectDir, "plans", "index.json");
-}
-
-function planMarkdownDir(projectDir: string): string {
-  return join(projectDir, "plans");
-}
-
-function relativePlanPath(planId: string): string {
-  return join("plans", `${planId}.md`);
-}
-
-// ---------------------------------------------------------------------------
-// Normalization
+// Normalization (DiscoveryPlanRecord → WebPlanRecord)
 // ---------------------------------------------------------------------------
 
 function createEmptyContextRefs(): WebPlanContextRefs {
@@ -139,6 +122,10 @@ function createEmptyContextRefs(): WebPlanContextRefs {
     cronJobs: [],
     recentChats: [],
   };
+}
+
+function relativePlanPath(planId: string): string {
+  return `plans/${planId}.md`;
 }
 
 export function normalizeDiscoveryPlanRecord(record: Record<string, unknown> | null | undefined): WebPlanRecord {
@@ -210,63 +197,10 @@ function normalizeWorkspaceRef(
   return { strategy, cwd };
 }
 
-// ---------------------------------------------------------------------------
-// Store I/O
-// ---------------------------------------------------------------------------
-
-async function readPlanStore(projectDir: string): Promise<PlanIndex> {
-  try {
-    const raw = await fs.readFile(indexPath(projectDir), "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.plans)) {
-      return { ...EMPTY_STORE };
-    }
-    const version =
-      typeof parsed.schemaVersion === "number"
-        ? parsed.schemaVersion
-        : typeof parsed.version === "number"
-          ? parsed.version
-          : INDEX_VERSION;
-    return {
-      version,
-      plans: (parsed.plans as unknown[]).map((p) => normalizeDiscoveryPlanRecord(p as Record<string, unknown>)),
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return { ...EMPTY_STORE };
-    }
-    throw error;
-  }
-}
-
-async function writePlanStore(projectDir: string, store: PlanIndex): Promise<void> {
-  await fs.mkdir(planMarkdownDir(projectDir), { recursive: true });
-  await fs.writeFile(
-    indexPath(projectDir),
-    `${JSON.stringify({ schemaVersion: INDEX_VERSION, plans: store.plans }, null, 2)}\n`,
-    "utf8",
+function toWebPlanRecords(index: DiscoveryPlanIndex): WebPlanRecord[] {
+  return index.plans.map((plan) =>
+    normalizeDiscoveryPlanRecord(plan as unknown as Record<string, unknown>),
   );
-}
-
-async function readPlanBody(projectDir: string, planFilePath: string): Promise<string> {
-  const absolutePath = isAbsolute(planFilePath) ? planFilePath : resolve(projectDir, planFilePath);
-  try {
-    return await fs.readFile(absolutePath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return "";
-    throw error;
-  }
-}
-
-async function readRawPlanRecord(projectDir: string, planId: string): Promise<Record<string, unknown> | null> {
-  try {
-    const raw = await fs.readFile(indexPath(projectDir), "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.plans)) return null;
-    return (parsed.plans as Record<string, unknown>[]).find((p) => p.id === planId) ?? null;
-  } catch {
-    return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +252,8 @@ function normalizePlanSelection(
   }
   return [...selected];
 }
+
+type CycleExecutionRecord = WorkCycleExecutionRecord;
 
 function executionMap(executions: CycleExecutionRecord[]): Map<string, CycleExecutionRecord> {
   const byPlanId = new Map<string, CycleExecutionRecord>();
@@ -462,15 +398,17 @@ export class DiscoveryPlanService {
     this.deps = deps;
   }
 
-  private projectDir(projectRoot: string): string {
-    return resolveProjectDir(this.deps.pilotHome, this.deps.resolveProjectId, projectRoot);
+  private stores(projectRoot: string): ProjectStores {
+    return this.deps.createStores(projectRoot);
   }
 
   async getPlansOverview(projectName: string) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const projectDir = this.projectDir(projectRoot);
-    const store = await readPlanStore(projectDir);
-    if (store.plans.length === 0) return { plans: [] };
+    const { planStore, cycleStore, reportStore } = this.stores(projectRoot);
+
+    const planIndex = await planStore.readIndex();
+    const webPlans = toWebPlanRecords(planIndex);
+    if (webPlans.length === 0) return { plans: [] };
 
     const sessionResult = await this.deps.sessions
       .getSessions(projectName, Number.MAX_SAFE_INTEGER, 0)
@@ -484,9 +422,9 @@ export class DiscoveryPlanService {
 
     const isActive = (id: string) => this.deps.activity.isSessionActive(id);
 
-    const cycleIndex = await readCycleIndex(projectDir);
+    const cycleIndex = await cycleStore.readIndex();
     const cycleWorkspaceMap = new Map(cycleIndex.cycles.map((c) => [c.id, c.workspace]));
-    const executionByPlanId = new Map<string, CycleExecutionRecord>();
+    const executionByPlanId = new Map<string, WorkCycleExecutionRecord>();
     for (const cycle of cycleIndex.cycles) {
       for (const execution of cycle.executions ?? []) {
         executionByPlanId.set(execution.planId, execution);
@@ -494,14 +432,14 @@ export class DiscoveryPlanService {
     }
 
     const plans = await Promise.all(
-      store.plans.map(async (plan) => {
-        const body = await readPlanBody(projectDir, plan.planFilePath);
+      webPlans.map(async (plan) => {
+        const body = await planStore.readPlanByPath(plan.planFilePath) ?? "";
         const session = plan.executionSessionId
           ? (sessionsById.get(plan.executionSessionId) as WebPlanSession) || null
           : null;
         const overview = buildOverview(plan, body, session, isActive);
         if (!overview.workspace && plan.workCycleId) {
-          overview.workspace = cycleWorkspaceMap.get(plan.workCycleId);
+          overview.workspace = cycleWorkspaceMap.get(plan.workCycleId) as { strategy: string; cwd: string } | undefined;
         }
         const execution = executionByPlanId.get(plan.id);
         if (execution) {
@@ -519,8 +457,9 @@ export class DiscoveryPlanService {
 
   async archiveCycle(projectName: string, cycleId: string, planIds?: string[]) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const projectDir = this.projectDir(projectRoot);
-    const cycleIndex = await readCycleIndex(projectDir);
+    const { planStore, cycleStore } = this.stores(projectRoot);
+
+    const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
     if (!cycle) throw makeError("Work cycle not found", "NOT_FOUND");
 
@@ -535,20 +474,23 @@ export class DiscoveryPlanService {
       );
     }
 
-    const store = await readPlanStore(projectDir);
-    const selectedPlanIds = normalizePlanSelection(cycle, store.plans, planIds);
-    const { archiveWholeCycle } = validateArchiveSelection(cycle, store.plans, selectedPlanIds);
+    const storeIndex = await planStore.readIndex();
+    const webPlans = toWebPlanRecords(storeIndex);
+    const selectedPlanIds = normalizePlanSelection(cycle, webPlans, planIds);
+    const { archiveWholeCycle } = validateArchiveSelection(cycle, webPlans, selectedPlanIds);
     const now = new Date().toISOString();
 
-    for (const plan of store.plans) {
-      if (selectedPlanIds.includes(plan.id) && !isResolvedPlan(plan)) {
-        plan.status = "archived";
-        plan.updatedAt = now;
-      }
-    }
-    await writePlanStore(projectDir, store);
+    await planStore.batchUpdateStatus(
+      selectedPlanIds
+        .filter((id) => {
+          const plan = webPlans.find((p) => p.id === id);
+          return plan && !isResolvedPlan(plan);
+        })
+        .map((id) => ({ planId: id, status: "archived" as DiscoveryPlanStatus, updatedAt: now })),
+    );
 
-    const hasRemainingPlan = store.plans.some((plan) => (
+    const updatedWebPlans = toWebPlanRecords(await planStore.readIndex());
+    const hasRemainingPlan = updatedWebPlans.some((plan) => (
       cycle.planIds.includes(plan.id) && !isResolvedPlan(plan)
     ));
     const shouldCloseCycle = archiveWholeCycle || !hasRemainingPlan;
@@ -566,10 +508,8 @@ export class DiscoveryPlanService {
     }
 
     if (shouldCloseCycle) {
-      cycle.status = "archived";
-      cycle.archivedAt = now;
+      await cycleStore.updateStatus(cycleId, "archived", new Date(now));
     }
-    await writeCycleIndex(projectDir, cycleIndex);
 
     if (shouldCloseCycle && this.deps.state) {
       try {
@@ -585,7 +525,7 @@ export class DiscoveryPlanService {
       timestamp: now,
       action: "archive",
       cycleId,
-      plans: store.plans
+      plans: webPlans
         .filter((plan) => selectedPlanIds.includes(plan.id))
         .map((plan) => ({
           id: plan.id,
@@ -601,14 +541,13 @@ export class DiscoveryPlanService {
   }
 
   /**
-   * Mark a cycle as "applying" and return its metadata. The actual apply
-   * agent loop is triggered via `gateway.alwaysOnApply` — the caller
-   * (discovery-plans.js) fires that RPC after this method returns.
+   * Mark a cycle as "applying" and return its metadata.
    */
   async queueCycleApply(projectName: string, cycleId: string, planIds?: string[]) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const projectDir = this.projectDir(projectRoot);
-    const cycleIndex = await readCycleIndex(projectDir);
+    const { planStore, cycleStore } = this.stores(projectRoot);
+
+    const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
     if (!cycle) throw makeError("Work cycle not found", "NOT_FOUND");
 
@@ -626,18 +565,17 @@ export class DiscoveryPlanService {
       );
     }
 
-    const store = await readPlanStore(projectDir);
-    const selectedPlanIds = normalizePlanSelection(cycle, store.plans, planIds);
+    const storeIndex = await planStore.readIndex();
+    const webPlans = toWebPlanRecords(storeIndex);
+    const selectedPlanIds = normalizePlanSelection(cycle, webPlans, planIds);
     const { legacyWorkspaceApply } = validateApplySelection(
       cycle,
-      store.plans,
+      webPlans,
       selectedPlanIds,
       planIds !== undefined,
     );
-    const cyclePlans = store.plans.filter((p) => selectedPlanIds.includes(p.id));
 
-    cycle.status = "applying";
-    await writeCycleIndex(projectDir, cycleIndex);
+    await cycleStore.updateStatus(cycleId, "applying", new Date());
 
     const executionToken = randomUUID();
 
@@ -659,16 +597,18 @@ export class DiscoveryPlanService {
     updates: { status: string; executionSessionId?: string; executionToken?: string; planIds: string[] },
   ) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const projectDir = this.projectDir(projectRoot);
-    const cycleIndex = await readCycleIndex(projectDir);
+    const { planStore, cycleStore } = this.stores(projectRoot);
+
+    const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
     if (!cycle) throw makeError("Work cycle not found", "NOT_FOUND");
 
     const normalizedStatus = updates.status;
-    const now = new Date().toISOString();
+    const now = new Date();
+    const nowIso = now.toISOString();
 
     if (cycle.status === "applying") {
-      const finalStatus = normalizedStatus === "completed" ? "applied" : "active";
+      const finalStatus: WorkCycleStatus = normalizedStatus === "completed" ? "applied" : "active";
 
       if (finalStatus === "applied" && cycle.workspace?.cwd && this.deps.workspace) {
         try {
@@ -682,23 +622,23 @@ export class DiscoveryPlanService {
         }
       }
 
-      cycle.status = finalStatus;
-      if (finalStatus === "applied") cycle.appliedAt = now;
-      await writeCycleIndex(projectDir, cycleIndex);
+      await cycleStore.updateStatus(cycleId, finalStatus, now);
 
       if (finalStatus === "applied") {
-        const store = await readPlanStore(projectDir);
+        const storeIndex = await planStore.readIndex();
+        const webPlans = toWebPlanRecords(storeIndex);
         const selected = new Set(updates.planIds);
-        const affectedPlans = store.plans.filter(
+        const affectedPlans = webPlans.filter(
           (plan) => cycle.planIds.includes(plan.id) && !isResolvedPlan(plan),
         );
-        for (const plan of store.plans) {
-          if (cycle.planIds.includes(plan.id) && !isResolvedPlan(plan)) {
-            plan.status = selected.has(plan.id) ? "applied" : "archived";
-            plan.updatedAt = now;
-          }
-        }
-        await writePlanStore(projectDir, store);
+
+        await planStore.batchUpdateStatus(
+          affectedPlans.map((plan) => ({
+            planId: plan.id,
+            status: (selected.has(plan.id) ? "applied" : "archived") as DiscoveryPlanStatus,
+            updatedAt: nowIso,
+          })),
+        );
 
         if (this.deps.state) {
           try {
@@ -711,7 +651,7 @@ export class DiscoveryPlanService {
         await this.appendPreferenceEvent(projectRoot, {
           schemaVersion: 2,
           eventId: randomUUID(),
-          timestamp: now,
+          timestamp: nowIso,
           action: "apply",
           cycleId,
           plans: affectedPlans.map((plan) => ({
@@ -726,7 +666,8 @@ export class DiscoveryPlanService {
       }
     }
 
-    return { cycle, planIds: updates.planIds };
+    const updatedCycle = await cycleStore.getRecord(cycleId);
+    return { cycle: updatedCycle ?? cycle, planIds: updates.planIds };
   }
 
   /**
@@ -734,47 +675,43 @@ export class DiscoveryPlanService {
    */
   async getCyclesOverview(projectName: string) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const projectDir = this.projectDir(projectRoot);
-    const cycleIndex = await readCycleIndex(projectDir);
+    const { cycleStore } = this.stores(projectRoot);
+    const cycleIndex = await cycleStore.readIndex();
     return { cycles: cycleIndex.cycles };
   }
 
   /**
    * Read a plan's report markdown by planId.
-   * Returns the raw markdown string (empty if no report exists yet).
    */
   async readReport(projectName: string, planId: string): Promise<{ content: string }> {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const projectDir = this.projectDir(projectRoot);
+    const { planStore, reportStore } = this.stores(projectRoot);
 
-    const rawRecord = await readRawPlanRecord(projectDir, planId);
-    if (!rawRecord) throw makeError("Discovery plan not found", "NOT_FOUND");
+    const record = await planStore.getRecord(planId);
+    if (!record) throw makeError("Discovery plan not found", "NOT_FOUND");
 
-    let reportPath = typeof rawRecord.reportFilePath === "string" ? rawRecord.reportFilePath : "";
-
-    if (!reportPath) {
-      const runId =
-        typeof rawRecord.sourceDiscoverySessionId === "string" ? rawRecord.sourceDiscoverySessionId
-        : typeof rawRecord.sourceRunId === "string" ? rawRecord.sourceRunId
-        : "";
-      if (runId) {
-        const inferred = join("reports", `${runId}.md`);
-        const inferredContent = await readPlanBody(projectDir, inferred);
-        if (inferredContent) return { content: inferredContent };
-      }
-      return { content: "" };
+    if (record.reportFilePath) {
+      const content = await reportStore.readByPath(record.reportFilePath) ?? "";
+      return { content };
     }
 
-    const content = await readPlanBody(projectDir, reportPath);
-    return { content };
+    const runId = record.sourceRunId;
+    if (runId) {
+      const content = await reportStore.readReport(runId);
+      if (content) return { content };
+    }
+
+    return { content: "" };
   }
 
   /**
    * Low-level store reader — used by context aggregation.
    */
-  async readStore(projectName: string): Promise<PlanIndex> {
+  async readStore(projectName: string): Promise<{ version: number; plans: WebPlanRecord[] }> {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    return readPlanStore(this.projectDir(projectRoot));
+    const { planStore } = this.stores(projectRoot);
+    const index = await planStore.readIndex();
+    return { version: 1, plans: toWebPlanRecords(index) };
   }
 
   private async appendPreferenceEvent(projectRoot: string, event: PreferenceEvent): Promise<void> {
@@ -789,92 +726,6 @@ export class DiscoveryPlanService {
       });
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Cycle store I/O
-// ---------------------------------------------------------------------------
-
-type CycleExecutionRecord = {
-  executionId: string;
-  runId: string;
-  planId: string;
-  status: string;
-  startedAt: string;
-  finishedAt: string;
-  baseCommit: string;
-  beforeHead: string;
-  afterHead: string;
-  commitShas: string[];
-  dependsOnPlanIds: string[];
-  dependencyReasons: string[];
-  dependencyAnalysisStatus: string;
-};
-
-type CycleIndex = {
-  schemaVersion: number;
-  cycles: Array<{
-    id: string;
-    projectKey: string;
-    status: string;
-    workspace: { strategy: string; cwd: string; metadata?: Record<string, string> };
-    planIds: string[];
-    executions?: CycleExecutionRecord[];
-    createdAt: string;
-    createdByRunId?: string;
-    appliedAt?: string;
-    archivedAt?: string;
-  }>;
-};
-
-const EMPTY_CYCLE_INDEX: CycleIndex = { schemaVersion: 1, cycles: [] };
-
-async function readCycleIndex(projectDir: string): Promise<CycleIndex> {
-  const filePath = join(projectDir, "cycles", "index.json");
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && Array.isArray(parsed.cycles)) {
-      return normalizeCycleIndex(parsed as CycleIndex);
-    }
-    return { ...EMPTY_CYCLE_INDEX };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return { ...EMPTY_CYCLE_INDEX };
-    }
-    throw error;
-  }
-}
-
-function normalizeCycleIndex(index: CycleIndex): CycleIndex {
-  return {
-    schemaVersion: 1,
-    cycles: index.cycles.map((cycle) => ({
-      ...cycle,
-      planIds: Array.isArray(cycle.planIds) ? [...cycle.planIds] : [],
-      executions: (cycle.executions ?? []).map((execution) => ({
-        ...execution,
-        commitShas: normalizeStringList(execution.commitShas),
-        dependsOnPlanIds: normalizeStringList(execution.dependsOnPlanIds),
-        dependencyReasons: normalizeStringList(execution.dependencyReasons),
-        dependencyAnalysisStatus: normalizeString(execution.dependencyAnalysisStatus, "clean"),
-      })),
-    })),
-  };
-}
-
-async function writeCycleIndex(projectDir: string, index: CycleIndex): Promise<void> {
-  const dir = join(projectDir, "cycles");
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(
-    join(dir, "index.json"),
-    `${JSON.stringify({ schemaVersion: 1, cycles: index.cycles }, null, 2)}\n`,
-    "utf8",
-  );
 }
 
 // ---------------------------------------------------------------------------

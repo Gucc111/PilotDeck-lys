@@ -5,7 +5,7 @@ import type {
   PreferenceEvent,
   PreferenceEventPlan,
   PreferencePlanOutcome,
-} from "../protocol/types.js";
+} from "../../protocol/types.js";
 
 type LegacyPreferenceEventPlan = Omit<PreferenceEventPlan, "outcome">;
 

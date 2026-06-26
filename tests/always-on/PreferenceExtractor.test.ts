@@ -9,7 +9,7 @@ import {
   readPreferences,
   type PreferenceLlmOptions,
 } from "../../src/always-on/memory/PreferenceExtractor.js";
-import { PreferenceEventStore } from "../../src/always-on/storage/PreferenceEventStore.js";
+import { PreferenceEventStore } from "../../src/always-on/storage/log/PreferenceEventStore.js";
 import type { PreferenceEvent } from "../../src/always-on/protocol/types.js";
 
 function event(id: string): PreferenceEvent {

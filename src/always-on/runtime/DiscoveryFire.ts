@@ -18,11 +18,11 @@ import type {
   WorkspaceHandle,
 } from "../protocol/types.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import { AlwaysOnEventStore } from "../storage/AlwaysOnEventStore.js";
-import { DiscoveryPlanStore } from "../storage/DiscoveryPlanStore.js";
-import { DiscoveryReportStore } from "../storage/DiscoveryReportStore.js";
-import { DiscoveryStateStore } from "../storage/DiscoveryStateStore.js";
-import { WorkCycleStore } from "../storage/WorkCycleStore.js";
+import { AlwaysOnEventStore } from "../storage/log/AlwaysOnEventStore.js";
+import { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
+import { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
+import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
+import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
 import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
 import {
   analyzeExecutionDependencies,
@@ -42,7 +42,7 @@ import {
 } from "./SessionConfigOverrides.js";
 import type { PermissionRule } from "../../permission/index.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
-import type { PreferenceEventStore } from "../storage/PreferenceEventStore.js";
+import type { PreferenceEventStore } from "../storage/log/PreferenceEventStore.js";
 import {
   preparePreferenceMemory,
   type LoggerLike,

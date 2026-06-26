@@ -44,12 +44,12 @@ export {
   reportMarkdownPath,
   type AlwaysOnPaths,
 } from "./storage/AlwaysOnPaths.js";
-export { DiscoveryStateStore, defaultDiscoveryState, getDayKey } from "./storage/DiscoveryStateStore.js";
-export { DiscoveryPlanStore } from "./storage/DiscoveryPlanStore.js";
-export { WorkCycleStore } from "./storage/WorkCycleStore.js";
-export { DiscoveryReportStore } from "./storage/DiscoveryReportStore.js";
-export { AlwaysOnEventStore } from "./storage/AlwaysOnEventStore.js";
-export { PreferenceEventStore } from "./storage/PreferenceEventStore.js";
+export { DiscoveryStateStore, defaultDiscoveryState, getDayKey } from "./storage/json/DiscoveryStateStore.js";
+export { DiscoveryPlanStore } from "./storage/json/DiscoveryPlanStore.js";
+export { WorkCycleStore } from "./storage/json/WorkCycleStore.js";
+export { DiscoveryReportStore } from "./storage/file/DiscoveryReportStore.js";
+export { AlwaysOnEventStore } from "./storage/log/AlwaysOnEventStore.js";
+export { PreferenceEventStore } from "./storage/log/PreferenceEventStore.js";
 export {
   PreferenceExtractor,
   preparePreferenceMemory,

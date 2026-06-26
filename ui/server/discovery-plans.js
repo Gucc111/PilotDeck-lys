@@ -13,7 +13,7 @@ import {
   getProjectCronJobsOverview,
   getSessions,
 } from './projects.js';
-import { resolvePilotHome, resolveProjectStorageId } from './utils/pilotPaths.js';
+import { resolvePilotHome } from './utils/pilotPaths.js';
 
 import { DiscoveryPlanService } from '../../src/always-on/web/DiscoveryPlanService.js';
 import { buildDiscoveryContext } from '../../src/always-on/web/DiscoveryPlanContext.js';
@@ -22,8 +22,11 @@ import {
   disposeWorkspace as disposeWorkspaceImpl,
 } from '../../src/always-on/workspace/WorkspaceApply.js';
 import { resolveAlwaysOnPaths } from '../../src/always-on/storage/AlwaysOnPaths.js';
-import { DiscoveryStateStore } from '../../src/always-on/storage/DiscoveryStateStore.js';
-import { PreferenceEventStore } from '../../src/always-on/storage/PreferenceEventStore.js';
+import { DiscoveryPlanStore } from '../../src/always-on/storage/json/DiscoveryPlanStore.js';
+import { WorkCycleStore } from '../../src/always-on/storage/json/WorkCycleStore.js';
+import { DiscoveryStateStore } from '../../src/always-on/storage/json/DiscoveryStateStore.js';
+import { DiscoveryReportStore } from '../../src/always-on/storage/file/DiscoveryReportStore.js';
+import { PreferenceEventStore } from '../../src/always-on/storage/log/PreferenceEventStore.js';
 
 // ---------------------------------------------------------------------------
 // Wire dependencies for the service
@@ -32,8 +35,15 @@ import { PreferenceEventStore } from '../../src/always-on/storage/PreferenceEven
 function getService() {
   const pilotHome = resolvePilotHome();
   return new DiscoveryPlanService({
-    pilotHome,
-    resolveProjectId: (projectRoot) => resolveProjectStorageId(projectRoot, pilotHome),
+    createStores: (projectRoot) => {
+      const paths = resolveAlwaysOnPaths({ pilotHome, projectKey: projectRoot });
+      return {
+        planStore: new DiscoveryPlanStore(paths),
+        cycleStore: new WorkCycleStore(paths),
+        stateStore: new DiscoveryStateStore(paths),
+        reportStore: new DiscoveryReportStore(paths),
+      };
+    },
     paths: { extractProjectDirectory },
     sessions: { getSessions },
     activity: { isSessionActive: isClaudeSDKSessionActive },

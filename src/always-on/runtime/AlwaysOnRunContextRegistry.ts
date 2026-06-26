@@ -1,8 +1,8 @@
 import type { DiscoveryPlanRecord, WorkspaceHandle } from "../protocol/types.js";
-import type { DiscoveryPlanStore } from "../storage/DiscoveryPlanStore.js";
-import type { DiscoveryReportStore } from "../storage/DiscoveryReportStore.js";
-import type { DiscoveryStateStore } from "../storage/DiscoveryStateStore.js";
-import type { WorkCycleStore } from "../storage/WorkCycleStore.js";
+import type { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
+import type { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
+import type { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
+import type { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
 import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
 

@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { AlwaysOnPhaseEvent } from "../protocol/types.js";
-import type { AlwaysOnPaths } from "./AlwaysOnPaths.js";
+import type { AlwaysOnPhaseEvent } from "../../protocol/types.js";
+import type { AlwaysOnPaths } from "../AlwaysOnPaths.js";
 
 export class AlwaysOnEventStore {
   constructor(private readonly paths: AlwaysOnPaths) {}

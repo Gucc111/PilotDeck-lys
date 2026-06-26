@@ -7,7 +7,12 @@ import {
   DiscoveryPlanService,
   type DiscoveryPlanServiceDeps,
 } from "../../src/always-on/web/DiscoveryPlanService.js";
-import { PreferenceEventStore } from "../../src/always-on/storage/PreferenceEventStore.js";
+import { PreferenceEventStore } from "../../src/always-on/storage/log/PreferenceEventStore.js";
+import { DiscoveryPlanStore } from "../../src/always-on/storage/json/DiscoveryPlanStore.js";
+import { WorkCycleStore } from "../../src/always-on/storage/json/WorkCycleStore.js";
+import { DiscoveryStateStore } from "../../src/always-on/storage/json/DiscoveryStateStore.js";
+import { DiscoveryReportStore } from "../../src/always-on/storage/file/DiscoveryReportStore.js";
+import type { AlwaysOnPaths } from "../../src/always-on/storage/AlwaysOnPaths.js";
 import type { PreferenceEvent } from "../../src/always-on/protocol/types.js";
 
 type PlanSeed = {
@@ -116,8 +121,35 @@ async function createFixture(input: {
     }
   }
   const deps: DiscoveryPlanServiceDeps = {
-    pilotHome,
-    resolveProjectId: () => "project-id",
+    createStores: () => {
+      const paths: AlwaysOnPaths = {
+        pilotHome,
+        projectKey: projectRoot,
+        projectId: "project-id",
+        rootDir: join(pilotHome, "always-on"),
+        projectDir,
+        stateFile: join(projectDir, "state.json"),
+        plansDir: join(projectDir, "plans"),
+        planIndexFile: join(projectDir, "plans", "index.json"),
+        cyclesDir: join(projectDir, "cycles"),
+        cycleIndexFile: join(projectDir, "cycles", "index.json"),
+        reportsDir: join(projectDir, "reports"),
+        eventsFile: join(projectDir, "events.jsonl"),
+        locksDir: join(projectDir, "locks"),
+        discoveryLockFile: join(projectDir, "locks", "discovery.lock"),
+        worktreesDir: join(pilotHome, "always-on", "worktrees", "project-id"),
+        snapshotsDir: join(pilotHome, "always-on", "snapshots", "project-id"),
+        memoryDir: join(projectDir, "memory"),
+        preferenceEventsFile: join(projectDir, "memory", "preference-events.jsonl"),
+        preferencesFile: join(projectDir, "memory", "preferences.md"),
+      };
+      return {
+        planStore: new DiscoveryPlanStore(paths),
+        cycleStore: new WorkCycleStore(paths),
+        stateStore: new DiscoveryStateStore(paths),
+        reportStore: new DiscoveryReportStore(paths),
+      };
+    },
     paths: { extractProjectDirectory: async () => projectRoot },
     sessions: { getSessions: async () => ({ sessions: [] }) },
     activity: { isSessionActive: () => false },
