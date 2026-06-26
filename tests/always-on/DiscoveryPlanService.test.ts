@@ -155,6 +155,8 @@ async function createFixture(input: {
     activity: { isSessionActive: () => false },
     workspace: {
       applyWorktreeChanges: async () => ({ applied: true }),
+      getWorkspaceStatus: async () => "",
+      revertCommits: async () => ({ reverted: true }),
       disposeWorkspace: async (_strategy, cwd) => {
         disposed.push(cwd);
       },
@@ -295,7 +297,7 @@ describe("DiscoveryPlanService plan selection", () => {
     }
   });
 
-  it("supports whole-cycle legacy apply but rejects legacy partial apply", async () => {
+  it("rejects applying completed plans without recorded commits", async () => {
     const fixture = await createFixture({
       plans: [
         { id: "a", status: "completed" },
@@ -307,13 +309,10 @@ describe("DiscoveryPlanService plan selection", () => {
         fixture.service.queueCycleApply("project", "cycle-1", ["a"]),
         "INVALID_SELECTION",
       );
-      const queued = await fixture.service.queueCycleApply("project", "cycle-1");
-      assert.equal(queued.legacyWorkspaceApply, true);
-      assert.deepEqual(queued.planIds, ["a", "b"]);
-      await fixture.service.updateCycleExecution("project", "cycle-1", {
-        status: "failed",
-        planIds: queued.planIds,
-      });
+      await rejectsWithCode(
+        fixture.service.queueCycleApply("project", "cycle-1"),
+        "INVALID_SELECTION",
+      );
       assert.equal((await fixture.readCycles())[0]?.status, "active");
       assert.deepEqual(fixture.disposed, []);
       assert.deepEqual(await fixture.readPreferenceEvents(), []);
@@ -322,7 +321,7 @@ describe("DiscoveryPlanService plan selection", () => {
     }
   });
 
-  it("fails closed for cycles mixing present and missing execution metadata", async () => {
+  it("migrates v1 execution metadata and rejects plans without commits", async () => {
     const fixture = await createFixture({
       plans: [
         { id: "a", status: "completed" },
@@ -335,10 +334,15 @@ describe("DiscoveryPlanService plan selection", () => {
         fixture.service.queueCycleApply("project", "cycle-1"),
         "INVALID_SELECTION",
       );
-      await rejectsWithCode(
-        fixture.service.archiveCycle("project", "cycle-1", ["a"]),
-        "INVALID_SELECTION",
-      );
+      const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
+      assert.equal(queued.legacyWorkspaceApply, false);
+      assert.deepEqual(queued.planIds, ["a"]);
+      await fixture.service.updateCycleExecution("project", "cycle-1", {
+        status: "failed",
+        planIds: queued.planIds,
+      });
+      const archived = await fixture.service.archiveCycle("project", "cycle-1", ["a"]);
+      assert.deepEqual(archived.planIds, ["a"]);
     } finally {
       await fixture.cleanup();
     }

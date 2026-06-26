@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   createAlwaysOnManager,
   createApplyHandler,
@@ -22,7 +25,7 @@ import {
   type SkillMigrationItem,
   type SkillMigrationSourceKind,
 } from "../extension/skills/index.js";
-import { loadPilotConfig, resolvePilotHome } from "../pilot/index.js";
+import { getPilotConfigFilePath, loadPilotConfig, resolvePilotHome } from "../pilot/index.js";
 import { createLocalGateway } from "./createLocalGateway.js";
 import { startPilotDeckServer } from "./pilotdeckServer.js";
 import { installGlobalProxy, reinstallGlobalProxy } from "./proxy.js";
@@ -53,6 +56,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     let alwaysOn: AlwaysOnManager | undefined;
     let cron: CronManager | undefined;
     let deferredBroadcast: ((name: string, payload?: unknown) => void) | undefined;
+    let activeConfigStore: { reload(reason?: string): Promise<unknown> } | undefined;
     const sessionOverrides = new SessionConfigOverrides();
 
     const formatAlwaysOnLogData = (data: unknown): string => {
@@ -108,6 +112,15 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         onTurnEvent: (sessionKey, channelKey, event) => {
           deferredBroadcast?.("always-on:turn-event", { sessionKey, channelKey, event });
         },
+        disableAlwaysOnProject: async ({ projectKey, error }) => {
+          await disableAlwaysOnProjectInYaml(pilotHome, projectKey);
+          deferredBroadcast?.("always-on:disabled", {
+            projectKey,
+            error,
+            message: "Always-On 已因失败自动关闭，请手动重新开启。",
+          });
+          await activeConfigStore?.reload("always-on-auto-disabled");
+        },
       });
     }
 
@@ -149,6 +162,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       cron,
       telemetry,
     });
+    activeConfigStore = configStore;
 
     const standaloneApply = createApplyHandler({
       gateway,
@@ -778,6 +792,41 @@ function readNumberFlag(argv: string[], flag: string): number | undefined {
 function inferChannelKey(sessionKey: string): string {
   const separator = sessionKey.indexOf(":");
   return separator > 0 ? sessionKey.slice(0, separator) : "cli";
+}
+
+async function disableAlwaysOnProjectInYaml(
+  pilotHome: string,
+  projectKey: string,
+): Promise<void> {
+  const configPath = getPilotConfigFilePath(pilotHome);
+  let raw = "";
+  try {
+    raw = await readFile(configPath, "utf-8");
+  } catch {
+    raw = "";
+  }
+
+  const parsed = raw.trim() ? parseYaml(raw) : {};
+  const root = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+  const alwaysOn = root.alwaysOn && typeof root.alwaysOn === "object" && !Array.isArray(root.alwaysOn)
+    ? root.alwaysOn as Record<string, unknown>
+    : {};
+  const projects = alwaysOn.projects && typeof alwaysOn.projects === "object" && !Array.isArray(alwaysOn.projects)
+    ? alwaysOn.projects as Record<string, unknown>
+    : {};
+  const project = projects[projectKey] && typeof projects[projectKey] === "object" && !Array.isArray(projects[projectKey])
+    ? projects[projectKey] as Record<string, unknown>
+    : {};
+
+  project.enabled = false;
+  projects[projectKey] = project;
+  alwaysOn.projects = projects;
+  root.alwaysOn = alwaysOn;
+
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(configPath, stringifyYaml(root, { lineWidth: 0 }), "utf-8");
 }
 
 function createFallbackGateway(): Gateway {

@@ -90,11 +90,23 @@ export interface WorkCycleOverview {
   id: string;
   projectKey: string;
   status: WorkCycleStatus;
+  baseCommit?: string;
   workspace: {
     strategy: string;
     cwd: string;
   };
   planIds: string[];
+  plans?: Record<string, {
+    status: DiscoveryPlanStatus;
+    commitShas: string[];
+    beforeHead?: string;
+    afterHead?: string;
+    dependsOnPlanIds: string[];
+    dependencyReasons: string[];
+    dependencyAnalysisStatus: string;
+    lastRunId?: string;
+    updatedAt: string;
+  }>;
   createdAt: string;
   appliedAt?: string;
   archivedAt?: string;

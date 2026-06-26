@@ -29,6 +29,7 @@ export type CreateAlwaysOnManagerOptions = {
   onTurnEvent?: DiscoveryFireDependencies["onTurnEvent"];
   telemetry?: TelemetryClient;
   preferenceLlm?: PreferenceLlmOptions;
+  disableAlwaysOnProject?: DiscoveryFireDependencies["disableAlwaysOnProject"];
 };
 
 /**
@@ -86,6 +87,7 @@ export class AlwaysOnManager {
           onTurnEvent: options.onTurnEvent,
           telemetry: options.telemetry,
           preferenceLlm: options.preferenceLlm,
+          disableAlwaysOnProject: options.disableAlwaysOnProject,
           runContexts: this.runContexts,
           sessionOverrides: this.sessionOverrides,
           skipToolCreation: true,

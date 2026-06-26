@@ -70,6 +70,7 @@ export type WorkCycleExecutionStatus = "completed" | "failed";
 
 export type WorkCycleDependencyAnalysisStatus = "clean" | "dependent" | "failed";
 
+/** @deprecated Retained for schema v1 WorkCycle migration. */
 export type WorkCycleExecutionRecord = {
   executionId: string;
   runId: string;
@@ -84,6 +85,30 @@ export type WorkCycleExecutionRecord = {
   dependsOnPlanIds: string[];
   dependencyReasons: string[];
   dependencyAnalysisStatus: WorkCycleDependencyAnalysisStatus;
+};
+
+export type WorkCyclePlanAttempt = {
+  runId: string;
+  status: WorkCycleExecutionStatus;
+  startedAt: string;
+  finishedAt: string;
+  beforeHead: string;
+  afterHead: string;
+  commitShas: string[];
+  error?: { code: string; message: string };
+};
+
+export type CyclePlanState = {
+  status: DiscoveryPlanStatus;
+  commitShas: string[];
+  beforeHead?: string;
+  afterHead?: string;
+  dependsOnPlanIds: string[];
+  dependencyReasons: string[];
+  dependencyAnalysisStatus: WorkCycleDependencyAnalysisStatus;
+  lastRunId?: string;
+  updatedAt: string;
+  attempts?: WorkCyclePlanAttempt[];
 };
 
 export type WorkspaceHandle = {
@@ -121,13 +146,13 @@ export type WorkCycleRecord = {
   id: string;
   projectKey: string;
   status: WorkCycleStatus;
+  baseCommit: string;
   workspace: {
     strategy: WorkspaceStrategyId;
     cwd: string;
     metadata: Record<string, string>;
   };
-  planIds: string[];
-  executions?: WorkCycleExecutionRecord[];
+  plans: Record<string, CyclePlanState>;
   createdAt: string;
   createdByRunId: string;
   appliedAt?: string;
@@ -135,7 +160,7 @@ export type WorkCycleRecord = {
 };
 
 export type WorkCycleIndex = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   cycles: WorkCycleRecord[];
 };
 
@@ -172,6 +197,7 @@ export type AlwaysOnEventPhase =
   | "report_produced"
   | "apply_started"
   | "apply_completed"
+  | "always_on_disabled"
   | "run_completed"
   | "run_failed";
 
@@ -186,6 +212,8 @@ export type AlwaysOnPhaseEvent = {
   planId?: string;
   outcome?: AlwaysOnDiscoveryOutcome;
   error?: { code: string; message: string };
+  message?: string;
+  disabledReason?: { stage: string; code: string; message: string };
 };
 
 export type PreferencePlanOutcome = "applied" | "archived";

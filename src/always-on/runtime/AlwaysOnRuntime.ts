@@ -68,6 +68,7 @@ export type CreateAlwaysOnRuntimeOptions = {
   skipToolCreation?: boolean;
   telemetry?: TelemetryClient;
   preferenceLlm?: PreferenceLlmOptions;
+  disableAlwaysOnProject?: DiscoveryFireDependencies["disableAlwaysOnProject"];
 };
 
 const NOOP_LOGGER: AlwaysOnRuntimeLogger = {
@@ -116,6 +117,7 @@ export class AlwaysOnRuntime {
   private readonly onTurnEvent?: DiscoveryFireDependencies["onTurnEvent"];
   private readonly telemetry?: TelemetryClient;
   private readonly preferenceLlm?: PreferenceLlmOptions;
+  private readonly disableAlwaysOnProject?: DiscoveryFireDependencies["disableAlwaysOnProject"];
 
   private gateway?: Gateway;
   private fire?: DiscoveryFire;
@@ -146,6 +148,7 @@ export class AlwaysOnRuntime {
     this.onTurnEvent = options.onTurnEvent;
     this.telemetry = options.telemetry;
     this.preferenceLlm = options.preferenceLlm;
+    this.disableAlwaysOnProject = options.disableAlwaysOnProject;
     this.workspaceRegistry = options.workspaceRegistry ?? this.buildDefaultWorkspaceRegistry();
 
     this.tools = options.skipToolCreation
@@ -215,6 +218,7 @@ export class AlwaysOnRuntime {
       telemetry: this.telemetry,
       preferenceEventStore: new PreferenceEventStore(this.paths.preferenceEventsFile),
       preferenceLlm: this.preferenceLlm,
+      disableAlwaysOnProject: this.disableAlwaysOnProject,
     });
     this.scheduler = new DiscoveryScheduler({
       config: this.config,
@@ -228,6 +232,8 @@ export class AlwaysOnRuntime {
       now: this.now,
       logger: this.logger,
       isSessionInFlight,
+      eventStore: this.eventStore,
+      disableAlwaysOnProject: this.disableAlwaysOnProject,
     });
   }
 
@@ -279,15 +285,16 @@ export class AlwaysOnRuntime {
     }
 
     const planIndex = await this.planStore.readIndex();
+    const cyclePlanIds = new Set(Object.keys(cycle.plans));
     const defaultPlanIds = planIndex.plans
       .filter((plan) => (
-        cycle.planIds.includes(plan.id) &&
+        cyclePlanIds.has(plan.id) &&
         plan.status !== "applied" &&
         plan.status !== "archived"
       ))
       .map((plan) => plan.id);
     const selectedPlanIds = new Set(input.planIds ?? defaultPlanIds);
-    const resolvedPlanIds = input.planIds ?? ((cycle.executions ?? []).length > 0 ? defaultPlanIds : undefined);
+    const resolvedPlanIds = input.planIds ?? defaultPlanIds;
     const defaultPlanIdSet = new Set(defaultPlanIds);
     if (selectedPlanIds.size === 0 || [...selectedPlanIds].some((planId) => !defaultPlanIdSet.has(planId))) {
       return {
@@ -298,18 +305,8 @@ export class AlwaysOnRuntime {
         },
       };
     }
-    const executionPlanIds = new Set((cycle.executions ?? []).map((execution) => execution.planId));
-    if ((cycle.executions ?? []).length > 0 && defaultPlanIds.some((planId) => !executionPlanIds.has(planId))) {
-      return {
-        sessionKey: "",
-        error: {
-          code: "missing_execution_metadata",
-          message: "Cycle mixes active plans with and without execution commit metadata.",
-        },
-      };
-    }
     const cyclePlans = planIndex.plans
-      .filter((p) => cycle.planIds.includes(p.id) && selectedPlanIds.has(p.id))
+      .filter((p) => cyclePlanIds.has(p.id) && selectedPlanIds.has(p.id))
       .map((p) => ({ id: p.id, title: p.title }));
 
     const runId = this.uuid();

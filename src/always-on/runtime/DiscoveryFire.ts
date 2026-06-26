@@ -11,9 +11,9 @@ import type {
   AlwaysOnDiscoveryOutcome,
   AlwaysOnDiscoveryState,
   AlwaysOnEventPhase,
+  CyclePlanState,
   DiscoveryFireResult,
   DiscoveryPlanRecord,
-  WorkCycleExecutionRecord,
   WorkCycleRecord,
   WorkspaceHandle,
 } from "../protocol/types.js";
@@ -34,7 +34,6 @@ import {
   listCommitsBetween,
 } from "../workspace/WorkspaceGit.js";
 import type { AlwaysOnRunContextRegistry, ExecutionRunContext, DiscoveryRunContext, WorkspaceRunContext, ReportRunContext } from "./AlwaysOnRunContextRegistry.js";
-import { generateWorkspaceDiff } from "../workspace/WorkspaceApply.js";
 import { buildDiscoveryPrompt, buildExecutionPrompt, buildWorkspacePrompt, buildReportPrompt, buildApplyPrompt } from "./discoveryPrompts.js";
 import {
   UNATTENDED_SESSION_EXCLUDED_TOOLS,
@@ -62,6 +61,13 @@ export type DiscoveryFireDependencies = {
   cycleStore: WorkCycleStore;
   reportStore: DiscoveryReportStore;
   eventStore: AlwaysOnEventStore;
+  disableAlwaysOnProject?: (input: {
+    projectKey: string;
+    stage: "discovery" | "workspace" | "execution" | "internal";
+    runId: string;
+    planId?: string;
+    error: { code: string; message: string };
+  }) => Promise<void>;
   uuid: () => string;
   now: () => Date;
   logger?: LoggerLike;
@@ -191,6 +197,8 @@ export class DiscoveryFire {
       planId?: string;
       outcome?: AlwaysOnDiscoveryOutcome;
       error?: { code: string; message: string };
+      message?: string;
+      disabledReason?: { stage: string; code: string; message: string };
       telemetryPhase?: "discovery" | "workspace" | "execution" | "report" | "apply";
     },
   ): void {
@@ -239,6 +247,52 @@ export class DiscoveryFire {
       .catch(() => undefined);
   }
 
+  private async disableAlwaysOnAfterFailure(input: {
+    runId: string;
+    planId?: string;
+    stage: "discovery" | "workspace" | "execution" | "internal";
+    error: { code: string; message: string };
+  }): Promise<void> {
+    const message = "Always-On 已因失败自动关闭，请手动重新开启。";
+    try {
+      await this.deps.disableAlwaysOnProject?.({
+        projectKey: this.deps.projectKey,
+        runId: input.runId,
+        planId: input.planId,
+        stage: input.stage,
+        error: input.error,
+      });
+      this.emitEvent(input.runId, "always_on_disabled", {
+        planId: input.planId,
+        error: input.error,
+        message,
+        disabledReason: {
+          stage: input.stage,
+          code: input.error.code,
+          message,
+        },
+        outcome: "failed",
+        telemetryPhase: input.stage === "internal" ? "discovery" : input.stage,
+      });
+    } catch (error) {
+      this.emitEvent(input.runId, "always_on_disabled", {
+        planId: input.planId,
+        error: {
+          code: "always_on_disable_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+        message,
+        disabledReason: {
+          stage: input.stage,
+          code: input.error.code,
+          message,
+        },
+        outcome: "failed",
+        telemetryPhase: input.stage === "internal" ? "discovery" : input.stage,
+      });
+    }
+  }
+
   static deriveDiscoverySessionKey(projectKey: string, runId: string): string {
     return `always-on/discovery:project=${projectKey}:run=${runId}`;
   }
@@ -269,24 +323,14 @@ export class DiscoveryFire {
   }): Promise<{ events: GatewayEvent[]; error?: { code: string; message: string }; sessionKey: string }> {
     const { cycle, projectRoot } = input;
 
-    const selectedPlanIds = new Set(input.planIds ?? cycle.planIds);
-    const executions = cycle.executions ?? [];
-    const commitScoped = executions.length > 0;
-    const selectedExecutions = executions.filter((execution) => selectedPlanIds.has(execution.planId));
-    const selectedCommitShas = selectedExecutions.flatMap((execution) => execution.commitShas);
+    const selectedPlanIds = new Set(input.planIds ?? Object.keys(cycle.plans));
+    const selectedPlanStates = [...selectedPlanIds].map((planId) => ({
+      planId,
+      state: cycle.plans[planId],
+    }));
+    const selectedCommitShas = selectedPlanStates.flatMap((entry) => entry.state?.commitShas ?? []);
 
-    if (!commitScoped && input.planIds !== undefined) {
-      return {
-        events: [],
-        sessionKey: "",
-        error: {
-          code: "invalid_selection",
-          message: "Legacy cycles without execution metadata only support whole-cycle apply.",
-        },
-      };
-    }
-
-    if (commitScoped && executions.some((execution) => execution.dependencyAnalysisStatus === "failed")) {
+    if (Object.values(cycle.plans).some((state) => state.dependencyAnalysisStatus === "failed")) {
       return {
         events: [],
         sessionKey: "",
@@ -297,29 +341,39 @@ export class DiscoveryFire {
       };
     }
 
-    if (commitScoped && selectedExecutions.length !== selectedPlanIds.size) {
+    if (selectedPlanStates.some((entry) => !entry.state)) {
       return {
         events: [],
         sessionKey: "",
         error: {
-          code: "missing_execution_metadata",
-          message: "Selected plans do not all have execution commit metadata.",
+          code: "invalid_selection",
+          message: "Selected plans are not all present in this work cycle.",
         },
       };
     }
 
-    for (const execution of selectedExecutions) {
-      if (execution.status !== "completed") {
+    for (const { planId, state } of selectedPlanStates) {
+      if (!state || (state.status !== "completed" && state.status !== "completed_no_report")) {
         return {
           events: [],
           sessionKey: "",
           error: {
             code: "invalid_selection",
-            message: `Plan ${execution.planId} has no successful execution to apply.`,
+            message: `Plan ${planId} has no successful execution to apply.`,
           },
         };
       }
-      const missingDependencies = execution.dependsOnPlanIds.filter(
+      if (state.commitShas.length === 0) {
+        return {
+          events: [],
+          sessionKey: "",
+          error: {
+            code: "invalid_selection",
+            message: `Plan ${planId} has no commits to apply.`,
+          },
+        };
+      }
+      const missingDependencies = state.dependsOnPlanIds.filter(
         (dependencyId) => !selectedPlanIds.has(dependencyId),
       );
       if (missingDependencies.length > 0) {
@@ -328,26 +382,18 @@ export class DiscoveryFire {
           sessionKey: "",
           error: {
             code: "invalid_selection",
-            message: `Plan ${execution.planId} depends on unselected plan(s): ${missingDependencies.join(", ")}`,
+            message: `Plan ${planId} depends on unselected plan(s): ${missingDependencies.join(", ")}`,
           },
         };
       }
     }
 
-    const selectedPatch = commitScoped
-      ? await generatePatchForCommits(cycle.workspace.cwd, selectedCommitShas)
-      : "";
-    const diff = commitScoped
-      ? {
-          diff: selectedPatch,
-          fileCount: (selectedPatch.match(/^diff --git /gm) ?? []).length,
-          truncated: false,
-        }
-      : await generateWorkspaceDiff(
-          cycle.workspace.strategy,
-          cycle.workspace.cwd,
-          projectRoot,
-        );
+    const selectedPatch = await generatePatchForCommits(cycle.workspace.cwd, selectedCommitShas);
+    const diff = {
+      diff: selectedPatch,
+      fileCount: (selectedPatch.match(/^diff --git /gm) ?? []).length,
+      truncated: false,
+    };
 
     const sessionKey = DiscoveryFire.deriveApplySessionKey(this.deps.projectKey, input.runId);
     this.emitEvent(input.runId, "apply_started", { outcome: "executed" });
@@ -372,13 +418,11 @@ export class DiscoveryFire {
           },
           selectedPlanIds: [...selectedPlanIds],
           selectedCommitShas,
-          commitScoped,
+          commitScoped: true,
           projectName: input.projectName,
           projectRoot,
           diff,
-          branchName: commitScoped
-            ? undefined
-            : cycle.workspace.metadata?.branchName as string | undefined,
+          branchName: undefined,
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",
@@ -425,8 +469,13 @@ export class DiscoveryFire {
       };
     }
 
-    const existingExecution = await this.deps.cycleStore.findExecutionByPlanId(planId);
-    if (existingExecution) {
+    if (
+      planRecord.status === "completed" ||
+      planRecord.status === "completed_no_report" ||
+      planRecord.status === "applied" ||
+      planRecord.status === "archived" ||
+      planRecord.status === "executing"
+    ) {
       return {
         outcome: "failed",
         runId,
@@ -434,8 +483,8 @@ export class DiscoveryFire {
         finishedAt: startedAt.toISOString(),
         planId,
         error: {
-          code: "plan_already_executed",
-          message: `Plan ${planId} already has an execution record and cannot be rerun.`,
+          code: "plan_not_rerunnable",
+          message: `Plan ${planId} is ${planRecord.status} and cannot be rerun.`,
         },
       };
     }
@@ -469,6 +518,12 @@ export class DiscoveryFire {
       const code = error instanceof AlwaysOnError ? error.code : "workspace_prepare_failed";
       const message = error instanceof Error ? error.message : String(error);
       this.emitEvent(runId, "run_failed", { planId, error: { code, message }, outcome: "failed", telemetryPhase: "workspace" });
+      await this.disableAlwaysOnAfterFailure({
+        runId,
+        planId,
+        stage: "workspace",
+        error: { code, message },
+      });
       await this.deps.stateStore.markFireCompleted({ outcome: "failed", runId, planId, now: finishedAt });
       return { outcome: "failed", runId, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), planId, error: { code, message } };
     }
@@ -530,6 +585,11 @@ export class DiscoveryFire {
         });
         executionError = pickFirstError(events);
       }
+    } catch (error) {
+      executionError = {
+        code: error instanceof AlwaysOnError ? error.code : "execution_failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
     } finally {
       this.deps.runContexts.unregister(executionSessionKey);
       this.deps.sessionOverrides.delete(executionSessionKey);
@@ -546,6 +606,7 @@ export class DiscoveryFire {
         baseCommit: executionGitState.baseCommit,
         beforeHead: executionGitState.beforeHead,
         status: executionError ? "failed" : "completed",
+        error: executionError,
       });
       executionCommitShas = recorded.commitShas;
       if (recorded.error && !executionError) {
@@ -555,6 +616,12 @@ export class DiscoveryFire {
 
     if (executionError) {
       this.emitEvent(runId, "run_failed", { planId, error: { code: executionError.code ?? "execution_failed", message: executionError.message }, outcome: "failed", telemetryPhase: "execution" });
+      await this.disableAlwaysOnAfterFailure({
+        runId,
+        planId,
+        stage: "execution",
+        error: { code: executionError.code ?? "execution_failed", message: executionError.message },
+      });
       const finishedAt = this.deps.now();
       const reportFilePath = await this.writeFallbackReport({ runId, plan: planRecord, startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), reason: `execution_failed: ${executionError.message}`, workspaceStrategy: workspace.strategy, workspaceHandle: workspace.cwd });
       await this.deps.planStore.updateStatus(planId, { status: "failed", reportFilePath, workCycleId: workCycle.id });
@@ -740,6 +807,11 @@ export class DiscoveryFire {
         error: { code: discoveryError.code ?? "discovery_failed", message: discoveryError.message },
         outcome: "failed",
       });
+      await this.disableAlwaysOnAfterFailure({
+        runId,
+        stage: "discovery",
+        error: { code: discoveryError.code ?? "discovery_failed", message: discoveryError.message },
+      });
       await this.markFailedNoPlan(runId, finishedAt);
       return {
         outcome: "failed",
@@ -788,6 +860,12 @@ export class DiscoveryFire {
         error: { code, message },
         outcome: "failed",
         telemetryPhase: "workspace",
+      });
+      await this.disableAlwaysOnAfterFailure({
+        runId,
+        planId: planRecord.id,
+        stage: "workspace",
+        error: { code, message },
       });
       await this.deps.stateStore.markFireCompleted({
         outcome: "failed",
@@ -867,6 +945,11 @@ export class DiscoveryFire {
         });
         executionError = pickFirstError(events);
       }
+    } catch (error) {
+      executionError = {
+        code: error instanceof AlwaysOnError ? error.code : "execution_failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
     } finally {
       this.deps.runContexts.unregister(executionSessionKey);
       this.deps.sessionOverrides.delete(executionSessionKey);
@@ -885,6 +968,7 @@ export class DiscoveryFire {
         baseCommit: executionGitState.baseCommit,
         beforeHead: executionGitState.beforeHead,
         status: executionError ? "failed" : "completed",
+        error: executionError,
       });
       executionCommitShas = recorded.commitShas;
       if (recorded.error && !executionError) {
@@ -898,6 +982,12 @@ export class DiscoveryFire {
         error: { code: executionError.code ?? "execution_failed", message: executionError.message },
         outcome: "failed",
         telemetryPhase: "execution",
+      });
+      await this.disableAlwaysOnAfterFailure({
+        runId,
+        planId: planRecord.id,
+        stage: "execution",
+        error: { code: executionError.code ?? "execution_failed", message: executionError.message },
       });
       const finishedAt = this.deps.now();
       const reportFilePath = await this.writeFallbackReport({
@@ -1179,9 +1269,9 @@ export class DiscoveryFire {
     }
     const beforeHead = await getHeadCommit(workspace.cwd);
     const baseCommit =
+      cycle.baseCommit ||
       workspace.metadata.baseCommit ||
       cycle.workspace.metadata?.baseCommit ||
-      cycle.executions?.[0]?.baseCommit ||
       beforeHead;
     return { baseCommit, beforeHead };
   }
@@ -1195,6 +1285,7 @@ export class DiscoveryFire {
     baseCommit: string;
     beforeHead: string;
     status: "completed" | "failed";
+    error?: { code?: string; message: string };
   }): Promise<{ commitShas: string[]; error?: { code?: string; message: string } }> {
     try {
       await commitDirtyWorkspace(
@@ -1218,24 +1309,28 @@ export class DiscoveryFire {
         input.beforeHead,
         afterHead,
       );
-      const previousExecutions = input.cycle.executions ?? [];
+      const candidatePlans = Object.entries(input.cycle.plans)
+        .filter(([planId, state]) => (
+          planId !== input.planId &&
+          state.status !== "applied" &&
+          state.status !== "archived" &&
+          state.commitShas.length > 0
+        ))
+        .map(([planId, state]) => ({ planId, commitShas: state.commitShas }));
       let dependencyAnalysis: Pick<
-        WorkCycleExecutionRecord,
+        CyclePlanState,
         "dependsOnPlanIds" | "dependencyReasons" | "dependencyAnalysisStatus"
       >;
       try {
         dependencyAnalysis = await analyzeExecutionDependencies({
           workspaceCwd: input.workspace.cwd,
           baseCommit: input.baseCommit,
-          previousExecutions: previousExecutions.map((entry) => ({
-            planId: entry.planId,
-            commitShas: entry.commitShas,
-          })),
+          previousExecutions: candidatePlans,
           currentCommitShas: commitShas,
         });
       } catch (error) {
         dependencyAnalysis = {
-          dependsOnPlanIds: previousExecutions.map((entry) => entry.planId),
+          dependsOnPlanIds: candidatePlans.map((entry) => entry.planId),
           dependencyReasons: [
             `Dependency analysis failed: ${error instanceof Error ? error.message : String(error)}`,
           ],
@@ -1243,29 +1338,57 @@ export class DiscoveryFire {
         };
       }
 
-      const execution: WorkCycleExecutionRecord = {
-        executionId: input.runId,
+      await this.deps.cycleStore.recordPlanRun(input.cycle.id, {
         runId: input.runId,
         planId: input.planId,
         status: input.status,
         startedAt: input.startedAt.toISOString(),
         finishedAt: this.deps.now().toISOString(),
-        baseCommit: input.baseCommit,
         beforeHead: input.beforeHead,
         afterHead,
         commitShas,
+        error: input.error
+          ? { code: input.error.code ?? "execution_failed", message: input.error.message }
+          : undefined,
         ...dependencyAnalysis,
-      };
-      await this.deps.cycleStore.recordExecution(input.cycle.id, execution);
-      input.cycle.executions = [...previousExecutions, execution];
+      });
+      const updatedCycle = await this.deps.cycleStore.getRecord(input.cycle.id);
+      if (updatedCycle) {
+        input.cycle.plans = updatedCycle.plans;
+      }
       return { commitShas };
     } catch (error) {
+      const fallbackError = {
+        code: error instanceof AlwaysOnError ? error.code : "execution_commit_failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
+      try {
+        const afterHead = await getHeadCommit(input.workspace.cwd).catch(() => input.beforeHead);
+        const commitShas = await listCommitsBetween(
+          input.workspace.cwd,
+          input.beforeHead,
+          afterHead,
+        ).catch(() => []);
+        await this.deps.cycleStore.recordPlanRun(input.cycle.id, {
+          planId: input.planId,
+          runId: input.runId,
+          status: "failed",
+          startedAt: input.startedAt.toISOString(),
+          finishedAt: this.deps.now().toISOString(),
+          beforeHead: input.beforeHead,
+          afterHead,
+          commitShas,
+          dependsOnPlanIds: [],
+          dependencyReasons: [fallbackError.message],
+          dependencyAnalysisStatus: "failed",
+          error: fallbackError,
+        });
+      } catch {
+        // Best effort: the caller still receives the commit failure.
+      }
       return {
         commitShas: [],
-        error: {
-          code: error instanceof AlwaysOnError ? error.code : "execution_commit_failed",
-          message: error instanceof Error ? error.message : String(error),
-        },
+        error: fallbackError,
       };
     }
   }

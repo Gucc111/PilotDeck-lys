@@ -21,6 +21,10 @@ import {
   applyWorktreeToProject,
   disposeWorkspace as disposeWorkspaceImpl,
 } from '../../src/always-on/workspace/WorkspaceApply.js';
+import {
+  getStatusPorcelain,
+  revertCommits,
+} from '../../src/always-on/workspace/WorkspaceGit.js';
 import { resolveAlwaysOnPaths } from '../../src/always-on/storage/AlwaysOnPaths.js';
 import { DiscoveryPlanStore } from '../../src/always-on/storage/json/DiscoveryPlanStore.js';
 import { WorkCycleStore } from '../../src/always-on/storage/json/WorkCycleStore.js';
@@ -49,6 +53,8 @@ function getService() {
     activity: { isSessionActive: isClaudeSDKSessionActive },
     workspace: {
       applyWorktreeChanges: applyWorktreeToProject,
+      getWorkspaceStatus: getStatusPorcelain,
+      revertCommits,
       disposeWorkspace: disposeWorkspaceImpl,
     },
     state: {

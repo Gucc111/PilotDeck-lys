@@ -56,25 +56,32 @@ export type WebCycleRecord = {
   id: string;
   projectKey: string;
   status: string;
+  baseCommit?: string;
   workspace: {
     strategy: string;
     cwd: string;
   };
   planIds: string[];
-  executions?: Array<{
-    executionId: string;
-    runId: string;
-    planId: string;
+  plans?: Record<string, {
     status: string;
-    startedAt: string;
-    finishedAt: string;
-    baseCommit: string;
-    beforeHead: string;
-    afterHead: string;
     commitShas: string[];
+    beforeHead?: string;
+    afterHead?: string;
     dependsOnPlanIds: string[];
     dependencyReasons: string[];
     dependencyAnalysisStatus: string;
+    lastRunId?: string;
+    updatedAt: string;
+    attempts?: Array<{
+      runId: string;
+      status: string;
+      startedAt: string;
+      finishedAt: string;
+      beforeHead: string;
+      afterHead: string;
+      commitShas: string[];
+      error?: { code: string; message: string };
+    }>;
   }>;
   createdAt: string;
   appliedAt?: string;

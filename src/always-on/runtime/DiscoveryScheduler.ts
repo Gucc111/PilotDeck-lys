@@ -5,6 +5,7 @@ import type { GateBlockReason } from "../protocol/types.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
 import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
 import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
+import { AlwaysOnEventStore } from "../storage/log/AlwaysOnEventStore.js";
 import type { ChannelLeaseRegistry } from "./ChannelLeaseRegistry.js";
 import {
   acquireDiscoveryLock,
@@ -31,6 +32,13 @@ export type DiscoverySchedulerDependencies = {
   now: () => Date;
   logger: DiscoverySchedulerLogger;
   isSessionInFlight: () => boolean;
+  eventStore?: AlwaysOnEventStore;
+  disableAlwaysOnProject?: (input: {
+    projectKey: string;
+    stage: "internal";
+    runId: string;
+    error: { code: string; message: string };
+  }) => Promise<void>;
 };
 
 export class DiscoveryScheduler {
@@ -120,7 +128,8 @@ export class DiscoveryScheduler {
       if (
         activeCycle &&
         activeCycle.status === "active" &&
-        activeCycle.planIds.length >= this.deps.config.workspace.maxPlansPerCycle
+        Object.values(activeCycle.plans).filter((plan) => plan.status !== "applied" && plan.status !== "archived").length >=
+          this.deps.config.workspace.maxPlansPerCycle
       ) {
         this.deps.logger.info("always-on gate blocked", { reason: "cycle_full" });
         return { outcome: "blocked", reason: "cycle_full" as GateBlockReason };
@@ -159,13 +168,41 @@ export class DiscoveryScheduler {
         error: error instanceof Error ? error.message : String(error),
       });
       const code = error instanceof AlwaysOnError ? error.code : "internal";
+      const message = error instanceof Error ? error.message : String(error);
+      await this.disableAfterCrash(runId, { code, message });
       throw new AlwaysOnError(
         code === "internal" ? "internal" : code,
-        error instanceof Error ? error.message : String(error),
+        message,
       );
     } finally {
       await releaseDiscoveryLock(this.deps.paths);
     }
+  }
+
+  private async disableAfterCrash(runId: string, error: { code: string; message: string }): Promise<void> {
+    const message = "Always-On 已因失败自动关闭，请手动重新开启。";
+    try {
+      await this.deps.disableAlwaysOnProject?.({
+        projectKey: this.deps.projectKey,
+        stage: "internal",
+        runId,
+        error,
+      });
+    } catch {
+      // Best effort; still emit the user-facing event below.
+    }
+    await this.deps.eventStore?.appendEvent({
+      schemaVersion: 1,
+      eventId: this.deps.uuid(),
+      runId,
+      projectKey: this.deps.projectKey,
+      phase: "always_on_disabled",
+      timestamp: this.deps.now().toISOString(),
+      outcome: "failed",
+      error,
+      message,
+      disabledReason: { stage: "internal", code: error.code, message },
+    }).catch(() => undefined);
   }
 
   private ensureDormancyWatcher(): void {

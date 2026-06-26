@@ -140,6 +140,37 @@ export async function generatePatchForCommits(
   return patches.join("\n");
 }
 
+export async function revertCommits(
+  cwd: string,
+  commitShas: string[],
+  gitBin = "git",
+): Promise<{ reverted: boolean; error?: string }> {
+  const ordered = [...commitShas].reverse().filter(Boolean);
+  if (ordered.length === 0) return { reverted: true };
+
+  const status = await getStatusPorcelain(cwd, gitBin);
+  if (status) {
+    return { reverted: false, error: "Workspace has uncommitted changes." };
+  }
+
+  for (const sha of ordered) {
+    const result = await runGit(
+      cwd,
+      [...ALWAYS_ON_GIT_IDENTITY, "revert", "--no-edit", sha],
+      { gitBin },
+    );
+    if (result.exitCode !== 0) {
+      await runGit(cwd, ["revert", "--abort"], { gitBin }).catch(() => undefined);
+      return {
+        reverted: false,
+        error: `git revert ${sha} failed: ${result.stderr || result.stdout}`,
+      };
+    }
+  }
+
+  return { reverted: true };
+}
+
 export async function analyzeExecutionDependencies(input: {
   workspaceCwd: string;
   baseCommit: string;
