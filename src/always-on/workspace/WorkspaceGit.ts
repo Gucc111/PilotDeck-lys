@@ -140,6 +140,63 @@ export async function generatePatchForCommits(
   return patches.join("\n");
 }
 
+export type ChangedFileEntry = {
+  status: "A" | "M" | "D" | "R" | string;
+  path: string;
+  oldPath?: string;
+};
+
+const MAX_CUMULATIVE_DIFF_CHARS = 80_000;
+
+export async function generateCumulativeDiff(
+  cwd: string,
+  baseCommit: string,
+  gitBin = "git",
+): Promise<{ diff: string; fileCount: number; truncated: boolean }> {
+  const result = await runGit(
+    cwd,
+    ["diff", baseCommit, "HEAD", "--binary", "--find-renames"],
+    { gitBin },
+  );
+  expectGitOk(result, "git diff (cumulative)");
+  const fullDiff = result.stdout;
+  const fileCount = (fullDiff.match(/^diff --git /gm) ?? []).length;
+  if (fullDiff.length > MAX_CUMULATIVE_DIFF_CHARS) {
+    return {
+      diff: fullDiff.slice(0, MAX_CUMULATIVE_DIFF_CHARS),
+      fileCount,
+      truncated: true,
+    };
+  }
+  return { diff: fullDiff, fileCount, truncated: false };
+}
+
+export async function generateChangedFileList(
+  cwd: string,
+  baseCommit: string,
+  gitBin = "git",
+): Promise<ChangedFileEntry[]> {
+  const result = await runGit(
+    cwd,
+    ["diff", "--name-status", baseCommit, "HEAD"],
+    { gitBin },
+  );
+  expectGitOk(result, "git diff --name-status");
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      const statusCode = parts[0][0];
+      if (statusCode === "R") {
+        return { status: "R", path: parts[2] ?? parts[1], oldPath: parts[1] };
+      }
+      return { status: statusCode, path: parts[1] ?? "" };
+    })
+    .filter((entry) => entry.path.length > 0);
+}
+
 export async function revertCommits(
   cwd: string,
   commitShas: string[],

@@ -27,11 +27,14 @@ import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRe
 import {
   analyzeExecutionDependencies,
   commitDirtyWorkspace,
+  generateCumulativeDiff,
+  generateChangedFileList,
   generatePatchForCommits,
   getHeadCommit,
   getStatusPorcelain,
   isGitRepository,
   listCommitsBetween,
+  revertCommits,
 } from "../workspace/WorkspaceGit.js";
 import type { AlwaysOnRunContextRegistry, ExecutionRunContext, DiscoveryRunContext, WorkspaceRunContext, ReportRunContext } from "./AlwaysOnRunContextRegistry.js";
 import { buildDiscoveryPrompt, buildExecutionPrompt, buildWorkspacePrompt, buildReportPrompt, buildApplyPrompt } from "./discoveryPrompts.js";
@@ -388,12 +391,56 @@ export class DiscoveryFire {
       }
     }
 
-    const selectedPatch = await generatePatchForCommits(cycle.workspace.cwd, selectedCommitShas);
+    // Archive unselected plans so the worktree HEAD reflects only
+    // the selected plans' cumulative effect.
+    const unselectedPlanIds = Object.keys(cycle.plans)
+      .filter((id) => !selectedPlanIds.has(id))
+      .filter((id) => {
+        const s = cycle.plans[id];
+        return s && s.status !== "applied" && s.status !== "archived";
+      });
+
+    if (unselectedPlanIds.length > 0) {
+      const unselectedCommits = unselectedPlanIds.flatMap(
+        (id) => cycle.plans[id]?.commitShas ?? [],
+      );
+      if (unselectedCommits.length > 0) {
+        const reverted = await revertCommits(cycle.workspace.cwd, unselectedCommits);
+        if (!reverted.reverted) {
+          return {
+            events: [],
+            sessionKey: "",
+            error: {
+              code: "archive_revert_failed",
+              message: reverted.error ?? "Failed to revert unselected plan commits before apply",
+            },
+          };
+        }
+      }
+      for (const planId of unselectedPlanIds) {
+        await this.deps.cycleStore.updatePlanStatus(cycle.id, planId, "archived");
+        await this.deps.planStore.updateStatus(planId, { status: "archived" });
+      }
+    }
+
+    const isProjectGit = await isGitRepository(projectRoot);
+    const cumulativeDiffResult = await generateCumulativeDiff(
+      cycle.workspace.cwd,
+      cycle.baseCommit,
+    );
     const diff = {
-      diff: selectedPatch,
-      fileCount: (selectedPatch.match(/^diff --git /gm) ?? []).length,
-      truncated: false,
+      diff: cumulativeDiffResult.diff,
+      fileCount: cumulativeDiffResult.fileCount,
+      truncated: cumulativeDiffResult.truncated,
     };
+
+    let changedFiles: Array<{ status: string; path: string; oldPath?: string }> | undefined;
+    if (!isProjectGit) {
+      changedFiles = await generateChangedFileList(
+        cycle.workspace.cwd,
+        cycle.baseCommit,
+      );
+    }
 
     const sessionKey = DiscoveryFire.deriveApplySessionKey(this.deps.projectKey, input.runId);
     this.emitEvent(input.runId, "apply_started", { outcome: "executed" });
@@ -416,12 +463,11 @@ export class DiscoveryFire {
             title: input.plans.map((p) => p.title).join("; "),
             workspace: { cwd: cycle.workspace.cwd, strategy: cycle.workspace.strategy },
           },
-          selectedPlanIds: [...selectedPlanIds],
-          selectedCommitShas,
-          commitScoped: true,
           projectName: input.projectName,
           projectRoot,
           diff,
+          isProjectGit,
+          changedFiles,
           branchName: undefined,
           language: this.deps.config.language,
         }),

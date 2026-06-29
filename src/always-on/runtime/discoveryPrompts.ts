@@ -291,6 +291,8 @@ export type BuildApplyPromptInput = {
   selectedPlanIds?: string[];
   selectedCommitShas?: string[];
   commitScoped?: boolean;
+  isProjectGit?: boolean;
+  changedFiles?: Array<{ status: string; path: string; oldPath?: string }>;
   projectName: string;
   projectRoot: string;
   diff: WorkspaceDiff;
@@ -333,34 +335,83 @@ export function buildApplyPrompt(input: BuildApplyPromptInput): string {
     );
   }
 
-  lines.push(
-    "",
-    "## Merge approach",
-    "",
-    ...(input.commitScoped
-      ? [
-          "Apply only the selected execution patch included below.",
-          "Do not merge the isolated workspace branch or inspect/apply changes belonging to unselected plans.",
-          "",
-        ]
-      : []),
-    "Choose the best merge strategy based on the situation. You have full access to git and shell tools.",
-    ...(input.commitScoped
-      ? [
-          "Use the supplied patch as the source of truth. Apply it with git or reproduce it through precise file edits.",
-        ]
-      : [
-          "Common approaches (pick whichever fits):",
-          "  - `git merge` / `git merge --no-ff` if the workspace is on a named branch",
-          "  - `git cherry-pick` for individual commits",
-          "  - `git diff` + `git apply` for patch-based application",
-          "  - Direct file edits via Edit/Write tools for surgical changes",
-        ]),
-    "",
-    "If you encounter conflicts, resolve them intelligently — do not blindly overwrite.",
-    "If you cannot resolve a conflict, leave standard conflict markers (<<<< / ==== / >>>>).",
-    "",
-  );
+  lines.push("", "## Merge approach", "");
+
+  if (input.isProjectGit !== undefined) {
+    if (input.isProjectGit) {
+      lines.push(
+        "Below is the cumulative diff from the isolated workspace relative to the baseCommit.",
+        "The diff context lines are based on baseCommit, which matches your workspace's current state.",
+        "",
+        "Recommended approach:",
+        "1. Save the diff below to a temporary file",
+        "2. Run `git apply <patch-file>` in the project root directory",
+        "3. Do NOT commit — only modify the working tree, let the user decide whether to commit",
+        "",
+        "Notes:",
+        "- Use `git apply` (without --3way) — it only modifies working tree files, no commits",
+        "- If apply fails, use Edit/Write tools to manually edit the corresponding files based on the diff",
+        "- Do NOT use git merge / git cherry-pick / git am or any other command that produces commits",
+        "",
+      );
+    } else {
+      lines.push(
+        "Below is the changed file list and diff from the isolated workspace relative to its initial state.",
+        "",
+        "Recommended approach:",
+        "1. For added/modified files: read the file content from the isolated workspace",
+        `   (${plan.workspace?.cwd ?? "workspace"}), then write it to the corresponding path under project root (${projectRoot})`,
+        "2. For deleted files: delete the corresponding file in the project root directory",
+        "3. Use the Read tool to read files from the isolated workspace, and the Write tool to write to the project root",
+        "",
+        `Do NOT use any git commands on the project root directory (it is not a git repository).`,
+        "",
+      );
+
+      if (input.changedFiles?.length) {
+        lines.push("Changed files:");
+        for (const f of input.changedFiles) {
+          if (f.status === "R") {
+            lines.push(`  - [Renamed] ${f.oldPath} → ${f.path}`);
+          } else if (f.status === "A") {
+            lines.push(`  - [Added] ${f.path}`);
+          } else if (f.status === "D") {
+            lines.push(`  - [Deleted] ${f.path}`);
+          } else {
+            lines.push(`  - [Modified] ${f.path}`);
+          }
+        }
+        lines.push("");
+      }
+    }
+  } else if (input.commitScoped) {
+    lines.push(
+      "Apply only the selected execution patch included below.",
+      "Do not merge the isolated workspace branch or inspect/apply changes belonging to unselected plans.",
+      "",
+      "Choose the best merge strategy based on the situation. You have full access to git and shell tools.",
+      "Use the supplied patch as the source of truth. Apply it with git or reproduce it through precise file edits.",
+      "",
+    );
+  } else {
+    lines.push(
+      "Choose the best merge strategy based on the situation. You have full access to git and shell tools.",
+      "Common approaches (pick whichever fits):",
+      "  - `git merge` / `git merge --no-ff` if the workspace is on a named branch",
+      "  - `git cherry-pick` for individual commits",
+      "  - `git diff` + `git apply` for patch-based application",
+      "  - Direct file edits via Edit/Write tools for surgical changes",
+      "",
+    );
+  }
+
+  if (input.isProjectGit === undefined) {
+    lines.push(
+      "If you encounter conflicts, resolve them intelligently — do not blindly overwrite.",
+      "If you cannot resolve a conflict, leave standard conflict markers (<<<< / ==== / >>>>).",
+      "",
+    );
+  }
 
   if (!diff.diff.trim()) {
     lines.push("No differences detected in the workspace. Nothing to apply.");
