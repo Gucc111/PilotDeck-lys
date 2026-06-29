@@ -355,14 +355,19 @@ export function buildApplyPrompt(input: BuildApplyPromptInput): string {
         "",
       );
     } else {
+      const wsCwd = plan.workspace?.cwd ?? "workspace";
       lines.push(
         "Below is the changed file list and diff from the isolated workspace relative to its initial state.",
         "",
         "Recommended approach:",
-        "1. For added/modified files: read the file content from the isolated workspace",
-        `   (${plan.workspace?.cwd ?? "workspace"}), then write it to the corresponding path under project root (${projectRoot})`,
-        "2. For deleted files: delete the corresponding file in the project root directory",
-        "3. Use the Read tool to read files from the isolated workspace, and the Write tool to write to the project root",
+        "1. For added/modified files, copy them from the isolated workspace to the project root:",
+        `   mkdir -p <parent-dir> && cp ${wsCwd}/<path> ${projectRoot}/<path>`,
+        "2. For renamed files: copy to the new path and remove the old path",
+        "3. For deleted files: rm <projectRoot>/<path>",
+        "4. You may batch multiple copy commands into a single shell call",
+        "",
+        "If you need to inspect or fine-tune a file's content before writing, use the Read tool to",
+        "view the workspace file, then the Write/Edit tool to produce the adjusted version.",
         "",
         `Do NOT use any git commands on the project root directory (it is not a git repository).`,
         "",

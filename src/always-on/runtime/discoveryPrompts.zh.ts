@@ -276,14 +276,19 @@ export function buildApplyPromptZh(input: BuildApplyPromptInput): string {
         "",
       );
     } else {
+      const wsCwd = plan.workspace?.cwd ?? "workspace";
       lines.push(
         "以下是隔离工作区相对于初始状态的变更文件清单和 diff。",
         "",
         "推荐方式：",
-        `1. 对于新增/修改的文件：从隔离工作区 (${plan.workspace?.cwd ?? "workspace"}) 读取文件内容，`,
-        `   写入项目根目录 (${projectRoot}) 的对应路径`,
-        "2. 对于删除的文件：在项目根目录中删除对应文件",
-        "3. 使用 Read 工具读取隔离工作区中的文件，使用 Write 工具写入项目根目录",
+        "1. 对于新增/修改的文件，从隔离工作区复制到项目根目录：",
+        `   mkdir -p <父目录> && cp ${wsCwd}/<path> ${projectRoot}/<path>`,
+        "2. 对于重命名的文件：复制到新路径并删除旧路径",
+        "3. 对于删除的文件：rm <projectRoot>/<path>",
+        "4. 可以将多条复制命令合并到一个 shell 调用中批量执行",
+        "",
+        "如果需要检查或微调某个文件的内容后再写入，可使用 Read 工具查看隔离工作区中的文件，",
+        "再用 Write/Edit 工具生成调整后的版本。",
         "",
         "不要使用任何 git 命令操作项目根目录（它不是 git 仓库）。",
         "",

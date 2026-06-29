@@ -202,7 +202,9 @@ describe("runApplyPhase", () => {
       const prompt = getPrompt();
 
       assert.match(prompt, /not a git repository/i, "should mention not a git repository");
-      assert.match(prompt, /Read .* Write/i, "should suggest Read/Write tools");
+      assert.match(prompt, /\bcp\b/, "should suggest cp command");
+      assert.match(prompt, /\bmkdir -p\b/, "should suggest mkdir -p");
+      assert.match(prompt, /\brm\b/, "should suggest rm command");
       assert.doesNotMatch(prompt, /git apply/, "should NOT suggest git apply");
       assert.doesNotMatch(prompt, /git merge/, "should NOT suggest git merge");
       assert.doesNotMatch(prompt, /git cherry-pick/, "should NOT suggest cherry-pick");
