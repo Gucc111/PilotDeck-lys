@@ -90,7 +90,6 @@ export {
   AlwaysOnRunContextRegistry,
   type AlwaysOnRunContext,
   type DiscoveryRunContext,
-  type WorkspaceRunContext,
   type ExecutionRunContext,
   type ReportRunContext,
 } from "./runtime/AlwaysOnRunContextRegistry.js";
@@ -102,12 +101,9 @@ export {
 export {
   DiscoveryFire,
   acquireDiscoveryLock,
-  ensureActiveWorkCycle,
   releaseDiscoveryLock,
   type DiscoveryFireDependencies,
   type DiscoveryFireRunInput,
-  type EnsureActiveWorkCycleInput,
-  type EnsureActiveWorkCycleResult,
 } from "./runtime/DiscoveryFire.js";
 export {
   DiscoveryScheduler,
@@ -128,10 +124,8 @@ export {
 export {
   buildDiscoveryPrompt,
   buildExecutionPrompt,
-  buildWorkspacePrompt,
   buildReportPrompt,
   type BuildDiscoveryPromptInput,
-  type BuildWorkspacePromptInput,
   type BuildExecutionPromptInput,
   type BuildReportPromptInput,
 } from "./runtime/discoveryPrompts.js";
@@ -149,13 +143,6 @@ export {
   type AlwaysOnReportOutput,
   type CreateAlwaysOnReportToolOptions,
 } from "./tool/AlwaysOnReportTool.js";
-export {
-  createAlwaysOnWorkspaceTool,
-  ALWAYS_ON_WORKSPACE_TOOL_NAME,
-  type AlwaysOnWorkspaceInput,
-  type AlwaysOnWorkspaceOutput,
-  type CreateAlwaysOnWorkspaceToolOptions,
-} from "./tool/AlwaysOnWorkspaceTool.js";
 export { createApplyHandler, type CreateApplyHandlerDeps } from "./runtime/createApplyHandler.js";
 export type { WorkspaceProvider, WorkspaceProviderId, WorkspacePrepareInput, WorkspacePublishOutput } from "./workspace/WorkspaceProvider.js";
 

@@ -35,8 +35,8 @@ import {
   listCommitsBetween,
   revertCommits,
 } from "../workspace/WorkspaceGit.js";
-import type { AlwaysOnRunContextRegistry, ExecutionRunContext, DiscoveryRunContext, WorkspaceRunContext, ReportRunContext } from "./AlwaysOnRunContextRegistry.js";
-import { buildDiscoveryPrompt, buildExecutionPrompt, buildWorkspacePrompt, buildReportPrompt, buildApplyPrompt } from "./discoveryPrompts.js";
+import type { AlwaysOnRunContextRegistry, ExecutionRunContext, DiscoveryRunContext, ReportRunContext } from "./AlwaysOnRunContextRegistry.js";
+import { buildDiscoveryPrompt, buildExecutionPrompt, buildReportPrompt, buildApplyPrompt } from "./discoveryPrompts.js";
 import {
   UNATTENDED_SESSION_EXCLUDED_TOOLS,
   type SessionConfigOverrides,
@@ -86,7 +86,6 @@ export type DiscoveryFireRunInput = {
 };
 
 const DISCOVERY_CHANNEL: GatewayChannelKey = "always-on/discovery";
-const WORKSPACE_CHANNEL: GatewayChannelKey = "always-on/workspace";
 const EXECUTION_CHANNEL: GatewayChannelKey = "always-on/execute";
 const REPORT_CHANNEL: GatewayChannelKey = "always-on/report";
 const APPLY_CHANNEL: GatewayChannelKey = "always-on/apply";
@@ -111,82 +110,6 @@ function toTelemetryAlwaysOnPhase(phase: AlwaysOnEventPhase): "discovery" | "wor
   return "discovery";
 }
 
-export type EnsureActiveWorkCycleInput = {
-  state: AlwaysOnDiscoveryState;
-  projectKey: string;
-  runId: string;
-  planTitle: string;
-  cycleId: string;
-  workspaceRegistry: WorkspaceProviderRegistry;
-  stateStore: DiscoveryStateStore;
-  cycleStore: WorkCycleStore;
-  now: () => Date;
-  fileExists?: (path: string) => boolean;
-};
-
-export type EnsureActiveWorkCycleResult = {
-  handle: WorkspaceHandle;
-  cycle: WorkCycleRecord;
-  reused: boolean;
-};
-
-/**
- * Look up the project's active work cycle. If a cycle exists with its
- * workspace still on disk, reuse it. Otherwise prepare a new workspace and
- * create a new cycle. Always-On runs at most one active cycle (and one
- * workspace) per project; this function is the single source of truth.
- */
-export async function ensureActiveWorkCycle(
-  input: EnsureActiveWorkCycleInput,
-): Promise<EnsureActiveWorkCycleResult> {
-  const fileExists = input.fileExists ?? existsSync;
-
-  if (input.state.activeWorkCycleId) {
-    const existing = await input.cycleStore.getRecord(input.state.activeWorkCycleId);
-    if (existing && existing.status === "active" && fileExists(existing.workspace.cwd)) {
-      return {
-        handle: {
-          runId: existing.createdByRunId,
-          projectKey: input.projectKey,
-          strategy: existing.workspace.strategy,
-          cwd: existing.workspace.cwd,
-          metadata: { ...existing.workspace.metadata },
-        },
-        cycle: existing,
-        reused: true,
-      };
-    }
-  }
-
-  // Legacy migration: state still has currentWorkspace but no activeWorkCycleId
-  if (input.state.currentWorkspace && fileExists(input.state.currentWorkspace.cwd)) {
-    const ref = input.state.currentWorkspace;
-    const handle: WorkspaceHandle = {
-      runId: ref.runId,
-      projectKey: input.projectKey,
-      strategy: ref.strategy,
-      cwd: ref.cwd,
-      metadata: { ...ref.metadata },
-    };
-    const cycle = await input.cycleStore.create(handle, ref.runId, input.cycleId, input.now());
-    await input.stateStore.setActiveWorkCycleId(cycle.id, input.now());
-    return { handle, cycle, reused: true };
-  }
-
-  const prepared = await input.workspaceRegistry.prepare({
-    projectRoot: input.projectKey,
-    runId: input.runId,
-    planTitle: input.planTitle,
-  });
-  const cycle = await input.cycleStore.create(
-    prepared.handle,
-    input.runId,
-    input.cycleId,
-    input.now(),
-  );
-  await input.stateStore.setActiveWorkCycleId(cycle.id, input.now());
-  return { handle: prepared.handle, cycle, reused: false };
-}
 
 export class DiscoveryFire {
   constructor(private readonly deps: DiscoveryFireDependencies) {}
@@ -297,10 +220,6 @@ export class DiscoveryFire {
 
   static deriveDiscoverySessionKey(projectKey: string, runId: string): string {
     return `always-on/discovery:project=${projectKey}:run=${runId}`;
-  }
-
-  static deriveWorkspaceSessionKey(projectKey: string, runId: string): string {
-    return `always-on/workspace:project=${projectKey}:run=${runId}`;
   }
 
   static deriveExecutionSessionKey(projectKey: string, runId: string): string {
@@ -1177,7 +1096,6 @@ export class DiscoveryFire {
   }): Promise<{ handle: WorkspaceHandle; cycle: WorkCycleRecord }> {
     const { runId, state, planTitle } = input;
 
-    // ── Deterministic reuse check ──
     if (state.activeWorkCycleId) {
       const activeCycle = await this.deps.cycleStore.getRecord(state.activeWorkCycleId);
       if (activeCycle && activeCycle.status === "active" && existsSync(activeCycle.workspace.cwd)) {
@@ -1194,75 +1112,17 @@ export class DiscoveryFire {
       }
     }
 
-    // ── No reusable workspace — start agent loop to create one ──
-    const workspaceSessionKey = DiscoveryFire.deriveWorkspaceSessionKey(this.deps.projectKey, runId);
-
-    const workspaceCtx: WorkspaceRunContext = {
-      kind: "workspace",
-      sessionKey: workspaceSessionKey,
+    const { handle } = await this.deps.workspaceRegistry.prepare({
+      projectRoot: this.deps.projectKey,
       runId,
       planTitle,
-      projectKey: this.deps.projectKey,
-      paths: this.deps.paths,
-      workspaceRegistry: this.deps.workspaceRegistry,
-      stateStore: this.deps.stateStore,
-      cycleStore: this.deps.cycleStore,
-      now: this.deps.now,
-    };
-    this.deps.runContexts.register(workspaceCtx);
-    this.deps.sessionOverrides.set(workspaceSessionKey, {
-      cwd: this.deps.projectKey,
-      permissionMode: "bypassPermissions",
-      bypassAvailable: true,
-      canPrompt: false,
-      excludeTools: [...UNATTENDED_SESSION_EXCLUDED_TOOLS],
     });
-
-    try {
-      await this.drainTurn({
-        sessionKey: workspaceSessionKey,
-        channelKey: WORKSPACE_CHANNEL,
-        runId: `${runId}.workspace`,
-        message: buildWorkspacePrompt({
-          projectRoot: this.deps.projectKey,
-          runId,
-          planTitle,
-          language: this.deps.config.language,
-        }),
-        mode: "bypassPermissions",
-      });
-    } finally {
-      this.deps.runContexts.unregister(workspaceSessionKey);
-      this.deps.sessionOverrides.delete(workspaceSessionKey);
-      await this.deps.gateway
-        .closeSession({ sessionKey: workspaceSessionKey, reason: "always-on/done" })
-        .catch(() => undefined);
-    }
 
     const cycleId = this.deps.uuid();
-    if (workspaceCtx.handle) {
-      const cycle = await this.deps.cycleStore.create(
-        workspaceCtx.handle,
-        runId,
-        cycleId,
-        this.deps.now(),
-      );
-      await this.deps.stateStore.setActiveWorkCycleId(cycle.id, this.deps.now());
-      return { handle: workspaceCtx.handle, cycle };
-    }
+    const cycle = await this.deps.cycleStore.create(handle, runId, cycleId, this.deps.now());
+    await this.deps.stateStore.setActiveWorkCycleId(cycle.id, this.deps.now());
 
-    const ensured = await ensureActiveWorkCycle({
-      state,
-      projectKey: this.deps.projectKey,
-      runId,
-      planTitle,
-      cycleId,
-      workspaceRegistry: this.deps.workspaceRegistry,
-      stateStore: this.deps.stateStore,
-      cycleStore: this.deps.cycleStore,
-      now: this.deps.now,
-    });
-    return { handle: ensured.handle, cycle: ensured.cycle };
+    return { handle, cycle };
   }
 
   private assertWorkspaceCwdSafe(workspace: WorkspaceHandle): void {

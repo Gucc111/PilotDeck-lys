@@ -2,11 +2,9 @@ import type { DiscoveryPlanRecord } from "../protocol/types.js";
 import type { ChatDigest } from "../context/ChatDigestBuilder.js";
 import { ALWAYS_ON_PLAN_TOOL_NAME } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { ALWAYS_ON_REPORT_TOOL_NAME } from "../tool/AlwaysOnReportTool.js";
-import { ALWAYS_ON_WORKSPACE_TOOL_NAME } from "../tool/AlwaysOnWorkspaceTool.js";
 import { ALWAYS_ON_CHAT_HISTORY_TOOL_NAME } from "../tool/AlwaysOnChatHistoryTool.js";
 import {
   buildDiscoveryPromptZh,
-  buildWorkspacePromptZh,
   buildExecutionPromptZh,
   buildReportPromptZh,
   buildApplyPromptZh,
@@ -185,36 +183,6 @@ function formatExistingPlansSection(plans?: ExistingPlanSummary[]): string[] {
   }
 
   return lines;
-}
-
-export type BuildWorkspacePromptInput = {
-  projectRoot: string;
-  runId: string;
-  planTitle: string;
-  language?: string;
-};
-
-export function buildWorkspacePrompt(input: BuildWorkspacePromptInput): string {
-  if (input.language === "zh-CN") return buildWorkspacePromptZh(input);
-  return [
-    "You are preparing an isolated workspace for an Always-On plan execution.",
-    "",
-    `Project root: ${input.projectRoot}`,
-    `Plan: "${input.planTitle}"`,
-    "",
-    "Available workspace strategies:",
-    "  - `git-worktree`: Creates a git worktree on a new branch. Fast and space-efficient (hard-links).",
-    "    Requires a git repo with at least one commit. If the working tree is dirty, Always-On",
-    "    checkpoints all current changes before creating the worktree.",
-    "  - `snapshot-copy`: Copies the project directory (CoW on APFS/btrfs). Works for any directory",
-    "    but uses more disk space. Ignores .git, node_modules, dist by default.",
-    "",
-    "Permissions: this turn runs in `bypassPermissions` mode — every tool call is auto-allowed.",
-    "",
-    "## What to do",
-    "1. Check the project root state (e.g. `git status --porcelain` if it looks like a git repo, or `ls` otherwise).",
-    `2. Call \`${ALWAYS_ON_WORKSPACE_TOOL_NAME}\` with the chosen strategy, or \`auto\` to let the runtime decide.`,
-  ].join("\n");
 }
 
 export type BuildExecutionPromptInput = {

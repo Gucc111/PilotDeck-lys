@@ -1,11 +1,9 @@
 import type { ChatDigest } from "../context/ChatDigestBuilder.js";
 import { ALWAYS_ON_PLAN_TOOL_NAME } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { ALWAYS_ON_REPORT_TOOL_NAME } from "../tool/AlwaysOnReportTool.js";
-import { ALWAYS_ON_WORKSPACE_TOOL_NAME } from "../tool/AlwaysOnWorkspaceTool.js";
 import { ALWAYS_ON_CHAT_HISTORY_TOOL_NAME } from "../tool/AlwaysOnChatHistoryTool.js";
 import type {
   BuildDiscoveryPromptInput,
-  BuildWorkspacePromptInput,
   BuildExecutionPromptInput,
   BuildReportPromptInput,
   BuildApplyPromptInput,
@@ -149,28 +147,6 @@ function formatExistingPlansSectionZh(plans?: ExistingPlanSummary[]): string[] {
   }
 
   return lines;
-}
-
-export function buildWorkspacePromptZh(input: BuildWorkspacePromptInput): string {
-  return [
-    "你正在为 Always-On 计划执行准备一个隔离工作区。",
-    "",
-    `项目根目录: ${input.projectRoot}`,
-    `计划: "${input.planTitle}"`,
-    "",
-    "可用的工作区策略:",
-    "  - `git-worktree`: 在新分支上创建 git worktree。速度快、空间占用少 (使用硬链接)。",
-    "    要求项目是 git 仓库且至少有一次提交。若工作区存在未提交更改，Always-On",
-    "    会先提交当前全部改动作为 checkpoint，再创建 worktree。",
-    "  - `snapshot-copy`: 复制项目目录 (在 APFS/btrfs 上使用 CoW)。适用于任何目录,",
-    "    但占用更多磁盘空间。默认忽略 .git、node_modules、dist。",
-    "",
-    "权限: 本轮运行在 `bypassPermissions` 模式下——所有工具调用均自动允许。",
-    "",
-    "## 执行步骤",
-    "1. 检查项目根目录状态 (如 git 仓库可执行 `git status --porcelain`, 否则执行 `ls`)。",
-    `2. 调用 \`${ALWAYS_ON_WORKSPACE_TOOL_NAME}\`, 传入选定的策略, 或传入 \`auto\` 让运行时自动选择。`,
-  ].join("\n");
 }
 
 export function buildExecutionPromptZh(input: BuildExecutionPromptInput): string {

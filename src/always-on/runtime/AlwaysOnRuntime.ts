@@ -17,9 +17,6 @@ import {
   createAlwaysOnReportTool,
 } from "../tool/AlwaysOnReportTool.js";
 import {
-  createAlwaysOnWorkspaceTool,
-} from "../tool/AlwaysOnWorkspaceTool.js";
-import {
   createAlwaysOnChatHistoryTool,
 } from "../tool/AlwaysOnChatHistoryTool.js";
 import { GitWorktreeProvider } from "../workspace/GitWorktreeProvider.js";
@@ -163,9 +160,6 @@ export class AlwaysOnRuntime {
           createAlwaysOnReportTool({
             runContexts: this.runContexts,
             now: this.now,
-          }),
-          createAlwaysOnWorkspaceTool({
-            runContexts: this.runContexts,
           }),
           createAlwaysOnChatHistoryTool({
             runContexts: this.runContexts,

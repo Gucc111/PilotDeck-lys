@@ -1,10 +1,7 @@
 import type { DiscoveryPlanRecord, WorkspaceHandle } from "../protocol/types.js";
 import type { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
 import type { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
-import type { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
-import type { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
 
 export type DiscoveryRunContext = {
   kind: "discovery";
@@ -20,21 +17,6 @@ export type DiscoveryRunContext = {
   planCallCount: number;
   /** Short alias -> real sessionId mapping for the chat history tool. */
   chatSessionAliases?: Map<string, string>;
-};
-
-export type WorkspaceRunContext = {
-  kind: "workspace";
-  sessionKey: string;
-  runId: string;
-  planTitle: string;
-  projectKey: string;
-  paths: AlwaysOnPaths;
-  workspaceRegistry: WorkspaceProviderRegistry;
-  stateStore: DiscoveryStateStore;
-  cycleStore: WorkCycleStore;
-  now: () => Date;
-  /** Set after the workspace tool succeeds. */
-  handle?: WorkspaceHandle;
 };
 
 export type ExecutionRunContext = {
@@ -63,7 +45,6 @@ export type ReportRunContext = {
 
 export type AlwaysOnRunContext =
   | DiscoveryRunContext
-  | WorkspaceRunContext
   | ExecutionRunContext
   | ReportRunContext;
 
@@ -94,11 +75,6 @@ export class AlwaysOnRunContextRegistry {
   getDiscovery(sessionKey: string): DiscoveryRunContext | undefined {
     const ctx = this.contexts.get(sessionKey);
     return ctx && ctx.kind === "discovery" ? ctx : undefined;
-  }
-
-  getWorkspace(sessionKey: string): WorkspaceRunContext | undefined {
-    const ctx = this.contexts.get(sessionKey);
-    return ctx && ctx.kind === "workspace" ? ctx : undefined;
   }
 
   getExecution(sessionKey: string): ExecutionRunContext | undefined {

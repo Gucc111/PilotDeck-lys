@@ -21,7 +21,6 @@ import {
   AlwaysOnRunContextRegistry,
   createAlwaysOnDiscoveryPlanTool,
   createAlwaysOnReportTool,
-  createAlwaysOnWorkspaceTool,
   defaultAlwaysOnConfig,
   DiscoveryFire,
   DiscoveryPlanService,
@@ -125,7 +124,6 @@ async function bootstrap(workspace: string, model: string): Promise<BootstrapRes
   const extraTools = [
     createAlwaysOnDiscoveryPlanTool({ runContexts }),
     createAlwaysOnReportTool({ runContexts }),
-    createAlwaysOnWorkspaceTool({ runContexts }),
     createAlwaysOnChatHistoryTool({ runContexts }),
   ];
 

@@ -4,7 +4,6 @@ import type { AlwaysOnConfig } from "../config/index.js";
 import type { CreateAlwaysOnDiscoveryPlanToolOptions } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { createAlwaysOnDiscoveryPlanTool } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { createAlwaysOnReportTool } from "../tool/AlwaysOnReportTool.js";
-import { createAlwaysOnWorkspaceTool } from "../tool/AlwaysOnWorkspaceTool.js";
 import { createAlwaysOnChatHistoryTool } from "../tool/AlwaysOnChatHistoryTool.js";
 import { AlwaysOnRunContextRegistry } from "./AlwaysOnRunContextRegistry.js";
 import type { DiscoveryFireDependencies } from "./DiscoveryFire.js";
@@ -63,9 +62,6 @@ export class AlwaysOnManager {
       createAlwaysOnReportTool({
         runContexts: this.runContexts,
         now,
-      }),
-      createAlwaysOnWorkspaceTool({
-        runContexts: this.runContexts,
       }),
       createAlwaysOnChatHistoryTool({
         runContexts: this.runContexts,
