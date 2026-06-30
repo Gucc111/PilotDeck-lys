@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import type { AlwaysOnConfig } from "../config/index.js";
+import type { AlwaysOnConfig } from "../infra/config/index.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { GateBlockReason } from "../protocol/types.js";
-import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
-import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
-import { AlwaysOnEventStore } from "../storage/log/AlwaysOnEventStore.js";
+import type { AlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
+import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
+import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
+import { AlwaysOnEventStore } from "../infra/storage/log/AlwaysOnEventStore.js";
 import type { ChannelLeaseRegistry } from "./ChannelLeaseRegistry.js";
 import {
   acquireDiscoveryLock,

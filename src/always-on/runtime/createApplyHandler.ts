@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { Gateway, GatewayEvent } from "../../gateway/index.js";
 import type { AlwaysOnApplyInput, AlwaysOnApplyResult } from "../../gateway/protocol/types.js";
-import { resolveAlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
-import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
+import { resolveAlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
+import { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
+import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
 import { DiscoveryFire, type DiscoveryFireDependencies } from "./DiscoveryFire.js";
 import { SessionConfigOverrides } from "./SessionConfigOverrides.js";
-import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
-import { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
-import { AlwaysOnEventStore } from "../storage/log/AlwaysOnEventStore.js";
+import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
+import { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
+import { AlwaysOnEventStore } from "../infra/storage/log/AlwaysOnEventStore.js";
 import { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
 import { AlwaysOnRunContextRegistry } from "./AlwaysOnRunContextRegistry.js";
-import { defaultAlwaysOnConfig, type AlwaysOnConfig } from "../config/index.js";
+import { defaultAlwaysOnConfig, type AlwaysOnConfig } from "../infra/config/index.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
 
 export type CreateApplyHandlerDeps = {

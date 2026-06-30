@@ -1,7 +1,7 @@
 import type { DiscoveryPlanRecord, WorkspaceHandle } from "../protocol/types.js";
-import type { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
-import type { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
-import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
+import type { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
+import type { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
+import type { AlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
 
 export type DiscoveryRunContext = {
   kind: "discovery";

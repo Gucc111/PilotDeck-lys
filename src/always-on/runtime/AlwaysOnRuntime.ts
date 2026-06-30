@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Gateway } from "../../gateway/index.js";
 import type { PilotDeckToolDefinition } from "../../tool/index.js";
-import type { AlwaysOnConfig } from "../config/index.js";
-import { resolveAlwaysOnPaths, type AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
-import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
-import { AlwaysOnEventStore } from "../storage/log/AlwaysOnEventStore.js";
-import { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
-import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
+import type { AlwaysOnConfig } from "../infra/config/index.js";
+import { resolveAlwaysOnPaths, type AlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
+import { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
+import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
+import { AlwaysOnEventStore } from "../infra/storage/log/AlwaysOnEventStore.js";
+import { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
+import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
 import {
   createAlwaysOnDiscoveryPlanTool,
   type CreateAlwaysOnDiscoveryPlanToolOptions,
@@ -29,7 +29,7 @@ import { DiscoveryScheduler } from "./DiscoveryScheduler.js";
 import { SessionConfigOverrides } from "./SessionConfigOverrides.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
 import type { LoggerLike, PreferenceLlmOptions } from "../memory/PreferenceExtractor.js";
-import { PreferenceEventStore } from "../storage/log/PreferenceEventStore.js";
+import { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
 
 export type AlwaysOnRuntimeLogger = {
   info: (message: string, data?: unknown) => void;

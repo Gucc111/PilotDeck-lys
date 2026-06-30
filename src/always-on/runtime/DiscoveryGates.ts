@@ -1,4 +1,4 @@
-import type { AlwaysOnConfig } from "../config/index.js";
+import type { AlwaysOnConfig } from "../infra/config/index.js";
 import type {
   AlwaysOnChannelLease,
   AlwaysOnDiscoveryState,

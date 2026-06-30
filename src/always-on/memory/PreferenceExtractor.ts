@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { PreferenceEventStore } from "../storage/log/PreferenceEventStore.js";
+import type { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
 import {
   buildConsolidationSystemPrompt,
   buildConsolidationUserPrompt,

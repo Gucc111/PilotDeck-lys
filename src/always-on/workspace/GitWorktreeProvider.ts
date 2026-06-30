@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { runGit, type GitCommandResult } from "../infra/git/index.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { WorkspaceHandle } from "../protocol/types.js";
 import type { WorkspaceProvider, WorkspacePrepareInput, WorkspacePublishOutput } from "./WorkspaceProvider.js";
@@ -22,31 +22,29 @@ export class GitWorktreeProvider implements WorkspaceProvider {
   constructor(private readonly options: GitWorktreeProviderOptions) {}
 
   async isApplicable(projectRoot: string): Promise<boolean> {
-    const top = await runGit(this.git(), ["-C", projectRoot, "rev-parse", "--show-toplevel"]).catch(() => undefined);
+    const top = await runGit(projectRoot, ["rev-parse", "--show-toplevel"], { gitBin: this.git() }).catch(() => undefined);
     if (!top || top.exitCode !== 0) return false;
-    const head = await runGit(this.git(), ["-C", projectRoot, "rev-parse", "HEAD"]).catch(() => undefined);
+    const head = await runGit(projectRoot, ["rev-parse", "HEAD"], { gitBin: this.git() }).catch(() => undefined);
     if (!head || head.exitCode !== 0) return false;
     return true;
   }
 
   async prepare(input: WorkspacePrepareInput): Promise<WorkspaceHandle> {
-    const top = await runGit(this.git(), ["-C", input.projectRoot, "rev-parse", "--show-toplevel"]);
+    const top = await runGit(input.projectRoot, ["rev-parse", "--show-toplevel"], { gitBin: this.git() });
     expectOk(top, "git rev-parse --show-toplevel");
     const repoRoot = top.stdout.trim();
     await this.checkpointDirtyWorktree(repoRoot, input.planTitle);
 
-    const branchRes = await runGit(this.git(), ["-C", repoRoot, "rev-parse", "--abbrev-ref", "HEAD"]);
+    const branchRes = await runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], { gitBin: this.git() });
     expectOk(branchRes, "git rev-parse --abbrev-ref HEAD");
     const baseBranch = branchRes.stdout.trim();
-    const commitRes = await runGit(this.git(), ["-C", repoRoot, "rev-parse", "HEAD"]);
+    const commitRes = await runGit(repoRoot, ["rev-parse", "HEAD"], { gitBin: this.git() });
     expectOk(commitRes, "git rev-parse HEAD");
     const baseCommit = commitRes.stdout.trim();
 
     const worktreePath = resolve(this.options.baseDir, input.runId);
     const branchName = `always-on/${input.runId}`;
-    const add = await runGit(this.git(), [
-      "-C",
-      repoRoot,
+    const add = await runGit(repoRoot, [
       "worktree",
       "add",
       "-b",
@@ -74,7 +72,7 @@ export class GitWorktreeProvider implements WorkspaceProvider {
 
   async publish(handle: WorkspaceHandle): Promise<WorkspacePublishOutput> {
     const repoRoot = handle.metadata.repoRoot ?? handle.cwd;
-    const diff = await runGit(this.git(), ["-C", handle.cwd, "diff", "--stat"]).catch(() => undefined);
+    const diff = await runGit(handle.cwd, ["diff", "--stat"], { gitBin: this.git() }).catch(() => undefined);
     return {
       diff: diff && diff.exitCode === 0 ? diff.stdout : undefined,
       commit: undefined,
@@ -87,21 +85,19 @@ export class GitWorktreeProvider implements WorkspaceProvider {
     if (options.keep) return;
     this.options.onWorktreeRemoved?.(handle.cwd);
     const repoRoot = handle.metadata.repoRoot ?? handle.cwd;
-    const remove = await runGit(this.git(), [
-      "-C",
-      repoRoot,
+    const remove = await runGit(repoRoot, [
       "worktree",
       "remove",
       "--force",
       handle.cwd,
-    ]).catch(() => undefined);
+    ], { gitBin: this.git() }).catch(() => undefined);
     if (!remove || remove.exitCode !== 0) {
       await rm(handle.cwd, { recursive: true, force: true });
-      await runGit(this.git(), ["-C", repoRoot, "worktree", "prune"]).catch(() => undefined);
+      await runGit(repoRoot, ["worktree", "prune"], { gitBin: this.git() }).catch(() => undefined);
     }
     const branchName = handle.metadata.branchName as string | undefined;
     if (branchName) {
-      await runGit(this.git(), ["-C", repoRoot, "branch", "-D", branchName]).catch(() => undefined);
+      await runGit(repoRoot, ["branch", "-D", branchName], { gitBin: this.git() }).catch(() => undefined);
     }
   }
 
@@ -110,24 +106,22 @@ export class GitWorktreeProvider implements WorkspaceProvider {
   }
 
   private async checkpointDirtyWorktree(repoRoot: string, planTitle: string): Promise<void> {
-    const status = await runGit(this.git(), ["-C", repoRoot, "status", "--porcelain"]);
+    const status = await runGit(repoRoot, ["status", "--porcelain"], { gitBin: this.git() });
     expectOk(status, "git status --porcelain");
     if (!status.stdout.trim()) return;
 
-    const add = await runGit(this.git(), ["-C", repoRoot, "add", "-A"]);
+    const add = await runGit(repoRoot, ["add", "-A"], { gitBin: this.git() });
     expectOk(add, "git add -A");
 
     const normalizedTitle = planTitle.replace(/\s+/g, " ").trim() || "untitled plan";
-    const commit = await runGit(this.git(), [
-      "-C",
-      repoRoot,
+    const commit = await runGit(repoRoot, [
       "commit",
       "-m",
       `chore(always-on): checkpoint before executing ${normalizedTitle}`,
-    ]);
+    ], { gitBin: this.git() });
     expectOk(commit, "git commit");
 
-    const cleanStatus = await runGit(this.git(), ["-C", repoRoot, "status", "--porcelain"]);
+    const cleanStatus = await runGit(repoRoot, ["status", "--porcelain"], { gitBin: this.git() });
     expectOk(cleanStatus, "git status --porcelain");
     if (cleanStatus.stdout.trim()) {
       throw new AlwaysOnError(
@@ -139,29 +133,7 @@ export class GitWorktreeProvider implements WorkspaceProvider {
   }
 }
 
-type GitResult = { exitCode: number; stdout: string; stderr: string };
-
-async function runGit(bin: string, args: string[]): Promise<GitResult> {
-  return new Promise<GitResult>((resolvePromise) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString("utf-8");
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString("utf-8");
-    });
-    child.on("error", (error) => {
-      resolvePromise({ exitCode: -1, stdout, stderr: error.message });
-    });
-    child.on("close", (code) => {
-      resolvePromise({ exitCode: code ?? -1, stdout, stderr });
-    });
-  });
-}
-
-function expectOk(result: GitResult, label: string): void {
+function expectOk(result: GitCommandResult, label: string): void {
   if (result.exitCode !== 0) {
     throw new AlwaysOnError(
       "workspace_prepare_failed",

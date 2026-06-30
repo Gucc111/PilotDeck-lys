@@ -2,11 +2,14 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, rm, stat } from "node:fs/promises";
 import { platform } from "node:os";
 import { resolve } from "node:path";
-import { spawn } from "node:child_process";
+import {
+  initializeTemporaryGitRepository,
+  isGitAvailable,
+  runProcess,
+} from "../infra/git/index.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { WorkspaceHandle } from "../protocol/types.js";
 import type { WorkspaceProvider, WorkspacePrepareInput, WorkspacePublishOutput } from "./WorkspaceProvider.js";
-import { initializeTemporaryGitRepository } from "./WorkspaceGit.js";
 
 export type SnapshotCopyProviderOptions = {
   baseDir: string;
@@ -33,7 +36,7 @@ export class SnapshotCopyProvider implements WorkspaceProvider {
   async isApplicable(projectRoot: string): Promise<boolean> {
     try {
       const info = await stat(projectRoot);
-      return info.isDirectory();
+      return info.isDirectory() && await isGitAvailable(projectRoot);
     } catch {
       return false;
     }
@@ -51,11 +54,18 @@ export class SnapshotCopyProvider implements WorkspaceProvider {
     }
 
     await mkdir(resolve(target, ".."), { recursive: true });
-    const strategy = await this.copy(input.projectRoot, target);
-    const baseCommit = await initializeTemporaryGitRepository(
-      target,
-      `always-on snapshot base ${input.runId}`,
-    );
+    let strategy: string | undefined;
+    let baseCommit: string;
+    try {
+      strategy = await this.copy(input.projectRoot, target);
+      baseCommit = await initializeTemporaryGitRepository(
+        target,
+        `always-on snapshot base ${input.runId}`,
+      );
+    } catch (error) {
+      await rm(target, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
 
     return {
       runId: input.runId,
@@ -109,13 +119,13 @@ export class SnapshotCopyProvider implements WorkspaceProvider {
 
 async function tryClonefile(source: string, target: string): Promise<boolean> {
   // `cp -c` triggers macOS clonefile when source/target live on the same APFS volume.
-  return runCommand("cp", ["-c", "-R", source, target])
+  return runProcess("cp", ["-c", "-R", source, target])
     .then((result) => result.exitCode === 0 && existsSync(target))
     .catch(() => false);
 }
 
 async function tryReflinkCopy(source: string, target: string): Promise<boolean> {
-  return runCommand("cp", ["--reflink=auto", "-R", source, target])
+  return runProcess("cp", ["--reflink=auto", "-R", source, target])
     .then((result) => result.exitCode === 0 && existsSync(target))
     .catch(() => false);
 }
@@ -141,7 +151,7 @@ async function estimateSize(root: string, ignores: Set<string>): Promise<number>
   if (platform() === "win32") {
     return estimateSizeWindows(root, ignores);
   }
-  return runCommand("du", ["-sk", root])
+  return runProcess("du", ["-sk", root])
     .then((result) => {
       if (result.exitCode !== 0) return 0;
       const tokens = result.stdout.trim().split(/\s+/);
@@ -153,33 +163,11 @@ async function estimateSize(root: string, ignores: Set<string>): Promise<number>
 
 async function estimateSizeWindows(root: string, _ignores: Set<string>): Promise<number> {
   const script = `(Get-ChildItem -Path '${root.replace(/'/g, "''")}' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum`;
-  return runCommand("powershell", ["-NoProfile", "-Command", script])
+  return runProcess("powershell", ["-NoProfile", "-Command", script])
     .then((result) => {
       if (result.exitCode !== 0) return 0;
       const bytes = Number.parseInt(result.stdout.trim(), 10);
       return Number.isFinite(bytes) ? bytes : 0;
     })
     .catch(() => 0);
-}
-
-type CommandResult = { exitCode: number; stdout: string; stderr: string };
-
-async function runCommand(bin: string, args: string[]): Promise<CommandResult> {
-  return new Promise<CommandResult>((resolvePromise) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString("utf-8");
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString("utf-8");
-    });
-    child.on("error", (error) => {
-      resolvePromise({ exitCode: -1, stdout, stderr: error.message });
-    });
-    child.on("close", (code) => {
-      resolvePromise({ exitCode: code ?? -1, stdout, stderr });
-    });
-  });
 }

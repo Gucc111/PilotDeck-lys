@@ -20,11 +20,11 @@ import type {
   WorkCycleStatus,
   PreferenceEvent,
 } from "../protocol/types.js";
-import type { PreferenceEventStore } from "../storage/log/PreferenceEventStore.js";
-import type { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
-import type { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
-import type { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
-import type { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
+import type { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
+import type { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
+import type { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
+import type { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
+import type { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
 import {
   computeExecutionStatus,
   computePlanStatus,

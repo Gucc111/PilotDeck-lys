@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import type { Gateway, GatewayChannelKey, GatewayEvent } from "../../gateway/index.js";
 import { getPilotProjectChatDir } from "../../pilot/paths.js";
 import { buildChatDigest } from "../context/ChatDigestBuilder.js";
-import type { AlwaysOnConfig } from "../config/index.js";
+import type { AlwaysOnConfig } from "../infra/config/index.js";
 import { buildFallbackReport, parseReportMarkdown, type ReportMetadata } from "../contracts/ReportContract.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type {
@@ -17,12 +17,12 @@ import type {
   WorkCycleRecord,
   WorkspaceHandle,
 } from "../protocol/types.js";
-import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
-import { AlwaysOnEventStore } from "../storage/log/AlwaysOnEventStore.js";
-import { DiscoveryPlanStore } from "../storage/json/DiscoveryPlanStore.js";
-import { DiscoveryReportStore } from "../storage/file/DiscoveryReportStore.js";
-import { DiscoveryStateStore } from "../storage/json/DiscoveryStateStore.js";
-import { WorkCycleStore } from "../storage/json/WorkCycleStore.js";
+import type { AlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
+import { AlwaysOnEventStore } from "../infra/storage/log/AlwaysOnEventStore.js";
+import { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
+import { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
+import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
+import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
 import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRegistry.js";
 import {
   analyzeExecutionDependencies,
@@ -34,7 +34,7 @@ import {
   isGitRepository,
   listCommitsBetween,
   revertCommits,
-} from "../workspace/WorkspaceGit.js";
+} from "../infra/git/index.js";
 import type { AlwaysOnRunContextRegistry, ExecutionRunContext, DiscoveryRunContext, ReportRunContext } from "./AlwaysOnRunContextRegistry.js";
 import { buildDiscoveryPrompt, buildExecutionPrompt, buildReportPrompt, buildApplyPrompt } from "./discoveryPrompts.js";
 import {
@@ -43,7 +43,7 @@ import {
 } from "./SessionConfigOverrides.js";
 import type { PermissionRule } from "../../permission/index.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
-import type { PreferenceEventStore } from "../storage/log/PreferenceEventStore.js";
+import type { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
 import {
   preparePreferenceMemory,
   type LoggerLike,

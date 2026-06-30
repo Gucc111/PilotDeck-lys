@@ -37,19 +37,19 @@ export {
   type AlwaysOnProjectConfig,
   type AlwaysOnTriggerConfig,
   type AlwaysOnWorkspaceConfig,
-} from "./config/index.js";
+} from "./infra/config/index.js";
 export {
   resolveAlwaysOnPaths,
   planMarkdownPath,
   reportMarkdownPath,
   type AlwaysOnPaths,
-} from "./storage/AlwaysOnPaths.js";
-export { DiscoveryStateStore, defaultDiscoveryState, getDayKey } from "./storage/json/DiscoveryStateStore.js";
-export { DiscoveryPlanStore } from "./storage/json/DiscoveryPlanStore.js";
-export { WorkCycleStore } from "./storage/json/WorkCycleStore.js";
-export { DiscoveryReportStore } from "./storage/file/DiscoveryReportStore.js";
-export { AlwaysOnEventStore } from "./storage/log/AlwaysOnEventStore.js";
-export { PreferenceEventStore } from "./storage/log/PreferenceEventStore.js";
+} from "./infra/storage/AlwaysOnPaths.js";
+export { DiscoveryStateStore, defaultDiscoveryState, getDayKey } from "./infra/storage/json/DiscoveryStateStore.js";
+export { DiscoveryPlanStore } from "./infra/storage/json/DiscoveryPlanStore.js";
+export { WorkCycleStore } from "./infra/storage/json/WorkCycleStore.js";
+export { DiscoveryReportStore } from "./infra/storage/file/DiscoveryReportStore.js";
+export { AlwaysOnEventStore } from "./infra/storage/log/AlwaysOnEventStore.js";
+export { PreferenceEventStore } from "./infra/storage/log/PreferenceEventStore.js";
 export {
   PreferenceExtractor,
   preparePreferenceMemory,
