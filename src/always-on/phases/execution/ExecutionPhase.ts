@@ -1,7 +1,7 @@
 import type { GatewayChannelKey } from "../../../gateway/index.js";
-import { AlwaysOnError } from "../../protocol/errors.js";
-import type { CyclePlanState, WorkCycleRecord, WorkspaceHandle } from "../../protocol/types.js";
-import type { ExecutionRunContext } from "../../runtime/AlwaysOnRunContextRegistry.js";
+import { AlwaysOnError } from "../../infra/errors.js";
+import type { CyclePlanState, WorkCycleRecord, WorkspaceHandle } from "../../infra/storage/types.js";
+import type { ExecutionRunContext } from "../shared/RunContextRegistry.js";
 import {
   analyzeExecutionDependencies,
   commitDirtyWorkspace,

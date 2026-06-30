@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { GatewayChannelKey } from "../../../gateway/index.js";
 import { getPilotProjectChatDir } from "../../../pilot/paths.js";
-import type { DiscoveryRunContext } from "../../runtime/AlwaysOnRunContextRegistry.js";
+import type { DiscoveryRunContext } from "../shared/RunContextRegistry.js";
 import { deriveDiscoverySessionKey, pickFirstError } from "../shared/index.js";
 import { buildChatDigest } from "./context/index.js";
 import { preparePreferenceMemory } from "./memory/index.js";

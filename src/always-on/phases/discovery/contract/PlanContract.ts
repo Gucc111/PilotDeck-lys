@@ -1,4 +1,4 @@
-import { AlwaysOnError } from "../../../protocol/errors.js";
+import { AlwaysOnError } from "../../../infra/errors.js";
 
 /**
  * PlanContract enforces the markdown shape described in

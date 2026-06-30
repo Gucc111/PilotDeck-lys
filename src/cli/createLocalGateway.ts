@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync } from
 import { resolve, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
 import type { EdgeClawMemoryService } from "edgeclaw-memory-core";
-import type { SessionConfigOverrides } from "../always-on/runtime/SessionConfigOverrides.js";
+import type { SessionConfigOverrides } from "../always-on/phases/shared/SessionConfigOverrides.js";
 import {
   createAgentEventBuffer,
   createAgentSessionWithStorage,
@@ -626,7 +626,7 @@ class ProjectRuntimeRegistry {
    * Set the working directory override for a specific session.
    * Used by the Web UI execution path to point an agent session at
    * an isolated workspace (git-worktree / snapshot-copy) without
-   * going through DiscoveryFire.
+   * going through AlwaysOnPipeline.
    */
   setSessionCwd(sessionKey: string, cwd: string): void {
     if (!this._sessionOverrides) return;

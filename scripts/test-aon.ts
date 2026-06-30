@@ -18,43 +18,42 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import {
   AlwaysOnEventStore,
-  AlwaysOnRunContextRegistry,
-  createAlwaysOnDiscoveryPlanTool,
-  createAlwaysOnReportTool,
   defaultAlwaysOnConfig,
-  DiscoveryFire,
   DiscoveryPlanService,
   DiscoveryPlanStore,
   DiscoveryReportStore,
   DiscoveryStateStore,
-  GitWorktreeProvider,
   PreferenceEventStore,
   readPreferences,
   resolveAlwaysOnPaths,
   SessionConfigOverrides,
-  SnapshotCopyProvider,
   WorkCycleStore,
-  WorkspaceProviderRegistry,
   type AlwaysOnConfig,
   type AlwaysOnPaths,
-  type DiscoveryFireDependencies,
   type DiscoveryPlanRecord,
   type PreferenceLlmOptions,
   type WorkCycleRecord,
 } from "../src/always-on/index.js";
+import {
+  AlwaysOnPipeline,
+  type AlwaysOnPipelineDependencies,
+} from "../src/always-on/orchestration/AlwaysOnPipeline.js";
+import { AlwaysOnRunContextRegistry } from "../src/always-on/phases/shared/RunContextRegistry.js";
+import { createAlwaysOnDiscoveryPlanTool } from "../src/always-on/tool/AlwaysOnDiscoveryPlanTool.js";
+import { createAlwaysOnReportTool } from "../src/always-on/tool/AlwaysOnReportTool.js";
+import { WorkspaceProviderRegistry } from "../src/always-on/phases/workspace/WorkspaceProviderRegistry.js";
+import { GitWorktreeProvider } from "../src/always-on/phases/workspace/GitWorktreeProvider.js";
+import { SnapshotCopyProvider } from "../src/always-on/phases/workspace/SnapshotCopyProvider.js";
 import { createAlwaysOnChatHistoryTool } from "../src/always-on/tool/AlwaysOnChatHistoryTool.js";
-import type { CyclePlanState } from "../src/always-on/protocol/types.js";
+import type { CyclePlanState } from "../src/always-on/infra/storage/types.js";
 import { createLocalGateway } from "../src/cli/createLocalGateway.js";
 import type { Gateway, GatewayEvent } from "../src/gateway/index.js";
 import { getPilotConfigFilePath, loadPilotConfig, resolvePilotHome } from "../src/pilot/index.js";
-import {
-  applyWorktreeToProject,
-  disposeWorkspace,
-} from "../src/always-on/workspace/WorkspaceApply.js";
+import { disposeWorkspace } from "../src/always-on/phases/apply/workspaceLifecycle.js";
 import {
   getStatusPorcelain,
   revertCommits,
-} from "../src/always-on/workspace/WorkspaceGit.js";
+} from "../src/always-on/infra/git/index.js";
 
 const DEFAULT_MODEL = "llmcenter-in/claude-opus-4-6";
 const DEFAULT_LANGUAGE = "zh-CN";
@@ -99,7 +98,7 @@ type BootstrapResult = {
   runContexts: AlwaysOnRunContextRegistry;
   sessionOverrides: SessionConfigOverrides;
   workspaceRegistry: WorkspaceProviderRegistry;
-  buildFireDeps(): DiscoveryFireDependencies;
+  buildFireDeps(): AlwaysOnPipelineDependencies;
 };
 
 type ServiceContext = {
@@ -249,11 +248,13 @@ function buildPlanService(input: {
     activity: {
       isSessionActive: () => false,
     },
-    workspace: {
-      applyWorktreeChanges: applyWorktreeToProject,
-      disposeWorkspace,
-      getWorkspaceStatus: getStatusPorcelain,
-      revertCommits,
+    planLifecycle: {
+      disposeCycleWorkspace: ({ strategy, cwd, projectRoot }) => disposeWorkspace(strategy, cwd, projectRoot),
+      getCycleWorkspaceStatus: ({ workspaceCwd }) => getStatusPorcelain(workspaceCwd),
+      archivePlanCommits: async ({ workspaceCwd, commitShas }) => {
+        const result = await revertCommits(workspaceCwd, commitShas);
+        return { archived: result.reverted, error: result.error };
+      },
     },
     state: {
       clearActiveWorkCycleId: async () => {
@@ -367,7 +368,7 @@ async function cmdFire(): Promise<void> {
   console.log(`language:  ${language}`);
 
   const ctx = await bootstrap(workspace, modelSpec);
-  const fire = new DiscoveryFire(ctx.buildFireDeps());
+  const fire = new AlwaysOnPipeline(ctx.buildFireDeps());
   const runId = randomUUID();
   const startedAt = new Date();
 
@@ -393,7 +394,7 @@ async function cmdFire(): Promise<void> {
 async function cmdApply(): Promise<void> {
   const workspace = requireWorkspace();
   const ctx = await bootstrap(workspace, modelSpec);
-  const fire = new DiscoveryFire(ctx.buildFireDeps());
+  const fire = new AlwaysOnPipeline(ctx.buildFireDeps());
   try {
     const selection = await resolveCycleAndPlanSelection(ctx, cycleIdArg, planIdsArg);
     console.log("-- apply selection --");

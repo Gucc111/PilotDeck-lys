@@ -19,7 +19,7 @@ import type {
   WorkCycleRecord,
   WorkCycleStatus,
   PreferenceEvent,
-} from "../protocol/types.js";
+} from "../infra/storage/types.js";
 import type { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
 import type { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
 import type { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
@@ -72,21 +72,17 @@ export type SessionLister = {
   ): Promise<{ sessions: Array<Record<string, unknown>> }>;
 };
 
-export type WorkspaceManager = {
-  applyWorktreeChanges(
-    workspaceCwd: string,
-    projectRoot: string,
-  ): Promise<{ applied: boolean; diff?: string; error?: string }>;
-  getWorkspaceStatus?(workspaceCwd: string): Promise<string>;
-  revertCommits?(
-    workspaceCwd: string,
-    commitShas: string[],
-  ): Promise<{ reverted: boolean; error?: string }>;
-  disposeWorkspace(
-    strategy: string,
-    cwd: string,
-    projectRoot: string,
-  ): Promise<void>;
+export type PlanLifecycleActions = {
+  getCycleWorkspaceStatus?(input: { workspaceCwd: string }): Promise<string>;
+  archivePlanCommits?(input: {
+    workspaceCwd: string;
+    commitShas: string[];
+  }): Promise<{ archived: boolean; error?: string }>;
+  disposeCycleWorkspace(input: {
+    strategy: string;
+    cwd: string;
+    projectRoot: string;
+  }): Promise<void>;
 };
 
 export type StateManager = {
@@ -105,7 +101,7 @@ export type DiscoveryPlanServiceDeps = {
   paths: ProjectPathResolver;
   sessions: SessionLister;
   activity: SessionActivityChecker;
-  workspace?: WorkspaceManager;
+  planLifecycle?: PlanLifecycleActions;
   state?: StateManager;
   preferenceEvents?: {
     forProject: (projectRoot: string) => PreferenceEventStore;
@@ -452,17 +448,20 @@ export class DiscoveryPlanService {
     const { archiveWholeCycle } = validateArchiveSelection(cycle, webPlans, selectedPlanIds);
     const now = new Date().toISOString();
     const selectedCommitShas = selectedPlanIds.flatMap((id) => cycle.plans[id]?.commitShas ?? []);
-    if (!this.deps.workspace?.getWorkspaceStatus || !this.deps.workspace.revertCommits) {
+    if (!this.deps.planLifecycle?.getCycleWorkspaceStatus || !this.deps.planLifecycle.archivePlanCommits) {
       throw makeError("Archive requires workspace git revert support", "MISSING_WORKSPACE");
     }
-    const status = await this.deps.workspace.getWorkspaceStatus(cycle.workspace.cwd);
+    const status = await this.deps.planLifecycle.getCycleWorkspaceStatus({ workspaceCwd: cycle.workspace.cwd });
     if (status.trim()) {
       throw makeError("Cannot archive plans while isolated workspace has uncommitted changes", "WORKSPACE_DIRTY");
     }
     if (selectedCommitShas.length > 0) {
-      const reverted = await this.deps.workspace.revertCommits(cycle.workspace.cwd, selectedCommitShas);
-      if (!reverted.reverted) {
-        throw makeError(reverted.error || "Failed to revert archived plan commits", "ARCHIVE_REVERT_FAILED");
+      const archived = await this.deps.planLifecycle.archivePlanCommits({
+        workspaceCwd: cycle.workspace.cwd,
+        commitShas: selectedCommitShas,
+      });
+      if (!archived.archived) {
+        throw makeError(archived.error || "Failed to revert archived plan commits", "ARCHIVE_REVERT_FAILED");
       }
     }
 
@@ -484,13 +483,13 @@ export class DiscoveryPlanService {
     ));
     const shouldCloseCycle = archiveWholeCycle || !hasRemainingPlan;
 
-    if (shouldCloseCycle && cycle.workspace?.cwd && this.deps.workspace) {
+    if (shouldCloseCycle && cycle.workspace?.cwd && this.deps.planLifecycle) {
       try {
-        await this.deps.workspace.disposeWorkspace(
-          cycle.workspace.strategy,
-          cycle.workspace.cwd,
+        await this.deps.planLifecycle.disposeCycleWorkspace({
+          strategy: cycle.workspace.strategy,
+          cwd: cycle.workspace.cwd,
           projectRoot,
-        );
+        });
       } catch {
         // Best effort — workspace may already be gone.
       }
@@ -568,7 +567,6 @@ export class DiscoveryPlanService {
       projectRoot,
       executionToken,
       planIds: selectedPlanIds,
-      legacyWorkspaceApply: false,
     };
   }
 
@@ -594,13 +592,13 @@ export class DiscoveryPlanService {
     if (cycle.status === "applying") {
       const finalStatus: WorkCycleStatus = normalizedStatus === "completed" ? "applied" : "active";
 
-      if (finalStatus === "applied" && cycle.workspace?.cwd && this.deps.workspace) {
+      if (finalStatus === "applied" && cycle.workspace?.cwd && this.deps.planLifecycle) {
         try {
-          await this.deps.workspace.disposeWorkspace(
-            cycle.workspace.strategy,
-            cycle.workspace.cwd,
+          await this.deps.planLifecycle.disposeCycleWorkspace({
+            strategy: cycle.workspace.strategy,
+            cwd: cycle.workspace.cwd,
             projectRoot,
-          );
+          });
         } catch {
           // Best effort cleanup.
         }

@@ -1,4 +1,4 @@
-import type { PreferenceEvent } from "../../../protocol/types.js";
+import type { PreferenceEvent } from "../../../infra/storage/types.js";
 
 const EXTRACTION_SYSTEM_PROMPT = `You are an Always-On preference analysis assistant. Based on how the user handled automatic task suggestions, analyze and update the user's preference summary.
 

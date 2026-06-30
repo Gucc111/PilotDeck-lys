@@ -1,4 +1,4 @@
-import type { DiscoveryPlanRecord } from "../../protocol/types.js";
+import type { DiscoveryPlanRecord } from "../../infra/storage/types.js";
 import { buildExecutionPromptZh } from "./prompts.zh.js";
 
 export type BuildExecutionPromptInput = {

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { PilotDeckToolRuntimeError } from "../../tool/protocol/errors.js";
 import type { PilotDeckToolDefinition } from "../../tool/protocol/types.js";
 import { parsePlanMarkdown, type PlanContractOptions } from "../phases/discovery/contract/index.js";
-import { AlwaysOnError } from "../protocol/errors.js";
-import type { DiscoveryPlanRecord } from "../protocol/types.js";
-import type { AlwaysOnRunContextRegistry, DiscoveryRunContext } from "../runtime/AlwaysOnRunContextRegistry.js";
+import { AlwaysOnError } from "../infra/errors.js";
+import type { DiscoveryPlanRecord } from "../infra/storage/types.js";
+import type { AlwaysOnRunContextRegistry, DiscoveryRunContext } from "../phases/shared/RunContextRegistry.js";
 
 export type AlwaysOnDiscoveryPlanInput = {
   title: string;

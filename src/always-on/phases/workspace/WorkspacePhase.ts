@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { AlwaysOnError } from "../../protocol/errors.js";
-import type { WorkspaceHandle } from "../../protocol/types.js";
+import { AlwaysOnError } from "../../infra/errors.js";
+import type { WorkspaceHandle } from "../../infra/storage/types.js";
 import type { WorkspacePhaseDeps, WorkspacePhaseInput, WorkspacePhaseOutput } from "./types.js";
 
 export class WorkspacePhase {

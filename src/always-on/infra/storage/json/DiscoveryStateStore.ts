@@ -3,7 +3,7 @@ import type {
   AlwaysOnDiscoveryOutcome,
   AlwaysOnDiscoveryState,
   WorkspaceStrategyId,
-} from "../../../protocol/types.js";
+} from "../types.js";
 import type { AlwaysOnPaths } from "../AlwaysOnPaths.js";
 import { atomicWriteJson, readJsonSafe } from "./JsonStoreBase.js";
 

@@ -7,13 +7,13 @@ import {
   DiscoveryPlanService,
   type DiscoveryPlanServiceDeps,
 } from "../../src/always-on/web/DiscoveryPlanService.js";
-import { PreferenceEventStore } from "../../src/always-on/storage/log/PreferenceEventStore.js";
-import { DiscoveryPlanStore } from "../../src/always-on/storage/json/DiscoveryPlanStore.js";
-import { WorkCycleStore } from "../../src/always-on/storage/json/WorkCycleStore.js";
-import { DiscoveryStateStore } from "../../src/always-on/storage/json/DiscoveryStateStore.js";
-import { DiscoveryReportStore } from "../../src/always-on/storage/file/DiscoveryReportStore.js";
-import type { AlwaysOnPaths } from "../../src/always-on/storage/AlwaysOnPaths.js";
-import type { PreferenceEvent } from "../../src/always-on/protocol/types.js";
+import { PreferenceEventStore } from "../../src/always-on/infra/storage/log/PreferenceEventStore.js";
+import { DiscoveryPlanStore } from "../../src/always-on/infra/storage/json/DiscoveryPlanStore.js";
+import { WorkCycleStore } from "../../src/always-on/infra/storage/json/WorkCycleStore.js";
+import { DiscoveryStateStore } from "../../src/always-on/infra/storage/json/DiscoveryStateStore.js";
+import { DiscoveryReportStore } from "../../src/always-on/infra/storage/file/DiscoveryReportStore.js";
+import type { AlwaysOnPaths } from "../../src/always-on/infra/storage/AlwaysOnPaths.js";
+import type { PreferenceEvent } from "../../src/always-on/infra/storage/types.js";
 
 type PlanSeed = {
   id: string;
@@ -153,11 +153,10 @@ async function createFixture(input: {
     paths: { extractProjectDirectory: async () => projectRoot },
     sessions: { getSessions: async () => ({ sessions: [] }) },
     activity: { isSessionActive: () => false },
-    workspace: {
-      applyWorktreeChanges: async () => ({ applied: true }),
-      getWorkspaceStatus: async () => "",
-      revertCommits: async () => ({ reverted: true }),
-      disposeWorkspace: async (_strategy, cwd) => {
+    planLifecycle: {
+      getCycleWorkspaceStatus: async () => "",
+      archivePlanCommits: async () => ({ archived: true }),
+      disposeCycleWorkspace: async ({ cwd }) => {
         disposed.push(cwd);
       },
     },
@@ -226,7 +225,6 @@ describe("DiscoveryPlanService plan selection", () => {
       );
       const result = await fixture.service.queueCycleApply("project", "cycle-1", ["a", "b"]);
       assert.deepEqual(result.planIds, ["a", "b"]);
-      assert.equal(result.legacyWorkspaceApply, false);
     } finally {
       await fixture.cleanup();
     }
@@ -335,7 +333,6 @@ describe("DiscoveryPlanService plan selection", () => {
         "INVALID_SELECTION",
       );
       const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
-      assert.equal(queued.legacyWorkspaceApply, false);
       assert.deepEqual(queued.planIds, ["a"]);
       await fixture.service.updateCycleExecution("project", "cycle-1", {
         status: "failed",

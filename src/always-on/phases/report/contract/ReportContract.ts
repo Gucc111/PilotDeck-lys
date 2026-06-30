@@ -6,7 +6,7 @@
  * by appending placeholders so downstream tooling (UI, history) can still
  * render the report. Each fallback adds an entry to the "Notes" section.
  */
-import type { AlwaysOnDiscoveryOutcome, WorkspaceStrategyId } from "../../../protocol/types.js";
+import type { AlwaysOnDiscoveryOutcome, WorkspaceStrategyId } from "../../../infra/storage/types.js";
 
 export type ReportMetadata = {
   runId: string;

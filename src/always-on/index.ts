@@ -13,9 +13,6 @@ export type {
   DiscoveryPlanRecord,
   DiscoveryPlanStatus,
   DiscoveryPlanWorkspaceRef,
-  DiscoveryFireResult,
-  GateBlockReason,
-  GateResult,
   WorkCycleIndex,
   WorkCycleDependencyAnalysisStatus,
   WorkCycleExecutionRecord,
@@ -24,8 +21,9 @@ export type {
   WorkCycleStatus,
   WorkspaceHandle,
   WorkspaceStrategyId,
-} from "./protocol/types.js";
-export { AlwaysOnError, type AlwaysOnErrorCode } from "./protocol/errors.js";
+} from "./infra/storage/types.js";
+export type { AlwaysOnPipelineResult, GateBlockReason, GateResult } from "./orchestration/types.js";
+export { AlwaysOnError, type AlwaysOnErrorCode } from "./infra/errors.js";
 export {
   parseAlwaysOnConfig,
   defaultAlwaysOnConfig,
@@ -51,122 +49,26 @@ export { DiscoveryReportStore } from "./infra/storage/file/DiscoveryReportStore.
 export { AlwaysOnEventStore } from "./infra/storage/log/AlwaysOnEventStore.js";
 export { PreferenceEventStore } from "./infra/storage/log/PreferenceEventStore.js";
 export {
-  PreferenceExtractor,
-  preparePreferenceMemory,
   readPreferences,
   type LoggerLike as PreferenceLoggerLike,
-  type PreferenceExtractionInput,
-  type PreferenceExtractionResult,
-  type PreferenceExtractorDependencies,
   type PreferenceLlmOptions,
-  type PreparePreferenceMemoryInput,
 } from "./phases/discovery/memory/index.js";
 export {
-  buildChatDigest,
-  extractAllUserPrompts,
-  type BuildChatDigestOptions,
-  type ChatDigest,
-  type ChatSessionDigest,
-} from "./phases/discovery/context/index.js";
-export {
-  parsePlanMarkdown,
-  PLAN_REQUIRED_SECTIONS,
-  PLAN_METADATA_FIRST_LINE,
-  PLAN_METADATA_KEYS,
-  type PlanContractOptions,
-  type PlanMetadata,
-  type PlanParseResult,
-} from "./phases/discovery/contract/index.js";
-export {
-  parseReportMarkdown,
-  buildFallbackReport,
-  rebuildReport,
-  REPORT_METADATA_FIRST_LINE,
-  REPORT_REQUIRED_SECTIONS,
-  type ReportMetadata,
-  type ReportParseResult,
-  type BuildFallbackReportInput,
-} from "./phases/report/contract/index.js";
-export { ChannelLeaseRegistry, type LeaseUpdateInput } from "./runtime/ChannelLeaseRegistry.js";
-export {
-  evaluateAlwaysOnDiscoveryGates,
-  type DiscoveryGateInput,
-} from "./runtime/DiscoveryGates.js";
-export { SignalWatcher, type SignalWatcherOptions } from "./runtime/SignalWatcher.js";
-export {
-  AlwaysOnRunContextRegistry,
-  type AlwaysOnRunContext,
-  type DiscoveryRunContext,
-  type ExecutionRunContext,
-  type ReportRunContext,
-} from "./runtime/AlwaysOnRunContextRegistry.js";
-export {
   SessionConfigOverrides,
-  UNATTENDED_SESSION_EXCLUDED_TOOLS,
   type SessionConfigOverride,
-} from "./runtime/SessionConfigOverrides.js";
-export {
-  DiscoveryFire,
-  acquireDiscoveryLock,
-  releaseDiscoveryLock,
-  type DiscoveryFireDependencies,
-  type DiscoveryFireRunInput,
-} from "./runtime/DiscoveryFire.js";
-export {
-  DiscoveryScheduler,
-  type DiscoverySchedulerDependencies,
-  type DiscoverySchedulerLogger,
-} from "./runtime/DiscoveryScheduler.js";
+} from "./phases/shared/SessionConfigOverrides.js";
 export {
   AlwaysOnRuntime,
   createAlwaysOnRuntime,
   type AlwaysOnRuntimeLogger,
   type CreateAlwaysOnRuntimeOptions,
-} from "./runtime/AlwaysOnRuntime.js";
+} from "./app/AlwaysOnRuntime.js";
 export {
   AlwaysOnManager,
   createAlwaysOnManager,
   type CreateAlwaysOnManagerOptions,
-} from "./runtime/AlwaysOnManager.js";
-export {
-  buildDiscoveryPrompt,
-  buildExecutionPrompt,
-  buildReportPrompt,
-  buildApplyPrompt,
-  type BuildDiscoveryPromptInput,
-  type BuildExecutionPromptInput,
-  type BuildReportPromptInput,
-  type BuildApplyPromptInput,
-} from "./runtime/discoveryPrompts.js";
-export { DiscoveryPhase, type DiscoveryPhaseDeps, type DiscoveryPhaseInput, type DiscoveryPhaseOutput } from "./phases/discovery/index.js";
-export { WorkspacePhase, type WorkspacePhaseDeps, type WorkspacePhaseInput, type WorkspacePhaseOutput } from "./phases/workspace/index.js";
-export { ExecutionPhase, type ExecutionPhaseDeps, type ExecutionPhaseInput, type ExecutionPhaseOutput } from "./phases/execution/index.js";
-export { ReportPhase, type ReportPhaseDeps, type ReportPhaseInput, type ReportPhaseOutput } from "./phases/report/index.js";
-export { ApplyPhase, type ApplyPhaseDeps, type ApplyPhaseInput, type ApplyPhaseOutput } from "./phases/apply/index.js";
-export {
-  AgentTurnRunner,
-  AlwaysOnFailurePolicy,
-  PhaseEventEmitter,
-  ReportFallbackWriter,
-} from "./phases/shared/index.js";
-export {
-  createAlwaysOnDiscoveryPlanTool,
-  ALWAYS_ON_PLAN_TOOL_NAME,
-  type AlwaysOnDiscoveryPlanInput,
-  type AlwaysOnDiscoveryPlanOutput,
-  type CreateAlwaysOnDiscoveryPlanToolOptions,
-} from "./tool/AlwaysOnDiscoveryPlanTool.js";
-export {
-  createAlwaysOnReportTool,
-  ALWAYS_ON_REPORT_TOOL_NAME,
-  type AlwaysOnReportInput,
-  type AlwaysOnReportOutput,
-  type CreateAlwaysOnReportToolOptions,
-} from "./tool/AlwaysOnReportTool.js";
-export { createApplyHandler, type CreateApplyHandlerDeps } from "./runtime/createApplyHandler.js";
-export type { WorkspaceProvider, WorkspaceProviderId, WorkspacePrepareInput, WorkspacePublishOutput } from "./workspace/WorkspaceProvider.js";
-
-// Web-facing presentation & lifecycle services (shared by UI/CLI/SDK)
+} from "./app/AlwaysOnManager.js";
+export { createApplyHandler, type CreateApplyHandlerDeps } from "./app/createApplyHandler.js";
 export {
   computeExecutionStatus,
   computePlanStatus,
@@ -184,8 +86,11 @@ export {
   type WebPlanContextRefs,
   type WebPlanStatus,
 } from "./web/DiscoveryPlanStatus.js";
-export { DiscoveryPlanService, normalizeDiscoveryPlanRecord, type DiscoveryPlanServiceDeps, type StateManager } from "./web/DiscoveryPlanService.js";
+export {
+  DiscoveryPlanService,
+  normalizeDiscoveryPlanRecord,
+  type DiscoveryPlanServiceDeps,
+  type PlanLifecycleActions,
+  type StateManager,
+} from "./web/DiscoveryPlanService.js";
 export { buildDiscoveryContext, type DiscoveryContextDeps } from "./web/DiscoveryPlanContext.js";
-export { GitWorktreeProvider, type GitWorktreeProviderOptions } from "./workspace/GitWorktreeProvider.js";
-export { SnapshotCopyProvider, type SnapshotCopyProviderOptions } from "./workspace/SnapshotCopyProvider.js";
-export { WorkspaceProviderRegistry } from "./workspace/WorkspaceProviderRegistry.js";

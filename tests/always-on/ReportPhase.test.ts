@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ReportPhase } from "../../src/always-on/phases/report/index.js";
-import { AlwaysOnRunContextRegistry } from "../../src/always-on/runtime/AlwaysOnRunContextRegistry.js";
-import { SessionConfigOverrides } from "../../src/always-on/runtime/SessionConfigOverrides.js";
-import type { DiscoveryPlanRecord, WorkCycleRecord, WorkspaceHandle } from "../../src/always-on/protocol/types.js";
+import { AlwaysOnRunContextRegistry } from "../../src/always-on/phases/shared/RunContextRegistry.js";
+import { SessionConfigOverrides } from "../../src/always-on/phases/shared/SessionConfigOverrides.js";
+import type { DiscoveryPlanRecord, WorkCycleRecord, WorkspaceHandle } from "../../src/always-on/infra/storage/types.js";
 
 describe("ReportPhase", () => {
   it("writes a fallback report and marks the plan completed_no_report when no report is produced", async () => {

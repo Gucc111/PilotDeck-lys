@@ -447,12 +447,12 @@ export interface Gateway {
   /**
    * Trigger an Always-On apply phase: merge workspace changes into the
    * project root via a `bypassPermissions` agent loop inside
-   * `DiscoveryFire.drainTurn`. Progress events are broadcast as
+   * `AlwaysOnPipeline.drainTurn`. Progress events are broadcast as
    * `always-on:turn-event` notifications.
    */
   alwaysOnApply?(input: AlwaysOnApplyInput): Promise<AlwaysOnApplyResult>;
   /**
-   * Re-execute an existing Always-On plan through DiscoveryFire phases 2-4
+   * Re-execute an existing Always-On plan through AlwaysOnPipeline phases 2-4
    * (workspace, execution, report). Used by the UI retry button.
    */
   alwaysOnRerunPlan?(input: AlwaysOnRerunPlanInput): Promise<AlwaysOnRerunPlanResult>;

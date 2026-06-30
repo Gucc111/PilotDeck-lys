@@ -13,7 +13,7 @@
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { runGit } from "../infra/git/index.js";
 import {
   normalizeString,
   toIsoTimestamp,
@@ -117,30 +117,15 @@ export async function buildDiscoveryContext(deps: DiscoveryContextDeps) {
 // Workspace signal collection
 // ---------------------------------------------------------------------------
 
-async function runCommand(command: string, args: string[], cwd: string): Promise<string> {
-  return new Promise((done) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.on("error", () => done(""));
-    child.on("close", (code) => done(code === 0 ? stdout.trim() : ""));
-  });
+async function runGitText(cwd: string, args: string[]): Promise<string> {
+  const result = await runGit(cwd, args).catch(() => undefined);
+  return result && result.exitCode === 0 ? result.stdout.trim() : "";
 }
 
 async function collectWorkspaceSignals(projectRoot: string): Promise<string[]> {
   const [gitStatus, recentCommit] = await Promise.all([
-    runCommand("git", ["-C", projectRoot, "status", "--short"], projectRoot),
-    runCommand(
-      "git",
-      ["-C", projectRoot, "log", "-1", "--stat", "--oneline", "--decorate=no"],
-      projectRoot,
-    ),
+    runGitText(projectRoot, ["status", "--short"]),
+    runGitText(projectRoot, ["log", "-1", "--stat", "--oneline", "--decorate=no"]),
   ]);
 
   const signals: string[] = [];

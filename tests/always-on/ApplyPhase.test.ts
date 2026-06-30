@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ApplyPhase } from "../../src/always-on/phases/apply/index.js";
-import { SessionConfigOverrides } from "../../src/always-on/runtime/SessionConfigOverrides.js";
-import type { WorkCycleRecord } from "../../src/always-on/protocol/types.js";
+import { SessionConfigOverrides } from "../../src/always-on/phases/shared/SessionConfigOverrides.js";
+import type { WorkCycleRecord } from "../../src/always-on/infra/storage/types.js";
 
 describe("ApplyPhase", () => {
   it("rejects a cycle with failed dependency analysis before starting an agent turn", async () => {

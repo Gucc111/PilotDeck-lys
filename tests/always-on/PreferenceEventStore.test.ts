@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
-import { PreferenceEventStore } from "../../src/always-on/storage/log/PreferenceEventStore.js";
-import type { PreferenceEvent } from "../../src/always-on/protocol/types.js";
+import { PreferenceEventStore } from "../../src/always-on/infra/storage/log/PreferenceEventStore.js";
+import type { PreferenceEvent } from "../../src/always-on/infra/storage/types.js";
 
 function event(id: string): PreferenceEvent {
   return {

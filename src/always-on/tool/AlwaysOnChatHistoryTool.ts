@@ -6,7 +6,7 @@ import { readTranscript } from "../../session/transcript/TranscriptReader.js";
 import { replayTranscriptEntries } from "../../session/transcript/TranscriptReplay.js";
 import { sanitizeSessionIdForPath } from "../../session/storage/ProjectSessionStorage.js";
 import { listProjectSessions } from "../../session/storage/SessionList.js";
-import type { AlwaysOnRunContextRegistry } from "../runtime/AlwaysOnRunContextRegistry.js";
+import type { AlwaysOnRunContextRegistry } from "../phases/shared/RunContextRegistry.js";
 
 export type AlwaysOnChatHistoryInput = {
   sessionId: string;

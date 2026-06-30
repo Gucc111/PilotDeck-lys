@@ -2,7 +2,7 @@ import type { GatewayChannelKey, GatewayEvent } from "../../../gateway/index.js"
 import type {
   AlwaysOnDiscoveryOutcome,
   AlwaysOnEventPhase,
-} from "../../protocol/types.js";
+} from "../../infra/storage/types.js";
 
 export type AlwaysOnTelemetryPhase = "discovery" | "workspace" | "execution" | "report" | "apply";
 

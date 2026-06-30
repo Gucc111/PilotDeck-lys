@@ -1,4 +1,4 @@
-import type { WorkCycleDependencyAnalysisStatus } from "../../protocol/types.js";
+import type { WorkCycleDependencyAnalysisStatus } from "../storage/types.js";
 
 export type ProcessCommandResult = {
   exitCode: number;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { WorkspacePhase } from "../../src/always-on/phases/workspace/index.js";
-import type { WorkCycleRecord } from "../../src/always-on/protocol/types.js";
+import type { WorkCycleRecord } from "../../src/always-on/infra/storage/types.js";
 
 describe("WorkspacePhase", () => {
   it("reuses an active cycle with an existing workspace directory", async () => {

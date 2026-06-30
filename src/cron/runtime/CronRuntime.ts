@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import {
   SessionConfigOverrides,
   UNATTENDED_SESSION_EXCLUDED_TOOLS,
-} from "../../always-on/runtime/SessionConfigOverrides.js";
+} from "../../always-on/phases/shared/SessionConfigOverrides.js";
 import type { Gateway } from "../../gateway/index.js";
 import type { PilotDeckToolDefinition } from "../../tool/index.js";
 import type { CronConfig } from "../config/parseCronConfig.js";

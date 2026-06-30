@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import {
   defaultAlwaysOnConfig,
   parseAlwaysOnConfig,
-} from "../../src/always-on/config/index.js";
+} from "../../src/always-on/infra/config/index.js";
 
 describe("Always-On memory config", () => {
   it("has extraction and consolidation thresholds by default", () => {

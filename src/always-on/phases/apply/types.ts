@@ -2,8 +2,8 @@ import type { GatewayEvent } from "../../../gateway/index.js";
 import type { AlwaysOnConfig } from "../../infra/config/index.js";
 import type { DiscoveryPlanStore } from "../../infra/storage/json/DiscoveryPlanStore.js";
 import type { WorkCycleStore } from "../../infra/storage/json/WorkCycleStore.js";
-import type { WorkCycleRecord } from "../../protocol/types.js";
-import type { SessionConfigOverrides } from "../../runtime/SessionConfigOverrides.js";
+import type { WorkCycleRecord } from "../../infra/storage/types.js";
+import type { SessionConfigOverrides } from "../shared/SessionConfigOverrides.js";
 import type { AgentTurnRunner } from "../shared/AgentTurnRunner.js";
 import type { PhaseEventEmitter } from "../shared/PhaseEventEmitter.js";
 

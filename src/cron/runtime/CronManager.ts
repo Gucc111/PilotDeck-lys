@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { resolve } from "node:path";
-import type { SessionConfigOverrides } from "../../always-on/runtime/SessionConfigOverrides.js";
+import type { SessionConfigOverrides } from "../../always-on/phases/shared/SessionConfigOverrides.js";
 import type { Gateway } from "../../gateway/index.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
 import type { PilotDeckToolDefinition } from "../../tool/index.js";

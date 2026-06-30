@@ -1,7 +1,7 @@
 import type { TelemetryClient } from "../../../telemetry/index.js";
 import type {
   AlwaysOnEventPhase,
-} from "../../protocol/types.js";
+} from "../../infra/storage/types.js";
 import type { AlwaysOnEventStore } from "../../infra/storage/log/AlwaysOnEventStore.js";
 import type { AlwaysOnTelemetryPhase, PhaseEventExtra } from "./types.js";
 

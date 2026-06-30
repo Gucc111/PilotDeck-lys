@@ -1,4 +1,4 @@
-import type { DiscoveryPlanRecord } from "../../protocol/types.js";
+import type { DiscoveryPlanRecord } from "../../infra/storage/types.js";
 import { ALWAYS_ON_REPORT_TOOL_NAME } from "../../tool/AlwaysOnReportTool.js";
 import { buildReportPromptZh } from "./prompts.zh.js";
 

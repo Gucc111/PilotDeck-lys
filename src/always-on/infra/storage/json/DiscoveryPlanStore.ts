@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { DiscoveryPlanIndex, DiscoveryPlanRecord, DiscoveryPlanStatus, DiscoveryPlanWorkspaceRef } from "../../../protocol/types.js";
+import type { DiscoveryPlanIndex, DiscoveryPlanRecord, DiscoveryPlanStatus, DiscoveryPlanWorkspaceRef } from "../types.js";
 import { planMarkdownPath, type AlwaysOnPaths } from "../AlwaysOnPaths.js";
 import { atomicWriteJson, readJsonSafe } from "./JsonStoreBase.js";
 

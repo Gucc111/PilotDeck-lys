@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { ExecutionPhase } from "../../src/always-on/phases/execution/index.js";
-import { AlwaysOnRunContextRegistry } from "../../src/always-on/runtime/AlwaysOnRunContextRegistry.js";
-import { SessionConfigOverrides } from "../../src/always-on/runtime/SessionConfigOverrides.js";
-import type { DiscoveryPlanRecord, WorkCycleRecord, WorkspaceHandle } from "../../src/always-on/protocol/types.js";
+import { AlwaysOnRunContextRegistry } from "../../src/always-on/phases/shared/RunContextRegistry.js";
+import { SessionConfigOverrides } from "../../src/always-on/phases/shared/SessionConfigOverrides.js";
+import type { DiscoveryPlanRecord, WorkCycleRecord, WorkspaceHandle } from "../../src/always-on/infra/storage/types.js";
 
 describe("ExecutionPhase", () => {
   it("returns a git-unavailable error before running the agent when workspace is not a git repository", async () => {

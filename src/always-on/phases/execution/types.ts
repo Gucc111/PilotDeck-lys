@@ -3,13 +3,13 @@ import type {
   DiscoveryPlanRecord,
   WorkCycleRecord,
   WorkspaceHandle,
-} from "../../protocol/types.js";
+} from "../../infra/storage/types.js";
 import type { AlwaysOnConfig } from "../../infra/config/index.js";
 import type { AlwaysOnPaths } from "../../infra/storage/AlwaysOnPaths.js";
 import type { DiscoveryPlanStore } from "../../infra/storage/json/DiscoveryPlanStore.js";
 import type { WorkCycleStore } from "../../infra/storage/json/WorkCycleStore.js";
-import type { AlwaysOnRunContextRegistry } from "../../runtime/AlwaysOnRunContextRegistry.js";
-import type { SessionConfigOverrides } from "../../runtime/SessionConfigOverrides.js";
+import type { AlwaysOnRunContextRegistry } from "../shared/RunContextRegistry.js";
+import type { SessionConfigOverrides } from "../shared/SessionConfigOverrides.js";
 import type { AgentTurnRunner } from "../shared/AgentTurnRunner.js";
 import type { PhaseEventEmitter } from "../shared/PhaseEventEmitter.js";
 
