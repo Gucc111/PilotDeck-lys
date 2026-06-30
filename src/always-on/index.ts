@@ -125,10 +125,23 @@ export {
   buildDiscoveryPrompt,
   buildExecutionPrompt,
   buildReportPrompt,
+  buildApplyPrompt,
   type BuildDiscoveryPromptInput,
   type BuildExecutionPromptInput,
   type BuildReportPromptInput,
+  type BuildApplyPromptInput,
 } from "./runtime/discoveryPrompts.js";
+export { DiscoveryPhase, type DiscoveryPhaseDeps, type DiscoveryPhaseInput, type DiscoveryPhaseOutput } from "./phases/discovery/index.js";
+export { WorkspacePhase, type WorkspacePhaseDeps, type WorkspacePhaseInput, type WorkspacePhaseOutput } from "./phases/workspace/index.js";
+export { ExecutionPhase, type ExecutionPhaseDeps, type ExecutionPhaseInput, type ExecutionPhaseOutput } from "./phases/execution/index.js";
+export { ReportPhase, type ReportPhaseDeps, type ReportPhaseInput, type ReportPhaseOutput } from "./phases/report/index.js";
+export { ApplyPhase, type ApplyPhaseDeps, type ApplyPhaseInput, type ApplyPhaseOutput } from "./phases/apply/index.js";
+export {
+  AgentTurnRunner,
+  AlwaysOnFailurePolicy,
+  PhaseEventEmitter,
+  ReportFallbackWriter,
+} from "./phases/shared/index.js";
 export {
   createAlwaysOnDiscoveryPlanTool,
   ALWAYS_ON_PLAN_TOOL_NAME,

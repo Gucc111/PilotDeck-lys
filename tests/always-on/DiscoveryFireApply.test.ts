@@ -7,7 +7,7 @@ import {
   DiscoveryFire,
   type DiscoveryFireDependencies,
 } from "../../src/always-on/runtime/DiscoveryFire.js";
-import type { WorkCycleRecord } from "../../src/always-on/protocol/types.js";
+import type { DiscoveryPlanStatus, WorkCycleRecord } from "../../src/always-on/protocol/types.js";
 import {
   commitDirtyWorkspace,
   getHeadCommit,
@@ -88,7 +88,7 @@ function buildCycle(
   projectRoot: string,
   workspace: string,
   baseCommit: string,
-  plans: Record<string, { beforeHead: string; afterHead: string; commitShas: string[]; status?: string }>,
+  plans: Record<string, { beforeHead: string; afterHead: string; commitShas: string[]; status?: DiscoveryPlanStatus }>,
 ): WorkCycleRecord {
   const planEntries: WorkCycleRecord["plans"] = {};
   for (const [id, p] of Object.entries(plans)) {
