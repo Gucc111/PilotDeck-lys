@@ -27,7 +27,6 @@ import type { WorkspaceProviderRegistry } from "../workspace/WorkspaceProviderRe
 import {
   analyzeExecutionDependencies,
   commitDirtyWorkspace,
-  generateCumulativeDiff,
   generateChangedFileList,
   generatePatchForCommits,
   getHeadCommit,
@@ -424,23 +423,10 @@ export class DiscoveryFire {
     }
 
     const isProjectGit = await isGitRepository(projectRoot);
-    const cumulativeDiffResult = await generateCumulativeDiff(
+    const changedFiles = await generateChangedFileList(
       cycle.workspace.cwd,
       cycle.baseCommit,
     );
-    const diff = {
-      diff: cumulativeDiffResult.diff,
-      fileCount: cumulativeDiffResult.fileCount,
-      truncated: cumulativeDiffResult.truncated,
-    };
-
-    let changedFiles: Array<{ status: string; path: string; oldPath?: string }> | undefined;
-    if (!isProjectGit) {
-      changedFiles = await generateChangedFileList(
-        cycle.workspace.cwd,
-        cycle.baseCommit,
-      );
-    }
 
     const sessionKey = DiscoveryFire.deriveApplySessionKey(this.deps.projectKey, input.runId);
     this.emitEvent(input.runId, "apply_started", { outcome: "executed" });
@@ -458,17 +444,11 @@ export class DiscoveryFire {
         channelKey: APPLY_CHANNEL,
         runId: `${input.runId}.apply`,
         message: buildApplyPrompt({
-          plan: {
-            id: cycle.id,
-            title: input.plans.map((p) => p.title).join("; "),
-            workspace: { cwd: cycle.workspace.cwd, strategy: cycle.workspace.strategy },
-          },
-          projectName: input.projectName,
-          projectRoot,
-          diff,
+          workspaceCwd: cycle.workspace.cwd,
+          baseCommit: cycle.baseCommit,
           isProjectGit,
           changedFiles,
-          branchName: undefined,
+          projectRoot,
           language: this.deps.config.language,
         }),
         mode: "bypassPermissions",

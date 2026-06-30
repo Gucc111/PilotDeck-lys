@@ -205,11 +205,11 @@ describe("runApplyPhase", () => {
       assert.match(prompt, /\bcp\b/, "should suggest cp command");
       assert.match(prompt, /\bmkdir -p\b/, "should suggest mkdir -p");
       assert.match(prompt, /\brm\b/, "should suggest rm command");
-      assert.doesNotMatch(prompt, /git apply/, "should NOT suggest git apply");
+      assert.doesNotMatch(prompt, /\| git apply/, "should NOT suggest piped git apply");
       assert.doesNotMatch(prompt, /git merge/, "should NOT suggest git merge");
       assert.doesNotMatch(prompt, /git cherry-pick/, "should NOT suggest cherry-pick");
 
-      assert.match(prompt, /\[Added\].*new-file\.txt/, "should list the added file");
+      assert.match(prompt, /\[A\].*new-file\.txt/, "should list the added file");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -253,12 +253,11 @@ describe("runApplyPhase", () => {
       assert.equal(result.error, undefined);
       const prompt = getPrompt();
 
-      assert.match(prompt, /git apply/, "should suggest git apply");
-      assert.match(prompt, /Do NOT commit/i, "should warn against committing");
+      assert.match(prompt, /git -C .+ diff .+ \| git apply/, "should contain pipe command");
       assert.match(prompt, /Do NOT use git merge/i, "should warn against git merge");
-      assert.match(prompt, /Do NOT use.*git cherry-pick/i, "should warn against cherry-pick");
-      assert.match(prompt, /Do NOT use.*git am/i, "should warn against git am");
-      assert.doesNotMatch(prompt, /Common approaches/, "should NOT show generic merge approaches");
+      assert.match(prompt, /git cherry-pick/, "should warn against cherry-pick");
+      assert.match(prompt, /git am/, "should warn against git am");
+      assert.match(prompt, /\[A\].*feature\.txt/, "should list the added file");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

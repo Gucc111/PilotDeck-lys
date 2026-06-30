@@ -1,5 +1,4 @@
 import type { DiscoveryPlanRecord } from "../protocol/types.js";
-import type { WorkspaceDiff } from "../workspace/WorkspaceApply.js";
 import type { ChatDigest } from "../context/ChatDigestBuilder.js";
 import { ALWAYS_ON_PLAN_TOOL_NAME } from "../tool/AlwaysOnDiscoveryPlanTool.js";
 import { ALWAYS_ON_REPORT_TOOL_NAME } from "../tool/AlwaysOnReportTool.js";
@@ -287,158 +286,75 @@ export function buildReportPrompt(input: BuildReportPromptInput): string {
 }
 
 export type BuildApplyPromptInput = {
-  plan: { title: string; id: string; workspace?: { cwd: string; strategy: string } };
-  selectedPlanIds?: string[];
-  selectedCommitShas?: string[];
-  commitScoped?: boolean;
-  isProjectGit?: boolean;
-  changedFiles?: Array<{ status: string; path: string; oldPath?: string }>;
-  projectName: string;
+  workspaceCwd: string;
+  baseCommit: string;
+  isProjectGit: boolean;
+  changedFiles: Array<{ status: string; path: string; oldPath?: string }>;
   projectRoot: string;
-  diff: WorkspaceDiff;
-  branchName?: string;
   language?: string;
 };
 
 export function buildApplyPrompt(input: BuildApplyPromptInput): string {
   if (input.language === "zh-CN") return buildApplyPromptZh(input);
-  const { plan, projectName, projectRoot, diff, branchName } = input;
+  const { workspaceCwd, baseCommit, projectRoot, changedFiles } = input;
 
   const lines: string[] = [
-    `Always-On apply for project "${projectName}".`,
+    "Merge a set of file changes from the isolated workspace into the project directory.",
     "",
-    "Your job is to merge changes from the isolated workspace into the project root.",
-    "",
-    "Do not enter Plan Mode.",
-    "Do not create a new plan — apply the existing changes directly.",
-    "",
-    `Plan: "${plan.title}" (${plan.id})`,
-    `Project root: ${projectRoot}`,
+    `Working directory (cwd): ${projectRoot}`,
+    `Isolated workspace: ${workspaceCwd}`,
+    `Base commit: ${baseCommit}`,
   ];
 
-  if (plan.workspace?.cwd) {
-    lines.push(`Isolated workspace: ${plan.workspace.cwd} (${plan.workspace.strategy})`);
-  }
-
-  if (branchName) {
-    lines.push(`Workspace branch: ${branchName}`);
-  }
-
-  if (input.commitScoped) {
-    lines.push(
-      "",
-      "Selected plan ids:",
-      ...(input.selectedPlanIds?.length ? input.selectedPlanIds.map((id) => `  - ${id}`) : ["  - none"]),
-      "",
-      "Selected execution commits, in apply order:",
-      ...(input.selectedCommitShas?.length ? input.selectedCommitShas.map((sha) => `  - ${sha}`) : ["  - no-op execution"]),
-    );
-  }
-
-  lines.push("", "## Merge approach", "");
-
-  if (input.isProjectGit !== undefined) {
-    if (input.isProjectGit) {
-      lines.push(
-        "Below is the cumulative diff from the isolated workspace relative to the baseCommit.",
-        "The diff context lines are based on baseCommit, which matches your workspace's current state.",
-        "",
-        "Recommended approach:",
-        "1. Save the diff below to a temporary file",
-        "2. Run `git apply <patch-file>` in the project root directory",
-        "3. Do NOT commit — only modify the working tree, let the user decide whether to commit",
-        "",
-        "Notes:",
-        "- Use `git apply` (without --3way) — it only modifies working tree files, no commits",
-        "- If apply fails, use Edit/Write tools to manually edit the corresponding files based on the diff",
-        "- Do NOT use git merge / git cherry-pick / git am or any other command that produces commits",
-        "",
-      );
-    } else {
-      const wsCwd = plan.workspace?.cwd ?? "workspace";
-      lines.push(
-        "Below is the changed file list and diff from the isolated workspace relative to its initial state.",
-        "",
-        "Recommended approach:",
-        "1. For added/modified files, copy them from the isolated workspace to the project root:",
-        `   mkdir -p <parent-dir> && cp ${wsCwd}/<path> ${projectRoot}/<path>`,
-        "2. For renamed files: copy to the new path and remove the old path",
-        "3. For deleted files: rm <projectRoot>/<path>",
-        "4. You may batch multiple copy commands into a single shell call",
-        "",
-        "If you need to inspect or fine-tune a file's content before writing, use the Read tool to",
-        "view the workspace file, then the Write/Edit tool to produce the adjusted version.",
-        "",
-        `Do NOT use any git commands on the project root directory (it is not a git repository).`,
-        "",
-      );
-
-      if (input.changedFiles?.length) {
-        lines.push("Changed files:");
-        for (const f of input.changedFiles) {
-          if (f.status === "R") {
-            lines.push(`  - [Renamed] ${f.oldPath} → ${f.path}`);
-          } else if (f.status === "A") {
-            lines.push(`  - [Added] ${f.path}`);
-          } else if (f.status === "D") {
-            lines.push(`  - [Deleted] ${f.path}`);
-          } else {
-            lines.push(`  - [Modified] ${f.path}`);
-          }
-        }
-        lines.push("");
-      }
-    }
-  } else if (input.commitScoped) {
-    lines.push(
-      "Apply only the selected execution patch included below.",
-      "Do not merge the isolated workspace branch or inspect/apply changes belonging to unselected plans.",
-      "",
-      "Choose the best merge strategy based on the situation. You have full access to git and shell tools.",
-      "Use the supplied patch as the source of truth. Apply it with git or reproduce it through precise file edits.",
-      "",
-    );
-  } else {
-    lines.push(
-      "Choose the best merge strategy based on the situation. You have full access to git and shell tools.",
-      "Common approaches (pick whichever fits):",
-      "  - `git merge` / `git merge --no-ff` if the workspace is on a named branch",
-      "  - `git cherry-pick` for individual commits",
-      "  - `git diff` + `git apply` for patch-based application",
-      "  - Direct file edits via Edit/Write tools for surgical changes",
-      "",
-    );
-  }
-
-  if (input.isProjectGit === undefined) {
-    lines.push(
-      "If you encounter conflicts, resolve them intelligently — do not blindly overwrite.",
-      "If you cannot resolve a conflict, leave standard conflict markers (<<<< / ==== / >>>>).",
-      "",
-    );
-  }
-
-  if (!diff.diff.trim()) {
-    lines.push("No differences detected in the workspace. Nothing to apply.");
+  if (changedFiles.length === 0) {
+    lines.push("", "No file changes detected. Nothing to apply.");
     return lines.join("\n");
   }
 
-  if (diff.truncated) {
+  lines.push("", "## Merge approach", "");
+  lines.push(...formatChangedFileList(changedFiles, input.isProjectGit));
+
+  if (input.isProjectGit) {
     lines.push(
-      `The diff is large (${diff.fileCount} files) and has been truncated.`,
-      "Read the relevant files from the workspace directory to compare and apply.",
+      "Run the following command to apply the changes:",
       "",
-      "Truncated diff (first portion):",
+      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD --binary --find-renames | git apply`,
       "",
-      diff.diff,
+      "If the command fails, inspect individual files from the list above and edit manually:",
+      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
+      "Do NOT use git merge / git cherry-pick / git am or any command that produces commits.",
     );
   } else {
     lines.push(
-      `Changes (${diff.fileCount} file${diff.fileCount === 1 ? "" : "s"}):`,
+      "Complete the merge based on the file list above:",
+      `- Added/modified files: cp ${workspaceCwd}/<path> ./<path> (mkdir -p the parent directory first if needed)`,
+      "- Deleted files: rm ./<path>",
+      "- Renamed files: cp to the new path and rm the old path",
+      "- You may batch multiple commands into a single shell call",
+      `- To inspect a specific file's diff: git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
       "",
-      diff.diff,
+      "Do NOT use any git commands on the project directory (it is not a git repository).",
     );
   }
 
   return lines.join("\n");
+}
+
+function formatChangedFileList(
+  files: Array<{ status: string; path: string; oldPath?: string }>,
+  isGit: boolean,
+): string[] {
+  const label = isGit
+    ? "Changed files relative to base commit:"
+    : "Changed files relative to initial state:";
+  const lines = [label];
+  for (const f of files) {
+    if (f.status === "R") {
+      lines.push(`  - [R] ${f.oldPath} → ${f.path}`);
+    } else {
+      lines.push(`  - [${f.status}] ${f.path}`);
+    }
+  }
+  lines.push("");
+  return lines;
 }

@@ -223,143 +223,65 @@ export function buildReportPromptZh(input: BuildReportPromptInput): string {
 }
 
 export function buildApplyPromptZh(input: BuildApplyPromptInput): string {
-  const { plan, projectName, projectRoot, diff, branchName } = input;
+  const { workspaceCwd, baseCommit, projectRoot, changedFiles } = input;
 
   const lines: string[] = [
-    `Always-On 应用变更到项目 "${projectName}"。`,
+    "将隔离工作区中的一组文件变更合并到项目目录。",
     "",
-    "你的任务是将隔离工作区中的变更合并到项目根目录。",
-    "",
-    "不要进入计划模式。",
-    "不要创建新计划——直接应用现有变更。",
-    "",
-    `计划: "${plan.title}" (${plan.id})`,
-    `项目根目录: ${projectRoot}`,
+    `工作目录（当前 cwd）: ${projectRoot}`,
+    `隔离工作区: ${workspaceCwd}`,
+    `Base commit: ${baseCommit}`,
   ];
 
-  if (plan.workspace?.cwd) {
-    lines.push(`隔离工作区: ${plan.workspace.cwd} (${plan.workspace.strategy})`);
-  }
-
-  if (branchName) {
-    lines.push(`工作区分支: ${branchName}`);
-  }
-
-  if (input.commitScoped) {
-    lines.push(
-      "",
-      "选中的 plan id:",
-      ...(input.selectedPlanIds?.length ? input.selectedPlanIds.map((id) => `  - ${id}`) : ["  - 无"]),
-      "",
-      "选中的 execution commits（按应用顺序）:",
-      ...(input.selectedCommitShas?.length ? input.selectedCommitShas.map((sha) => `  - ${sha}`) : ["  - 无改动 execution"]),
-    );
-  }
-
-  lines.push("", "## 合并方式", "");
-
-  if (input.isProjectGit !== undefined) {
-    if (input.isProjectGit) {
-      lines.push(
-        "以下是隔离工作区相对于 baseCommit 的累积 diff。",
-        "这个 diff 的上下文行基于 baseCommit，与你的工作区当前状态一致。",
-        "",
-        "推荐方式：",
-        "1. 将以下 diff 保存为临时文件",
-        "2. 在项目根目录执行 `git apply <patch-file>`",
-        "3. 不要 commit——只修改工作树，由用户自行决定是否 commit",
-        "",
-        "注意：",
-        "- 使用 `git apply`（不带 --3way），它只修改工作树文件，不产生 commit",
-        "- 如果 apply 失败，使用 Edit/Write 工具按照 diff 手动编辑对应文件",
-        "- 不要使用 git merge / git cherry-pick / git am 等会产生 commit 的命令",
-        "",
-      );
-    } else {
-      const wsCwd = plan.workspace?.cwd ?? "workspace";
-      lines.push(
-        "以下是隔离工作区相对于初始状态的变更文件清单和 diff。",
-        "",
-        "推荐方式：",
-        "1. 对于新增/修改的文件，从隔离工作区复制到项目根目录：",
-        `   mkdir -p <父目录> && cp ${wsCwd}/<path> ${projectRoot}/<path>`,
-        "2. 对于重命名的文件：复制到新路径并删除旧路径",
-        "3. 对于删除的文件：rm <projectRoot>/<path>",
-        "4. 可以将多条复制命令合并到一个 shell 调用中批量执行",
-        "",
-        "如果需要检查或微调某个文件的内容后再写入，可使用 Read 工具查看隔离工作区中的文件，",
-        "再用 Write/Edit 工具生成调整后的版本。",
-        "",
-        "不要使用任何 git 命令操作项目根目录（它不是 git 仓库）。",
-        "",
-      );
-
-      if (input.changedFiles?.length) {
-        lines.push("变更文件清单：");
-        for (const f of input.changedFiles) {
-          if (f.status === "R") {
-            lines.push(`  - [重命名] ${f.oldPath} → ${f.path}`);
-          } else if (f.status === "A") {
-            lines.push(`  - [新增] ${f.path}`);
-          } else if (f.status === "D") {
-            lines.push(`  - [删除] ${f.path}`);
-          } else {
-            lines.push(`  - [修改] ${f.path}`);
-          }
-        }
-        lines.push("");
-      }
-    }
-  } else if (input.commitScoped) {
-    lines.push(
-      "只应用下方提供的选中 execution 补丁。",
-      "不要合并整个隔离工作区分支, 也不要检查或应用属于未选 plan 的改动。",
-      "",
-      "根据实际情况选择最佳的合并策略。你可以完全使用 git 和 shell 工具。",
-      "以下方补丁为唯一改动来源。可使用 git 应用补丁, 或通过精确文件编辑复现补丁。",
-      "",
-    );
-  } else {
-    lines.push(
-      "根据实际情况选择最佳的合并策略。你可以完全使用 git 和 shell 工具。",
-      "常见方式 (根据情况选择):",
-      "  - `git merge` / `git merge --no-ff` 如果工作区在命名分支上",
-      "  - `git cherry-pick` 针对单个提交",
-      "  - `git diff` + `git apply` 基于补丁的应用",
-      "  - 使用 Edit/Write 工具直接编辑文件, 适用于精确的小范围变更",
-      "",
-    );
-  }
-
-  if (input.isProjectGit === undefined) {
-    lines.push(
-      "如果遇到冲突, 请智能解决——不要盲目覆盖。",
-      "如果无法解决冲突, 保留标准冲突标记 (<<<< / ==== / >>>>)。",
-      "",
-    );
-  }
-
-  if (!diff.diff.trim()) {
-    lines.push("工作区未检测到差异。无需应用任何变更。");
+  if (changedFiles.length === 0) {
+    lines.push("", "未检测到文件变更，无需操作。");
     return lines.join("\n");
   }
 
-  if (diff.truncated) {
+  lines.push("", "## 合并方式", "");
+  lines.push(...formatChangedFileListZh(changedFiles, input.isProjectGit));
+
+  if (input.isProjectGit) {
     lines.push(
-      `差异较大 (${diff.fileCount} 个文件), 已截断。`,
-      "请从工作区目录读取相关文件进行对比和应用。",
+      "执行以下命令将变更应用到项目目录：",
       "",
-      "截断后的差异 (前部内容):",
+      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD --binary --find-renames | git apply`,
       "",
-      diff.diff,
+      "如果命令失败，根据上方文件清单，逐文件查看 diff 并手动编辑：",
+      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
+      "不要使用 git merge / git cherry-pick / git am 等会产生 commit 的命令。",
     );
   } else {
     lines.push(
-      `变更内容 (${diff.fileCount} 个文件):`,
+      "根据文件清单完成合并：",
+      `- 新增/修改的文件：cp ${workspaceCwd}/<path> ./<path>（必要时先 mkdir -p 父目录）`,
+      "- 删除的文件：rm ./<path>",
+      "- 重命名的文件：cp 到新路径并 rm 旧路径",
+      "- 可将多条命令合并到一个 shell 调用中批量执行",
+      `- 如需查看某文件的具体改动：git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
       "",
-      diff.diff,
+      "不要使用任何 git 命令操作项目目录（它不是 git 仓库）。",
     );
   }
 
   return lines.join("\n");
+}
+
+function formatChangedFileListZh(
+  files: Array<{ status: string; path: string; oldPath?: string }>,
+  isGit: boolean,
+): string[] {
+  const label = isGit
+    ? "相对于 base commit 的变更文件："
+    : "相对于初始状态的变更文件：";
+  const lines = [label];
+  for (const f of files) {
+    if (f.status === "R") {
+      lines.push(`  - [R] ${f.oldPath} → ${f.path}`);
+    } else {
+      lines.push(`  - [${f.status}] ${f.path}`);
+    }
+  }
+  lines.push("");
+  return lines;
 }
