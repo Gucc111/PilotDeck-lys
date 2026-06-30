@@ -8,7 +8,7 @@ import {
   preparePreferenceMemory,
   readPreferences,
   type PreferenceLlmOptions,
-} from "../../src/always-on/memory/PreferenceExtractor.js";
+} from "../../src/always-on/phases/discovery/memory/index.js";
 import { PreferenceEventStore } from "../../src/always-on/storage/log/PreferenceEventStore.js";
 import type { PreferenceEvent } from "../../src/always-on/protocol/types.js";
 

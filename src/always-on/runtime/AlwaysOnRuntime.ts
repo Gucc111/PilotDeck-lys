@@ -28,7 +28,7 @@ import { DiscoveryFire, type DiscoveryFireDependencies } from "./DiscoveryFire.j
 import { DiscoveryScheduler } from "./DiscoveryScheduler.js";
 import { SessionConfigOverrides } from "./SessionConfigOverrides.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
-import type { LoggerLike, PreferenceLlmOptions } from "../memory/PreferenceExtractor.js";
+import type { LoggerLike, PreferenceLlmOptions } from "../phases/discovery/memory/index.js";
 import { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
 
 export type AlwaysOnRuntimeLogger = {

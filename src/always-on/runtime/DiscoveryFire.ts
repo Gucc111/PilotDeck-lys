@@ -18,9 +18,9 @@ import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.j
 import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
 import { AlwaysOnEventStore } from "../infra/storage/log/AlwaysOnEventStore.js";
 import type { PreferenceEventStore } from "../infra/storage/log/PreferenceEventStore.js";
-import type { LoggerLike, PreferenceLlmOptions } from "../memory/PreferenceExtractor.js";
 import { ApplyPhase } from "../phases/apply/ApplyPhase.js";
 import { DiscoveryPhase } from "../phases/discovery/DiscoveryPhase.js";
+import type { LoggerLike, PreferenceLlmOptions } from "../phases/discovery/memory/index.js";
 import { ExecutionPhase } from "../phases/execution/ExecutionPhase.js";
 import { ReportPhase } from "../phases/report/ReportPhase.js";
 import {

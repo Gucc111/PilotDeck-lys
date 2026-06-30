@@ -11,7 +11,7 @@ import type { WorkCycleStore } from "../../infra/storage/json/WorkCycleStore.js"
 import type { PreferenceEventStore } from "../../infra/storage/log/PreferenceEventStore.js";
 import type { AlwaysOnRunContextRegistry } from "../../runtime/AlwaysOnRunContextRegistry.js";
 import type { SessionConfigOverrides } from "../../runtime/SessionConfigOverrides.js";
-import type { LoggerLike, PreferenceLlmOptions } from "../../memory/PreferenceExtractor.js";
+import type { LoggerLike, PreferenceLlmOptions } from "./memory/index.js";
 import type { AgentTurnRunner } from "../shared/AgentTurnRunner.js";
 import type { PhaseEventEmitter } from "../shared/PhaseEventEmitter.js";
 

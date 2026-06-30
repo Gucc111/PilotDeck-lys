@@ -1,6 +1,6 @@
 import { PilotDeckToolRuntimeError } from "../../tool/protocol/errors.js";
 import type { PilotDeckToolDefinition } from "../../tool/protocol/types.js";
-import { parseReportMarkdown, type ReportMetadata } from "../contracts/ReportContract.js";
+import { parseReportMarkdown, type ReportMetadata } from "../phases/report/contract/index.js";
 import type { AlwaysOnRunContextRegistry } from "../runtime/AlwaysOnRunContextRegistry.js";
 
 export type AlwaysOnReportInput = {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PilotDeckToolRuntimeError } from "../../tool/protocol/errors.js";
 import type { PilotDeckToolDefinition } from "../../tool/protocol/types.js";
-import { parsePlanMarkdown, type PlanContractOptions } from "../contracts/PlanContract.js";
+import { parsePlanMarkdown, type PlanContractOptions } from "../phases/discovery/contract/index.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { DiscoveryPlanRecord } from "../protocol/types.js";
 import type { AlwaysOnRunContextRegistry, DiscoveryRunContext } from "../runtime/AlwaysOnRunContextRegistry.js";

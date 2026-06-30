@@ -60,7 +60,14 @@ export {
   type PreferenceExtractorDependencies,
   type PreferenceLlmOptions,
   type PreparePreferenceMemoryInput,
-} from "./memory/PreferenceExtractor.js";
+} from "./phases/discovery/memory/index.js";
+export {
+  buildChatDigest,
+  extractAllUserPrompts,
+  type BuildChatDigestOptions,
+  type ChatDigest,
+  type ChatSessionDigest,
+} from "./phases/discovery/context/index.js";
 export {
   parsePlanMarkdown,
   PLAN_REQUIRED_SECTIONS,
@@ -69,7 +76,7 @@ export {
   type PlanContractOptions,
   type PlanMetadata,
   type PlanParseResult,
-} from "./contracts/PlanContract.js";
+} from "./phases/discovery/contract/index.js";
 export {
   parseReportMarkdown,
   buildFallbackReport,
@@ -79,7 +86,7 @@ export {
   type ReportMetadata,
   type ReportParseResult,
   type BuildFallbackReportInput,
-} from "./contracts/ReportContract.js";
+} from "./phases/report/contract/index.js";
 export { ChannelLeaseRegistry, type LeaseUpdateInput } from "./runtime/ChannelLeaseRegistry.js";
 export {
   evaluateAlwaysOnDiscoveryGates,

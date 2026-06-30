@@ -1,4 +1,4 @@
-import type { ChatDigest } from "../../context/ChatDigestBuilder.js";
+import type { ChatDigest } from "./context/index.js";
 import { ALWAYS_ON_CHAT_HISTORY_TOOL_NAME } from "../../tool/AlwaysOnChatHistoryTool.js";
 import { ALWAYS_ON_PLAN_TOOL_NAME } from "../../tool/AlwaysOnDiscoveryPlanTool.js";
 import { buildDiscoveryPromptZh } from "./prompts.zh.js";

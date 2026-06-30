@@ -1,4 +1,4 @@
-import { buildFallbackReport, type ReportMetadata } from "../../contracts/ReportContract.js";
+import { buildFallbackReport, type ReportMetadata } from "../report/contract/index.js";
 import type { DiscoveryPlanRecord } from "../../protocol/types.js";
 import type { DiscoveryReportStore } from "../../infra/storage/file/DiscoveryReportStore.js";
 

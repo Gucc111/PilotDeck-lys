@@ -1,5 +1,5 @@
 import type { GatewayChannelKey, GatewayEvent } from "../../../gateway/index.js";
-import { parseReportMarkdown, type ReportMetadata } from "../../contracts/ReportContract.js";
+import { parseReportMarkdown, type ReportMetadata } from "./contract/index.js";
 import type { ReportRunContext } from "../../runtime/AlwaysOnRunContextRegistry.js";
 import {
   deriveReportSessionKey,

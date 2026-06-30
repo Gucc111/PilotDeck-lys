@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildDiscoveryPrompt } from "../../src/always-on/runtime/discoveryPrompts.js";
+import { buildDiscoveryPrompt } from "../../src/always-on/phases/discovery/prompts.js";
 
 function prompt(language?: string): string {
   return buildDiscoveryPrompt({

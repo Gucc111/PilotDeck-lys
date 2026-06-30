@@ -13,7 +13,7 @@ import {
 } from "./AlwaysOnRuntime.js";
 import { SessionConfigOverrides } from "./SessionConfigOverrides.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
-import type { PreferenceLlmOptions } from "../memory/PreferenceExtractor.js";
+import type { PreferenceLlmOptions } from "../phases/discovery/memory/index.js";
 
 export type CreateAlwaysOnManagerOptions = {
   config: AlwaysOnConfig;
