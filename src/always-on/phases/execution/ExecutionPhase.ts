@@ -73,8 +73,6 @@ export class ExecutionPhase {
           message: buildExecutionPrompt({
             plan,
             planMarkdown: input.planMarkdown,
-            workspaceCwd: workspace.cwd,
-            workspaceStrategy: workspace.strategy,
             language: this.deps.config.language,
           }),
           mode: "bypassPermissions",
