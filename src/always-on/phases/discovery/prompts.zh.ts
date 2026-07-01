@@ -6,7 +6,7 @@ import type { BuildDiscoveryPromptInput, ExistingPlanSummary } from "./prompts.j
 export function buildDiscoveryPromptZh(input: BuildDiscoveryPromptInput): string {
   const rootPath = input.workspace?.cwd ?? input.projectRoot;
   const lines: string[] = [
-    `你正在为项目执行自主 Always-On 发现任务: ${rootPath}`,
+    `你正在为项目执行自主发现任务: ${rootPath}`,
     "",
     "目标: 最多提出一个有价值的任务。",
     "",
@@ -83,7 +83,7 @@ function formatChatDigestSectionZh(digest?: ChatDigest): string[] {
 function formatPreferencesSectionZh(preferences?: string): string[] {
   if (!preferences?.trim()) return [];
   return [
-    "## Always-On 用户偏好",
+    "## 用户偏好",
     "",
     "以下偏好来自历史计划的处置结果。",
     "避免提出与用户拒绝倾向一致的任务, 但不要将用户曾接受的任务类型视为唯一方向——",

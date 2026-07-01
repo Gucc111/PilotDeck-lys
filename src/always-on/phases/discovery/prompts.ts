@@ -27,7 +27,7 @@ export function buildDiscoveryPrompt(input: BuildDiscoveryPromptInput): string {
   if (input.language === "zh-CN") return buildDiscoveryPromptZh(input);
   const rootPath = input.workspace?.cwd ?? input.projectRoot;
   const lines: string[] = [
-    `You are running an autonomous Always-On discovery for project: ${rootPath}`,
+    `You are running an autonomous project discovery task for: ${rootPath}`,
     "",
     "Goal: identify AT MOST ONE worthwhile task to propose.",
     "",
@@ -104,7 +104,7 @@ function formatChatDigestSection(digest?: ChatDigest): string[] {
 function formatPreferencesSection(preferences?: string): string[] {
   if (!preferences?.trim()) return [];
   return [
-    "## Always-On user preferences",
+    "## User preferences",
     "",
     "The following preferences were learned from past plan outcomes.",
     "Avoid proposing tasks aligned with rejected preferences, but do not confine yourself to previously accepted types —",

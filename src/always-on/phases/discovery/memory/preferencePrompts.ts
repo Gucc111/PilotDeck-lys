@@ -1,6 +1,6 @@
 import type { PreferenceEvent } from "../../../infra/storage/types.js";
 
-const EXTRACTION_SYSTEM_PROMPT = `You are an Always-On preference analysis assistant. Based on how the user handled automatic task suggestions, analyze and update the user's preference summary.
+const EXTRACTION_SYSTEM_PROMPT = `You are a preference analysis assistant. Based on how the user handled automatic task suggestions, analyze and update the user's preference summary.
 
 Output format:
 - Organize into two blocks: "## More likely to be accepted" and "## More likely to be rejected"
@@ -17,7 +17,7 @@ Update rules:
 Output the COMPLETE updated preferences.md content, including all existing dimensions.
 If no new preferences are discovered, output exactly: NONE`;
 
-const EXTRACTION_SYSTEM_PROMPT_ZH = `你是一个 Always-On 偏好分析助手。根据用户对自动任务建议的处置结果，分析并更新用户的偏好摘要。
+const EXTRACTION_SYSTEM_PROMPT_ZH = `你是一个偏好分析助手。根据用户对自动任务建议的处置结果，分析并更新用户的偏好摘要。
 
 输出格式：
 - 整体分为两大块："## 更可能被用户接受" 和 "## 更可能被用户拒绝"
@@ -34,7 +34,7 @@ const EXTRACTION_SYSTEM_PROMPT_ZH = `你是一个 Always-On 偏好分析助手�
 输出完整的更新后 preferences.md 内容，包含所有已有维度。
 如果没有发现新的偏好，请准确输出：NONE`;
 
-const CONSOLIDATION_SYSTEM_PROMPT = `You are an Always-On preference analysis assistant. Consolidate a user's preference summary by merging semantically similar dimensions and removing dimensions with insufficient evidence.
+const CONSOLIDATION_SYSTEM_PROMPT = `You are a preference analysis assistant. Consolidate a user's preference summary by merging semantically similar dimensions and removing dimensions with insufficient evidence.
 
 Rules:
 - Merge dimensions that describe the same type of task preference
@@ -43,7 +43,7 @@ Rules:
 - Use a tactful tone
 - Output the COMPLETE updated preferences.md content`;
 
-const CONSOLIDATION_SYSTEM_PROMPT_ZH = `你是一个 Always-On 偏好分析助手。请合并整理用户的偏好摘要，将语义相近的维度合并，并删除证据不足的维度。
+const CONSOLIDATION_SYSTEM_PROMPT_ZH = `你是一个偏好分析助手。请合并整理用户的偏好摘要，将语义相近的维度合并，并删除证据不足的维度。
 
 规则：
 - 合并描述同类任务偏好的维度
