@@ -20,15 +20,32 @@ export function buildApplyPromptZh(input: BuildApplyPromptInput): string {
   lines.push(...formatChangedFileListZh(changedFiles, input.isProjectGit));
 
   if (input.isProjectGit) {
-    lines.push(
-      "执行以下命令将变更应用到项目目录：",
-      "",
-      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD --binary --find-renames | git apply`,
-      "",
-      "如果命令失败，根据上方文件清单，逐文件查看 diff 并手动编辑：",
-      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
-      "不要使用 git merge / git cherry-pick / git am 等会产生 commit 的命令。",
-    );
+    if (input.programmaticApplyError) {
+      lines.push(
+        "PilotDeck 已经尝试用程序化方式应用累积 diff，但该步骤失败。",
+        "你现在是 fallback 合并者。不要盲目重复执行同一条命令；请检查受影响文件，必要时手动编辑项目文件。",
+        "",
+        "失败命令：",
+        `  ${input.programmaticApplyError.command}`,
+        "",
+        "失败输出：",
+        input.programmaticApplyError.error || input.programmaticApplyError.stderr || input.programmaticApplyError.stdout || "（无输出）",
+        "",
+        "逐文件查看隔离工作区中的 diff，并直接编辑项目文件：",
+        `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
+        "不要使用 git merge / git cherry-pick / git am，也不要创建 commit。",
+      );
+    } else {
+      lines.push(
+        "执行以下命令将变更应用到项目目录：",
+        "",
+        `  git -C ${workspaceCwd} diff ${baseCommit} HEAD --binary --find-renames | git apply`,
+        "",
+        "如果命令失败，根据上方文件清单，逐文件查看 diff 并手动编辑：",
+        `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
+        "不要使用 git merge / git cherry-pick / git am 等会产生 commit 的命令。",
+      );
+    }
   } else {
     lines.push(
       "根据文件清单完成合并：",

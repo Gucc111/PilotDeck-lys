@@ -20,17 +20,17 @@ import { buildDiscoveryContext } from '../../src/always-on/web/DiscoveryPlanCont
 import {
   applyWorktreeToProject,
   disposeWorkspace as disposeWorkspaceImpl,
-} from '../../src/always-on/workspace/WorkspaceApply.js';
+} from '../../src/always-on/phases/apply/workspaceLifecycle.js';
 import {
   getStatusPorcelain,
   revertCommits,
-} from '../../src/always-on/workspace/WorkspaceGit.js';
-import { resolveAlwaysOnPaths } from '../../src/always-on/storage/AlwaysOnPaths.js';
-import { DiscoveryPlanStore } from '../../src/always-on/storage/json/DiscoveryPlanStore.js';
-import { WorkCycleStore } from '../../src/always-on/storage/json/WorkCycleStore.js';
-import { DiscoveryStateStore } from '../../src/always-on/storage/json/DiscoveryStateStore.js';
-import { DiscoveryReportStore } from '../../src/always-on/storage/file/DiscoveryReportStore.js';
-import { PreferenceEventStore } from '../../src/always-on/storage/log/PreferenceEventStore.js';
+} from '../../src/always-on/infra/git/index.js';
+import { resolveAlwaysOnPaths } from '../../src/always-on/infra/storage/AlwaysOnPaths.js';
+import { DiscoveryPlanStore } from '../../src/always-on/infra/storage/json/DiscoveryPlanStore.js';
+import { WorkCycleStore } from '../../src/always-on/infra/storage/json/WorkCycleStore.js';
+import { DiscoveryStateStore } from '../../src/always-on/infra/storage/json/DiscoveryStateStore.js';
+import { DiscoveryReportStore } from '../../src/always-on/infra/storage/file/DiscoveryReportStore.js';
+import { PreferenceEventStore } from '../../src/always-on/infra/storage/log/PreferenceEventStore.js';
 
 // ---------------------------------------------------------------------------
 // Wire dependencies for the service
@@ -131,8 +131,14 @@ export async function archiveWorkCycle(projectName, cycleId, planIds) {
   return getService().archiveCycle(projectName, cycleId, planIds);
 }
 
-export async function applyWorkCycle(projectName, cycleId, planIds) {
-  const result = await getService().queueCycleApply(projectName, cycleId, planIds);
+export async function checkApplyReadiness(projectName, cycleId, planIds) {
+  return getService().checkApplyReadiness(projectName, cycleId, planIds);
+}
+
+export async function applyWorkCycle(projectName, cycleId, planIds, options = {}) {
+  const result = await getService().queueCycleApply(projectName, cycleId, planIds, {
+    allowDivergedProject: !!options.allowDivergedProject,
+  });
 
   const gw = await getPilotDeckGateway();
 
@@ -142,6 +148,7 @@ export async function applyWorkCycle(projectName, cycleId, planIds) {
       projectKey: result.projectRoot,
       workCycleId: cycleId,
       projectName,
+      allowDivergedProject: !!options.allowDivergedProject,
     };
     if (!result.legacyWorkspaceApply) {
       applyInput.planIds = result.planIds;

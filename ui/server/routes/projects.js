@@ -13,6 +13,7 @@ import {
   getProjectDiscoveryPlanReport,
   rerunDiscoveryPlan,
   getProjectWorkCycles,
+  checkApplyReadiness,
   applyWorkCycle,
   archiveWorkCycle,
 } from '../discovery-plans.js';
@@ -191,6 +192,8 @@ function getDiscoveryPlanErrorStatus(error) {
     error?.code === 'INVALID_STATE' ||
     error?.code === 'MISSING_PLAN_BODY' ||
     error?.code === 'MISSING_WORKSPACE' ||
+    error?.code === 'PROJECT_DIRTY' ||
+    error?.code === 'PROJECT_DIVERGED' ||
     error?.code === 'plan_already_executed'
   ) {
     return 409;
@@ -291,11 +294,30 @@ router.post('/:projectName/work-cycles/:cycleId/apply', async (req, res) => {
     if (!cycleId) return res.status(400).json({ error: 'cycleId is required' });
 
     const planIds = Array.isArray(req.body?.planIds) ? req.body.planIds : undefined;
-    const result = await applyWorkCycle(projectName, cycleId, planIds);
+    const result = await applyWorkCycle(projectName, cycleId, planIds, {
+      allowDivergedProject: !!req.body?.allowDivergedProject,
+    });
     return res.json(result);
   } catch (error) {
     return res.status(getDiscoveryPlanErrorStatus(error)).json({
       error: getDiscoveryPlanErrorMessage(error, 'Failed to apply work cycle')
+    });
+  }
+});
+
+router.post('/:projectName/work-cycles/:cycleId/apply/readiness', async (req, res) => {
+  try {
+    const projectName = getTrimmedParam(req.params?.projectName);
+    const cycleId = getTrimmedParam(req.params?.cycleId);
+    if (!projectName) return res.status(400).json({ error: 'projectName is required' });
+    if (!cycleId) return res.status(400).json({ error: 'cycleId is required' });
+
+    const planIds = Array.isArray(req.body?.planIds) ? req.body.planIds : undefined;
+    const result = await checkApplyReadiness(projectName, cycleId, planIds);
+    return res.json(result);
+  } catch (error) {
+    return res.status(getDiscoveryPlanErrorStatus(error)).json({
+      error: getDiscoveryPlanErrorMessage(error, 'Failed to check apply readiness')
     });
   }
 });

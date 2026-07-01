@@ -107,6 +107,7 @@ export function createApplyHandler(
       cycle,
       plans: cyclePlans,
       planIds: resolvedPlanIds,
+      allowDivergedProject: input.allowDivergedProject,
       projectName: input.projectName,
       projectRoot: input.projectKey,
     });

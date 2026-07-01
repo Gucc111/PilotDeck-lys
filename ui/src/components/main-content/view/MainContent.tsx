@@ -169,8 +169,9 @@ function MainContent({
     projectName: string,
     cycleId: string,
     planIds?: string[],
+    options?: { allowDivergedProject?: boolean },
   ) => {
-    const response = await api.applyWorkCycle(projectName, cycleId, planIds);
+    const response = await api.applyWorkCycle(projectName, cycleId, planIds, options);
     const payload = await readJsonPayload<{ cycle?: { id: string }; sessionKey?: string; executionToken?: string; error?: { code: string; message: string } | string }>(response);
     if (!response.ok || !payload) {
       const errMsg = typeof payload?.error === 'string' ? payload.error : payload?.error?.message;
@@ -435,7 +436,12 @@ type SplitBodyProps = {
   inlineThinking: any;
   autoScrollToBottom: any;
   sendByCtrlEnter: any;
-  applyAndLaunchCycle: (projectName: string, cycleId: string) => Promise<void>;
+  applyAndLaunchCycle: (
+    projectName: string,
+    cycleId: string,
+    planIds?: string[],
+    options?: { allowDivergedProject?: boolean },
+  ) => Promise<void>;
   handleOpenExecutionSession: (projectKey: string, runId: string, projectName?: string) => void;
   editorExpanded: boolean;
   hasEditor: boolean;

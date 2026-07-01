@@ -24,7 +24,12 @@ type AlwaysOnV2Props = {
   selectedProject: Project | null;
   subTab: AlwaysOnSubTab;
   onSubTabChange: (tab: AlwaysOnSubTab) => void;
-  onApplyWorkCycle?: (projectName: string, cycleId: string, planIds?: string[]) => Promise<void>;
+  onApplyWorkCycle?: (
+    projectName: string,
+    cycleId: string,
+    planIds?: string[],
+    options?: { allowDivergedProject?: boolean },
+  ) => Promise<void>;
   onOpenExecutionSession?: (projectKey: string, runId: string, projectName?: string) => void;
 };
 

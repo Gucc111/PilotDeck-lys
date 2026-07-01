@@ -38,3 +38,19 @@ export type CumulativeDiff = {
   fileCount: number;
   truncated: boolean;
 };
+
+export type ApplyProjectReadinessStatus =
+  | "clean"
+  | "dirty"
+  | "diverged"
+  | "changed"
+  | "unknown";
+
+export type ApplyProjectReadiness = {
+  isProjectGit: boolean;
+  status: ApplyProjectReadinessStatus;
+  changedFiles: ChangedFileEntry[];
+  affectedPaths: string[];
+  conflictingPaths: string[];
+  message: string;
+};

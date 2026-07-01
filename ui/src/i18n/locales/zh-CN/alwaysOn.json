@@ -109,6 +109,15 @@
       "applying": "正在应用…",
       "applied": "已应用",
       "archived": "已归档"
+    },
+    "applyReadiness": {
+      "dirty": "原项目存在未提交改动，请先处理后再应用。",
+      "diverged": "原项目状态与隔离环境基准不一致。",
+      "changed": "原项目自隔离工作区创建后存在文件变动。",
+      "unknown": "PilotDeck 无法确认原项目是否仍与隔离环境基准一致。",
+      "continue": "继续应用",
+      "cancel": "取消",
+      "dismiss": "知道了"
     }
   }
 }

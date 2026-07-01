@@ -109,6 +109,15 @@
       "applying": "Applying…",
       "applied": "Applied",
       "archived": "Archived"
+    },
+    "applyReadiness": {
+      "dirty": "The project has uncommitted changes. Please handle them before applying.",
+      "diverged": "The project state differs from the isolated workspace base.",
+      "changed": "The project has file changes since the isolated workspace was created.",
+      "unknown": "PilotDeck could not verify whether the project still matches the isolated workspace.",
+      "continue": "Continue",
+      "cancel": "Cancel",
+      "dismiss": "Dismiss"
     }
   }
 }

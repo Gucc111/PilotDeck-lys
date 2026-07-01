@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import {
   analyzeExecutionDependencies,
+  checkApplyProjectReadiness,
   commitDirtyWorkspace,
+  generateChangedFileList,
   generatePatchForCommits,
   getHeadCommit,
   getStatusPorcelain,
@@ -170,6 +172,95 @@ describe("infra git operations", () => {
       assert.equal(await readFile(join(cwd, "hidden.txt"), "utf8"), "current plan\n");
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("detects dirty and diverged git project files only for affected paths", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pilotdeck-readiness-git-"));
+    const project = join(root, "project");
+    const workspace = join(root, "workspace");
+    try {
+      await mkdir(project, { recursive: true });
+      await writeFile(join(project, "file.txt"), "base\n", "utf8");
+      const baseCommit = await initializeTemporaryGitRepository(project, "base");
+      const clone = await runGit(root, ["clone", project, workspace]);
+      assert.equal(clone.exitCode, 0, clone.stderr);
+
+      await writeFile(join(workspace, "file.txt"), "workspace\n", "utf8");
+      await commitDirtyWorkspace(workspace, "workspace change");
+      const changedFiles = await generateChangedFileList(workspace, baseCommit);
+
+      await writeFile(join(project, "file.txt"), "dirty\n", "utf8");
+      const dirty = await checkApplyProjectReadiness({
+        projectRoot: project,
+        workspaceCwd: workspace,
+        baseCommit,
+        changedFiles,
+      });
+      assert.equal(dirty.status, "dirty");
+      assert.deepEqual(dirty.conflictingPaths, ["file.txt"]);
+
+      await writeFile(join(project, "file.txt"), "base\n", "utf8");
+      await writeFile(join(project, "other.txt"), "other\n", "utf8");
+      await commitDirtyWorkspace(project, "unrelated");
+      const unrelated = await checkApplyProjectReadiness({
+        projectRoot: project,
+        workspaceCwd: workspace,
+        baseCommit,
+        changedFiles,
+      });
+      assert.equal(unrelated.status, "clean");
+
+      await writeFile(join(project, "file.txt"), "project\n", "utf8");
+      await commitDirtyWorkspace(project, "project change");
+      const diverged = await checkApplyProjectReadiness({
+        projectRoot: project,
+        workspaceCwd: workspace,
+        baseCommit,
+        changedFiles,
+      });
+      assert.equal(diverged.status, "diverged");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("detects changed files in non-git projects using only affected paths", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pilotdeck-readiness-nongit-"));
+    const project = join(root, "project");
+    const workspace = join(root, "workspace");
+    try {
+      await mkdir(project, { recursive: true });
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(project, "file.txt"), "base\n", "utf8");
+      await writeFile(join(project, "other.txt"), "changed\n", "utf8");
+      await writeFile(join(workspace, "file.txt"), "base\n", "utf8");
+      await writeFile(join(workspace, "other.txt"), "base\n", "utf8");
+      const baseCommit = await initializeTemporaryGitRepository(workspace, "base");
+
+      await writeFile(join(workspace, "file.txt"), "workspace\n", "utf8");
+      await commitDirtyWorkspace(workspace, "workspace change");
+      const changedFiles = await generateChangedFileList(workspace, baseCommit);
+
+      const clean = await checkApplyProjectReadiness({
+        projectRoot: project,
+        workspaceCwd: workspace,
+        baseCommit,
+        changedFiles,
+      });
+      assert.equal(clean.status, "clean");
+
+      await writeFile(join(project, "file.txt"), "project\n", "utf8");
+      const changed = await checkApplyProjectReadiness({
+        projectRoot: project,
+        workspaceCwd: workspace,
+        baseCommit,
+        changedFiles,
+      });
+      assert.equal(changed.status, "changed");
+      assert.deepEqual(changed.conflictingPaths, ["file.txt"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

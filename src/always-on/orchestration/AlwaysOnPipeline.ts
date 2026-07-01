@@ -211,6 +211,7 @@ export class AlwaysOnPipeline {
     cycle: WorkCycleRecord;
     plans: Array<{ id: string; title: string }>;
     planIds?: string[];
+    allowDivergedProject?: boolean;
     projectName: string;
     projectRoot: string;
   }): Promise<{ events: GatewayEvent[]; error?: { code: string; message: string }; sessionKey: string }> {

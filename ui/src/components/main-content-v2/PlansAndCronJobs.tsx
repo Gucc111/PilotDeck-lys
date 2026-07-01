@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type {
+  ApplyProjectReadiness,
   CronJobOverview,
   CronJobsOverviewResponse,
   DiscoveryPlanOverview,
@@ -365,8 +366,18 @@ function buildGraphLayout(
 // ---------------------------------------------------------------------------
 
 type PlansAndCronJobsProps = {
-  onApplyWorkCycle?: (projectName: string, cycleId: string, planIds?: string[]) => Promise<void>;
+  onApplyWorkCycle?: (
+    projectName: string,
+    cycleId: string,
+    planIds?: string[],
+    options?: { allowDivergedProject?: boolean },
+  ) => Promise<void>;
   onOpenPlanDetail?: (planId: string, projectName: string, projectDisplayName: string, sourceRunId: string, projectKey: string) => void;
+};
+
+type ApplyReadinessPrompt = {
+  cycleId: string;
+  readiness: ApplyProjectReadiness;
 };
 
 export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }: PlansAndCronJobsProps) {
@@ -380,6 +391,7 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [cycleBusy, setCycleBusy] = useState<string | null>(null);
   const [confirmingArchiveCycle, setConfirmingArchiveCycle] = useState<string | null>(null);
+  const [applyReadinessPrompt, setApplyReadinessPrompt] = useState<ApplyReadinessPrompt | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [selectedPlanIdsByCycle, setSelectedPlanIdsByCycle] = useState<Map<string, Set<string>>>(new Map());
 
@@ -681,6 +693,7 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
 
                   const toggleAllPlans = () => {
                     if (!activeSelectionKey) return;
+                    setApplyReadinessPrompt(null);
                     updateCycleSelection(activeSelectionKey, (current) => {
                       const allSelected = planRecords.length > 0 && planRecords.every((plan) => current.has(plan.id));
                       return allSelected ? new Set<string>() : new Set(planRecords.map((plan) => plan.id));
@@ -689,6 +702,7 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
 
                   const togglePlan = (planId: string) => {
                     if (!activeSelectionKey) return;
+                    setApplyReadinessPrompt(null);
                     updateCycleSelection(activeSelectionKey, (current) => {
                       if (current.has(planId)) current.delete(planId);
                       else current.add(planId);
@@ -696,19 +710,36 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                     });
                   };
 
-                  const handleApply = async () => {
+                  const performApply = async (allowDivergedProject: boolean) => {
+                    if (onApplyWorkCycle) {
+                      await onApplyWorkCycle(projectKey, activeCycle!.id, selectedPlanIdList, { allowDivergedProject });
+                    } else {
+                      const res = await api.applyWorkCycle(projectKey, activeCycle!.id, selectedPlanIdList, { allowDivergedProject });
+                      if (!res.ok) {
+                        const body = await res.json().catch(() => ({})) as { error?: string };
+                        throw new Error(body?.error || `HTTP ${res.status}`);
+                      }
+                    }
+                  };
+
+                  const handleApply = async (options: { allowDivergedProject?: boolean } = {}) => {
                     if (!activeCycle || applyDisabled) return;
                     setCycleBusy(activeCycle.id);
                     try {
-                      if (onApplyWorkCycle) {
-                        await onApplyWorkCycle(projectKey, activeCycle.id, selectedPlanIdList);
-                      } else {
-                        const res = await api.applyWorkCycle(projectKey, activeCycle.id, selectedPlanIdList);
-                        if (!res.ok) {
-                          const body = await res.json().catch(() => ({})) as { error?: string };
-                          throw new Error(body?.error || `HTTP ${res.status}`);
+                      if (!options.allowDivergedProject) {
+                        const readinessRes = await api.checkApplyReadiness(projectKey, activeCycle.id, selectedPlanIdList);
+                        if (!readinessRes.ok) {
+                          const body = await readinessRes.json().catch(() => ({})) as { error?: string };
+                          throw new Error(body?.error || `HTTP ${readinessRes.status}`);
+                        }
+                        const readiness = await readinessRes.json() as ApplyProjectReadiness;
+                        if (readiness.status === 'dirty' || readiness.status === 'diverged' || readiness.status === 'changed' || readiness.status === 'unknown') {
+                          setApplyReadinessPrompt({ cycleId: activeCycle.id, readiness });
+                          return;
                         }
                       }
+                      await performApply(!!options.allowDivergedProject);
+                      setApplyReadinessPrompt(null);
                       await refresh();
                     } catch {
                       // Visible via refresh.
@@ -736,6 +767,18 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                   };
 
                   const confirmingArchive = !!activeCycle && confirmingArchiveCycle === activeCycle.id;
+                  const applyPrompt = !!activeCycle && applyReadinessPrompt?.cycleId === activeCycle.id
+                    ? applyReadinessPrompt
+                    : null;
+                  const applyPromptMessage = applyPrompt
+                    ? applyPrompt.readiness.status === 'dirty'
+                      ? t('plansCron.applyReadiness.dirty', { defaultValue: 'The project has uncommitted changes. Please handle them before applying.' })
+                      : applyPrompt.readiness.status === 'changed'
+                        ? t('plansCron.applyReadiness.changed', { defaultValue: 'The project has file changes since the isolated workspace was created.' })
+                        : applyPrompt.readiness.status === 'unknown'
+                          ? t('plansCron.applyReadiness.unknown', { defaultValue: 'PilotDeck could not verify whether the project still matches the isolated workspace.' })
+                          : t('plansCron.applyReadiness.diverged', { defaultValue: 'The project state differs from the isolated workspace base.' })
+                    : '';
 
                   return (
                     <>
@@ -748,6 +791,31 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                           toggleSection={toggleSection}
                           actions={
                             <div className="flex items-center gap-1.5">
+                              {applyPrompt && (
+                                <div className="flex max-w-[360px] items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200">
+                                  <AlertCircle className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+                                  <span className="line-clamp-2">{applyPromptMessage}</span>
+                                  {applyPrompt.readiness.status !== 'dirty' && (
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() => void handleApply({ allowDivergedProject: true })}
+                                      className="ml-1 inline-flex h-6 shrink-0 items-center rounded bg-amber-600 px-2 text-[11px] font-medium text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-500 dark:disabled:bg-neutral-800 dark:disabled:text-neutral-500"
+                                    >
+                                      {t('plansCron.applyReadiness.continue', { defaultValue: 'Continue' })}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setApplyReadinessPrompt(null)}
+                                    className="inline-flex h-6 shrink-0 items-center rounded border border-amber-200 px-2 text-[11px] text-amber-700 transition hover:bg-amber-100 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-900/60"
+                                  >
+                                    {applyPrompt.readiness.status === 'dirty'
+                                      ? t('plansCron.applyReadiness.dismiss', { defaultValue: 'Dismiss' })
+                                      : t('plansCron.applyReadiness.cancel', { defaultValue: 'Cancel' })}
+                                  </button>
+                                </div>
+                              )}
                               {isApplying && (
                                 <span className="inline-flex items-center gap-1 text-xxs text-sky-600 dark:text-sky-400">
                                   <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} />

@@ -23,6 +23,7 @@ export type ApplyPhaseInput = {
   cycle: WorkCycleRecord;
   plans: Array<{ id: string; title: string }>;
   planIds?: string[];
+  allowDivergedProject?: boolean;
   projectName: string;
   projectRoot: string;
 };

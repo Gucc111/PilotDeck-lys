@@ -1,12 +1,13 @@
 import type { GatewayChannelKey } from "../../../gateway/index.js";
 import {
+  checkApplyProjectReadiness,
   generateChangedFileList,
-  isGitRepository,
   revertCommits,
 } from "../../infra/git/index.js";
 import { deriveApplySessionKey, pickFirstError } from "../shared/index.js";
 import { buildApplyPrompt } from "./prompts.js";
 import type { ApplyPhaseDeps, ApplyPhaseInput, ApplyPhaseOutput } from "./types.js";
+import { applyCumulativeDiffToProject, type ProgrammaticApplyResult } from "./workspaceLifecycle.js";
 
 const APPLY_CHANNEL: GatewayChannelKey = "always-on/apply";
 
@@ -110,14 +111,66 @@ export class ApplyPhase {
       }
     }
 
-    const isProjectGit = await isGitRepository(projectRoot);
     const changedFiles = await generateChangedFileList(
       cycle.workspace.cwd,
       cycle.baseCommit,
     );
+    const readiness = await checkApplyProjectReadiness({
+      projectRoot,
+      workspaceCwd: cycle.workspace.cwd,
+      baseCommit: cycle.baseCommit,
+      changedFiles,
+    });
+    if (readiness.status === "dirty") {
+      return {
+        events: [],
+        sessionKey: "",
+        error: {
+          code: "project_dirty",
+          message: "Project has uncommitted changes in files touched by the selected plans. Please handle those changes before applying.",
+        },
+      };
+    }
+    if (
+      (readiness.status === "diverged" ||
+        readiness.status === "changed") &&
+      !input.allowDivergedProject
+    ) {
+      return {
+        events: [],
+        sessionKey: "",
+        error: {
+          code: "project_diverged",
+          message: readiness.message,
+        },
+      };
+    }
+    const isProjectGit = readiness.isProjectGit;
+
+    let programmaticApplyError: ProgrammaticApplyResult | undefined;
+    let applyStarted = false;
+    const emitApplyStarted = () => {
+      if (applyStarted) return;
+      this.deps.events.emit(input.runId, "apply_started", { outcome: "executed" });
+      applyStarted = true;
+    };
+
+    if (isProjectGit) {
+      emitApplyStarted();
+      const result = await applyCumulativeDiffToProject(
+        cycle.workspace.cwd,
+        cycle.baseCommit,
+        projectRoot,
+      );
+      if (result.applied) {
+        this.deps.events.emit(input.runId, "apply_completed", { outcome: "executed" });
+        return { events: [], sessionKey: "", error: undefined };
+      }
+      programmaticApplyError = result;
+    }
 
     const sessionKey = deriveApplySessionKey(this.deps.projectKey, input.runId);
-    this.deps.events.emit(input.runId, "apply_started", { outcome: "executed" });
+    emitApplyStarted();
     this.deps.sessionOverrides.set(sessionKey, {
       cwd: projectRoot,
       permissionMode: "bypassPermissions",
@@ -136,6 +189,7 @@ export class ApplyPhase {
           baseCommit: cycle.baseCommit,
           isProjectGit,
           changedFiles,
+          programmaticApplyError,
           projectRoot,
           language: this.deps.config.language,
         }),

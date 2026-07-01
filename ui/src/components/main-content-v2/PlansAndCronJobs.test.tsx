@@ -14,6 +14,7 @@ const apiMock = vi.hoisted(() => ({
   allCronJobs: vi.fn(),
   projectDiscoveryPlans: vi.fn(),
   projectWorkCycles: vi.fn(),
+  checkApplyReadiness: vi.fn(),
   applyWorkCycle: vi.fn(),
   archiveWorkCycle: vi.fn(),
   executeProjectDiscoveryPlan: vi.fn(),
@@ -108,6 +109,14 @@ function setup(plans: DiscoveryPlanOverview[], cycles: WorkCycleOverview[]) {
   apiMock.allCronJobs.mockResolvedValue(jsonResponse({ jobs: [] }));
   apiMock.projectDiscoveryPlans.mockResolvedValue(jsonResponse({ plans }));
   apiMock.projectWorkCycles.mockResolvedValue(jsonResponse({ cycles }));
+  apiMock.checkApplyReadiness.mockResolvedValue(jsonResponse({
+    isProjectGit: true,
+    status: 'clean',
+    changedFiles: [],
+    affectedPaths: [],
+    conflictingPaths: [],
+    message: 'clean',
+  }));
   apiMock.applyWorkCycle.mockResolvedValue(jsonResponse({ ok: true }));
   apiMock.archiveWorkCycle.mockResolvedValue(jsonResponse({ archived: true }));
 
@@ -288,13 +297,63 @@ describe('PlansAndCronJobs selection behavior', () => {
 
     fireEvent.click(applyButton());
     await waitFor(() => {
-      expect(apiMock.applyWorkCycle).toHaveBeenCalledWith('general', 'cycle-current', ['plan-a', 'plan-b']);
+      expect(apiMock.checkApplyReadiness).toHaveBeenCalledWith('general', 'cycle-current', ['plan-a', 'plan-b']);
+      expect(apiMock.applyWorkCycle).toHaveBeenCalledWith('general', 'cycle-current', ['plan-a', 'plan-b'], { allowDivergedProject: false });
     });
 
     fireEvent.click(archiveButton());
     fireEvent.click(screen.getByRole('button', { name: /^Archive$/ }));
     await waitFor(() => {
       expect(apiMock.archiveWorkCycle).toHaveBeenCalledWith('general', 'cycle-current', ['plan-a', 'plan-b']);
+    });
+  });
+
+  it('blocks apply when readiness reports dirty project files', async () => {
+    setup(
+      [makePlan('plan-a', 'Plan A')],
+      [makeCycle({ 'plan-a': makePlanState({ commitShas: ['commit-a'] }) })],
+    );
+    apiMock.checkApplyReadiness.mockResolvedValue(jsonResponse({
+      isProjectGit: true,
+      status: 'dirty',
+      changedFiles: [{ status: 'M', path: 'file.txt' }],
+      affectedPaths: ['file.txt'],
+      conflictingPaths: ['file.txt'],
+      message: 'dirty',
+    }));
+
+    await waitForPlans();
+    fireEvent.click(screen.getByLabelText('Select plan: Plan A'));
+    fireEvent.click(applyButton());
+
+    await screen.findByText('The project has uncommitted changes. Please handle them before applying.');
+    expect(apiMock.applyWorkCycle).not.toHaveBeenCalled();
+  });
+
+  it('confirms diverged project files before continuing apply', async () => {
+    setup(
+      [makePlan('plan-a', 'Plan A')],
+      [makeCycle({ 'plan-a': makePlanState({ commitShas: ['commit-a'] }) })],
+    );
+    apiMock.checkApplyReadiness.mockResolvedValue(jsonResponse({
+      isProjectGit: true,
+      status: 'diverged',
+      changedFiles: [{ status: 'M', path: 'file.txt' }],
+      affectedPaths: ['file.txt'],
+      conflictingPaths: ['file.txt'],
+      message: 'diverged',
+    }));
+
+    await waitForPlans();
+    fireEvent.click(screen.getByLabelText('Select plan: Plan A'));
+    fireEvent.click(applyButton());
+
+    await screen.findByText('The project state differs from the isolated workspace base.');
+    expect(apiMock.applyWorkCycle).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => {
+      expect(apiMock.applyWorkCycle).toHaveBeenCalledWith('general', 'cycle-current', ['plan-a'], { allowDivergedProject: true });
     });
   });
 });

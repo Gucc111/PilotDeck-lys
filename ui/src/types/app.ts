@@ -122,6 +122,22 @@ export interface WorkCycleOverview {
   archivedAt?: string;
 }
 
+export type ApplyProjectReadinessStatus =
+  | 'clean'
+  | 'dirty'
+  | 'diverged'
+  | 'changed'
+  | 'unknown';
+
+export interface ApplyProjectReadiness {
+  isProjectGit: boolean;
+  status: ApplyProjectReadinessStatus;
+  changedFiles: Array<{ status: string; path: string; oldPath?: string }>;
+  affectedPaths: string[];
+  conflictingPaths: string[];
+  message: string;
+}
+
 export interface DiscoveryContextMemoryItem {
   path: string;
   modifiedAt: string;

@@ -197,10 +197,18 @@ export const api = {
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/discovery-plans/${encodeURIComponent(planId)}/report`),
   projectWorkCycles: (projectName) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles`),
-  applyWorkCycle: (projectName, cycleId, planIds) =>
-    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles/${encodeURIComponent(cycleId)}/apply`, {
+  checkApplyReadiness: (projectName, cycleId, planIds) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles/${encodeURIComponent(cycleId)}/apply/readiness`, {
       method: 'POST',
       ...(Array.isArray(planIds) ? { body: JSON.stringify({ planIds }) } : {}),
+    }),
+  applyWorkCycle: (projectName, cycleId, planIds, options = {}) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles/${encodeURIComponent(cycleId)}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(Array.isArray(planIds) ? { planIds } : {}),
+        ...(options.allowDivergedProject ? { allowDivergedProject: true } : {}),
+      }),
     }),
   archiveWorkCycle: (projectName, cycleId, planIds) =>
     authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/work-cycles/${encodeURIComponent(cycleId)}/archive`, {

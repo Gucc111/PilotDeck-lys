@@ -7,6 +7,15 @@ export type WorkspaceDiff = {
   truncated: boolean;
 };
 
+export type ProgrammaticApplyResult = {
+  applied: boolean;
+  diff?: string;
+  error?: string;
+  command: string;
+  stdout?: string;
+  stderr?: string;
+};
+
 const MAX_INLINE_DIFF_CHARS = 80_000;
 
 export async function generateWorkspaceDiff(
@@ -117,6 +126,50 @@ export async function applyWorktreeToProject(
   }
 
   return { applied: true, diff: patch };
+}
+
+export async function applyCumulativeDiffToProject(
+  worktreeCwd: string,
+  baseCommit: string,
+  projectRoot: string,
+  gitBin = "git",
+): Promise<ProgrammaticApplyResult> {
+  const command = `git -C ${worktreeCwd} diff ${baseCommit} HEAD --binary --find-renames | git -C ${projectRoot} apply`;
+  const diffResult = await runGit(worktreeCwd, [
+    "diff",
+    baseCommit,
+    "HEAD",
+    "--binary",
+    "--find-renames",
+  ], { gitBin });
+  if (diffResult.exitCode !== 0) {
+    return {
+      applied: false,
+      command,
+      stdout: diffResult.stdout,
+      stderr: diffResult.stderr,
+      error: `git diff failed: ${diffResult.stderr || diffResult.stdout}`,
+    };
+  }
+
+  const patch = diffResult.stdout;
+  if (!patch.trim()) {
+    return { applied: true, diff: "", command };
+  }
+
+  const applyResult = await runGit(projectRoot, ["apply"], { gitBin, stdin: patch });
+  if (applyResult.exitCode !== 0) {
+    return {
+      applied: false,
+      diff: patch,
+      command,
+      stdout: applyResult.stdout,
+      stderr: applyResult.stderr,
+      error: `git apply failed: ${applyResult.stderr || applyResult.stdout}`,
+    };
+  }
+
+  return { applied: true, diff: patch, command, stdout: applyResult.stdout, stderr: applyResult.stderr };
 }
 
 export async function disposeWorkspace(

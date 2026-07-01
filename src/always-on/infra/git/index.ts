@@ -1,4 +1,6 @@
 export type {
+  ApplyProjectReadiness,
+  ApplyProjectReadinessStatus,
   ChangedFileEntry,
   CumulativeDiff,
   ExecutionDependencyAnalysis,
@@ -17,7 +19,9 @@ export {
 } from "./runner.js";
 export {
   ALWAYS_ON_GIT_IDENTITY,
+  checkApplyProjectReadiness,
   commitDirtyWorkspace,
+  generateApplyChangedFileList,
   generateChangedFileList,
   generateCumulativeDiff,
   generatePatchForCommits,

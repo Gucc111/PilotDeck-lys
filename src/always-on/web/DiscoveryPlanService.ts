@@ -26,6 +26,11 @@ import type { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
 import type { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
 import type { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
 import {
+  checkApplyProjectReadiness,
+  generateApplyChangedFileList,
+  type ApplyProjectReadiness,
+} from "../infra/git/index.js";
+import {
   computeExecutionStatus,
   computePlanStatus,
   normalizeString,
@@ -109,6 +114,10 @@ export type DiscoveryPlanServiceDeps = {
   logger?: {
     warn: (message: string, data?: Record<string, unknown>) => void;
   };
+};
+
+export type QueueCycleApplyOptions = {
+  allowDivergedProject?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -528,10 +537,11 @@ export class DiscoveryPlanService {
     return { archived: true, planIds: selectedPlanIds };
   }
 
-  /**
-   * Mark a cycle as "applying" and return its metadata.
-   */
-  async queueCycleApply(projectName: string, cycleId: string, planIds?: string[]) {
+  async checkApplyReadiness(
+    projectName: string,
+    cycleId: string,
+    planIds?: string[],
+  ): Promise<ApplyProjectReadiness> {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const { planStore, cycleStore } = this.stores(projectRoot);
 
@@ -558,6 +568,47 @@ export class DiscoveryPlanService {
     const selectedPlanIds = normalizePlanSelection(cycle, webPlans, planIds);
     validateApplySelection(cycle, webPlans, selectedPlanIds);
 
+    return this.computeApplyReadiness(projectRoot, cycle, selectedPlanIds);
+  }
+
+  /**
+   * Mark a cycle as "applying" and return its metadata.
+   */
+  async queueCycleApply(
+    projectName: string,
+    cycleId: string,
+    planIds?: string[],
+    options: QueueCycleApplyOptions = {},
+  ) {
+    const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
+    const { planStore, cycleStore } = this.stores(projectRoot);
+
+    const cycleIndex = await cycleStore.readIndex();
+    const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
+    if (!cycle) throw makeError("Work cycle not found", "NOT_FOUND");
+
+    if (cycle.status !== "active") {
+      throw makeError(
+        `Cycle must be in active status to apply (current: ${cycle.status})`,
+        "INVALID_STATE",
+      );
+    }
+
+    if (!cycle.workspace?.cwd) {
+      throw makeError(
+        "Cycle has no associated workspace to apply",
+        "MISSING_WORKSPACE",
+      );
+    }
+
+    const storeIndex = await planStore.readIndex();
+    const webPlans = toWebPlanRecords(storeIndex);
+    const selectedPlanIds = normalizePlanSelection(cycle, webPlans, planIds);
+    validateApplySelection(cycle, webPlans, selectedPlanIds);
+
+    const readiness = await this.computeApplyReadiness(projectRoot, cycle, selectedPlanIds);
+    enforceApplyReadiness(readiness, options);
+
     await cycleStore.updateStatus(cycleId, "applying", new Date());
 
     const executionToken = randomUUID();
@@ -567,6 +618,7 @@ export class DiscoveryPlanService {
       projectRoot,
       executionToken,
       planIds: selectedPlanIds,
+      readiness,
     };
   }
 
@@ -722,6 +774,44 @@ export class DiscoveryPlanService {
       });
     }
   }
+
+  private async computeApplyReadiness(
+    projectRoot: string,
+    cycle: WorkCycleRecord,
+    selectedPlanIds: string[],
+  ): Promise<ApplyProjectReadiness> {
+    const selected = new Set(selectedPlanIds);
+    const unselectedCommitShas = Object.entries(cycle.plans)
+      .filter(([planId, state]) => (
+        !selected.has(planId) &&
+        state.status !== "applied" &&
+        state.status !== "archived"
+      ))
+      .flatMap(([, state]) => state.commitShas ?? []);
+
+    try {
+      const changedFiles = await generateApplyChangedFileList(
+        cycle.workspace.cwd,
+        cycle.baseCommit,
+        unselectedCommitShas,
+      );
+      return checkApplyProjectReadiness({
+        projectRoot,
+        workspaceCwd: cycle.workspace.cwd,
+        baseCommit: cycle.baseCommit,
+        changedFiles,
+      });
+    } catch (error) {
+      return {
+        isProjectGit: false,
+        status: "unknown",
+        changedFiles: [],
+        affectedPaths: [],
+        conflictingPaths: [],
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -732,4 +822,23 @@ function makeError(message: string, code: string): Error & { code: string } {
   const error = new Error(message) as Error & { code: string };
   error.code = code;
   return error;
+}
+
+function enforceApplyReadiness(
+  readiness: ApplyProjectReadiness,
+  options: QueueCycleApplyOptions,
+): void {
+  if (readiness.status === "dirty") {
+    throw makeError(
+      "Project has uncommitted changes in files touched by the selected plans. Please handle those changes before applying.",
+      "PROJECT_DIRTY",
+    );
+  }
+  if (
+    (readiness.status === "diverged" ||
+      readiness.status === "changed") &&
+    !options.allowDivergedProject
+  ) {
+    throw makeError(readiness.message, "PROJECT_DIVERGED");
+  }
 }

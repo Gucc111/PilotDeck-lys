@@ -342,6 +342,7 @@ export type AlwaysOnApplyInput = {
   workCycleId: string;
   projectName: string;
   planIds?: string[];
+  allowDivergedProject?: boolean;
 };
 
 export type AlwaysOnApplyResult = {

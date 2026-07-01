@@ -5,6 +5,12 @@ export type BuildApplyPromptInput = {
   baseCommit: string;
   isProjectGit: boolean;
   changedFiles: Array<{ status: string; path: string; oldPath?: string }>;
+  programmaticApplyError?: {
+    command: string;
+    error?: string;
+    stdout?: string;
+    stderr?: string;
+  };
   projectRoot: string;
   language?: string;
 };
@@ -30,15 +36,32 @@ export function buildApplyPrompt(input: BuildApplyPromptInput): string {
   lines.push(...formatChangedFileList(changedFiles, input.isProjectGit));
 
   if (input.isProjectGit) {
-    lines.push(
-      "Run the following command to apply the changes:",
-      "",
-      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD --binary --find-renames | git apply`,
-      "",
-      "If the command fails, inspect individual files from the list above and edit manually:",
-      `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
-      "Do NOT use git merge / git cherry-pick / git am or any command that produces commits.",
-    );
+    if (input.programmaticApplyError) {
+      lines.push(
+        "PilotDeck already tried to apply the cumulative diff programmatically, but it failed.",
+        "You are the fallback merger. Do not blindly rerun the same command; inspect the affected files and apply the changes manually when needed.",
+        "",
+        "Failed command:",
+        `  ${input.programmaticApplyError.command}`,
+        "",
+        "Failure output:",
+        input.programmaticApplyError.error || input.programmaticApplyError.stderr || input.programmaticApplyError.stdout || "(no output)",
+        "",
+        "Inspect individual file diffs from the isolated workspace and edit the project files directly:",
+        `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
+        "Do NOT use git merge / git cherry-pick / git am, and do NOT create commits.",
+      );
+    } else {
+      lines.push(
+        "Run the following command to apply the changes:",
+        "",
+        `  git -C ${workspaceCwd} diff ${baseCommit} HEAD --binary --find-renames | git apply`,
+        "",
+        "If the command fails, inspect individual files from the list above and edit manually:",
+        `  git -C ${workspaceCwd} diff ${baseCommit} HEAD -- <file>`,
+        "Do NOT use git merge / git cherry-pick / git am or any command that produces commits.",
+      );
+    }
   } else {
     lines.push(
       "Complete the merge based on the file list above:",
