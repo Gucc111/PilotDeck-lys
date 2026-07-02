@@ -244,7 +244,7 @@ export class AlwaysOnPipeline {
       });
     }
 
-    const planMarkdown = await this.deps.planStore.readPlanMarkdown(planId);
+    const planMarkdown = await this.deps.planStore.readPlanByPath(planRecord.planFilePath);
     if (!planMarkdown) {
       return failedResult(runId, startedAt, startedAt, planId, {
         code: "plan_body_missing",

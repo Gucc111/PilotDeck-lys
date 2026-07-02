@@ -63,7 +63,6 @@ async function createFixture(input: {
     status: plan.status,
     summary: `${plan.id} summary`,
     rationale: "",
-    dedupeKey: plan.id,
     sourceRunId: `run-${plan.id}`,
     planFilePath: `plans/${plan.id}.md`,
     workCycleId: "cycle-1",

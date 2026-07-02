@@ -21,7 +21,6 @@ function validPlan(overrides: Partial<Record<string, string>> = {}): string {
     "> sourceRunId: run_1",
     "> createdAt: 2026-01-01T00:00:00.000Z",
     "> projectRoot: /project",
-    "> dedupeKey: phase-ownership-cleanup",
     "",
     "## Summary",
     sections.Summary,
@@ -50,7 +49,6 @@ describe("Discovery plan contract", () => {
     assert.equal(parsed.title, "Phase Ownership Cleanup");
     assert.equal(parsed.metadata.id, "plan_1");
     assert.equal(parsed.metadata.sourceRunId, "run_1");
-    assert.equal(parsed.metadata.dedupeKey, "phase-ownership-cleanup");
     assert.deepEqual(Object.keys(parsed.sections), [
       "Summary",
       "Rationale",

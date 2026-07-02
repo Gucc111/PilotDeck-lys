@@ -14,7 +14,6 @@ it("rejects rerunning a completed plan", async () => {
     status: "completed",
     summary: "",
     rationale: "",
-    dedupeKey: "plan-1",
     sourceRunId: "run-1",
     planFilePath: "plans/plan-1.md",
     workCycleId: "cycle-1",

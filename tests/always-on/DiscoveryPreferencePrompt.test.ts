@@ -9,9 +9,9 @@ function prompt(language?: string): string {
     createdAt: "2026-01-01T00:00:00.000Z",
     chatDir: "/chats",
     existingPlans: [
-      { id: "pending", title: "Pending", summary: "pending summary", dedupeKey: "pending", status: "completed_no_report" },
-      { id: "applied", title: "Applied", summary: "applied summary", dedupeKey: "applied", status: "applied" },
-      { id: "archived", title: "Archived", summary: "archived summary", dedupeKey: "archived", status: "archived" },
+      { id: "pending", title: "Pending", summary: "pending summary", status: "completed_no_report" },
+      { id: "applied", title: "Applied", summary: "applied summary", status: "applied" },
+      { id: "archived", title: "Archived", summary: "archived summary", status: "archived" },
     ],
     preferences: "## Preference marker",
     language,

@@ -33,6 +33,7 @@ describe("AlwaysOnPipeline report session reuse", () => {
       const stateStore = new DiscoveryStateStore(paths);
       const cycleStore = new WorkCycleStore(paths);
       const reportStore = new DiscoveryReportStore(paths);
+      const planFilePath = await planStore.writePlanMarkdown("Plan 1", "test0001", "# Plan 1\n\n## Execution Steps\n- Do work.\n");
       const plan: DiscoveryPlanRecord = {
         id: "plan-1",
         title: "Plan 1",
@@ -40,11 +41,9 @@ describe("AlwaysOnPipeline report session reuse", () => {
         status: "ready",
         summary: "summary",
         rationale: "rationale",
-        dedupeKey: "plan-1",
         sourceRunId: "source-run",
-        planFilePath: "plans/plan-1.md",
+        planFilePath,
       };
-      await planStore.writePlanMarkdown(plan.id, "# Plan 1\n\n## Execution Steps\n- Do work.\n");
       await planStore.upsert(plan);
 
       const workspaceRegistry = new WorkspaceProviderRegistry();

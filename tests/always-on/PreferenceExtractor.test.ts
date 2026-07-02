@@ -23,7 +23,6 @@ function event(id: string): PreferenceEvent {
       id: `plan-${id}`,
       title: `Plan ${id}`,
       summary: `Summary ${id}`,
-      dedupeKey: `plan-${id}`,
       outcome: id.includes("archive") ? "archived" : "applied",
     }],
     indexed: false,

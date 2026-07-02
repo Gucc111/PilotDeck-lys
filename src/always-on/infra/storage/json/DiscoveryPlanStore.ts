@@ -35,16 +35,11 @@ export class DiscoveryPlanStore {
     await atomicWriteJson(this.paths.planIndexFile, index);
   }
 
-  async writePlanMarkdown(planId: string, markdown: string): Promise<string> {
-    const filePath = planMarkdownPath(this.paths, planId);
+  async writePlanMarkdown(title: string, uid: string, markdown: string): Promise<string> {
+    const filePath = planMarkdownPath(this.paths, title, uid);
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, markdown, "utf-8");
     return filePath;
-  }
-
-  async readPlanMarkdown(planId: string): Promise<string | undefined> {
-    const filePath = planMarkdownPath(this.paths, planId);
-    return safeReadFile(filePath);
   }
 
   async readPlanByPath(planFilePath: string): Promise<string | undefined> {
@@ -120,7 +115,7 @@ export class DiscoveryPlanStore {
 
   async updatePlanFields(
     planId: string,
-    fields: Partial<Pick<DiscoveryPlanRecord, "status" | "reportFilePath" | "workCycleId" | "title" | "summary" | "rationale" | "dedupeKey">>,
+    fields: Partial<Pick<DiscoveryPlanRecord, "status" | "reportFilePath" | "workCycleId" | "title" | "summary" | "rationale">>,
   ): Promise<DiscoveryPlanRecord | undefined> {
     const index = await this.readIndex();
     const target = index.plans.find((entry) => entry.id === planId);
@@ -136,7 +131,6 @@ export class DiscoveryPlanStore {
     if (fields.title !== undefined) target.title = fields.title;
     if (fields.summary !== undefined) target.summary = fields.summary;
     if (fields.rationale !== undefined) target.rationale = fields.rationale;
-    if (fields.dedupeKey !== undefined) target.dedupeKey = fields.dedupeKey;
     await this.writeIndex(index);
     return target;
   }
@@ -159,7 +153,6 @@ function normalizePlanRecord(raw: Record<string, unknown>): DiscoveryPlanRecord 
       : "ready",
     summary: typeof raw.summary === "string" ? raw.summary : "",
     rationale: typeof raw.rationale === "string" ? raw.rationale : "",
-    dedupeKey: typeof raw.dedupeKey === "string" ? raw.dedupeKey : (typeof raw.id === "string" ? raw.id : ""),
     sourceRunId: typeof raw.sourceRunId === "string" ? raw.sourceRunId : "",
     planFilePath: typeof raw.planFilePath === "string" ? raw.planFilePath : "",
     reportFilePath: typeof raw.reportFilePath === "string" ? raw.reportFilePath : undefined,

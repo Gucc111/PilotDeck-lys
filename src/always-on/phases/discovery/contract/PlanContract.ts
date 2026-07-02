@@ -18,7 +18,6 @@ export type PlanMetadata = {
   sourceRunId: string;
   createdAt: string;
   projectRoot: string;
-  dedupeKey: string;
 };
 
 export type PlanParseResult = {
@@ -43,7 +42,6 @@ export const PLAN_METADATA_KEYS: ReadonlyArray<keyof PlanMetadata> = [
   "sourceRunId",
   "createdAt",
   "projectRoot",
-  "dedupeKey",
 ];
 
 export type PlanContractOptions = {
@@ -215,7 +213,6 @@ function parseMetadataLines(lines: string[]): Record<keyof PlanMetadata, string>
     sourceRunId: "",
     createdAt: "",
     projectRoot: "",
-    dedupeKey: "",
   };
   for (const line of lines) {
     const trimmed = line.trim();

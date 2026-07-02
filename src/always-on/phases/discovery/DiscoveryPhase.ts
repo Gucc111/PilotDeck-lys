@@ -61,7 +61,6 @@ export class DiscoveryPhase {
       id: p.id,
       title: p.title,
       summary: p.summary,
-      dedupeKey: p.dedupeKey,
       status: p.status,
     }));
 

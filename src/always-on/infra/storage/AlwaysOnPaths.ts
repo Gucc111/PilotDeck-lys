@@ -61,12 +61,20 @@ export function resolveAlwaysOnPaths(input: {
   };
 }
 
-export function planMarkdownPath(paths: AlwaysOnPaths, planId: string): string {
-  return resolve(paths.plansDir, `${sanitizeId(planId)}.md`);
+export function planMarkdownPath(paths: AlwaysOnPaths, title: string, uid: string): string {
+  return resolve(paths.plansDir, `${sanitizeId(title)}--${sanitizeId(uid)}.md`);
 }
 
 export function reportMarkdownPath(paths: AlwaysOnPaths, runId: string): string {
   return resolve(paths.reportsDir, `${sanitizeId(runId)}.md`);
+}
+
+/**
+ * Strip the `--<uid>` suffix from a plan file path so the raw uid
+ * is never exposed to the agent / LLM.
+ */
+export function stripPlanUidFromFilename(filePath: string): string {
+  return filePath.replace(/--[A-Za-z0-9._-]+\.md$/, ".md");
 }
 
 function sanitizeId(value: string): string {

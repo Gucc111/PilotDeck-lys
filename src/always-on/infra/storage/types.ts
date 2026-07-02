@@ -123,7 +123,6 @@ export type DiscoveryPlanRecord = {
   status: DiscoveryPlanStatus;
   summary: string;
   rationale: string;
-  dedupeKey: string;
   sourceRunId: string;
   planFilePath: string;
   reportFilePath?: string;
@@ -195,7 +194,6 @@ export type PreferenceEventPlan = {
   id: string;
   title: string;
   summary: string;
-  dedupeKey: string;
   outcome: PreferencePlanOutcome;
 };
 

@@ -35,7 +35,6 @@ export function buildDiscoveryPromptZh(input: BuildDiscoveryPromptInput): string
     `    > sourceRunId: ${input.runId}`,
     `    > createdAt: ${input.createdAt}`,
     `    > projectRoot: ${input.projectRoot}`,
-    "    > dedupeKey: <稳定标识符>",
     "  - 章节按以下顺序排列: ## Summary, ## Rationale, ## Context Signals, ## Proposed Change, ## Execution Steps, ## Verification。",
     "  - Summary 不超过 200 字符, 单段落。",
     "  - Context Signals: 至少一个 `-` 列表项。",

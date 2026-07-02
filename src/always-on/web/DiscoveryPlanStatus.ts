@@ -28,7 +28,6 @@ export type WebPlanRecord = {
   status: string;
   summary: string;
   rationale: string;
-  dedupeKey: string;
   sourceDiscoverySessionId: string;
   executionSessionId: string;
   executionStartedAt: string;

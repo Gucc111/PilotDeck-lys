@@ -7,7 +7,6 @@ export type ExistingPlanSummary = {
   id: string;
   title: string;
   summary?: string;
-  dedupeKey: string;
   status: string;
 };
 
@@ -56,7 +55,6 @@ export function buildDiscoveryPrompt(input: BuildDiscoveryPromptInput): string {
     `    > sourceRunId: ${input.runId}`,
     `    > createdAt: ${input.createdAt}`,
     `    > projectRoot: ${input.projectRoot}`,
-    "    > dedupeKey: <stable identifier>",
     "  - Sections in this exact order: ## Summary, ## Rationale, ## Context Signals, ## Proposed Change, ## Execution Steps, ## Verification.",
     "  - Summary ≤ 200 chars, single paragraph.",
     "  - Context Signals: at least one `-` bullet.",

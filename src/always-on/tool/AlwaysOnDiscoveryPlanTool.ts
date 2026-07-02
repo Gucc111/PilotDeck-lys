@@ -3,6 +3,7 @@ import { PilotDeckToolRuntimeError } from "../../tool/protocol/errors.js";
 import type { PilotDeckToolDefinition } from "../../tool/protocol/types.js";
 import { parsePlanMarkdown, type PlanContractOptions } from "../phases/discovery/contract/index.js";
 import { AlwaysOnError } from "../infra/errors.js";
+import { stripPlanUidFromFilename } from "../infra/storage/AlwaysOnPaths.js";
 import type { DiscoveryPlanRecord } from "../infra/storage/types.js";
 import type { AlwaysOnRunContextRegistry, DiscoveryRunContext } from "../phases/shared/RunContextRegistry.js";
 
@@ -10,7 +11,6 @@ export type AlwaysOnDiscoveryPlanInput = {
   title: string;
   summary: string;
   rationale: string;
-  dedupeKey: string;
   content: string;
 };
 
@@ -18,7 +18,6 @@ export type AlwaysOnDiscoveryPlanOutput = {
   ok: true;
   planId: string;
   planFilePath: string;
-  dedupeKey: string;
 };
 
 export type CreateAlwaysOnDiscoveryPlanToolOptions = {
@@ -44,13 +43,12 @@ export function createAlwaysOnDiscoveryPlanTool(
     kind: "session",
     inputSchema: {
       type: "object",
-      required: ["title", "summary", "rationale", "dedupeKey", "content"],
+      required: ["title", "summary", "rationale", "content"],
       additionalProperties: false,
       properties: {
         title: { type: "string" },
         summary: { type: "string" },
         rationale: { type: "string" },
-        dedupeKey: { type: "string" },
         content: { type: "string", description: "Full plan markdown body." },
       },
     },
@@ -87,15 +85,16 @@ export function createAlwaysOnDiscoveryPlanTool(
       }
 
       const planId = parsed.metadata.id || `plan_${uuid()}`;
-      const filePath = await ctx.planStore.writePlanMarkdown(planId, parsed.rawContent);
+      const title = input.title.trim() || parsed.title;
+      const fileUid = uuid().slice(0, 8);
+      const filePath = await ctx.planStore.writePlanMarkdown(title, fileUid, parsed.rawContent);
       const record: DiscoveryPlanRecord = {
         id: planId,
-        title: input.title.trim() || parsed.title,
+        title,
         createdAt: now().toISOString(),
         status: "ready",
         summary: input.summary.trim(),
         rationale: input.rationale.trim(),
-        dedupeKey: input.dedupeKey.trim() || parsed.metadata.dedupeKey,
         sourceRunId: parsed.metadata.sourceRunId || ctx.runId,
         planFilePath: filePath,
       };
@@ -105,12 +104,11 @@ export function createAlwaysOnDiscoveryPlanTool(
       const data: AlwaysOnDiscoveryPlanOutput = {
         ok: true,
         planId: stored.id,
-        planFilePath: stored.planFilePath,
-        dedupeKey: stored.dedupeKey,
+        planFilePath: stripPlanUidFromFilename(stored.planFilePath),
       };
       return {
         content: [
-          { type: "text", text: `Plan saved as ${stored.id} (${stored.dedupeKey}).` },
+          { type: "text", text: `Plan saved as ${stored.id}.` },
           { type: "json", value: data },
         ],
         data,

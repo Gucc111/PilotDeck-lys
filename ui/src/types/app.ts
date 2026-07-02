@@ -79,7 +79,6 @@ export interface DiscoveryPlanOverview {
   status: DiscoveryPlanStatus;
   summary?: string;
   rationale?: string;
-  dedupeKey?: string;
   executionSessionId?: string;
   executionCommitShas?: string[];
   workCycleId?: string;

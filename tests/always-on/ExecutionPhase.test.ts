@@ -23,7 +23,6 @@ describe("ExecutionPhase", () => {
         status: "ready",
         summary: "",
         rationale: "",
-        dedupeKey: "plan-1",
         sourceRunId: "run-1",
         planFilePath: "plans/plan-1.md",
       };

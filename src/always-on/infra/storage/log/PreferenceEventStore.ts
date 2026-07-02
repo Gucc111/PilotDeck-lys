@@ -136,7 +136,6 @@ function normalizeV2Plan(raw: unknown): PreferenceEventPlan | undefined {
     id: plan.id,
     title: plan.title,
     summary: typeof plan.summary === "string" ? plan.summary : "",
-    dedupeKey: typeof plan.dedupeKey === "string" ? plan.dedupeKey : plan.id,
     outcome: plan.outcome,
   };
 }
@@ -152,7 +151,6 @@ function normalizeLegacyPlan(
     id: plan.id,
     title: plan.title,
     summary: typeof plan.summary === "string" ? plan.summary : "",
-    dedupeKey: typeof plan.dedupeKey === "string" ? plan.dedupeKey : plan.id,
     outcome,
   };
 }
