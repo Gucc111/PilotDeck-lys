@@ -4,7 +4,6 @@ export const DEFAULT_IGNORE_GLOBS: string[] = [
   "**/.git/**",
   "**/node_modules/**",
   "**/.pilotdeck/**",
-  "**/.pilotdeck-always-on/**",
   "**/dist/**",
   "**/.DS_Store",
 ];

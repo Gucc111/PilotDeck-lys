@@ -15,7 +15,7 @@ export type SnapshotCopyProviderOptions = {
   baseDir: string;
   /** Hard cap on source size in bytes. Default 1 GiB. */
   maxBytes: number;
-  /** Defaults: `.git/`, `node_modules/`, `dist/`, `.pilotdeck/`, `.pilotdeck-always-on/`. */
+  /** Defaults: `.git/`, `node_modules/`, `dist/`, `.pilotdeck/`. */
   ignorePaths?: string[];
 };
 
@@ -24,7 +24,6 @@ const DEFAULT_IGNORES = [
   "node_modules",
   "dist",
   ".pilotdeck",
-  ".pilotdeck-always-on",
 ];
 
 export class SnapshotCopyProvider implements WorkspaceProvider {

@@ -70,7 +70,6 @@ async function generateSnapshotCopyDiff(
     "--exclude=node_modules",
     "--exclude=dist",
     "--exclude=.pilotdeck",
-    "--exclude=.pilotdeck-always-on",
     projectRoot,
     workspaceCwd,
   ]);
