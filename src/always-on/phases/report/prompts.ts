@@ -1,12 +1,7 @@
-import type { DiscoveryPlanRecord } from "../../infra/storage/types.js";
 import { ALWAYS_ON_REPORT_TOOL_NAME } from "../../tool/AlwaysOnReportTool.js";
 import { buildReportPromptZh } from "./prompts.zh.js";
 
 export type BuildReportPromptInput = {
-  plan: DiscoveryPlanRecord;
-  planMarkdown: string;
-  workspaceCwd: string;
-  workspaceStrategy: string;
   executionCommitShas?: string[];
   language?: string;
 };
@@ -14,14 +9,7 @@ export type BuildReportPromptInput = {
 export function buildReportPrompt(input: BuildReportPromptInput): string {
   if (input.language === "zh-CN") return buildReportPromptZh(input);
   return [
-    "You are writing a work report for a completed Always-On plan execution.",
-    `Workspace strategy: ${input.workspaceStrategy}.`,
-    `Workspace cwd: ${input.workspaceCwd}`,
-    "",
-    "Permissions: this turn runs in `bypassPermissions` mode — every tool call is auto-allowed.",
-    "",
-    "## Plan that was executed",
-    input.planMarkdown.trim(),
+    "Write a work report for the plan execution just completed. Focus on the work performed and the observed results.",
     "",
     "## What to do",
     ...(input.executionCommitShas?.length
@@ -31,7 +19,7 @@ export function buildReportPrompt(input: BuildReportPromptInput): string {
       : [
           "1. Review the workspace to see what changed (e.g. `git diff --stat`, `ls`, read relevant files).",
         ]),
-    "2. Summarize the execution: what steps were performed, which files were changed, command outputs, and verification results.",
+    "2. Summarize this session's execution: what steps were performed, which files were changed, command outputs, verification results, and follow-ups.",
     `3. Call \`${ALWAYS_ON_REPORT_TOOL_NAME}\` exactly once with the full work-report markdown.`,
     "",
     "Each section MUST use `##` (h2) headers — e.g. `## Plan Reference`, `## Steps Performed`, etc.",

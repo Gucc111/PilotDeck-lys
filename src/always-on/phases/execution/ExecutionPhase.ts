@@ -87,7 +87,9 @@ export class ExecutionPhase {
     } finally {
       this.deps.runContexts.unregister(sessionKey);
       this.deps.sessionOverrides.delete(sessionKey);
-      await this.deps.turnRunner.closeSession(sessionKey);
+      if (!input.keepSessionOpen) {
+        await this.deps.turnRunner.closeSession(sessionKey);
+      }
     }
 
     let commitShas: string[] = [];
@@ -113,7 +115,7 @@ export class ExecutionPhase {
       this.deps.events.emit(runId, "execution_completed", { planId: plan.id, title: plan.title });
     }
 
-    return { commitShas, error: executionError };
+    return { sessionKey, commitShas, error: executionError };
   }
 
   private async prepareExecutionGitState(input: {

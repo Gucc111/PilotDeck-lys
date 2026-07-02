@@ -167,7 +167,6 @@ export class AlwaysOnPipeline {
         paths: deps.paths,
         projectKey: deps.projectKey,
         runContexts: deps.runContexts,
-        sessionOverrides: deps.sessionOverrides,
         planStore: deps.planStore,
         stateStore: deps.stateStore,
         reportStore: deps.reportStore,
@@ -175,7 +174,6 @@ export class AlwaysOnPipeline {
         events: this.events,
         fallbackWriter: this.fallbackWriter,
         now: deps.now,
-        excludeTools,
       }),
       apply: new ApplyPhase({
         config: deps.config,
@@ -354,6 +352,7 @@ export class AlwaysOnPipeline {
       planMarkdown,
       workspace,
       cycle,
+      keepSessionOpen: true,
     });
 
     if (execution.error) {
@@ -373,6 +372,7 @@ export class AlwaysOnPipeline {
         stage: "execution",
         error: failure,
       });
+      await this.turnRunner.closeSession(execution.sessionKey);
       const finishedAt = this.deps.now();
       const reportFilePath = await this.fallbackWriter.write({
         runId,
@@ -407,10 +407,10 @@ export class AlwaysOnPipeline {
     }
 
     const report = await this.phases.report.execute({
+      sessionKey: execution.sessionKey,
       runId,
       startedAt,
       plan,
-      planMarkdown,
       workspace,
       cycle,
       executionCommitShas: execution.commitShas,

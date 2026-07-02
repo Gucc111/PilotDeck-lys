@@ -11,7 +11,6 @@ import type { DiscoveryPlanStore } from "../../infra/storage/json/DiscoveryPlanS
 import type { DiscoveryReportStore } from "../../infra/storage/file/DiscoveryReportStore.js";
 import type { DiscoveryStateStore } from "../../infra/storage/json/DiscoveryStateStore.js";
 import type { AlwaysOnRunContextRegistry } from "../shared/RunContextRegistry.js";
-import type { SessionConfigOverrides } from "../shared/SessionConfigOverrides.js";
 import type { AgentTurnRunner } from "../shared/AgentTurnRunner.js";
 import type { PhaseEventEmitter } from "../shared/PhaseEventEmitter.js";
 import type { ReportFallbackWriter } from "../shared/ReportFallbackWriter.js";
@@ -21,7 +20,6 @@ export type ReportPhaseDeps = {
   paths: AlwaysOnPaths;
   projectKey: string;
   runContexts: AlwaysOnRunContextRegistry;
-  sessionOverrides: SessionConfigOverrides;
   planStore: DiscoveryPlanStore;
   stateStore: DiscoveryStateStore;
   reportStore: DiscoveryReportStore;
@@ -29,14 +27,13 @@ export type ReportPhaseDeps = {
   events: PhaseEventEmitter;
   fallbackWriter: ReportFallbackWriter;
   now: () => Date;
-  excludeTools: string[];
 };
 
 export type ReportPhaseInput = {
+  sessionKey: string;
   runId: string;
   startedAt: Date;
   plan: DiscoveryPlanRecord;
-  planMarkdown: string;
   workspace: WorkspaceHandle;
   cycle: WorkCycleRecord;
   executionCommitShas: string[];

@@ -35,9 +35,11 @@ export type ExecutionPhaseInput = {
   planMarkdown: string;
   workspace: WorkspaceHandle;
   cycle: WorkCycleRecord;
+  keepSessionOpen?: boolean;
 };
 
 export type ExecutionPhaseOutput = {
+  sessionKey: string;
   commitShas: string[];
   error?: { code?: string; message: string };
 };

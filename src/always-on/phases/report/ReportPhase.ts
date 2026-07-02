@@ -2,7 +2,6 @@ import type { GatewayChannelKey, GatewayEvent } from "../../../gateway/index.js"
 import { parseReportMarkdown, type ReportMetadata } from "./contract/index.js";
 import type { ReportRunContext } from "../shared/RunContextRegistry.js";
 import {
-  deriveReportSessionKey,
   extractAssistantText,
   pickFirstError,
 } from "../shared/index.js";
@@ -15,16 +14,8 @@ export class ReportPhase {
   constructor(private readonly deps: ReportPhaseDeps) {}
 
   async execute(input: ReportPhaseInput): Promise<ReportPhaseOutput> {
-    const { plan, runId, workspace } = input;
+    const { plan, runId, sessionKey, workspace } = input;
     this.deps.events.emit(runId, "report_started", { planId: plan.id, title: plan.title });
-    const sessionKey = deriveReportSessionKey(this.deps.projectKey, runId);
-    this.deps.sessionOverrides.set(sessionKey, {
-      cwd: workspace.cwd,
-      permissionMode: "bypassPermissions",
-      bypassAvailable: true,
-      canPrompt: false,
-      excludeTools: [...this.deps.excludeTools],
-    });
 
     const reportCtx: ReportRunContext = {
       kind: "report",
@@ -47,10 +38,6 @@ export class ReportPhase {
         channelKey: REPORT_CHANNEL,
         runId: `${runId}.report`,
         message: buildReportPrompt({
-          plan,
-          planMarkdown: input.planMarkdown,
-          workspaceCwd: workspace.cwd,
-          workspaceStrategy: workspace.strategy,
           executionCommitShas: input.executionCommitShas,
           language: this.deps.config.language,
         }),
@@ -59,7 +46,6 @@ export class ReportPhase {
       reportError = pickFirstError(reportEvents);
     } finally {
       this.deps.runContexts.unregister(sessionKey);
-      this.deps.sessionOverrides.delete(sessionKey);
       await this.deps.turnRunner.closeSession(sessionKey);
     }
 
