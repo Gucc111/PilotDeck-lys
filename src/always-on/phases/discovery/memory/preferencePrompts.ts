@@ -5,13 +5,16 @@ const EXTRACTION_SYSTEM_PROMPT = `You are a preference analysis assistant. Based
 Output format:
 - Organize into two blocks: "## More likely to be accepted" and "## More likely to be rejected"
 - Under each block, use sub-headings (### dimension name) to represent a preference dimension
-- Derive dimensions from the event data instead of using a predefined taxonomy
-- Describe each tendency tactfully and include 1–3 examples quoting original plan titles
+- Keep 3–5 dimensions per block; prefer merging into an existing dimension over creating a new one
+- Name dimensions by user intent (e.g. "Fix documentation errors"), not by specific operations
+- Describe each tendency in ONE sentence (≤ 30 words), stating the pattern without speculating on user psychology
+- Include 1–3 examples per dimension; each example should be a concise phrase (≤ 15 words) capturing the essence of the action, stripped of project-specific proper nouns — do NOT quote plan titles verbatim
 
 Update rules:
 - Add new evidence to an existing dimension when it fits
-- Create a dimension when no existing dimension fits
+- Create a new dimension ONLY when no existing dimension can accommodate the evidence
 - Record exceptions when new evidence contradicts an existing tendency
+- If two dimensions differ only in the specific object (e.g. different files, different sections), merge them
 - Preserve unaffected dimensions verbatim
 
 Output the COMPLETE updated preferences.md content, including all existing dimensions.
@@ -22,13 +25,16 @@ const EXTRACTION_SYSTEM_PROMPT_ZH = `你是一个偏好分析助手。根据用�
 输出格式：
 - 整体分为两大块："## 更可能被用户接受" 和 "## 更可能被用户拒绝"
 - 每大块下使用子标题（### 维度名）表示一个偏好维度
-- 维度不预设，完全从事件数据中提炼
-- 每个维度使用委婉语气描述倾向，并附 1～3 个引用原始 plan 标题的例子
+- 每大块控制在 3～5 个维度，优先归入已有维度而非创建新维度
+- 维度名以用户意图层面命名（如"修复文档事实性错误"），而非具体操作层面
+- 每个维度用一句话（≤ 30 字）概括倾向，直接陈述规律，不做心理推测
+- 附 1～3 个例子，每个例子用简洁语言（≤ 15 字）概括行为本质，去除项目专有名词，不直接引用 plan 标题原文
 
 更新规则：
 - 新证据适合已有维度时，补充到该维度
-- 无已有维度可容纳时，创建新维度
+- 仅当无已有维度可容纳时，才创建新维度
 - 新证据与已有倾向冲突时，补充例外说明
+- 如果两个维度仅在具体对象上有区别（如不同文件、不同章节），应合并为同一维度
 - 未受影响的维度原样保留
 
 输出完整的更新后 preferences.md 内容，包含所有已有维度。
@@ -37,19 +43,27 @@ const EXTRACTION_SYSTEM_PROMPT_ZH = `你是一个偏好分析助手。根据用�
 const CONSOLIDATION_SYSTEM_PROMPT = `You are a preference analysis assistant. Consolidate a user's preference summary by merging semantically similar dimensions and removing dimensions with insufficient evidence.
 
 Rules:
-- Merge dimensions that describe the same type of task preference
+- Merge dimensions that differ only in the specific object (e.g. different files, different sections) into one
+- Merge dimensions that describe the same user intent even if worded differently
+- Target 3–5 dimensions per block after consolidation
 - Remove dimensions supported only by one weak example with no clear pattern
+- Rename dimensions to reflect user intent rather than specific operations
+- Rewrite each tendency description as ONE sentence (≤ 30 words), no psychological speculation
+- Rewrite examples as concise phrases (≤ 15 words) capturing the action essence, without project-specific proper nouns
 - Preserve the two-block structure: "## More likely to be accepted" and "## More likely to be rejected"
-- Use a tactful tone
 - Output the COMPLETE updated preferences.md content`;
 
 const CONSOLIDATION_SYSTEM_PROMPT_ZH = `你是一个偏好分析助手。请合并整理用户的偏好摘要，将语义相近的维度合并，并删除证据不足的维度。
 
 规则：
-- 合并描述同类任务偏好的维度
+- 仅在具体对象上有区别的维度（如不同文件、不同章节）合并为同一维度
+- 描述同类用户意图的维度合并，即使措辞不同
+- 合并后每大块控制在 3～5 个维度
 - 删除只有一个弱证据且没有明确模式的维度
+- 维度名以用户意图层面命名，而非具体操作层面
+- 每个维度用一句话（≤ 30 字）概括倾向，不做心理推测
+- 例子用简洁语言（≤ 15 字）概括行为本质，去除项目专有名词
 - 保留两大块结构："## 更可能被用户接受" 和 "## 更可能被用户拒绝"
-- 使用委婉语气
 - 输出完整的更新后 preferences.md 内容`;
 
 export function buildExtractionSystemPrompt(language?: string): string {
