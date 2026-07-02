@@ -109,7 +109,7 @@ function formatExistingPlansSectionZh(plans?: ExistingPlanSummary[]): string[] {
   if (active.length > 0) {
     lines.push("## 待处理的累积计划 (已完成但尚未被应用或归档, 请勿重复这些主题)", "");
     for (const plan of active) {
-      lines.push(`- [${plan.status}] "${plan.title}"`);
+      lines.push(`- "${plan.title}"`);
       if (plan.summary) lines.push(`  摘要: ${plan.summary}`);
     }
   }
@@ -132,7 +132,7 @@ function formatExistingPlansSectionZh(plans?: ExistingPlanSummary[]): string[] {
       "",
     );
     for (const plan of dismissed) {
-      lines.push(`- [${plan.status}] "${plan.title}"`);
+      lines.push(`- "${plan.title}"`);
       if (plan.summary) lines.push(`  摘要: ${plan.summary}`);
     }
   }

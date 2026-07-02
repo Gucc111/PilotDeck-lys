@@ -133,7 +133,7 @@ function formatExistingPlansSection(plans?: ExistingPlanSummary[]): string[] {
       "",
     );
     for (const plan of active) {
-      lines.push(`- [${plan.status}] "${plan.title}"`);
+      lines.push(`- "${plan.title}"`);
       if (plan.summary) lines.push(`  Summary: ${plan.summary}`);
     }
   }
@@ -161,7 +161,7 @@ function formatExistingPlansSection(plans?: ExistingPlanSummary[]): string[] {
       "",
     );
     for (const plan of dismissed) {
-      lines.push(`- [${plan.status}] "${plan.title}"`);
+      lines.push(`- "${plan.title}"`);
       if (plan.summary) lines.push(`  Summary: ${plan.summary}`);
     }
   }
