@@ -5,7 +5,7 @@
   },
   "tabs": {
     "dashboard": "Dashboard",
-    "plansCron": "Plans & Cron Jobs"
+    "plans": "Plans"
   },
   "dashboard": {
     "title": "Always-On Dashboard",
@@ -26,7 +26,7 @@
     },
     "runDetail": {
       "back": "Back to events",
-      "backToPlans": "Back to Plans & Cron Jobs",
+      "backToPlans": "Back to Plans",
       "loading": "Loading…",
       "untitled": "Untitled Plan",
       "workspaceStrategy": "Workspace",
@@ -60,10 +60,10 @@
     }
   },
   "plansCron": {
-    "title": "Plans & Cron Jobs",
-    "subtitle": "All plans and cron jobs across projects.",
-    "loading": "Loading plans and cron jobs…",
-    "empty": "No plans or cron jobs found.",
+    "title": "Plans",
+    "subtitle": "Always-On plans across projects.",
+    "loading": "Loading plans…",
+    "empty": "No plans found.",
     "unassigned": "Unassigned",
     "columns": {
       "title": "Title",
@@ -98,9 +98,7 @@
       "completedNoReport": "Report Unavailable",
       "failed": "Failed",
       "applied": "Applied",
-      "archived": "Archived",
-      "scheduled": "Scheduled",
-      "running": "Running"
+      "archived": "Archived"
     },
     "workCycle": "Work Cycle",
     "plans": "plans",
@@ -118,6 +116,28 @@
       "continue": "Continue",
       "cancel": "Cancel",
       "dismiss": "Dismiss"
+    }
+  },
+  "cron": {
+    "title": "Cron",
+    "subtitle": "Scheduled cron jobs across projects.",
+    "loading": "Loading cron jobs...",
+    "empty": "No active cron jobs found.",
+    "unassigned": "Unassigned",
+    "columns": {
+      "title": "Title",
+      "createdAt": "Created",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "actions": {
+      "delete": "Delete",
+      "runNow": "Run Now",
+      "stop": "Stop"
+    },
+    "status": {
+      "scheduled": "Scheduled",
+      "running": "Running"
     }
   }
 }

@@ -106,7 +106,6 @@ function makeCycle(
 
 function setup(plans: DiscoveryPlanOverview[], cycles: WorkCycleOverview[]) {
   apiMock.projects.mockResolvedValue(jsonResponse([project]));
-  apiMock.allCronJobs.mockResolvedValue(jsonResponse({ jobs: [] }));
   apiMock.projectDiscoveryPlans.mockResolvedValue(jsonResponse({ plans }));
   apiMock.projectWorkCycles.mockResolvedValue(jsonResponse({ cycles }));
   apiMock.checkApplyReadiness.mockResolvedValue(jsonResponse({
@@ -171,6 +170,7 @@ describe('PlansAndCronJobs selection behavior', () => {
 
     expect(screen.queryByText('Old Cycle Plan')).toBeNull();
     expect(screen.queryByText('Applied Plan')).toBeNull();
+    expect(apiMock.allCronJobs).not.toHaveBeenCalled();
   });
 
   it('disables apply until selected plans include their dependencies', async () => {

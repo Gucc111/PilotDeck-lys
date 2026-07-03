@@ -5,7 +5,7 @@
   },
   "tabs": {
     "dashboard": "仪表盘",
-    "plansCron": "计划与定时任务"
+    "plans": "计划"
   },
   "dashboard": {
     "title": "Always-On 仪表盘",
@@ -60,10 +60,10 @@
     }
   },
   "plansCron": {
-    "title": "计划与定时任务",
-    "subtitle": "所有项目的计划与定时任务。",
-    "loading": "正在加载计划与定时任务…",
-    "empty": "暂无计划或定时任务。",
+    "title": "计划",
+    "subtitle": "所有项目的 Always-On 计划。",
+    "loading": "正在加载计划…",
+    "empty": "暂无计划。",
     "unassigned": "未关联项目",
     "columns": {
       "title": "标题",
@@ -98,9 +98,7 @@
       "completedNoReport": "报告不可用",
       "failed": "执行失败",
       "applied": "已应用",
-      "archived": "已归档",
-      "scheduled": "已安排",
-      "running": "运行中"
+      "archived": "已归档"
     },
     "workCycle": "工作周期",
     "plans": "个计划",
@@ -118,6 +116,28 @@
       "continue": "继续应用",
       "cancel": "取消",
       "dismiss": "知道了"
+    }
+  },
+  "cron": {
+    "title": "Cron",
+    "subtitle": "所有项目的定时 cron 任务。",
+    "loading": "正在加载 cron 任务...",
+    "empty": "暂无活跃 cron 任务。",
+    "unassigned": "未关联项目",
+    "columns": {
+      "title": "标题",
+      "createdAt": "创建时间",
+      "status": "状态",
+      "actions": "操作"
+    },
+    "actions": {
+      "delete": "删除",
+      "runNow": "立即运行",
+      "stop": "停止"
+    },
+    "status": {
+      "scheduled": "已安排",
+      "running": "运行中"
     }
   }
 }

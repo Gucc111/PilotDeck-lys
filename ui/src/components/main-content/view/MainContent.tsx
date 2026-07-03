@@ -20,6 +20,7 @@ import MainContentStateView from './subcomponents/MainContentStateView';
 import ErrorBoundary from './ErrorBoundary';
 
 const AlwaysOnV2 = React.lazy(() => import('../../main-content-v2/AlwaysOnV2'));
+const CronV2 = React.lazy(() => import('../../main-content-v2/CronV2'));
 const FilesV2 = React.lazy(() => import('../../main-content-v2/FilesV2'));
 const ShellV2 = React.lazy(() => import('../../main-content-v2/ShellV2'));
 const GitV2 = React.lazy(() => import('../../main-content-v2/GitV2'));
@@ -312,7 +313,7 @@ function MainContent({
     );
   }
 
-  if (!selectedProject && activeTab !== 'dashboard') {
+  if (!selectedProject && activeTab !== 'dashboard' && activeTab !== 'cron') {
     return (
       <MainContentStateView
         mode="empty"
@@ -504,6 +505,7 @@ function SplitBody(props: SplitBodyProps) {
     'shell',
     'git',
     'always-on',
+    'cron',
     'dashboard',
     'memory',
     'skills',
@@ -600,6 +602,7 @@ function SplitBody(props: SplitBodyProps) {
         />
       );
     }
+    if (activeTab === 'cron') return <CronV2 />;
     if (activeTab === 'dashboard') return <DashboardV2 projectFilter={selectedProject?.name} projectFullPath={selectedProject?.fullPath} onSelectProject={onSelectProjectByName} />;
     if (activeTab === 'memory') return <MemoryPanel selectedProject={selectedProject} />;
     if (activeTab === 'skills') return <SkillsV2 selectedProject={selectedProject} projects={projects} />;
