@@ -124,6 +124,10 @@
     "loading": "Loading cron jobs...",
     "empty": "No active cron jobs found.",
     "unassigned": "Unassigned",
+    "tabs": {
+      "list": "Task List",
+      "create": "Create Task"
+    },
     "columns": {
       "title": "Title",
       "createdAt": "Created",
@@ -138,6 +142,38 @@
     "status": {
       "scheduled": "Scheduled",
       "running": "Running"
+    },
+    "create": {
+      "title": "Create Cron Task",
+      "subtitle": "Schedule a one-time or recurring background prompt.",
+      "success": "Cron task created.",
+      "fields": {
+        "prompt": "Prompt",
+        "workspace": "Workspace",
+        "scheduleType": "Schedule Type",
+        "date": "Date",
+        "time": "Time",
+        "timezone": "Timezone"
+      },
+      "placeholders": {
+        "prompt": "Describe what PilotDeck should do when this task runs.",
+        "workspace": "Select a workspace"
+      },
+      "schedule": {
+        "once": "One-time",
+        "cron": "Recurring"
+      },
+      "validation": {
+        "messageRequired": "Prompt is required.",
+        "workspaceRequired": "Workspace is required.",
+        "dateRequired": "Date is required.",
+        "timeRequired": "Time is required.",
+        "timezoneRequired": "Timezone is required.",
+        "runAtFuture": "Run time must be in the future."
+      },
+      "actions": {
+        "submit": "Create Task"
+      }
     }
   }
 }

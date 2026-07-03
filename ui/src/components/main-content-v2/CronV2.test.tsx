@@ -8,6 +8,7 @@ import CronV2 from './CronV2';
 const apiMock = vi.hoisted(() => ({
   projects: vi.fn(),
   allCronJobs: vi.fn(),
+  cronCreate: vi.fn(),
   cronDelete: vi.fn(),
   cronRunNow: vi.fn(),
   cronStop: vi.fn(),
@@ -56,6 +57,7 @@ function makeJob(overrides: Partial<CronJobOverview>): CronJobOverview {
 function setup(jobs: CronJobOverview[]) {
   apiMock.projects.mockResolvedValue(jsonResponse([project]));
   apiMock.allCronJobs.mockResolvedValue(jsonResponse({ jobs }));
+  apiMock.cronCreate.mockResolvedValue(jsonResponse({ task: { taskId: 'created-task' } }));
   apiMock.cronRunNow.mockResolvedValue(jsonResponse({ triggered: true }));
   apiMock.cronStop.mockResolvedValue(jsonResponse({ stopped: true }));
   apiMock.cronDelete.mockResolvedValue(jsonResponse({ deleted: true }));
@@ -84,6 +86,89 @@ describe('CronV2', () => {
     expect(screen.getByText('Unassigned')).toBeTruthy();
     expect(screen.getByText('Unassigned check')).toBeTruthy();
     expect(screen.queryByText('Completed old job')).toBeNull();
+  });
+
+  it('shows cron sub-navigation and defaults to the task list', async () => {
+    setup([makeJob({ prompt: 'Visible list task' })]);
+
+    expect(screen.getByRole('button', { name: 'Task List' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create Task' })).toBeTruthy();
+    await screen.findByText('Visible list task');
+  });
+
+  it('creates a one-time cron task and refreshes the list', async () => {
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByText('Create Cron Task');
+
+    fireEvent.change(screen.getByLabelText('Prompt'), {
+      target: { value: 'Run a focused review' },
+    });
+    fireEvent.change(screen.getByLabelText('Workspace'), {
+      target: { value: '/project/general' },
+    });
+    fireEvent.change(screen.getByLabelText('Date'), {
+      target: { value: '2099-01-01' },
+    });
+    fireEvent.change(screen.getByLabelText('Time'), {
+      target: { value: '10:00' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Task' }).at(-1)!);
+
+    await waitFor(() => {
+      expect(apiMock.cronCreate).toHaveBeenCalledWith(expect.objectContaining({
+        message: 'Run a focused review',
+        projectKey: '/project/general',
+        schedule: expect.objectContaining({ type: 'once' }),
+      }));
+      expect(apiMock.allCronJobs).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('creates a recurring cron task', async () => {
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByText('Create Cron Task');
+    fireEvent.change(screen.getByLabelText('Prompt'), {
+      target: { value: 'Daily digest' },
+    });
+    fireEvent.change(screen.getByLabelText('Workspace'), {
+      target: { value: '/project/general' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring' }));
+    fireEvent.change(screen.getByLabelText('Time'), {
+      target: { value: '08:30' },
+    });
+    fireEvent.change(screen.getByLabelText('Timezone'), {
+      target: { value: 'Asia/Shanghai' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Task' }).at(-1)!);
+
+    await waitFor(() => {
+      expect(apiMock.cronCreate).toHaveBeenCalledWith(expect.objectContaining({
+        message: 'Daily digest',
+        projectKey: '/project/general',
+        timezone: 'Asia/Shanghai',
+        schedule: {
+          type: 'cron',
+          expression: '30 8 * * *',
+          timezone: 'Asia/Shanghai',
+        },
+      }));
+    });
+  });
+
+  it('validates required create fields before calling the API', async () => {
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByText('Create Cron Task');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Task' }).at(-1)!);
+
+    await screen.findByText('Prompt is required.');
+    expect(apiMock.cronCreate).not.toHaveBeenCalled();
   });
 
   it('runs a scheduled cron job immediately and refreshes', async () => {
