@@ -215,6 +215,14 @@ describe('PlansAndCronJobs selection behavior', () => {
     expect(screen.queryByText('Actions')).toBeNull();
     expect(screen.getByText('Dependency Graph')).toBeTruthy();
 
+    const planList = document.querySelector('[data-plan-list="true"]');
+    const dependencyGraph = document.querySelector('[data-dependency-graph="true"]');
+    expect(planList).toBeTruthy();
+    expect(dependencyGraph).toBeTruthy();
+    expect(
+      planList!.compareDocumentPosition(dependencyGraph!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
     fireEvent.click(screen.getByLabelText('Select plan: Plan B'));
     await waitFor(() => {
       expect(graphNode('plan-b').getAttribute('data-selected')).toBe('true');
@@ -224,6 +232,23 @@ describe('PlansAndCronJobs selection behavior', () => {
     await waitFor(() => {
       expect((screen.getByLabelText('Select plan: Plan A') as HTMLInputElement).checked).toBe(true);
     });
+  });
+
+  it('clips long dependency graph titles inside fixed-size nodes', async () => {
+    const longTitle = 'Fix every exceptionally long failing test title in poker core without letting text escape graph nodes';
+    setup(
+      [makePlan('plan-a', longTitle)],
+      [makeCycle({ 'plan-a': makePlanState({ commitShas: ['commit-a'] }) })],
+    );
+
+    await waitForPlans();
+
+    const title = graphNode('plan-a').querySelector('[data-graph-node-title="true"]');
+    expect(title).toBeTruthy();
+    expect(title!.textContent).toBe(longTitle);
+    expect(title!.classList.contains('overflow-hidden')).toBe(true);
+    expect(title!.classList.contains('text-ellipsis')).toBe(true);
+    expect(title!.classList.contains('whitespace-nowrap')).toBe(true);
   });
 
   it('disables archive when remaining plans would lose a dependency', async () => {

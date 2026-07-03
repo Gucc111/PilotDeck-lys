@@ -146,8 +146,8 @@ const COL = {
   actions: 'w-[140px] shrink-0',
 } as const;
 
-const GRAPH_NODE_WIDTH = 176;
-const GRAPH_NODE_HEIGHT = 38;
+const GRAPH_NODE_WIDTH = 220;
+const GRAPH_NODE_HEIGHT = 44;
 
 const RESOLVED_PLAN_STATUSES = new Set<DiscoveryPlanStatus>(['applied', 'archived']);
 
@@ -282,12 +282,6 @@ type GraphEdge = {
   to: string;
 };
 
-function truncateGraphLabel(value: string, maxLength = 30): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, maxLength - 3)}...`;
-}
-
 function buildGraphLayout(
   plans: DiscoveryPlanOverview[],
   cycle?: WorkCycleOverview,
@@ -328,8 +322,8 @@ function buildGraphLayout(
   }
 
   const nodes: GraphNode[] = [];
-  const layerGapX = 220;
-  const nodeGapY = 58;
+  const layerGapX = 280;
+  const nodeGapY = 66;
   for (const [depth, layerPlans] of [...layers.entries()].sort(([left], [right]) => left - right)) {
     layerPlans
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
@@ -356,8 +350,8 @@ function buildGraphLayout(
   return {
     nodes,
     edges,
-    width: Math.max(320, 56 + maxDepth * layerGapX + GRAPH_NODE_WIDTH),
-    height: Math.max(150, 68 + maxLayerSize * nodeGapY),
+    width: Math.max(640, 56 + maxDepth * layerGapX + GRAPH_NODE_WIDTH),
+    height: Math.max(170, 76 + maxLayerSize * nodeGapY),
   };
 }
 
@@ -890,8 +884,8 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
                             </div>
                           }
                         >
-                          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]">
-                            <div className="min-w-0">
+                          <div className="grid grid-cols-1">
+                            <div className="min-w-0" data-plan-list="true">
                               <ColumnHeaders
                                 t={t}
                                 selectable
@@ -1118,7 +1112,7 @@ function DependencyGraph({
   };
 
   return (
-    <div className="border-t border-neutral-200 bg-neutral-50/40 dark:border-neutral-800 dark:bg-neutral-900/20 xl:border-l xl:border-t-0">
+    <div className="border-t border-neutral-200 bg-neutral-50/40 dark:border-neutral-800 dark:bg-neutral-900/20" data-dependency-graph="true">
       <div className="border-b border-neutral-200 px-3 py-2 text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
         {label}
       </div>
@@ -1130,7 +1124,7 @@ function DependencyGraph({
           drag ? 'cursor-grabbing' : 'cursor-grab',
         )}
         style={{ height: viewportHeight }}
-        viewBox={`0 0 360 ${viewportHeight}`}
+        viewBox={`0 0 ${layout.width} ${viewportHeight}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
@@ -1148,7 +1142,7 @@ function DependencyGraph({
             <path d="M0,0 L8,4 L0,8 Z" className="fill-neutral-400 dark:fill-neutral-600" />
           </marker>
         </defs>
-        <rect width="360" height={viewportHeight} className="fill-transparent" />
+        <rect width={layout.width} height={viewportHeight} className="fill-transparent" />
         <g transform={`translate(${pan.x} ${pan.y})`}>
           {layout.edges.map((edge) => {
             const from = nodeById.get(edge.from);
@@ -1203,27 +1197,32 @@ function DependencyGraph({
                 />
                 <circle
                   cx="15"
-                  cy="19"
+                  cy="22"
                   r="4"
                   className={selected ? 'fill-blue-500 dark:fill-blue-400' : 'fill-neutral-300 dark:fill-neutral-600'}
                 />
-                <text
+                <foreignObject
                   x="27"
-                  y="17"
-                  className={cn(
-                    'fill-neutral-900 text-[10px] font-medium dark:fill-neutral-100',
-                    selected && 'fill-blue-700 dark:fill-blue-300',
-                  )}
+                  y="7"
+                  width={GRAPH_NODE_WIDTH - 38}
+                  height={GRAPH_NODE_HEIGHT - 12}
                 >
-                  {truncateGraphLabel(title)}
-                </text>
-                <text
-                  x="27"
-                  y="29"
-                  className="fill-neutral-400 text-[9px] dark:fill-neutral-500"
-                >
-                  {node.plan.status}
-                </text>
+                  <div className="flex h-full min-w-0 flex-col justify-center">
+                    <div
+                      data-graph-node-title="true"
+                      title={title}
+                      className={cn(
+                        'overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-medium leading-3 text-neutral-900 dark:text-neutral-100',
+                        selected && 'text-blue-700 dark:text-blue-300',
+                      )}
+                    >
+                      {title}
+                    </div>
+                    <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[9px] leading-3 text-neutral-400 dark:text-neutral-500">
+                      {node.plan.status}
+                    </div>
+                  </div>
+                </foreignObject>
               </g>
             );
           })}
