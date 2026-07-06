@@ -87,6 +87,7 @@ export type PlanLifecycleActions = {
     strategy: string;
     cwd: string;
     projectRoot: string;
+    metadata?: Record<string, string>;
   }): Promise<void>;
 };
 
@@ -497,6 +498,7 @@ export class DiscoveryPlanService {
           strategy: cycle.workspace.strategy,
           cwd: cycle.workspace.cwd,
           projectRoot,
+          metadata: cycle.workspace.metadata,
         });
       } catch {
         // Best effort — workspace may already be gone.
@@ -648,6 +650,7 @@ export class DiscoveryPlanService {
             strategy: cycle.workspace.strategy,
             cwd: cycle.workspace.cwd,
             projectRoot,
+            metadata: cycle.workspace.metadata,
           });
         } catch {
           // Best effort cleanup.

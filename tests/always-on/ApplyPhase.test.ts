@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
-import { ApplyPhase } from "../../src/always-on/phases/apply/index.js";
+import { ApplyPhase, disposeWorkspace } from "../../src/always-on/phases/apply/index.js";
 import { SessionConfigOverrides } from "../../src/always-on/phases/shared/SessionConfigOverrides.js";
 import type { WorkCycleRecord } from "../../src/always-on/infra/storage/types.js";
 import {
@@ -40,6 +40,40 @@ function makePhase(input: {
 }
 
 describe("ApplyPhase", () => {
+  it("disposes a git worktree and deletes its recorded Always-On branch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pilotdeck-worktree-dispose-"));
+    const project = join(root, "project");
+    const worktree = join(root, "worktree");
+    const branchName = "always-on/test-run";
+    try {
+      await createProjectWorktree(project, worktree, branchName);
+
+      await disposeWorkspace("git-worktree", worktree, project, "git", { branchName });
+
+      await assert.rejects(access(worktree));
+      await assertBranchAbsent(project, branchName);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the worktree current branch when disposing legacy git worktree metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pilotdeck-worktree-dispose-fallback-"));
+    const project = join(root, "project");
+    const worktree = join(root, "worktree");
+    const branchName = "always-on/test-run-fallback";
+    try {
+      await createProjectWorktree(project, worktree, branchName);
+
+      await disposeWorkspace("git-worktree", worktree, project);
+
+      await assert.rejects(access(worktree));
+      await assertBranchAbsent(project, branchName);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a cycle with failed dependency analysis before starting an agent turn", async () => {
     const cycle: WorkCycleRecord = {
       id: "cycle-1",
@@ -176,6 +210,25 @@ describe("ApplyPhase", () => {
     }
   });
 });
+
+async function createProjectWorktree(
+  project: string,
+  worktree: string,
+  branchName: string,
+): Promise<void> {
+  await mkdir(project, { recursive: true });
+  await writeFile(join(project, "file.txt"), "base\n", "utf8");
+  await initializeTemporaryGitRepository(project, "base");
+
+  const add = await runGit(project, ["worktree", "add", "-b", branchName, worktree, "HEAD"]);
+  assert.equal(add.exitCode, 0, add.stderr || add.stdout);
+}
+
+async function assertBranchAbsent(project: string, branchName: string): Promise<void> {
+  const branch = await runGit(project, ["branch", "--list", branchName]);
+  assert.equal(branch.exitCode, 0, branch.stderr || branch.stdout);
+  assert.equal(branch.stdout.trim(), "");
+}
 
 function makeCycle(
   projectRoot: string,

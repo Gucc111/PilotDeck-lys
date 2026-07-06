@@ -18,7 +18,6 @@ import { resolvePilotHome } from './utils/pilotPaths.js';
 import { DiscoveryPlanService } from '../../src/always-on/web/DiscoveryPlanService.js';
 import { buildDiscoveryContext } from '../../src/always-on/web/DiscoveryPlanContext.js';
 import {
-  applyWorktreeToProject,
   disposeWorkspace as disposeWorkspaceImpl,
 } from '../../src/always-on/phases/apply/workspaceLifecycle.js';
 import {
@@ -51,11 +50,13 @@ function getService() {
     paths: { extractProjectDirectory },
     sessions: { getSessions },
     activity: { isSessionActive: isClaudeSDKSessionActive },
-    workspace: {
-      applyWorktreeChanges: applyWorktreeToProject,
-      getWorkspaceStatus: getStatusPorcelain,
-      revertCommits,
-      disposeWorkspace: disposeWorkspaceImpl,
+    planLifecycle: {
+      disposeCycleWorkspace: ({ strategy, cwd, projectRoot, metadata }) => disposeWorkspaceImpl(strategy, cwd, projectRoot, 'git', metadata),
+      getCycleWorkspaceStatus: ({ workspaceCwd }) => getStatusPorcelain(workspaceCwd),
+      archivePlanCommits: async ({ workspaceCwd, commitShas }) => {
+        const result = await revertCommits(workspaceCwd, commitShas);
+        return { archived: result.reverted, error: result.error };
+      },
     },
     state: {
       clearActiveWorkCycleId: async (projectRoot) => {

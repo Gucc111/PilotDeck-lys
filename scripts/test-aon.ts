@@ -249,7 +249,7 @@ function buildPlanService(input: {
       isSessionActive: () => false,
     },
     planLifecycle: {
-      disposeCycleWorkspace: ({ strategy, cwd, projectRoot }) => disposeWorkspace(strategy, cwd, projectRoot),
+      disposeCycleWorkspace: ({ strategy, cwd, projectRoot, metadata }) => disposeWorkspace(strategy, cwd, projectRoot, "git", metadata),
       getCycleWorkspaceStatus: ({ workspaceCwd }) => getStatusPorcelain(workspaceCwd),
       archivePlanCommits: async ({ workspaceCwd, commitShas }) => {
         const result = await revertCommits(workspaceCwd, commitShas);

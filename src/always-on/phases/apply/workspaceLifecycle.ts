@@ -176,16 +176,40 @@ export async function disposeWorkspace(
   cwd: string,
   projectRoot: string,
   gitBin = "git",
+  metadata?: Record<string, string>,
 ): Promise<void> {
   if (strategy === "git-worktree") {
+    const branchName = await resolveAlwaysOnWorktreeBranch(cwd, gitBin, metadata);
     const remove = await runGit(projectRoot, ["worktree", "remove", "--force", cwd], { gitBin }).catch(() => undefined);
 
     if (!remove || remove.exitCode !== 0) {
       await rm(cwd, { recursive: true, force: true });
       await runGit(projectRoot, ["worktree", "prune"], { gitBin }).catch(() => undefined);
     }
+    if (branchName) {
+      await runGit(projectRoot, ["branch", "-D", branchName], { gitBin }).catch(() => undefined);
+    }
     return;
   }
 
   await rm(cwd, { recursive: true, force: true });
+}
+
+async function resolveAlwaysOnWorktreeBranch(
+  cwd: string,
+  gitBin: string,
+  metadata?: Record<string, string>,
+): Promise<string | undefined> {
+  const branchName = metadata?.branchName;
+  if (isAlwaysOnBranchName(branchName)) return branchName;
+
+  const current = await runGit(cwd, ["branch", "--show-current"], { gitBin }).catch(() => undefined);
+  if (!current || current.exitCode !== 0) return undefined;
+
+  const currentBranch = current.stdout.trim();
+  return isAlwaysOnBranchName(currentBranch) ? currentBranch : undefined;
+}
+
+function isAlwaysOnBranchName(branchName: string | undefined): branchName is string {
+  return typeof branchName === "string" && branchName.startsWith("always-on/");
 }

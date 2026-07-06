@@ -31,7 +31,7 @@ type Fixture = {
   root: string;
   projectDir: string;
   service: DiscoveryPlanService;
-  disposed: string[];
+  disposed: Array<{ cwd: string; metadata?: Record<string, string> }>;
   cleared: string[];
   warnings: string[];
   readPlans(): Promise<Array<Record<string, unknown>>>;
@@ -99,7 +99,10 @@ async function createFixture(input: {
         workspace: {
           strategy: "snapshot-copy",
           cwd: workspace,
-          metadata: { baseCommit: "a".repeat(40) },
+          metadata: {
+            baseCommit: "a".repeat(40),
+            branchName: "always-on/test-run",
+          },
         },
         planIds: plans.map((plan) => plan.id),
         executions,
@@ -110,7 +113,7 @@ async function createFixture(input: {
     "utf8",
   );
 
-  const disposed: string[] = [];
+  const disposed: Array<{ cwd: string; metadata?: Record<string, string> }> = [];
   const cleared: string[] = [];
   const warnings: string[] = [];
   const preferenceEventsFile = join(projectDir, "memory", "preference-events.jsonl");
@@ -155,8 +158,8 @@ async function createFixture(input: {
     planLifecycle: {
       getCycleWorkspaceStatus: async () => "",
       archivePlanCommits: async () => ({ archived: true }),
-      disposeCycleWorkspace: async ({ cwd }) => {
-        disposed.push(cwd);
+      disposeCycleWorkspace: async ({ cwd, metadata }) => {
+        disposed.push({ cwd, metadata });
       },
     },
     state: {
@@ -254,11 +257,12 @@ describe("DiscoveryPlanService plan selection", () => {
         )),
         [["b:archived"]],
       );
-      assert.deepEqual(fixture.disposed, []);
+      assert.equal(fixture.disposed.length, 0);
       assert.equal((await fixture.readCycles())[0]?.status, "active");
 
       await fixture.service.archiveCycle("project", "cycle-1", ["a"]);
       assert.equal(fixture.disposed.length, 1);
+      assert.equal(fixture.disposed[0]?.metadata?.branchName, "always-on/test-run");
       assert.equal(fixture.cleared.length, 1);
       assert.equal((await fixture.readCycles())[0]?.status, "archived");
       assert.deepEqual(
@@ -311,7 +315,7 @@ describe("DiscoveryPlanService plan selection", () => {
         "INVALID_SELECTION",
       );
       assert.equal((await fixture.readCycles())[0]?.status, "active");
-      assert.deepEqual(fixture.disposed, []);
+      assert.equal(fixture.disposed.length, 0);
       assert.deepEqual(await fixture.readPreferenceEvents(), []);
     } finally {
       await fixture.cleanup();
@@ -368,6 +372,7 @@ describe("DiscoveryPlanService plan selection", () => {
       assert.equal(statuses.get("b"), "archived");
       assert.equal((await fixture.readCycles())[0]?.status, "applied");
       assert.equal(fixture.disposed.length, 1);
+      assert.equal(fixture.disposed[0]?.metadata?.branchName, "always-on/test-run");
       assert.equal(fixture.cleared.length, 1);
       const overview = await fixture.service.getPlansOverview("project");
       assert.equal(overview.plans.find((plan) => plan.id === "a")?.status, "applied");
