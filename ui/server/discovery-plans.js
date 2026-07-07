@@ -158,6 +158,7 @@ export async function applyWorkCycle(projectName, cycleId, planIds, options = {}
   } catch (err) {
     await getService().updateCycleExecution(projectName, cycleId, {
       status: 'failed',
+      executionToken: result.executionToken,
       planIds: result.planIds,
     });
     return {
@@ -170,6 +171,7 @@ export async function applyWorkCycle(projectName, cycleId, planIds, options = {}
   if (applyResult.error) {
     await getService().updateCycleExecution(projectName, cycleId, {
       status: 'failed',
+      executionToken: result.executionToken,
       planIds: result.planIds,
     });
     return { cycle: result.cycle, planIds: result.planIds, error: applyResult.error };
@@ -178,6 +180,7 @@ export async function applyWorkCycle(projectName, cycleId, planIds, options = {}
   const finalResult = await getService().updateCycleExecution(projectName, cycleId, {
     status: 'completed',
     executionSessionId: applyResult.sessionKey,
+    executionToken: result.executionToken,
     planIds: result.planIds,
   });
   return {

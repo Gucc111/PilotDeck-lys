@@ -102,6 +102,12 @@ export type CyclePlanState = {
   attempts?: WorkCyclePlanAttempt[];
 };
 
+export type WorkCycleApplyLock = {
+  token: string;
+  planIds: string[];
+  startedAt: string;
+};
+
 export type WorkspaceHandle = {
   runId: string;
   projectKey: string;
@@ -143,6 +149,7 @@ export type WorkCycleRecord = {
   plans: Record<string, CyclePlanState>;
   createdAt: string;
   createdByRunId: string;
+  applyLock?: WorkCycleApplyLock;
   appliedAt?: string;
   archivedAt?: string;
 };

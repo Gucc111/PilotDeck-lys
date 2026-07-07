@@ -13,7 +13,7 @@ import { WorkCycleStore } from "../../src/always-on/infra/storage/json/WorkCycle
 import { DiscoveryStateStore } from "../../src/always-on/infra/storage/json/DiscoveryStateStore.js";
 import { DiscoveryReportStore } from "../../src/always-on/infra/storage/file/DiscoveryReportStore.js";
 import type { AlwaysOnPaths } from "../../src/always-on/infra/storage/AlwaysOnPaths.js";
-import type { PreferenceEvent } from "../../src/always-on/infra/storage/types.js";
+import type { PreferenceEvent, WorkspaceHandle } from "../../src/always-on/infra/storage/types.js";
 
 type PlanSeed = {
   id: string;
@@ -232,6 +232,84 @@ describe("DiscoveryPlanService plan selection", () => {
     }
   });
 
+  it("locks a work cycle while an apply is queued", async () => {
+    const fixture = await createFixture({
+      plans: [{ id: "a", status: "completed" }],
+      executions: [{ planId: "a" }],
+    });
+    try {
+      const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
+      assert.equal(queued.cycle.status, "applying");
+      assert.equal(typeof queued.executionToken, "string");
+      assert.deepEqual(queued.cycle.applyLock, {
+        token: queued.executionToken,
+        planIds: ["a"],
+        startedAt: queued.cycle.applyLock?.startedAt,
+      });
+
+      const [storedCycle] = await fixture.readCycles();
+      assert.equal(storedCycle?.status, "applying");
+      assert.equal((storedCycle?.applyLock as Record<string, unknown> | undefined)?.token, queued.executionToken);
+      assert.deepEqual((storedCycle?.applyLock as Record<string, unknown> | undefined)?.planIds, ["a"]);
+
+      await rejectsWithCode(
+        fixture.service.queueCycleApply("project", "cycle-1", ["a"]),
+        "APPLY_IN_PROGRESS",
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("rejects stale apply finalize tokens without changing cycle or plan state", async () => {
+    const fixture = await createFixture({
+      plans: [{ id: "a", status: "completed" }],
+      executions: [{ planId: "a" }],
+    });
+    try {
+      const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
+      await rejectsWithCode(
+        fixture.service.updateCycleExecution("project", "cycle-1", {
+          status: "completed",
+          executionToken: "wrong-token",
+          planIds: queued.planIds,
+        }),
+        "APPLY_TOKEN_MISMATCH",
+      );
+
+      const [cycle] = await fixture.readCycles();
+      assert.equal(cycle?.status, "applying");
+      assert.equal((cycle?.applyLock as Record<string, unknown> | undefined)?.token, queued.executionToken);
+      assert.equal((await fixture.readPlans())[0]?.status, "completed");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("clears the apply lock and restores active status after apply failure", async () => {
+    const fixture = await createFixture({
+      plans: [{ id: "a", status: "completed" }],
+      executions: [{ planId: "a" }],
+    });
+    try {
+      const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
+      const result = await fixture.service.updateCycleExecution("project", "cycle-1", {
+        status: "failed",
+        executionToken: queued.executionToken,
+        planIds: queued.planIds,
+      });
+
+      assert.equal(result.cycle.status, "active");
+      assert.equal(result.cycle.applyLock, undefined);
+      const [cycle] = await fixture.readCycles();
+      assert.equal(cycle?.status, "active");
+      assert.equal(cycle?.applyLock, undefined);
+      assert.equal((await fixture.readPlans())[0]?.status, "completed");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("keeps partial archive workspaces and blocks removing a required dependency", async () => {
     const fixture = await createFixture({
       plans: [
@@ -339,6 +417,7 @@ describe("DiscoveryPlanService plan selection", () => {
       assert.deepEqual(queued.planIds, ["a"]);
       await fixture.service.updateCycleExecution("project", "cycle-1", {
         status: "failed",
+        executionToken: queued.executionToken,
         planIds: queued.planIds,
       });
       const archived = await fixture.service.archiveCycle("project", "cycle-1", ["a"]);
@@ -363,6 +442,7 @@ describe("DiscoveryPlanService plan selection", () => {
       const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
       const finalized = await fixture.service.updateCycleExecution("project", "cycle-1", {
         status: "completed",
+        executionToken: queued.executionToken,
         planIds: queued.planIds,
       });
 
@@ -400,6 +480,7 @@ describe("DiscoveryPlanService plan selection", () => {
       const queued = await fixture.service.queueCycleApply("project", "cycle-1");
       await fixture.service.updateCycleExecution("project", "cycle-1", {
         status: "completed",
+        executionToken: queued.executionToken,
         planIds: queued.planIds,
       });
       const [event] = await fixture.readPreferenceEvents();
@@ -438,6 +519,7 @@ describe("DiscoveryPlanService plan selection", () => {
       const queued = await fixture.service.queueCycleApply("project", "cycle-1", ["a"]);
       const result = await fixture.service.updateCycleExecution("project", "cycle-1", {
         status: "completed",
+        executionToken: queued.executionToken,
         planIds: queued.planIds,
       });
       assert.equal(result.cycle.status, "applied");
@@ -446,11 +528,81 @@ describe("DiscoveryPlanService plan selection", () => {
 
       await fixture.service.updateCycleExecution("project", "cycle-1", {
         status: "completed",
+        executionToken: queued.executionToken,
         planIds: queued.planIds,
       });
       assert.equal(fixture.warnings.length, 1);
     } finally {
       await fixture.cleanup();
+    }
+  });
+});
+
+describe("WorkCycleStore apply lock", () => {
+  it("allows one active cycle apply and rejects duplicate beginApply calls", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pilotdeck-cycle-lock-"));
+    try {
+      const projectRoot = join(root, "project");
+      const projectDir = join(root, "always-on", "projects", "project-id");
+      const paths: AlwaysOnPaths = {
+        pilotHome: root,
+        projectKey: projectRoot,
+        projectId: "project-id",
+        rootDir: join(root, "always-on"),
+        projectDir,
+        stateFile: join(projectDir, "state.json"),
+        plansDir: join(projectDir, "plans"),
+        planIndexFile: join(projectDir, "plans", "index.json"),
+        cyclesDir: join(projectDir, "cycles"),
+        cycleIndexFile: join(projectDir, "cycles", "index.json"),
+        reportsDir: join(projectDir, "reports"),
+        eventsFile: join(projectDir, "events.jsonl"),
+        locksDir: join(projectDir, "locks"),
+        discoveryLockFile: join(projectDir, "locks", "discovery.lock"),
+        worktreesDir: join(root, "worktrees"),
+        snapshotsDir: join(root, "snapshots"),
+        memoryDir: join(projectDir, "memory"),
+        preferenceEventsFile: join(projectDir, "memory", "preference-events.jsonl"),
+        preferencesFile: join(projectDir, "memory", "preferences.md"),
+      };
+      const store = new WorkCycleStore(paths);
+      const handle: WorkspaceHandle = {
+        runId: "run-1",
+        projectKey: paths.projectKey,
+        strategy: "snapshot-copy",
+        cwd: join(root, "workspace"),
+        metadata: { baseCommit: "base" },
+      };
+      await store.create(handle, "run-1", "cycle-1", new Date("2026-01-01T00:00:00.000Z"));
+
+      const locked = await store.beginApply("cycle-1", {
+        token: "token-1",
+        planIds: ["plan-a"],
+        now: new Date("2026-01-01T00:01:00.000Z"),
+      });
+
+      assert.equal(locked.status, "applying");
+      assert.deepEqual(locked.applyLock, {
+        token: "token-1",
+        planIds: ["plan-a"],
+        startedAt: "2026-01-01T00:01:00.000Z",
+      });
+
+      await rejectsWithCode(
+        store.beginApply("cycle-1", {
+          token: "token-2",
+          planIds: ["plan-a"],
+          now: new Date("2026-01-01T00:02:00.000Z"),
+        }),
+        "APPLY_IN_PROGRESS",
+      );
+
+      await store.updateStatus("cycle-1", "active", new Date("2026-01-01T00:03:00.000Z"));
+      const restored = await store.getRecord("cycle-1");
+      assert.equal(restored?.status, "active");
+      assert.equal(restored?.applyLock, undefined);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

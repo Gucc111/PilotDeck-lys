@@ -32,7 +32,15 @@ export type RecordPlanRunInput = {
   error?: { code: string; message: string };
 };
 
+export type BeginApplyInput = {
+  token: string;
+  planIds: string[];
+  now: Date;
+};
+
 export class WorkCycleStore {
+  private static readonly mutationChains = new Map<string, Promise<unknown>>();
+
   constructor(private readonly paths: AlwaysOnPaths) {}
 
   async readIndex(): Promise<WorkCycleIndex> {
@@ -252,6 +260,36 @@ export class WorkCycleStore {
     return cloneCycle(cycle);
   }
 
+  async beginApply(
+    cycleId: string,
+    input: BeginApplyInput,
+  ): Promise<WorkCycleRecord> {
+    return this.withCycleMutation(cycleId, async () => {
+      const index = await this.readIndex();
+      const cycle = index.cycles.find((c) => c.id === cycleId);
+      if (!cycle) {
+        throw makeStoreError("Work cycle not found", "NOT_FOUND");
+      }
+      if (cycle.status === "applying") {
+        throw makeStoreError("This work cycle is already being applied.", "APPLY_IN_PROGRESS");
+      }
+      if (cycle.status !== "active") {
+        throw makeStoreError(
+          `Cycle must be active to apply (current: ${cycle.status})`,
+          "INVALID_STATE",
+        );
+      }
+      cycle.status = "applying";
+      cycle.applyLock = {
+        token: input.token,
+        planIds: [...input.planIds],
+        startedAt: input.now.toISOString(),
+      };
+      await this.writeIndex(index);
+      return cloneCycle(cycle);
+    });
+  }
+
   async updateStatus(
     cycleId: string,
     status: WorkCycleStatus,
@@ -261,10 +299,33 @@ export class WorkCycleStore {
     const cycle = index.cycles.find((c) => c.id === cycleId);
     if (!cycle) return undefined;
     cycle.status = status;
+    if (status !== "applying") {
+      delete cycle.applyLock;
+    }
     if (status === "applied") cycle.appliedAt = now.toISOString();
     if (status === "archived") cycle.archivedAt = now.toISOString();
     await this.writeIndex(index);
     return cloneCycle(cycle);
+  }
+
+  private async withCycleMutation<T>(cycleId: string, fn: () => Promise<T>): Promise<T> {
+    const key = `${this.paths.cycleIndexFile}:${cycleId}`;
+    const previous = WorkCycleStore.mutationChains.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = previous.then(() => current, () => current);
+    WorkCycleStore.mutationChains.set(key, chain);
+    await previous.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (WorkCycleStore.mutationChains.get(key) === chain) {
+        WorkCycleStore.mutationChains.delete(key);
+      }
+    }
   }
 }
 
@@ -301,8 +362,22 @@ function normalizeCycle(raw: Record<string, unknown>): WorkCycleRecord {
     plans,
     createdAt,
     createdByRunId: typeof raw.createdByRunId === "string" ? raw.createdByRunId : "",
+    applyLock: normalizeApplyLock(raw.applyLock),
     appliedAt: typeof raw.appliedAt === "string" ? raw.appliedAt : undefined,
     archivedAt: typeof raw.archivedAt === "string" ? raw.archivedAt : undefined,
+  };
+}
+
+function normalizeApplyLock(raw: unknown): WorkCycleRecord["applyLock"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const token = typeof obj.token === "string" ? obj.token : "";
+  const startedAt = typeof obj.startedAt === "string" ? obj.startedAt : "";
+  if (!token || !startedAt) return undefined;
+  return {
+    token,
+    startedAt,
+    planIds: safeStringArray(obj.planIds),
   };
 }
 
@@ -506,6 +581,13 @@ function cloneCycle(cycle: WorkCycleRecord): WorkCycleRecord {
       ...cycle.workspace,
       metadata: { ...cycle.workspace.metadata },
     },
+    applyLock: cycle.applyLock
+      ? {
+          token: cycle.applyLock.token,
+          startedAt: cycle.applyLock.startedAt,
+          planIds: [...cycle.applyLock.planIds],
+        }
+      : undefined,
     plans: Object.fromEntries(
       Object.entries(cycle.plans).map(([planId, state]) => [planId, clonePlanState(state)]),
     ),
@@ -524,4 +606,10 @@ function clonePlanState(state: CyclePlanState): CyclePlanState {
       error: attempt.error ? { ...attempt.error } : undefined,
     })),
   };
+}
+
+function makeStoreError(message: string, code: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  return error;
 }

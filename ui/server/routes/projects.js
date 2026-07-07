@@ -194,6 +194,8 @@ function getDiscoveryPlanErrorStatus(error) {
     error?.code === 'MISSING_WORKSPACE' ||
     error?.code === 'PROJECT_DIRTY' ||
     error?.code === 'PROJECT_DIVERGED' ||
+    error?.code === 'APPLY_IN_PROGRESS' ||
+    error?.code === 'APPLY_TOKEN_MISMATCH' ||
     error?.code === 'plan_already_executed'
   ) {
     return 409;

@@ -549,6 +549,10 @@ export class DiscoveryPlanService {
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
     if (!cycle) throw makeError("Work cycle not found", "NOT_FOUND");
 
+    if (cycle.status === "applying") {
+      throw makeError("This work cycle is already being applied.", "APPLY_IN_PROGRESS");
+    }
+
     if (cycle.status !== "active") {
       throw makeError(
         `Cycle must be in active status to apply (current: ${cycle.status})`,
@@ -587,6 +591,10 @@ export class DiscoveryPlanService {
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
     if (!cycle) throw makeError("Work cycle not found", "NOT_FOUND");
 
+    if (cycle.status === "applying") {
+      throw makeError("This work cycle is already being applied.", "APPLY_IN_PROGRESS");
+    }
+
     if (cycle.status !== "active") {
       throw makeError(
         `Cycle must be in active status to apply (current: ${cycle.status})`,
@@ -609,12 +617,15 @@ export class DiscoveryPlanService {
     const readiness = await this.computeApplyReadiness(projectRoot, cycle, selectedPlanIds);
     enforceApplyReadiness(readiness, options);
 
-    await cycleStore.updateStatus(cycleId, "applying", new Date());
-
     const executionToken = randomUUID();
+    const queuedCycle = await cycleStore.beginApply(cycleId, {
+      token: executionToken,
+      planIds: selectedPlanIds,
+      now: new Date(),
+    });
 
     return {
-      cycle,
+      cycle: queuedCycle,
       projectRoot,
       executionToken,
       planIds: selectedPlanIds,
@@ -642,6 +653,9 @@ export class DiscoveryPlanService {
     const nowIso = now.toISOString();
 
     if (cycle.status === "applying") {
+      if (!updates.executionToken || updates.executionToken !== cycle.applyLock?.token) {
+        throw makeError("Apply result does not match the active apply operation", "APPLY_TOKEN_MISMATCH");
+      }
       const finalStatus: WorkCycleStatus = normalizedStatus === "completed" ? "applied" : "active";
 
       if (finalStatus === "applied" && cycle.workspace?.cwd && this.deps.planLifecycle) {
