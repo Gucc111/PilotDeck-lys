@@ -510,7 +510,10 @@ async function resolveCycleAndPlanSelection(
   const plans = await readPlans(ctx);
   const cyclePlanIds = new Set(Object.keys(cycle.plans));
   const activePlanIds = plans
-    .filter((plan) => cyclePlanIds.has(plan.id) && plan.status !== "applied" && plan.status !== "archived")
+    .filter((plan) => {
+      const status = cycle.plans[plan.id]?.status;
+      return cyclePlanIds.has(plan.id) && status !== "applied" && status !== "archived";
+    })
     .map((plan) => plan.id);
   const planIds = explicitPlanIds ?? activePlanIds;
   const invalid = planIds.filter((planId) => !cyclePlanIds.has(planId));
@@ -539,7 +542,7 @@ async function readPlans(ctx: Pick<BootstrapResult, "planStore">): Promise<Disco
 }
 
 function printPlanSummary(plan: DiscoveryPlanRecord): void {
-  console.log(`- plan ${plan.id} [${plan.status}]`);
+  console.log(`- plan ${plan.id}`);
   console.log(`  title: ${plan.title}`);
   console.log(`  workCycleId: ${plan.workCycleId ?? "(none)"}`);
   console.log(`  planFile: ${plan.planFilePath}`);
@@ -570,7 +573,7 @@ function printCyclePlanState(
   state: CyclePlanState,
   plan?: DiscoveryPlanRecord,
 ): void {
-  console.log(`  - ${planId} [plan=${plan?.status ?? "?"} cycle=${state.status}] ${plan?.title ?? ""}`.trimEnd());
+  console.log(`  - ${planId} [cycle=${state.status}] ${plan?.title ?? ""}`.trimEnd());
   console.log(`    commits: ${state.commitShas.length}${state.commitShas.length ? ` ${state.commitShas.join(", ")}` : ""}`);
   console.log(`    beforeHead: ${state.beforeHead ?? "(none)"}`);
   console.log(`    afterHead: ${state.afterHead ?? "(none)"}`);

@@ -6,6 +6,7 @@ import { deriveDiscoverySessionKey, pickFirstError } from "../shared/index.js";
 import { buildChatDigest } from "./context/index.js";
 import { preparePreferenceMemory } from "./memory/index.js";
 import { buildDiscoveryPrompt } from "./prompts.js";
+import { migrateLegacyPlanStatuses } from "../../infra/storage/json/PlanStatusMigration.js";
 import type { DiscoveryPhaseDeps, DiscoveryPhaseInput, DiscoveryPhaseOutput } from "./types.js";
 
 const DISCOVERY_CHANNEL: GatewayChannelKey = "always-on/discovery";
@@ -56,12 +57,25 @@ export class DiscoveryPhase {
     });
     discoveryCtx.chatSessionAliases = chatDigest.aliasMap;
 
-    const planIndex = await this.deps.planStore.readIndex();
+    await migrateLegacyPlanStatuses({
+      planStore: this.deps.planStore,
+      cycleStore: this.deps.cycleStore,
+    });
+    const [planIndex, cycleIndex] = await Promise.all([
+      this.deps.planStore.readIndex(),
+      this.deps.cycleStore.readIndex(),
+    ]);
+    const planStateByPlanId = new Map<string, { status: string }>();
+    for (const cycle of cycleIndex.cycles) {
+      for (const [planId, planState] of Object.entries(cycle.plans)) {
+        planStateByPlanId.set(planId, planState);
+      }
+    }
     const existingPlans = planIndex.plans.map((p) => ({
       id: p.id,
       title: p.title,
       summary: p.summary,
-      status: p.status,
+      status: planStateByPlanId.get(p.id)?.status ?? "ready",
     }));
 
     const preferences = await preparePreferenceMemory({

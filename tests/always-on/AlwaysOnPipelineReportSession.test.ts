@@ -38,13 +38,22 @@ describe("AlwaysOnPipeline report session reuse", () => {
         id: "plan-1",
         title: "Plan 1",
         createdAt: "2026-01-01T00:00:00.000Z",
-        status: "ready",
         summary: "summary",
         rationale: "rationale",
         sourceRunId: "source-run",
         planFilePath,
       };
       await planStore.upsert(plan);
+      const priorCycle = await cycleStore.create({
+        runId: "prior-run",
+        projectKey: projectRoot,
+        strategy: "snapshot-copy",
+        cwd: workspaceCwd,
+        metadata: { baseCommit },
+      }, "prior-run", "cycle-prior", new Date("2026-01-01T00:00:00.000Z"));
+      await cycleStore.addPlan(priorCycle.id, plan.id);
+      await cycleStore.updatePlanStatus(priorCycle.id, plan.id, "failed");
+      await planStore.updatePlanFields(plan.id, { workCycleId: priorCycle.id });
 
       const workspaceRegistry = new WorkspaceProviderRegistry();
       workspaceRegistry.add({

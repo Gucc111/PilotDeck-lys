@@ -14,7 +14,6 @@ import type {
   CyclePlanState,
   DiscoveryPlanIndex,
   DiscoveryPlanRecord,
-  DiscoveryPlanStatus,
   WorkCycleIndex,
   WorkCycleRecord,
   WorkCycleStatus,
@@ -25,6 +24,7 @@ import type { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStor
 import type { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
 import type { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
 import type { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
+import { migrateLegacyPlanStatuses } from "../infra/storage/json/PlanStatusMigration.js";
 import {
   checkApplyProjectReadiness,
   generateApplyChangedFileList,
@@ -160,20 +160,13 @@ export function normalizeDiscoveryPlanRecord(record: Record<string, unknown> | n
   const sourceId = normalizeString(
     (record?.sourceDiscoverySessionId as string) || (record?.sourceRunId as string),
   );
-  const gatewayStatus = normalizeString(record?.status, "ready");
-  const mappedStatus =
-    gatewayStatus === "executing" ? "running" :
-    gatewayStatus === "superseded" ? "archived" :
-    gatewayStatus === "applying" ? "completed" :
-    gatewayStatus === "apply_failed" ? "completed" :
-    gatewayStatus;
 
   return {
     id,
     title: normalizeString(record?.title, "Untitled discovery plan"),
     createdAt: toIsoTimestamp(record?.createdAt as string) || now,
     updatedAt: toIsoTimestamp((record?.updatedAt as string) || (record?.createdAt as string)) || now,
-    status: mappedStatus,
+    status: "ready",
     summary: normalizeString(record?.summary),
     rationale: normalizeString(record?.rationale),
     sourceDiscoverySessionId: sourceId,
@@ -213,6 +206,20 @@ function toWebPlanRecords(index: DiscoveryPlanIndex): WebPlanRecord[] {
   );
 }
 
+function applyCycleStateToWebPlan(plan: WebPlanRecord, state?: CyclePlanState): WebPlanRecord {
+  if (!state) return plan;
+  return {
+    ...plan,
+    status: state.status,
+    executionStatus: state.status,
+    executionCommitShas: [...state.commitShas],
+    dependsOnPlanIds: [...state.dependsOnPlanIds],
+    dependencyReasons: [...state.dependencyReasons],
+    dependencyAnalysisStatus: state.dependencyAnalysisStatus,
+    updatedAt: state.updatedAt || plan.updatedAt,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Overview building
 // ---------------------------------------------------------------------------
@@ -222,15 +229,21 @@ function buildOverview(
   content: string,
   session: WebPlanSession,
   isSessionActive: (id: string) => boolean,
+  cyclePlan?: CyclePlanState,
 ) {
-  const status = computePlanStatus(plan, session, isSessionActive);
+  const lifecyclePlan = {
+    ...plan,
+    status: cyclePlan?.status ?? "ready",
+    executionStatus: cyclePlan?.status ?? plan.executionStatus,
+  };
+  const status = computePlanStatus(lifecyclePlan, session, isSessionActive);
   const latestSummary = normalizeString(
     session?.lastAssistantMessage || session?.summary || session?.title || plan.latestSummary,
   );
   return {
     ...plan,
     status,
-    executionStatus: computeExecutionStatus(plan, session, isSessionActive) || undefined,
+    executionStatus: computeExecutionStatus(lifecyclePlan, session, isSessionActive) || undefined,
     executionStartedAt:
       pickLatestIsoTimestamp(plan.executionStartedAt, session?.createdAt, session?.created_at) || undefined,
     executionLastActivityAt:
@@ -241,8 +254,8 @@ function buildOverview(
   };
 }
 
-function isResolvedPlan(plan: WebPlanRecord): boolean {
-  return plan.status === "applied" || plan.status === "archived";
+function isResolvedStatus(status: string | undefined): boolean {
+  return status === "applied" || status === "archived";
 }
 
 function normalizePlanSelection(
@@ -253,7 +266,7 @@ function normalizePlanSelection(
   const cyclePlanIds = new Set(Object.keys(cycle.plans));
   if (planIds === undefined) {
     return plans
-      .filter((plan) => cyclePlanIds.has(plan.id) && !isResolvedPlan(plan))
+      .filter((plan) => cyclePlanIds.has(plan.id) && !isResolvedStatus(cycle.plans[plan.id]?.status))
       .map((plan) => plan.id);
   }
   const selected = new Set<string>();
@@ -274,14 +287,15 @@ function validateApplySelection(
   }
 
   const cyclePlanIds = new Set(Object.keys(cycle.plans));
-  const activePlans = plans.filter((plan) => cyclePlanIds.has(plan.id) && !isResolvedPlan(plan));
+  const activePlans = plans.filter((plan) => cyclePlanIds.has(plan.id) && !isResolvedStatus(cycle.plans[plan.id]?.status));
   const planById = new Map(activePlans.map((plan) => [plan.id, plan]));
   for (const planId of selectedPlanIds) {
     const plan = planById.get(planId);
     if (!plan) {
       throw makeError(`Plan ${planId} is not an active plan in this cycle`, "INVALID_SELECTION");
     }
-    if (plan.status !== "completed" && plan.status !== "completed_no_report") {
+    const state = cycle.plans[planId];
+    if (!state || (state.status !== "completed" && state.status !== "completed_no_report")) {
       throw makeError(`Plan ${planId} must be completed before it can be applied`, "INVALID_SELECTION");
     }
   }
@@ -323,7 +337,7 @@ function validateArchiveSelection(
   }
 
   const cyclePlanIds = new Set(Object.keys(cycle.plans));
-  const activePlans = plans.filter((plan) => cyclePlanIds.has(plan.id) && !isResolvedPlan(plan));
+  const activePlans = plans.filter((plan) => cyclePlanIds.has(plan.id) && !isResolvedStatus(cycle.plans[plan.id]?.status));
   const activeIds = new Set(activePlans.map((plan) => plan.id));
   for (const planId of selectedPlanIds) {
     if (!activeIds.has(planId)) {
@@ -372,9 +386,14 @@ export class DiscoveryPlanService {
     return this.deps.createStores(projectRoot);
   }
 
+  private async migrateLegacyStatuses(stores: Pick<ProjectStores, "planStore" | "cycleStore">): Promise<void> {
+    await migrateLegacyPlanStatuses(stores);
+  }
+
   async getPlansOverview(projectName: string) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const { planStore, cycleStore, reportStore } = this.stores(projectRoot);
+    await this.migrateLegacyStatuses({ planStore, cycleStore });
 
     const planIndex = await planStore.readIndex();
     const webPlans = toWebPlanRecords(planIndex);
@@ -407,11 +426,11 @@ export class DiscoveryPlanService {
         const session = plan.executionSessionId
           ? (sessionsById.get(plan.executionSessionId) as WebPlanSession) || null
           : null;
-        const overview = buildOverview(plan, body, session, isActive);
+        const cyclePlan = planStateByPlanId.get(plan.id);
+        const overview = buildOverview(plan, body, session, isActive, cyclePlan);
         if (!overview.workspace && plan.workCycleId) {
           overview.workspace = cycleWorkspaceMap.get(plan.workCycleId) as { strategy: string; cwd: string } | undefined;
         }
-        const cyclePlan = planStateByPlanId.get(plan.id);
         if (cyclePlan) {
           overview.executionCommitShas = [...cyclePlan.commitShas];
           overview.dependsOnPlanIds = [...cyclePlan.dependsOnPlanIds];
@@ -428,6 +447,7 @@ export class DiscoveryPlanService {
   async archiveCycle(projectName: string, cycleId: string, planIds?: string[]) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const { planStore, cycleStore } = this.stores(projectRoot);
+    await this.migrateLegacyStatuses({ planStore, cycleStore });
 
     const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
@@ -474,22 +494,16 @@ export class DiscoveryPlanService {
       }
     }
 
-    await planStore.batchUpdateStatus(
-      selectedPlanIds
-        .filter((id) => {
-          const plan = webPlans.find((p) => p.id === id);
-          return plan && !isResolvedPlan(plan);
-        })
-        .map((id) => ({ planId: id, status: "archived" as DiscoveryPlanStatus, updatedAt: now })),
-    );
     for (const planId of selectedPlanIds) {
       await cycleStore.updatePlanStatus(cycleId, planId, "archived", new Date(now));
+      cycle.plans[planId] = {
+        ...cycle.plans[planId],
+        status: "archived",
+        updatedAt: now,
+      };
     }
 
-    const updatedWebPlans = toWebPlanRecords(await planStore.readIndex());
-    const hasRemainingPlan = updatedWebPlans.some((plan) => (
-      Object.prototype.hasOwnProperty.call(cycle.plans, plan.id) && !isResolvedPlan(plan)
-    ));
+    const hasRemainingPlan = Object.values(cycle.plans).some((state) => !isResolvedStatus(state.status));
     const shouldCloseCycle = archiveWholeCycle || !hasRemainingPlan;
 
     if (shouldCloseCycle && cycle.workspace?.cwd && this.deps.planLifecycle) {
@@ -544,6 +558,7 @@ export class DiscoveryPlanService {
   ): Promise<ApplyProjectReadiness> {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const { planStore, cycleStore } = this.stores(projectRoot);
+    await this.migrateLegacyStatuses({ planStore, cycleStore });
 
     const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
@@ -586,6 +601,7 @@ export class DiscoveryPlanService {
   ) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const { planStore, cycleStore } = this.stores(projectRoot);
+    await this.migrateLegacyStatuses({ planStore, cycleStore });
 
     const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
@@ -643,6 +659,7 @@ export class DiscoveryPlanService {
   ) {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
     const { planStore, cycleStore } = this.stores(projectRoot);
+    await this.migrateLegacyStatuses({ planStore, cycleStore });
 
     const cycleIndex = await cycleStore.readIndex();
     const cycle = cycleIndex.cycles.find((c) => c.id === cycleId);
@@ -678,15 +695,7 @@ export class DiscoveryPlanService {
         const webPlans = toWebPlanRecords(storeIndex);
         const selected = new Set(updates.planIds);
         const affectedPlans = webPlans.filter(
-          (plan) => Object.prototype.hasOwnProperty.call(cycle.plans, plan.id) && !isResolvedPlan(plan),
-        );
-
-        await planStore.batchUpdateStatus(
-          affectedPlans.map((plan) => ({
-            planId: plan.id,
-            status: (selected.has(plan.id) ? "applied" : "archived") as DiscoveryPlanStatus,
-            updatedAt: nowIso,
-          })),
+          (plan) => Object.prototype.hasOwnProperty.call(cycle.plans, plan.id) && !isResolvedStatus(cycle.plans[plan.id]?.status),
         );
 
         for (const plan of affectedPlans) {
@@ -771,9 +780,22 @@ export class DiscoveryPlanService {
    */
   async readStore(projectName: string): Promise<{ version: number; plans: WebPlanRecord[] }> {
     const projectRoot = await this.deps.paths.extractProjectDirectory(projectName);
-    const { planStore } = this.stores(projectRoot);
-    const index = await planStore.readIndex();
-    return { version: 1, plans: toWebPlanRecords(index) };
+    const { planStore, cycleStore } = this.stores(projectRoot);
+    await this.migrateLegacyStatuses({ planStore, cycleStore });
+    const [index, cycleIndex] = await Promise.all([
+      planStore.readIndex(),
+      cycleStore.readIndex(),
+    ]);
+    const planStateByPlanId = new Map<string, CyclePlanState>();
+    for (const cycle of cycleIndex.cycles) {
+      for (const [planId, state] of Object.entries(cycle.plans)) {
+        planStateByPlanId.set(planId, state);
+      }
+    }
+    return {
+      version: 1,
+      plans: toWebPlanRecords(index).map((plan) => applyCycleStateToWebPlan(plan, planStateByPlanId.get(plan.id))),
+    };
   }
 
   private async appendPreferenceEvent(projectRoot: string, event: PreferenceEvent): Promise<void> {

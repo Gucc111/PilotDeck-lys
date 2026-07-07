@@ -10,6 +10,7 @@ import {
 import { PreferenceEventStore } from "../../src/always-on/infra/storage/log/PreferenceEventStore.js";
 import { DiscoveryPlanStore } from "../../src/always-on/infra/storage/json/DiscoveryPlanStore.js";
 import { WorkCycleStore } from "../../src/always-on/infra/storage/json/WorkCycleStore.js";
+import { migrateLegacyPlanStatuses } from "../../src/always-on/infra/storage/json/PlanStatusMigration.js";
 import { DiscoveryStateStore } from "../../src/always-on/infra/storage/json/DiscoveryStateStore.js";
 import { DiscoveryReportStore } from "../../src/always-on/infra/storage/file/DiscoveryReportStore.js";
 import type { AlwaysOnPaths } from "../../src/always-on/infra/storage/AlwaysOnPaths.js";
@@ -209,6 +210,74 @@ async function rejectsWithCode(promise: Promise<unknown>, code: string): Promise
 }
 
 describe("DiscoveryPlanService plan selection", () => {
+  it("migrates legacy plan index statuses into cycle state and strips plan status fields", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pilotdeck-plan-status-migration-"));
+    const pilotHome = join(root, "pilot-home");
+    const projectRoot = join(root, "project");
+    const projectDir = join(pilotHome, "always-on", "projects", "project-id");
+    const paths: AlwaysOnPaths = {
+      pilotHome,
+      projectKey: projectRoot,
+      projectId: "project-id",
+      rootDir: join(pilotHome, "always-on"),
+      projectDir,
+      stateFile: join(projectDir, "state.json"),
+      plansDir: join(projectDir, "plans"),
+      planIndexFile: join(projectDir, "plans", "index.json"),
+      cyclesDir: join(projectDir, "cycles"),
+      cycleIndexFile: join(projectDir, "cycles", "index.json"),
+      reportsDir: join(projectDir, "reports"),
+      eventsFile: join(projectDir, "events.jsonl"),
+      locksDir: join(projectDir, "locks"),
+      discoveryLockFile: join(projectDir, "locks", "discovery.lock"),
+      worktreesDir: join(pilotHome, "always-on", "worktrees", "project-id"),
+      snapshotsDir: join(pilotHome, "always-on", "snapshots", "project-id"),
+      memoryDir: join(projectDir, "memory"),
+      preferenceEventsFile: join(projectDir, "memory", "preference-events.jsonl"),
+      preferencesFile: join(projectDir, "memory", "preferences.md"),
+    };
+    try {
+      await mkdir(paths.plansDir, { recursive: true });
+      await mkdir(paths.cyclesDir, { recursive: true });
+      await writeFile(paths.planIndexFile, JSON.stringify({
+        schemaVersion: 1,
+        plans: [
+          { id: "ready", title: "Ready", createdAt: "2026-01-01T00:00:00.000Z", status: "ready", summary: "", rationale: "", sourceRunId: "run-1", planFilePath: "plans/ready.md" },
+          { id: "linked", title: "Linked", createdAt: "2026-01-01T00:00:00.000Z", status: "completed_no_report", summary: "", rationale: "", sourceRunId: "run-2", planFilePath: "plans/linked.md", workCycleId: "cycle-1" },
+          { id: "orphan", title: "Orphan", createdAt: "2026-01-01T00:00:00.000Z", status: "failed", summary: "", rationale: "", sourceRunId: "run-3", planFilePath: "plans/orphan.md" },
+        ],
+      }, null, 2), "utf8");
+      await writeFile(paths.cycleIndexFile, JSON.stringify({
+        schemaVersion: 2,
+        cycles: [{
+          id: "cycle-1",
+          projectKey: projectRoot,
+          status: "active",
+          baseCommit: "",
+          workspace: { strategy: "snapshot-copy", cwd: join(root, "workspace"), metadata: {} },
+          plans: {},
+          createdAt: "2026-01-01T00:00:00.000Z",
+          createdByRunId: "run-2",
+        }],
+      }, null, 2), "utf8");
+
+      const planStore = new DiscoveryPlanStore(paths);
+      const cycleStore = new WorkCycleStore(paths);
+      await migrateLegacyPlanStatuses({ planStore, cycleStore });
+
+      const planIndex = JSON.parse(await readFile(paths.planIndexFile, "utf8"));
+      assert.equal(planIndex.plans.some((plan: Record<string, unknown>) => "status" in plan), false);
+      const cycleIndex = await cycleStore.readIndex();
+      assert.equal(cycleIndex.cycles.find((cycle) => cycle.id === "cycle-1")?.plans.linked?.status, "completed_no_report");
+      assert.equal(cycleIndex.cycles.some((cycle) => cycle.plans.ready), false);
+      const orphanCycle = cycleIndex.cycles.find((cycle) => cycle.plans.orphan);
+      assert.equal(orphanCycle?.plans.orphan?.status, "failed");
+      assert.equal((await planStore.getRecord("orphan"))?.workCycleId, orphanCycle?.id);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires dependency-closed apply and accepts completed_no_report", async () => {
     const fixture = await createFixture({
       plans: [
@@ -280,7 +349,8 @@ describe("DiscoveryPlanService plan selection", () => {
       const [cycle] = await fixture.readCycles();
       assert.equal(cycle?.status, "applying");
       assert.equal((cycle?.applyLock as Record<string, unknown> | undefined)?.token, queued.executionToken);
-      assert.equal((await fixture.readPlans())[0]?.status, "completed");
+      assert.equal((cycle?.plans as Record<string, { status: string }> | undefined)?.a?.status, "completed");
+      assert.equal(Object.prototype.hasOwnProperty.call((await fixture.readPlans())[0] ?? {}, "status"), false);
     } finally {
       await fixture.cleanup();
     }
@@ -304,7 +374,8 @@ describe("DiscoveryPlanService plan selection", () => {
       const [cycle] = await fixture.readCycles();
       assert.equal(cycle?.status, "active");
       assert.equal(cycle?.applyLock, undefined);
-      assert.equal((await fixture.readPlans())[0]?.status, "completed");
+      assert.equal((cycle?.plans as Record<string, { status: string }> | undefined)?.a?.status, "completed");
+      assert.equal(Object.prototype.hasOwnProperty.call((await fixture.readPlans())[0] ?? {}, "status"), false);
     } finally {
       await fixture.cleanup();
     }
@@ -447,9 +518,11 @@ describe("DiscoveryPlanService plan selection", () => {
       });
 
       assert.deepEqual(finalized.planIds, ["a"]);
-      const statuses = new Map((await fixture.readPlans()).map((plan) => [plan.id, plan.status]));
+      const cyclePlans = ((await fixture.readCycles())[0]?.plans ?? {}) as Record<string, { status: string }>;
+      const statuses = new Map(Object.entries(cyclePlans).map(([planId, state]) => [planId, state.status]));
       assert.equal(statuses.get("a"), "applied");
       assert.equal(statuses.get("b"), "archived");
+      assert.equal((await fixture.readPlans()).some((plan) => Object.prototype.hasOwnProperty.call(plan, "status")), false);
       assert.equal((await fixture.readCycles())[0]?.status, "applied");
       assert.equal(fixture.disposed.length, 1);
       assert.equal(fixture.disposed[0]?.metadata?.branchName, "always-on/test-run");
@@ -502,7 +575,8 @@ describe("DiscoveryPlanService plan selection", () => {
     try {
       const result = await fixture.service.archiveCycle("project", "cycle-1", ["a"]);
       assert.deepEqual(result.planIds, ["a"]);
-      assert.equal((await fixture.readPlans())[0]?.status, "archived");
+      assert.equal((((await fixture.readCycles())[0]?.plans ?? {}) as Record<string, { status: string }>).a?.status, "archived");
+      assert.equal(Object.prototype.hasOwnProperty.call((await fixture.readPlans())[0] ?? {}, "status"), false);
       assert.equal(fixture.warnings.length, 1);
     } finally {
       await fixture.cleanup();
@@ -523,7 +597,8 @@ describe("DiscoveryPlanService plan selection", () => {
         planIds: queued.planIds,
       });
       assert.equal(result.cycle.status, "applied");
-      assert.equal((await fixture.readPlans())[0]?.status, "applied");
+      assert.equal((((await fixture.readCycles())[0]?.plans ?? {}) as Record<string, { status: string }>).a?.status, "applied");
+      assert.equal(Object.prototype.hasOwnProperty.call((await fixture.readPlans())[0] ?? {}, "status"), false);
       assert.equal(fixture.warnings.length, 1);
 
       await fixture.service.updateCycleExecution("project", "cycle-1", {

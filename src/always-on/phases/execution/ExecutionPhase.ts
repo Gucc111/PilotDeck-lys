@@ -46,11 +46,9 @@ export class ExecutionPhase {
       plan,
     };
     this.deps.runContexts.register(executionCtx);
-    await this.deps.planStore.updateStatus(plan.id, {
-      status: "executing",
-      workCycleId: cycle.id,
-    });
     await this.deps.cycleStore.addPlan(cycle.id, plan.id);
+    await this.deps.cycleStore.updatePlanStatus(cycle.id, plan.id, "executing");
+    await this.deps.planStore.updatePlanFields(plan.id, { workCycleId: cycle.id });
     this.deps.events.emit(runId, "execution_started", { planId: plan.id, title: plan.title });
 
     let executionError: { code?: string; message: string } | undefined;

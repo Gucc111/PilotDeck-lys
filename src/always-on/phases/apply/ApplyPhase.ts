@@ -107,7 +107,6 @@ export class ApplyPhase {
       }
       for (const planId of unselectedPlanIds) {
         await this.deps.cycleStore.updatePlanStatus(cycle.id, planId, "archived");
-        await this.deps.planStore.updateStatus(planId, { status: "archived" });
       }
     }
 

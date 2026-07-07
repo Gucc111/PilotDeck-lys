@@ -10,6 +10,13 @@ const VALID_PLAN_STATUSES = new Set<string>([
   "ready", "executing", "completed", "completed_no_report", "failed", "applied", "archived",
 ]);
 
+export type LegacyPlanStatusSnapshot = {
+  planId: string;
+  status: DiscoveryPlanStatus;
+  workCycleId?: string;
+  createdAt: string;
+};
+
 export class DiscoveryPlanStore {
   constructor(private readonly paths: AlwaysOnPaths) {}
 
@@ -62,65 +69,18 @@ export class DiscoveryPlanStore {
     return stored;
   }
 
-  async updateStatus(
-    planId: string,
-    update: {
-      status?: DiscoveryPlanStatus;
-      reportFilePath?: string;
-      workCycleId?: string;
-    },
-  ): Promise<DiscoveryPlanRecord | undefined> {
-    const index = await this.readIndex();
-    const target = index.plans.find((entry) => entry.id === planId);
-    if (!target) return undefined;
-    if (update.status !== undefined) {
-      target.status = update.status;
-      const raw = target as Record<string, unknown>;
-      if ("executionStatus" in raw && (update.status === "completed" || update.status === "completed_no_report" || update.status === "failed")) {
-        raw.executionStatus = update.status;
-      }
-    }
-    if (update.reportFilePath !== undefined) {
-      target.reportFilePath = relativeIfInsideRoot(update.reportFilePath, this.paths.projectDir);
-    }
-    if (update.workCycleId !== undefined) {
-      target.workCycleId = update.workCycleId;
-      delete target.workspace;
-    }
-    await this.writeIndex(index);
-    return target;
-  }
-
   async getRecord(planId: string): Promise<DiscoveryPlanRecord | undefined> {
     const index = await this.readIndex();
     return index.plans.find((entry) => entry.id === planId);
   }
 
-  async batchUpdateStatus(
-    updates: Array<{ planId: string; status: DiscoveryPlanStatus; updatedAt?: string }>,
-  ): Promise<void> {
-    if (updates.length === 0) return;
-    const index = await this.readIndex();
-    const updateMap = new Map(updates.map((u) => [u.planId, u]));
-    for (const plan of index.plans) {
-      const update = updateMap.get(plan.id);
-      if (!update) continue;
-      plan.status = update.status;
-      if (update.updatedAt) {
-        (plan as Record<string, unknown>).updatedAt = update.updatedAt;
-      }
-    }
-    await this.writeIndex(index);
-  }
-
   async updatePlanFields(
     planId: string,
-    fields: Partial<Pick<DiscoveryPlanRecord, "status" | "reportFilePath" | "workCycleId" | "title" | "summary" | "rationale">>,
+    fields: Partial<Pick<DiscoveryPlanRecord, "reportFilePath" | "workCycleId" | "title" | "summary" | "rationale">>,
   ): Promise<DiscoveryPlanRecord | undefined> {
     const index = await this.readIndex();
     const target = index.plans.find((entry) => entry.id === planId);
     if (!target) return undefined;
-    if (fields.status !== undefined) target.status = fields.status;
     if (fields.reportFilePath !== undefined) {
       target.reportFilePath = relativeIfInsideRoot(fields.reportFilePath, this.paths.projectDir);
     }
@@ -133,6 +93,39 @@ export class DiscoveryPlanStore {
     if (fields.rationale !== undefined) target.rationale = fields.rationale;
     await this.writeIndex(index);
     return target;
+  }
+
+  async consumeLegacyStatuses(): Promise<LegacyPlanStatusSnapshot[]> {
+    const parsed = await readJsonSafe(
+      this.paths.planIndexFile,
+      () => undefined as Record<string, unknown> | undefined,
+      (value) => (
+        value &&
+        typeof value === "object" &&
+        (value as Record<string, unknown>).schemaVersion === 1 &&
+        Array.isArray((value as Record<string, unknown>).plans)
+          ? value as Record<string, unknown>
+          : undefined
+      ),
+    );
+    if (!parsed) return [];
+    const rawPlans = parsed.plans as unknown[];
+    const legacy: LegacyPlanStatusSnapshot[] = [];
+    for (const raw of rawPlans) {
+      if (!raw || typeof raw !== "object") continue;
+      const obj = raw as Record<string, unknown>;
+      if (typeof obj.id !== "string") continue;
+      if (!VALID_PLAN_STATUSES.has(obj.status as string)) continue;
+      legacy.push({
+        planId: obj.id,
+        status: obj.status as DiscoveryPlanStatus,
+        workCycleId: typeof obj.workCycleId === "string" ? obj.workCycleId : undefined,
+        createdAt: typeof obj.createdAt === "string" ? obj.createdAt : new Date().toISOString(),
+      });
+    }
+    if (legacy.length === 0) return [];
+    await this.writeIndex(normalizeIndex(parsed as unknown as DiscoveryPlanIndex));
+    return legacy;
   }
 }
 
@@ -148,9 +141,6 @@ function normalizePlanRecord(raw: Record<string, unknown>): DiscoveryPlanRecord 
     id: typeof raw.id === "string" ? raw.id : "",
     title: typeof raw.title === "string" ? raw.title : "Untitled",
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
-    status: VALID_PLAN_STATUSES.has(raw.status as string)
-      ? (raw.status as DiscoveryPlanStatus)
-      : "ready",
     summary: typeof raw.summary === "string" ? raw.summary : "",
     rationale: typeof raw.rationale === "string" ? raw.rationale : "",
     sourceRunId: typeof raw.sourceRunId === "string" ? raw.sourceRunId : "",

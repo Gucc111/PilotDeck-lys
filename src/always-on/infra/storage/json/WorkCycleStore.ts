@@ -38,6 +38,13 @@ export type BeginApplyInput = {
   now: Date;
 };
 
+export type LegacyPlanStatusMigrationInput = {
+  planId: string;
+  status: DiscoveryPlanStatus;
+  workCycleId?: string;
+  createdAt: string;
+};
+
 export class WorkCycleStore {
   private static readonly mutationChains = new Map<string, Promise<unknown>>();
 
@@ -306,6 +313,55 @@ export class WorkCycleStore {
     if (status === "archived") cycle.archivedAt = now.toISOString();
     await this.writeIndex(index);
     return cloneCycle(cycle);
+  }
+
+  async migrateLegacyPlanStatuses(
+    inputs: LegacyPlanStatusMigrationInput[],
+    now = new Date(),
+  ): Promise<Array<{ planId: string; workCycleId: string }>> {
+    if (inputs.length === 0) return [];
+    const index = await this.readIndex();
+    const assignments: Array<{ planId: string; workCycleId: string }> = [];
+    const cycleById = new Map(index.cycles.map((cycle) => [cycle.id, cycle]));
+
+    for (const input of inputs) {
+      const updatedAt = input.createdAt || now.toISOString();
+      let cycle = input.workCycleId ? cycleById.get(input.workCycleId) : undefined;
+      if (!cycle && input.status === "ready") continue;
+      if (!cycle) {
+        const cycleId = `orphan-${randomUUID()}`;
+        cycle = {
+          id: cycleId,
+          projectKey: this.paths.projectKey,
+          status: input.status === "applied"
+            ? "applied"
+            : input.status === "archived"
+              ? "archived"
+              : "active",
+          baseCommit: "",
+          workspace: {
+            strategy: "snapshot-copy",
+            cwd: "",
+            metadata: { orphan: "true" },
+          },
+          plans: {},
+          createdAt: updatedAt,
+          createdByRunId: "",
+          appliedAt: input.status === "applied" ? updatedAt : undefined,
+          archivedAt: input.status === "archived" ? updatedAt : undefined,
+        };
+        index.cycles.push(cycle);
+        cycleById.set(cycleId, cycle);
+        assignments.push({ planId: input.planId, workCycleId: cycleId });
+      }
+
+      const state = ensurePlanState(cycle, input.planId, new Date(updatedAt), input.status);
+      state.status = input.status;
+      state.updatedAt = updatedAt;
+    }
+
+    await this.writeIndex(index);
+    return assignments;
   }
 
   private async withCycleMutation<T>(cycleId: string, fn: () => Promise<T>): Promise<T> {

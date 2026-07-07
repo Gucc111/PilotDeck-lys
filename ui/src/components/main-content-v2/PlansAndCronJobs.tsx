@@ -204,7 +204,7 @@ function getCurrentCyclePlans(
   return plans.filter((plan) => {
     if (!cyclePlanIds.has(plan.id)) return false;
     if (plan.workCycleId && plan.workCycleId !== cycle.id) return false;
-    if (RESOLVED_PLAN_STATUSES.has(plan.status) || isResolvedStatus(getCyclePlanState(cycle, plan.id)?.status)) {
+    if (isResolvedStatus(getPlanStatus(plan, cycle))) {
       return false;
     }
     return true;

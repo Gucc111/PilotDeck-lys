@@ -4,6 +4,7 @@ import type { AlwaysOnApplyInput, AlwaysOnApplyResult } from "../../gateway/prot
 import { resolveAlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
 import { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
 import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
+import { migrateLegacyPlanStatuses } from "../infra/storage/json/PlanStatusMigration.js";
 import { AlwaysOnPipeline, type AlwaysOnPipelineDependencies } from "../orchestration/AlwaysOnPipeline.js";
 import { SessionConfigOverrides } from "../phases/shared/SessionConfigOverrides.js";
 import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
@@ -39,6 +40,8 @@ export function createApplyHandler(
     });
 
     const cycleStore = new WorkCycleStore(paths);
+    const planStore = new DiscoveryPlanStore(paths);
+    await migrateLegacyPlanStatuses({ planStore, cycleStore });
     const cycle = await cycleStore.getRecord(input.workCycleId);
     if (!cycle) {
       return {
@@ -54,14 +57,13 @@ export function createApplyHandler(
       };
     }
 
-    const planStore = new DiscoveryPlanStore(paths);
     const planIndex = await planStore.readIndex();
     const cyclePlanIds = new Set(Object.keys(cycle.plans));
     const defaultPlanIds = planIndex.plans
       .filter((plan) => (
         cyclePlanIds.has(plan.id) &&
-        plan.status !== "applied" &&
-        plan.status !== "archived"
+        cycle.plans[plan.id]?.status !== "applied" &&
+        cycle.plans[plan.id]?.status !== "archived"
       ))
       .map((plan) => plan.id);
     const selectedPlanIds = new Set(input.planIds ?? defaultPlanIds);

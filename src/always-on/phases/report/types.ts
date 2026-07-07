@@ -10,6 +10,7 @@ import type { AlwaysOnPaths } from "../../infra/storage/AlwaysOnPaths.js";
 import type { DiscoveryPlanStore } from "../../infra/storage/json/DiscoveryPlanStore.js";
 import type { DiscoveryReportStore } from "../../infra/storage/file/DiscoveryReportStore.js";
 import type { DiscoveryStateStore } from "../../infra/storage/json/DiscoveryStateStore.js";
+import type { WorkCycleStore } from "../../infra/storage/json/WorkCycleStore.js";
 import type { AlwaysOnRunContextRegistry } from "../shared/RunContextRegistry.js";
 import type { AgentTurnRunner } from "../shared/AgentTurnRunner.js";
 import type { PhaseEventEmitter } from "../shared/PhaseEventEmitter.js";
@@ -21,6 +22,7 @@ export type ReportPhaseDeps = {
   projectKey: string;
   runContexts: AlwaysOnRunContextRegistry;
   planStore: DiscoveryPlanStore;
+  cycleStore: WorkCycleStore;
   stateStore: DiscoveryStateStore;
   reportStore: DiscoveryReportStore;
   turnRunner: AgentTurnRunner;

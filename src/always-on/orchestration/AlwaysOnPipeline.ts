@@ -168,6 +168,7 @@ export class AlwaysOnPipeline {
         projectKey: deps.projectKey,
         runContexts: deps.runContexts,
         planStore: deps.planStore,
+        cycleStore: deps.cycleStore,
         stateStore: deps.stateStore,
         reportStore: deps.reportStore,
         turnRunner: this.turnRunner,
@@ -231,16 +232,15 @@ export class AlwaysOnPipeline {
       });
     }
 
-    if (
-      planRecord.status === "completed" ||
-      planRecord.status === "completed_no_report" ||
-      planRecord.status === "applied" ||
-      planRecord.status === "archived" ||
-      planRecord.status === "executing"
-    ) {
+    const planState = planRecord.workCycleId
+      ? (await this.deps.cycleStore.getRecord(planRecord.workCycleId))?.plans[planId]
+      : await this.deps.cycleStore.getPlanState(planId);
+    const planStatus = planState?.status ?? "ready";
+
+    if (planStatus !== "failed") {
       return failedResult(runId, startedAt, startedAt, planId, {
         code: "plan_not_rerunnable",
-        message: `Plan ${planId} is ${planRecord.status} and cannot be rerun.`,
+        message: `Plan ${planId} is ${planStatus} and cannot be rerun.`,
       });
     }
 
@@ -252,7 +252,6 @@ export class AlwaysOnPipeline {
       });
     }
 
-    await this.deps.planStore.updateStatus(planId, { status: "ready" });
     const state = await this.deps.stateStore.read(startedAt);
     return this.runPlanPhases({
       runId,
@@ -383,11 +382,11 @@ export class AlwaysOnPipeline {
         workspaceStrategy: workspace.strategy,
         workspaceHandle: workspace.cwd,
       });
-      await this.deps.planStore.updateStatus(plan.id, {
-        status: "failed",
+      await this.deps.planStore.updatePlanFields(plan.id, {
         reportFilePath,
         workCycleId: cycle.id,
       });
+      await this.deps.cycleStore.updatePlanStatus(cycle.id, plan.id, "failed");
       await this.deps.stateStore.markFireCompleted({
         outcome: "failed",
         runId,

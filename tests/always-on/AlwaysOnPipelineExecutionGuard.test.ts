@@ -11,7 +11,6 @@ it("rejects rerunning a completed plan", async () => {
     id: "plan-1",
     title: "Plan 1",
     createdAt: "2026-01-01T00:00:00.000Z",
-    status: "completed",
     summary: "",
     rationale: "",
     sourceRunId: "run-1",
@@ -21,6 +20,13 @@ it("rejects rerunning a completed plan", async () => {
   const deps = {
     planStore: {
       getRecord: async () => plan,
+    },
+    cycleStore: {
+      getRecord: async () => ({
+        plans: {
+          [plan.id]: { status: "completed" },
+        },
+      }),
     },
   } as unknown as AlwaysOnPipelineDependencies;
 

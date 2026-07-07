@@ -92,7 +92,6 @@ export function createAlwaysOnDiscoveryPlanTool(
         id: planId,
         title,
         createdAt: now().toISOString(),
-        status: "ready",
         summary: input.summary.trim(),
         rationale: input.rationale.trim(),
         sourceRunId: parsed.metadata.sourceRunId || ctx.runId,

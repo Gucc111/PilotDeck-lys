@@ -126,7 +126,6 @@ export type DiscoveryPlanRecord = {
   id: string;
   title: string;
   createdAt: string;
-  status: DiscoveryPlanStatus;
   summary: string;
   rationale: string;
   sourceRunId: string;

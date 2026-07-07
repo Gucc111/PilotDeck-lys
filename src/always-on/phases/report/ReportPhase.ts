@@ -90,8 +90,8 @@ export class ReportPhase {
       });
     }
 
-    await this.deps.planStore.updateStatus(plan.id, {
-      status: planStatus,
+    await this.deps.cycleStore.updatePlanStatus(input.cycle.id, plan.id, planStatus);
+    await this.deps.planStore.updatePlanFields(plan.id, {
       reportFilePath,
       workCycleId: input.cycle.id,
     });

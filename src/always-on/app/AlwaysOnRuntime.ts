@@ -6,6 +6,7 @@ import type { AlwaysOnConfig } from "../infra/config/index.js";
 import { resolveAlwaysOnPaths, type AlwaysOnPaths } from "../infra/storage/AlwaysOnPaths.js";
 import { DiscoveryPlanStore } from "../infra/storage/json/DiscoveryPlanStore.js";
 import { WorkCycleStore } from "../infra/storage/json/WorkCycleStore.js";
+import { migrateLegacyPlanStatuses } from "../infra/storage/json/PlanStatusMigration.js";
 import { AlwaysOnEventStore } from "../infra/storage/log/AlwaysOnEventStore.js";
 import { DiscoveryReportStore } from "../infra/storage/file/DiscoveryReportStore.js";
 import { DiscoveryStateStore } from "../infra/storage/json/DiscoveryStateStore.js";
@@ -273,6 +274,7 @@ export class AlwaysOnRuntime {
     if (!this.fire) {
       return { sessionKey: "", error: { code: "not_ready", message: "AlwaysOnRuntime.bindGateway not called" } };
     }
+    await migrateLegacyPlanStatuses({ planStore: this.planStore, cycleStore: this.cycleStore });
     const cycle = await this.cycleStore.getRecord(input.workCycleId);
     if (!cycle) {
       return { sessionKey: "", error: { code: "cycle_not_found", message: `Work cycle ${input.workCycleId} not found` } };
@@ -283,8 +285,8 @@ export class AlwaysOnRuntime {
     const defaultPlanIds = planIndex.plans
       .filter((plan) => (
         cyclePlanIds.has(plan.id) &&
-        plan.status !== "applied" &&
-        plan.status !== "archived"
+        cycle.plans[plan.id]?.status !== "applied" &&
+        cycle.plans[plan.id]?.status !== "archived"
       ))
       .map((plan) => plan.id);
     const selectedPlanIds = new Set(input.planIds ?? defaultPlanIds);

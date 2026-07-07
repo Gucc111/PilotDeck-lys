@@ -11,7 +11,6 @@ describe("ReportPhase", () => {
       id: "plan-1",
       title: "Plan 1",
       createdAt: "2026-01-01T00:00:00.000Z",
-      status: "executing",
       summary: "",
       rationale: "",
       sourceRunId: "run-1",
@@ -35,7 +34,8 @@ describe("ReportPhase", () => {
       createdByRunId: "run-1",
     };
 
-    let updatedStatus: unknown;
+    let updatedPlanFields: unknown;
+    let updatedCycleStatus = "";
     let markedOutcome: unknown;
     let reportTurn: AgentTurnInput | undefined;
     let closedSessionKey = "";
@@ -46,8 +46,13 @@ describe("ReportPhase", () => {
       projectKey: "/project",
       runContexts: new AlwaysOnRunContextRegistry(),
       planStore: {
-        updateStatus: async (_planId: string, status: unknown) => {
-          updatedStatus = status;
+        updatePlanFields: async (_planId: string, fields: unknown) => {
+          updatedPlanFields = fields;
+        },
+      } as any,
+      cycleStore: {
+        updatePlanStatus: async (_cycleId: string, _planId: string, status: string) => {
+          updatedCycleStatus = status;
         },
       } as any,
       stateStore: {
@@ -85,8 +90,8 @@ describe("ReportPhase", () => {
     assert.equal(closedSessionKey, executionSessionKey);
     assert.equal(result.planStatus, "completed_no_report");
     assert.equal(result.reportFilePath, "/reports/fallback.md");
-    assert.deepEqual(updatedStatus, {
-      status: "completed_no_report",
+    assert.equal(updatedCycleStatus, "completed_no_report");
+    assert.deepEqual(updatedPlanFields, {
       reportFilePath: "/reports/fallback.md",
       workCycleId: "cycle-1",
     });

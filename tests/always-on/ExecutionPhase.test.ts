@@ -20,7 +20,6 @@ describe("ExecutionPhase", () => {
         id: "plan-1",
         title: "Plan 1",
         createdAt: "2026-01-01T00:00:00.000Z",
-        status: "ready",
         summary: "",
         rationale: "",
         sourceRunId: "run-1",
@@ -52,11 +51,12 @@ describe("ExecutionPhase", () => {
         projectKey: projectRoot,
         runContexts: new AlwaysOnRunContextRegistry(),
         sessionOverrides: new SessionConfigOverrides(),
-        planStore: { updateStatus: async () => undefined } as any,
+        planStore: { updatePlanFields: async () => undefined } as any,
         cycleStore: {
           addPlan: async () => {
             addPlanCalled = true;
           },
+          updatePlanStatus: async () => undefined,
           recordPlanRun: async () => undefined,
           getRecord: async () => cycle,
         } as any,
