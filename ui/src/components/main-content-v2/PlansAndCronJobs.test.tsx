@@ -173,6 +173,92 @@ describe('PlansAndCronJobs selection behavior', () => {
     expect(apiMock.allCronJobs).not.toHaveBeenCalled();
   });
 
+  it('shows plans from the latest active or applying cycle when cycles are unordered', async () => {
+    setup(
+      [
+        makePlan('plan-old', 'Older Active Cycle Plan', {
+          workCycleId: 'cycle-old',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        }),
+        makePlan('plan-new', 'Latest Active Cycle Plan', {
+          workCycleId: 'cycle-new',
+          createdAt: '2026-01-02T00:00:00.000Z',
+        }),
+      ],
+      [
+        makeCycle(
+          { 'plan-old': makePlanState() },
+          { id: 'cycle-old', createdAt: '2026-01-01T00:00:00.000Z' },
+        ),
+        makeCycle(
+          { 'plan-new': makePlanState() },
+          { id: 'cycle-new', status: 'applying', createdAt: '2026-01-03T00:00:00.000Z' },
+        ),
+      ],
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Latest Active Cycle Plan').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText('Older Active Cycle Plan')).toBeNull();
+  });
+
+  it('hides archived plans from the latest cycle while showing unresolved plans', async () => {
+    setup(
+      [
+        makePlan('plan-visible', 'Visible Latest Plan', { workCycleId: 'cycle-new' }),
+        makePlan('plan-archived-record', 'Archived By Plan Record', {
+          workCycleId: 'cycle-new',
+          status: 'archived',
+        }),
+        makePlan('plan-archived-cycle', 'Archived By Cycle State', { workCycleId: 'cycle-new' }),
+      ],
+      [
+        makeCycle(
+          {
+            'plan-visible': makePlanState(),
+            'plan-archived-record': makePlanState(),
+            'plan-archived-cycle': makePlanState({ status: 'archived' }),
+          },
+          { id: 'cycle-new', createdAt: '2026-01-03T00:00:00.000Z' },
+        ),
+      ],
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Visible Latest Plan').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText('Archived By Plan Record')).toBeNull();
+    expect(screen.queryByText('Archived By Cycle State')).toBeNull();
+  });
+
+  it('does not show unresolved plans from older cycles', async () => {
+    setup(
+      [
+        makePlan('plan-old', 'Unresolved Older Cycle Plan', { workCycleId: 'cycle-old' }),
+        makePlan('plan-new', 'Unresolved Latest Cycle Plan', { workCycleId: 'cycle-new' }),
+      ],
+      [
+        makeCycle(
+          { 'plan-new': makePlanState() },
+          { id: 'cycle-new', createdAt: '2026-01-03T00:00:00.000Z' },
+        ),
+        makeCycle(
+          { 'plan-old': makePlanState() },
+          { id: 'cycle-old', createdAt: '2026-01-02T00:00:00.000Z' },
+        ),
+      ],
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Unresolved Latest Cycle Plan').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText('Unresolved Older Cycle Plan')).toBeNull();
+  });
+
   it('disables apply until selected plans include their dependencies', async () => {
     setup(
       [

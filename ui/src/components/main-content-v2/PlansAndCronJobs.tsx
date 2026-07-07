@@ -138,9 +138,22 @@ const GRAPH_NODE_WIDTH = 220;
 const GRAPH_NODE_HEIGHT = 44;
 
 const RESOLVED_PLAN_STATUSES = new Set<DiscoveryPlanStatus>(['applied', 'archived']);
+const VISIBLE_CYCLE_STATUSES = new Set<WorkCycleOverview['status']>(['active', 'applying']);
 
 function selectionKey(projectName: string, cycleId: string): string {
   return `${projectName}::${cycleId}`;
+}
+
+function timestampValue(value?: string): number {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function getLatestVisibleCycle(cycles: WorkCycleOverview[]): WorkCycleOverview | undefined {
+  return cycles
+    .filter((cycle) => VISIBLE_CYCLE_STATUSES.has(cycle.status))
+    .sort((left, right) => timestampValue(right.createdAt) - timestampValue(left.createdAt))[0];
 }
 
 function isResolvedStatus(status?: string): boolean {
@@ -444,7 +457,7 @@ export default function PlansAndCronJobs({ onApplyWorkCycle, onOpenPlanDetail }:
       const project = projectMap.get(projectName);
       const displayName = project?.displayName || projectName;
       const cycles = cyclesByProject.get(projectName) ?? [];
-      const activeCycle = cycles.find((c) => c.status === 'active' || c.status === 'applying');
+      const activeCycle = getLatestVisibleCycle(cycles);
       const currentPlans = getCurrentCyclePlans(plans, activeCycle);
       if (currentPlans.length === 0) continue;
       if (!result.has(projectName)) {
