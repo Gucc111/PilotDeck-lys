@@ -105,6 +105,11 @@ interface UseChatRealtimeHandlersArgs {
   onNavigateToSession?: (sessionId: string) => void;
   onWebSocketReconnect?: () => void;
   sessionStore: SessionStore;
+  sessionRequestParams?: {
+    sessionKind?: string;
+    parentSessionId?: string;
+    relativeTranscriptPath?: string;
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -132,6 +137,7 @@ export function useChatRealtimeHandlers({
   onNavigateToSession,
   onWebSocketReconnect,
   sessionStore,
+  sessionRequestParams,
 }: UseChatRealtimeHandlersArgs) {
   const { subscribe } = useWebSocket();
 
@@ -513,7 +519,12 @@ export function useChatRealtimeHandlers({
           // stream created before tool_use). The server has the authoritative
           // copy with correct ordering. Retry if server hasn't committed yet.
           const doRefresh = (attempt: number) => {
-            sessionStore.refreshFromServer(sid, { provider, projectName: selectedProject?.name, projectPath: selectedProject?.fullPath || selectedProject?.path || '' }).then(() => {
+            sessionStore.refreshFromServer(sid, {
+              provider,
+              projectName: selectedProject?.name,
+              projectPath: selectedProject?.fullPath || selectedProject?.path || '',
+              ...sessionRequestParams,
+            }).then(() => {
               const slot = sessionStore.getSessionSlot?.(sid);
               if (slot && slot.serverMessages.length === 0 && attempt < 5) {
                 setTimeout(() => doRefresh(attempt + 1), 1500 * attempt);
@@ -561,7 +572,12 @@ export function useChatRealtimeHandlers({
           activeTurnReplaySignatureRef.current.delete(sid);
           onSessionInactive?.(sid);
           onSessionNotProcessing?.(sid);
-          sessionStore.refreshFromServer(sid, { provider, projectName: selectedProject?.name, projectPath: selectedProject?.fullPath || selectedProject?.path || '' });
+          sessionStore.refreshFromServer(sid, {
+            provider,
+            projectName: selectedProject?.name,
+            projectPath: selectedProject?.fullPath || selectedProject?.path || '',
+            ...sessionRequestParams,
+          });
         }
         break;
       }
@@ -664,6 +680,7 @@ export function useChatRealtimeHandlers({
     onWebSocketReconnect,
     selectedProject,
     sessionStore,
+    sessionRequestParams,
   ]);
 
   useEffect(() => {

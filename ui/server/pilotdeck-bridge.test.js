@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     gatewayEventToFrames,
+    handleBackgroundTurnNotification,
     isGatewayUnavailableError,
 } from './pilotdeck-bridge.js';
 
@@ -105,5 +106,61 @@ describe('isGatewayUnavailableError', () => {
 
     it('does not classify generic bridge failures as gateway unavailable', () => {
         expect(isGatewayUnavailableError(new Error('Unexpected frame payload'))).toBe(false);
+    });
+});
+
+describe('handleBackgroundTurnNotification', () => {
+    it('turns background turn events into session-scoped frames', () => {
+        const sent = [];
+        const state = { knownSessions: new Set() };
+
+        handleBackgroundTurnNotification({
+            sessionKey: 'cron:task-1',
+            channelKey: 'cron',
+            source: 'cron',
+            event: { type: 'assistant_text_delta', text: 'hello' },
+        }, {
+            sendToSessionWatchers: (sessionId, frame) => sent.push({ sessionId, frame }),
+        }, state);
+
+        expect(sent).toHaveLength(2);
+        expect(sent[0]).toMatchObject({
+            sessionId: 'cron:task-1',
+            frame: {
+                kind: 'session_created',
+                sessionId: 'cron:task-1',
+                newSessionId: 'cron:task-1',
+            },
+        });
+        expect(sent[1]).toMatchObject({
+            sessionId: 'cron:task-1',
+            frame: {
+                kind: 'stream_delta',
+                sessionId: 'cron:task-1',
+                content: 'hello',
+            },
+        });
+    });
+
+    it('resets its synthetic session_created state after turn_completed', () => {
+        const sent = [];
+        const state = { knownSessions: new Set() };
+        const options = {
+            sendToSessionWatchers: (sessionId, frame) => sent.push({ sessionId, frame }),
+        };
+
+        handleBackgroundTurnNotification({
+            sessionKey: 'always-on/execute:project=/tmp/repo:run=run-1',
+            channelKey: 'always-on/execute',
+            event: { type: 'turn_completed', usage: {}, finishReason: 'completed' },
+        }, options, state);
+        handleBackgroundTurnNotification({
+            sessionKey: 'always-on/execute:project=/tmp/repo:run=run-1',
+            channelKey: 'always-on/execute',
+            event: { type: 'assistant_text_delta', text: 'again' },
+        }, options, state);
+
+        const createdFrames = sent.filter((item) => item.frame.kind === 'session_created');
+        expect(createdFrames).toHaveLength(2);
     });
 });

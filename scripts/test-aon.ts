@@ -355,7 +355,7 @@ function resolvePreferenceLlm(model: string, workspace: string): PreferenceLlmOp
     baseUrl: provider.url,
     model: modelId,
     apiKey: provider.apiKey,
-    protocol: provider.protocol,
+    protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
     headers: provider.headers as Record<string, string> | undefined,
     timeoutMs: provider.timeoutMs ?? 120_000,
   };

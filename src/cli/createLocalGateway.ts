@@ -124,6 +124,8 @@ export type CreateLocalGatewayOptions = {
    * benchmark / headless runs where no interactive user is present.
    */
   autoElicitation?: boolean;
+  /** @internal Legacy test harness option; retained as a no-op for compatibility. */
+  skipDefaultProject?: boolean;
   telemetry?: TelemetryClient;
 };
 

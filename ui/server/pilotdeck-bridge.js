@@ -1265,12 +1265,59 @@ export function isSessionActiveViaGateway(sessionId) {
 }
 
 export async function getActiveTurnSnapshotFramesViaGateway(sessionId, provider = 'pilotdeck') {
-    if (!isPilotDeckSessionKey(sessionId)) return [];
-    const gw = await ensureGateway();
-    if (typeof gw.getActiveTurnSnapshot !== 'function') return [];
-    const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId });
+    const snapshot = await getActiveTurnSnapshotViaGateway(sessionId);
     if (!snapshot?.active || !Array.isArray(snapshot.events)) return [];
     return snapshot.events.flatMap((event) => gatewayEventToFrames(event, sessionId, provider) || []);
+}
+
+export async function getActiveTurnSnapshotViaGateway(sessionId) {
+    if (!isPilotDeckSessionKey(sessionId)) return { active: false, sessionKey: sessionId || '', events: [] };
+    const gw = await ensureGateway();
+    if (typeof gw.getActiveTurnSnapshot !== 'function') {
+        return { active: false, sessionKey: sessionId, events: [] };
+    }
+    const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId });
+    if (!snapshot || !Array.isArray(snapshot.events)) {
+        return { active: false, sessionKey: sessionId, events: [] };
+    }
+    return snapshot;
+}
+
+export function handleBackgroundTurnNotification(payload, options, state = { knownSessions: new Set() }) {
+    const { sessionKey, channelKey, event } = payload ?? {};
+    if (!sessionKey || !event) return;
+
+    const provider = 'pilotdeck';
+    const send = (frame) => options.sendToSessionWatchers(sessionKey, frame);
+
+    if (!state.knownSessions.has(sessionKey)) {
+        state.knownSessions.add(sessionKey);
+        send(createNormalizedMessage({
+            provider,
+            sessionId: sessionKey,
+            kind: 'session_created',
+            newSessionId: sessionKey,
+            sessionKey,
+            channelKey,
+        }));
+    }
+
+    if (event.type === 'context_budget') {
+        const aoState = ensureSessionState(sessionKey, '', channelKey || 'web');
+        aoState.tokenBudget = {
+            used: event.used,
+            total: event.total,
+            ratio: event.ratio,
+            state: event.state,
+        };
+    }
+    for (const frame of gatewayEventToFrames(event, sessionKey, provider)) {
+        send(frame);
+    }
+
+    if (event.type === 'turn_completed') {
+        state.knownSessions.delete(sessionKey);
+    }
 }
 
 export function getActiveSessionIdsViaGateway() {
@@ -2132,65 +2179,30 @@ export function getRouterStatsSummary() {
 }
 
 /**
- * Register a notification handler that forwards Always-On turn events
- * to all connected browser WebSocket clients as NormalizedMessage frames.
+ * Register a notification handler that forwards background turn events
+ * to browser WebSocket clients watching the corresponding session.
  *
- * Called once from `index.js` after the WebSocket server is ready, passing
- * the shared `connectedClients` set.
+ * Supports the legacy `always-on:turn-event` notification name as well as
+ * the generic `background:turn-event` name used by cron and Always-On.
  *
- * @param {Set<import('ws').WebSocket>} clients
+ * @param {{
+ *   sendToSessionWatchers: (sessionId: string, frame: object) => void
+ * }} options
  */
-export function registerAlwaysOnNotificationForwarding(clients) {
+export function registerBackgroundTurnNotificationForwarding(options) {
     const knownSessions = new Set();
 
     ensureGateway().then((gw) => {
         gw.onNotification((name, payload) => {
-            if (name !== 'always-on:turn-event') return;
-            const { sessionKey, channelKey, event } = payload ?? {};
-            if (!sessionKey || !event) return;
-
-            const provider = 'pilotdeck';
-
-            if (!knownSessions.has(sessionKey)) {
-                knownSessions.add(sessionKey);
-                const createdFrame = createNormalizedMessage({
-                    provider,
-                    sessionId: sessionKey,
-                    kind: 'session_created',
-                    newSessionId: sessionKey,
-                    sessionKey,
-                    channelKey,
-                });
-                const createdMsg = JSON.stringify(createdFrame);
-                for (const client of clients) {
-                    if (client.readyState === 1) client.send(createdMsg);
-                }
-            }
-
-            if (event.type === 'context_budget') {
-                const aoState = ensureSessionState(sessionKey, '', channelKey || 'web');
-                aoState.tokenBudget = {
-                    used: event.used,
-                    total: event.total,
-                    ratio: event.ratio,
-                    state: event.state,
-                };
-            }
-            for (const frame of gatewayEventToFrames(event, sessionKey, provider)) {
-                const msg = JSON.stringify(frame);
-                for (const client of clients) {
-                    if (client.readyState === 1) client.send(msg);
-                }
-            }
-
-            if (event.type === 'turn_completed') {
-                knownSessions.delete(sessionKey);
-            }
+            if (name !== 'always-on:turn-event' && name !== 'background:turn-event') return;
+            handleBackgroundTurnNotification(payload, options, { knownSessions });
         });
     }).catch((err) => {
-        console.warn('[pilotdeck-bridge] failed to register always-on notification forwarding:', err?.message || err);
+        console.warn('[pilotdeck-bridge] failed to register background turn notification forwarding:', err?.message || err);
     });
 }
+
+export const registerAlwaysOnNotificationForwarding = registerBackgroundTurnNotificationForwarding;
 
 export async function elicitationRespondViaGateway(requestId, answer) {
     const gw = await ensureGateway();

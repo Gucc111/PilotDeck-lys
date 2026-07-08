@@ -85,10 +85,24 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         baseUrl: provider.url,
         model: selection.model,
         apiKey: provider.apiKey,
-        protocol: provider.protocol,
+        protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
         headers: provider.headers,
         timeoutMs: provider.timeoutMs,
       };
+    }
+
+    function broadcastBackgroundTurnEvent(
+      source: "always-on" | "cron",
+      sessionKey: string,
+      channelKey: string,
+      event: GatewayEvent,
+      metadata: Record<string, unknown> = {},
+    ): void {
+      const payload = { sessionKey, channelKey, source, event, ...metadata };
+      deferredBroadcast?.("background:turn-event", payload);
+      if (source === "always-on") {
+        deferredBroadcast?.("always-on:turn-event", { sessionKey, channelKey, event, ...metadata });
+      }
     }
 
     function buildAlwaysOn(
@@ -110,7 +124,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
           deferredBroadcast?.("worktree_removed", { cwd });
         },
         onTurnEvent: (sessionKey, channelKey, event) => {
-          deferredBroadcast?.("always-on:turn-event", { sessionKey, channelKey, event });
+          broadcastBackgroundTurnEvent("always-on", sessionKey, channelKey, event);
         },
         disableAlwaysOnProject: async ({ projectKey, error }) => {
           await disableAlwaysOnProjectInYaml(pilotHome, projectKey);
@@ -132,6 +146,9 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         sessionOverrides,
         logger: cronLogger,
         telemetry,
+        onTurnEvent: (sessionKey, channelKey, event, metadata) => {
+          broadcastBackgroundTurnEvent("cron", sessionKey, channelKey, event, metadata);
+        },
         onResultDelivery: (delivery) => {
           void serverRef?.deliverCronResult(delivery)
             .then((delivered) => {
@@ -171,7 +188,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       alwaysOnConfig: snapshot.config.alwaysOn,
       telemetry,
       onTurnEvent: (sessionKey, channelKey, event) => {
-        deferredBroadcast?.("always-on:turn-event", { sessionKey, channelKey, event });
+        broadcastBackgroundTurnEvent("always-on", sessionKey, channelKey, event);
       },
     });
 
@@ -272,7 +289,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         alwaysOnConfig: config.alwaysOn,
         telemetry,
         onTurnEvent: (sessionKey, channelKey, event) => {
-          deferredBroadcast?.("always-on:turn-event", { sessionKey, channelKey, event });
+          broadcastBackgroundTurnEvent("always-on", sessionKey, channelKey, event);
         },
       });
 

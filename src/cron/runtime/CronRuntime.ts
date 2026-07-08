@@ -28,7 +28,7 @@ import { createCronCreateTool } from "../tool/CronCreateTool.js";
 import { createCronDeleteTool } from "../tool/CronDeleteTool.js";
 import { createCronListTool } from "../tool/CronListTool.js";
 import { createCronStopTool } from "../tool/CronStopTool.js";
-import { CronFire, type CronActiveRun } from "./CronFire.js";
+import { CronFire, type CronActiveRun, type CronTurnEventCallback } from "./CronFire.js";
 import { computeNextRunAt } from "./CronSchedule.js";
 import { CronScheduler } from "./CronScheduler.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
@@ -51,6 +51,7 @@ export type CreateCronRuntimeOptions = {
   activeRunCount?: () => number;
   skipToolCreation?: boolean;
   onResultDelivery?: CronResultDeliveryHandler;
+  onTurnEvent?: CronTurnEventCallback;
 };
 
 const NOOP_LOGGER: CronRuntimeLogger = {
@@ -69,6 +70,7 @@ export class CronRuntime {
   private readonly logger: CronRuntimeLogger;
   private readonly telemetry?: TelemetryClient;
   private readonly onResultDelivery?: CronResultDeliveryHandler;
+  private readonly onTurnEvent?: CronTurnEventCallback;
   private readonly sessionOverrides: SessionConfigOverrides;
   private readonly tools: PilotDeckToolDefinition[];
   private readonly activeRuns = new Map<string, CronActiveRun>();
@@ -87,6 +89,7 @@ export class CronRuntime {
     this.logger = options.logger ?? NOOP_LOGGER;
     this.telemetry = options.telemetry;
     this.onResultDelivery = options.onResultDelivery;
+    this.onTurnEvent = options.onTurnEvent;
     this.sessionOverrides = options.sessionOverrides ?? new SessionConfigOverrides();
     this.sharedActiveRunCount = options.activeRunCount;
     this.tools = options.skipToolCreation
@@ -121,6 +124,7 @@ export class CronRuntime {
       defaultTimezone: this.config.timezone,
       releaseTaskSession: (task) => this.releaseTaskSession(task),
       onResultDelivery: this.onResultDelivery,
+      onTurnEvent: this.onTurnEvent,
       onPhaseEvent: (event) => {
         this.telemetry?.trackFeatureLoopStage({
           module: "cron_job",

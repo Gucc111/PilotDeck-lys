@@ -10,7 +10,7 @@ export {
   createCronManager,
   type CreateCronManagerOptions,
 } from "./runtime/CronManager.js";
-export type { CronPhaseEventCallback } from "./runtime/CronFire.js";
+export type { CronPhaseEventCallback, CronTurnEventCallback } from "./runtime/CronFire.js";
 export { computeNextCronRunAt, computeNextRunAt } from "./runtime/CronSchedule.js";
 export { isValidCronTimezone, resolveCronTimezone } from "./CronTimezone.js";
 export { resolveCronPaths, cronRunEventsPath, type CronPaths } from "./storage/CronPaths.js";

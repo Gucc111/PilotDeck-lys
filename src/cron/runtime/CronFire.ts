@@ -22,6 +22,18 @@ export type CronPhaseEventCallback = (event: {
   error?: { code: string; message: string };
 }) => void;
 
+export type CronTurnEventCallback = (
+  sessionKey: string,
+  channelKey: CronTask["channelKey"],
+  event: GatewayEvent,
+  metadata: {
+    source: "cron";
+    runId: string;
+    taskId: string;
+    projectKey?: string;
+  },
+) => void;
+
 export type CronFireDependencies = {
   gateway: Gateway;
   store: CronTaskStore;
@@ -37,6 +49,7 @@ export type CronFireDependencies = {
     warn: (message: string, data?: Record<string, unknown>) => void;
   };
   onPhaseEvent?: CronPhaseEventCallback;
+  onTurnEvent?: CronTurnEventCallback;
 };
 
 export class CronFire {
@@ -83,6 +96,12 @@ export class CronFire {
         timeoutMs: this.deps.runTimeoutMs,
       })) {
         await this.deps.store.appendRunEvent(runId, event);
+        this.deps.onTurnEvent?.(task.sessionKey, task.channelKey, event, {
+          source: "cron",
+          runId,
+          taskId: task.taskId,
+          projectKey: task.projectKey,
+        });
         if (event.type === "assistant_text_delta") {
           assistantText += event.text;
         }

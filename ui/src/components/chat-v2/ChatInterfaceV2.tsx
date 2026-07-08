@@ -325,6 +325,7 @@ function ChatInterfaceV2({
     onNavigateToSession,
     onWebSocketReconnect: handleWebSocketReconnect,
     sessionStore,
+    sessionRequestParams,
   });
 
   useEffect(() => {

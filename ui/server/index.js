@@ -63,14 +63,15 @@ import {
     decidePermissionViaGateway,
     grantSessionPermissionViaGateway,
     isSessionActiveViaGateway,
-    getActiveTurnSnapshotFramesViaGateway,
+    getActiveTurnSnapshotViaGateway,
     getActiveSessionIdsViaGateway,
     elicitationRespondViaGateway,
     getRouterDashboardData,
     getRouterSessionStats,
     getRouterStatsSummary,
     getPilotDeckGateway,
-    registerAlwaysOnNotificationForwarding,
+    gatewayEventToFrames,
+    registerBackgroundTurnNotificationForwarding,
     getSessionTokenBudget,
 } from './pilotdeck-bridge.js';
 import sessionManager from './sessionManager.js';
@@ -144,7 +145,9 @@ let projectsWatchers = [];
 let projectsWatcherDebounceTimer = null;
 const connectedClients = new Set();
 const sessionWatchRegistry = createSessionWatchRegistry();
-registerAlwaysOnNotificationForwarding(connectedClients);
+registerBackgroundTurnNotificationForwarding({
+    sendToSessionWatchers: (sessionId, frame) => broadcastToSessionWatchersAllUsers(sessionId, frame),
+});
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 
 function normalizeSessionId(value) {
@@ -195,6 +198,38 @@ function broadcastToSessionWatchers(sessionId, frame, userId, excludeWs = null) 
         if ((client.__pilotdeckUserId ?? null) !== userId) return;
         client.send(payload);
     });
+}
+
+function broadcastToSessionWatchersAllUsers(sessionId, frame, excludeWs = null) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId) return;
+    const payload = JSON.stringify(frame);
+    const watchers = sessionWatchRegistry.getWatchers(normalizedSessionId);
+    watchers.forEach((client) => {
+        if (client === excludeWs) return;
+        if (client.readyState !== WebSocket.OPEN) return;
+        client.send(payload);
+    });
+}
+
+async function loadActiveTurnSnapshotFrames(sessionId, provider) {
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    if (!normalizedSessionId) return { active: false, frames: [] };
+    const snapshot = await getActiveTurnSnapshotViaGateway(normalizedSessionId);
+    const active = Boolean(snapshot?.active);
+    const frames = active && Array.isArray(snapshot?.events)
+        ? snapshot.events.flatMap((event) => gatewayEventToFrames(event, normalizedSessionId, provider) || [])
+        : [];
+    return { active, frames, snapshot };
+}
+
+async function sendActiveTurnSnapshotToClient(sessionId, provider, writer) {
+    const result = await loadActiveTurnSnapshotFrames(sessionId, provider);
+    const { frames } = result;
+    for (const frame of frames) {
+        writer.send(frame);
+    }
+    return result;
 }
 
 // Broadcast progress to all connected WebSocket clients
@@ -2212,6 +2247,11 @@ function handleChatConnection(ws, request) {
             if (data.type === 'watch-session') {
                 if (requestSessionId) {
                     sessionWatchRegistry.watch(requestSessionId, ws);
+                    await sendActiveTurnSnapshotToClient(
+                        requestSessionId,
+                        data.provider || 'pilotdeck',
+                        writer,
+                    );
                 }
                 return;
             }
@@ -2333,10 +2373,15 @@ function handleChatConnection(ws, request) {
                 if (normalizeSessionId(sessionId)) {
                     sessionWatchRegistry.watch(sessionId, ws);
                 }
-                const isProcessing = isSessionActiveViaGateway(sessionId);
+                const snapshotResult = await loadActiveTurnSnapshotFrames(
+                    sessionId,
+                    data.provider || 'pilotdeck',
+                );
+                const bridgeActive = isSessionActiveViaGateway(sessionId);
+                const isProcessing = Boolean(snapshotResult.active || bridgeActive);
                 const includeActiveTurnMessages = data.includeActiveTurnMessages !== false;
-                const activeTurnMessages = (isProcessing && includeActiveTurnMessages)
-                    ? await getActiveTurnSnapshotFramesViaGateway(sessionId, data.provider || 'pilotdeck')
+                const activeTurnMessages = includeActiveTurnMessages
+                    ? snapshotResult.frames
                     : [];
                 writer.send({
                     type: 'session-status',
