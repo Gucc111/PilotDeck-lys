@@ -76,13 +76,20 @@ describe('CronV2', () => {
 
   it('loads active cron jobs and groups them by project', async () => {
     setup([
-      makeJob({ id: 'job-1', prompt: 'Run hourly report', projectKey: '/project/general' }),
+      makeJob({
+        id: 'job-1',
+        prompt: 'Run hourly report',
+        projectKey: '/project/general',
+        nextRunAt: '2026-01-01T01:00:00.000Z',
+      }),
       makeJob({ id: 'job-2', prompt: 'Unassigned check', projectKey: null }),
       makeJob({ id: 'job-3', prompt: 'Completed old job', status: 'completed' }),
     ]);
 
     await screen.findByText('General');
+    expect(screen.getAllByText('Next Run').length).toBeGreaterThan(0);
     expect(screen.getByText('Run hourly report')).toBeTruthy();
+    expect(screen.getByText(formatExpectedTime('2026-01-01T01:00:00.000Z'))).toBeTruthy();
     expect(screen.getByText('Unassigned')).toBeTruthy();
     expect(screen.getByText('Unassigned check')).toBeTruthy();
     expect(screen.queryByText('Completed old job')).toBeNull();
@@ -213,4 +220,22 @@ describe('CronV2', () => {
     await screen.findByText('No active cron jobs found.');
     expect(screen.queryByText('Past job')).toBeNull();
   });
+
+  it('renders a placeholder when next run time is missing', async () => {
+    setup([makeJob({ id: 'job-missing-next-run', prompt: 'Missing next run' })]);
+
+    await screen.findByText('Missing next run');
+    expect(screen.getByText('—')).toBeTruthy();
+  });
 });
+
+function formatExpectedTime(iso: string): string {
+  return new Date(Date.parse(iso)).toLocaleString([], {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}

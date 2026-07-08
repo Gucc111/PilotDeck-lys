@@ -131,6 +131,7 @@
     "columns": {
       "title": "Title",
       "createdAt": "Created",
+      "nextRunAt": "Next Run",
       "status": "Status",
       "actions": "Actions"
     },

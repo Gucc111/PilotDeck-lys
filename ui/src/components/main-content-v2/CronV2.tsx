@@ -29,8 +29,9 @@ const SUB_TABS: { id: CronSubTab; labelKey: string; defaultLabel: string; icon: 
 ];
 
 const COL = {
-  title: 'min-w-0 flex-1 max-w-[520px]',
+  title: 'min-w-0 flex-1 max-w-[420px]',
   createdAt: 'w-[150px] shrink-0',
+  nextRunAt: 'w-[150px] shrink-0',
   status: 'w-[140px] shrink-0',
   actions: 'w-[180px] shrink-0',
 } as const;
@@ -590,6 +591,11 @@ function ColumnHeaders({ t }: { t: (key: string, opts?: Record<string, string>) 
           {t('cron.columns.createdAt', { defaultValue: 'Created' })}
         </span>
       </div>
+      <div className={COL.nextRunAt}>
+        <span className="text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+          {t('cron.columns.nextRunAt', { defaultValue: 'Next Run' })}
+        </span>
+      </div>
       <div className={COL.status}>
         <span className="text-xxs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
           {t('cron.columns.status', { defaultValue: 'Status' })}
@@ -645,6 +651,9 @@ function CronJobRow({
       </div>
       <div className={cn(COL.createdAt, 'font-mono text-xxs tabular-nums text-neutral-500 dark:text-neutral-400')}>
         {formatAbsoluteTime(job.createdAt)}
+      </div>
+      <div className={cn(COL.nextRunAt, 'font-mono text-xxs tabular-nums text-neutral-500 dark:text-neutral-400')}>
+        {job.nextRunAt ? formatAbsoluteTime(job.nextRunAt) || '—' : '—'}
       </div>
       <div className={COL.status}>
         <span className={cn('inline-block rounded-full px-2 py-0.5 text-[11px] font-medium', CRON_STATUS_STYLE[status])}>

@@ -131,6 +131,7 @@
     "columns": {
       "title": "标题",
       "createdAt": "创建时间",
+      "nextRunAt": "下次运行",
       "status": "状态",
       "actions": "操作"
     },

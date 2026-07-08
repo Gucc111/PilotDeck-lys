@@ -159,6 +159,7 @@ export interface CronJobOverview {
   cron: string;
   prompt: string;
   createdAt: string;
+  nextRunAt?: string;
   recurring: boolean;
   manualOnly: boolean;
   status: CronJobOverviewStatus;
