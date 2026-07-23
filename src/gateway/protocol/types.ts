@@ -54,6 +54,9 @@ import type {
   TeammateCatalog,
   TeammateCatalogInput,
   TeammateDeleteResult,
+  TeammateEnablementGetInput,
+  TeammateEnablementResult,
+  TeammateEnablementSetInput,
   TeammateGatewayCreateInput,
   TeammateGatewayWriteInput,
   TeammateListResult,
@@ -523,5 +526,7 @@ export interface Gateway {
   teammateWrite?(input: TeammateGatewayWriteInput): Promise<TeammateReadResult>;
   teammateDelete?(input: TeammateAddressInput): Promise<TeammateDeleteResult>;
   teammateCatalog?(input: TeammateCatalogInput): Promise<TeammateCatalog>;
+  teammateEnablementGet?(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult>;
+  teammateEnablementSet?(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult>;
   teamState?(input: TeamStateInput): Promise<TeamStateResult>;
 }

@@ -132,7 +132,7 @@
       "detail": "Word wrap, line numbers, minimap, and font size"
     },
     "teammates": {
-      "detail": "Create project-scoped teammates and configure their capabilities"
+      "detail": "Manage global teammates and enable them per workspace"
     },
     "permissions": {
       "detail": "Manage allowed and blocked tool rules"
@@ -147,16 +147,28 @@
   },
   "teammates": {
     "title": "Teammates",
-    "description": "Manage project-scoped teammate definitions, prompts, models, and capabilities.",
-    "project": "Project",
-    "selectProject": "Select a project...",
-    "noProjects": "No project with a local path is available. Add or open a project first.",
+    "description": "Manage global teammate definitions and choose which ones each workspace can use.",
+    "selectProject": "Select a workspace...",
+    "noProjects": "No workspace with a local path is available. Global definitions remain editable, but capability catalogs cannot be validated.",
     "loading": "Loading teammates...",
-    "empty": "No teammates are defined for this project yet.",
+    "empty": "No global teammates are defined yet.",
     "list": {
-      "title": "Project teammates",
+      "title": "Global teammates",
       "count": "{{count}} teammate",
       "count_plural": "{{count}} teammates"
+    },
+    "workspace": {
+      "title": "Enabled for workspace",
+      "description": "This workspace selection only controls enablement, capability suggestions, and runtime diagnostics. Teammate definitions are global.",
+      "selector": "Reference workspace",
+      "none": "Select a workspace to load enablement and validate capabilities."
+    },
+    "enablement": {
+      "rowLabel": "Enabled for workspace",
+      "toggleLabel": "Enabled for workspace: {{name}}",
+      "loading": "Loading workspace enablement...",
+      "saving": "Saving workspace enablement...",
+      "summary": "{{count}} global teammate(s) enabled for this workspace"
     },
     "editor": {
       "select": "Select a teammate to edit, or create a new one.",
@@ -204,11 +216,13 @@
       "promptRequired": "A prompt is required."
     },
     "diagnostics": {
-      "title": "Definition validation errors",
+      "global": "Global definition errors",
+      "workspace": "Workspace capability errors",
       "validation": "Unable to save this definition"
     },
     "catalog": {
-      "manualOnly": "Capability suggestions are unavailable. You can still enter tools, plugins, skills, and MCP servers manually."
+      "manualOnly": "Capability suggestions for this workspace are unavailable. You can still enter tools, plugins, skills, and MCP servers manually.",
+      "noWorkspace": "No reference workspace is selected. You can edit the text configuration, but tools, plugins, skills, and MCP servers cannot be validated against a workspace catalog."
     },
     "confirmDelete": "Delete teammate \"{{name}}\"? This cannot be undone.",
     "status": {
@@ -219,7 +233,10 @@
       "load": "Failed to load teammates.",
       "save": "Failed to save teammate.",
       "delete": "Failed to delete teammate.",
-      "catalog": "Failed to load capability suggestions."
+      "catalog": "Failed to load capability suggestions.",
+      "enablementLoad": "Failed to load workspace teammate enablement.",
+      "enablementSave": "Failed to save workspace teammate enablement.",
+      "enablementUnknown": "The enablement status is unknown. Refresh to check the server state."
     }
   },
   "notifications": {

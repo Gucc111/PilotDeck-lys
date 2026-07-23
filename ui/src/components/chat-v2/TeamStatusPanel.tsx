@@ -90,7 +90,7 @@ export default function TeamStatusPanel({
             {!error && state?.teammates.length === 0 && (
               <p className="text-[11px] text-amber-600 dark:text-amber-400">
                 {t('team.noTeammates', {
-                  defaultValue: 'No Teammates are configured in this workspace.',
+                  defaultValue: 'The current workspace has no enabled and valid Teammate.',
                 })}
               </p>
             )}

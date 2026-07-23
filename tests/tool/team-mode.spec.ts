@@ -120,8 +120,9 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
       name: "Implementer",
       description: "Implements scoped changes",
       prompt: "Implement carefully.",
-      sourcePath: join(dir, ".pilotdeck/teammates/implementer.md"),
+      sourcePath: join(dir, "teammates/implementer.md"),
     }],
+    diagnostics: () => ["Workspace enablement is invalid."],
     host: {
       run: async (input) => {
         calls.push(`${input.definition.id}:${input.action}:${input.prompt}`);
@@ -167,5 +168,6 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
     "implementer:run:Implement feature",
     "implementer:follow_up:Add verification",
   ]);
+  assert.deepEqual(runtime.listDiagnostics(), ["Workspace enablement is invalid."]);
   assert.equal((await runtime.readProgress()).items[0]?.status, "completed");
 });

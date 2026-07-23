@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, resolve, join as joinPath } from "node:path";
+import { dirname, resolve, sep, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { EdgeClawMemoryService } from "edgeclaw-memory-core";
@@ -62,7 +62,12 @@ import {
 } from "../mcp/index.js";
 import { createModelRuntime, type ModelRuntime } from "../model/index.js";
 import { createDefaultPermissionContext, type PermissionRule } from "../permission/index.js";
-import { loadPilotConfig, resolvePilotHome, type PilotProxyConfig } from "../pilot/index.js";
+import {
+  getPilotTeammatesDir,
+  loadPilotConfig,
+  resolvePilotHome,
+  type PilotProxyConfig,
+} from "../pilot/index.js";
 import { createPilotConfigStoreSync, type PilotConfigStore } from "../pilot/config/PilotConfigStore.js";
 import type { PilotAgentModelSelection, PilotConfigSnapshot } from "../pilot/config/types.js";
 import { DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_ALLOWED_TOOLS, DEFAULT_TRIGGER_TIERS, type RouterConfig } from "../router/config/schema.js";
@@ -87,7 +92,10 @@ import type { EdgeClawMemoryProvider } from "../context/index.js";
 import { loadBuiltinPlugins } from "../extension/plugins/builtin/loadBuiltinPlugins.js";
 import { SkillManager, migrateLegacyBundledSkillCopies } from "../extension/skills/index.js";
 import {
+  canonicalizeTeammateWorkspace,
+  TeammateEnablementStoreError,
   TeammateManager,
+  TeammateManagerError,
   type TeammateDiagnostic,
   type TeammateRecord,
 } from "../extension/teammates/index.js";
@@ -103,6 +111,16 @@ import {
 } from "../agent/team/types.js";
 import type { PilotDeckTeamDelegateResult } from "../tool/protocol/types.js";
 import { buildMcpToolWireName, parseMcpToolWireName } from "../mcp/runtime/wireName.js";
+
+const WORKSPACE_TEAMMATE_DIAGNOSTIC_CODES = new Set<TeammateDiagnostic["code"]>([
+  "TEAMMATE_ENABLEMENT_INVALID",
+  "TEAMMATE_NOT_FOUND",
+  "MODEL_NOT_FOUND",
+  "TOOL_NOT_FOUND",
+  "PLUGIN_NOT_FOUND",
+  "SKILL_NOT_FOUND",
+  "MCP_SERVER_NOT_FOUND",
+]);
 
 export type CreateLocalGatewayOptions = {
   projectRoot?: string;
@@ -305,9 +323,13 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     toolResultsDir: resolve(tmpdir(), "pilotdeck-tool-output", process.pid.toString()),
     cron: options.cron,
     skillManager,
-    teammateManager: (projectKey) => registry.getTeammateManager(projectKey),
-    teammatesList: (projectKey) => registry.listTeammates(projectKey),
+    teammateManager: registry.getTeammateManager(),
+    teammatesList: () => registry.listAllTeammates(),
     teammateCatalog: (projectKey) => registry.getTeammateCatalog(projectKey),
+    teammateEnablementGet: ({ projectKey }) =>
+      registry.getTeammateEnablement(projectKey),
+    teammateEnablementSet: ({ projectKey, enabledTeammateIds }) =>
+      registry.setTeammateEnablement(projectKey, enabledTeammateIds),
     teamState: async ({ projectKey, leaderSessionId }) => {
       const storage = createAgentProjectSessionStorage({
         projectRoot: projectKey,
@@ -319,7 +341,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         path: storage.teamProgressPath,
         now,
       }).read();
-      const listed = await registry.getTeammateManager(projectKey).list();
+      const listed = await registry.listEnabledTeammates(projectKey);
       return {
         progress,
         teammates: listed.teammates.map((teammate) => {
@@ -386,7 +408,9 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     },
     async reloadExtensions(input) {
       const changedPaths = input?.changedPaths ?? [];
-      if (input?.projectKey) {
+      const globalTeammateChange = changedPaths.some((path) =>
+        isGlobalTeammatePath(path, pilotHome));
+      if (input?.projectKey && !globalTeammateChange) {
         // eslint-disable-next-line no-console
         console.log(
           `[pilotdeck] Extensions reload requested for project ${input.projectKey}:`,
@@ -506,7 +530,6 @@ type ProjectRuntime = {
   tools: ToolRegistry;
   teammates: RuntimeTeammateDefinition[];
   teammateDiagnostics: TeammateDiagnostic[];
-  teammateManager: TeammateManager;
   unavailableTools?: PilotDeckUnavailableToolDiagnostic[];
   projectStorage: GatewayProjectStorageOptions;
   /** Per-project background task runtime (shared across sessions). C5. */
@@ -540,6 +563,7 @@ const DEFAULT_BROWSER_NAVIGATION_TIMEOUT_MS = 90_000;
 
 class ProjectRuntimeRegistry {
   private readonly runtimes = new Map<string, ProjectRuntime>();
+  private readonly teammateManager: TeammateManager;
   private gateway?: InProcessGateway;
   private sessionRouter?: SessionRouter;
   private readonly teammateBindings = new Map<string, TeammateSessionBinding>();
@@ -578,6 +602,9 @@ class ProjectRuntimeRegistry {
   constructor(private readonly options: ProjectRuntimeRegistryOptions) {
     this._extraTools = options.extraTools ? [...options.extraTools] : [];
     this._sessionOverrides = options.sessionOverrides;
+    this.teammateManager = new TeammateManager({
+      pilotHome: options.pilotHome,
+    });
   }
 
   /**
@@ -768,7 +795,6 @@ class ProjectRuntimeRegistry {
       now: this.options.now,
       onCompletion: (event) => this.emitBackgroundTaskCompletion(event),
     });
-    const teammateManager = new TeammateManager({ projectRoot });
     const webSearchConfig = snapshot.config.tools?.webSearch;
     const tools = createBuiltinRegistry({
       backgroundTasks: { runtime: backgroundTasks },
@@ -813,7 +839,6 @@ class ProjectRuntimeRegistry {
       tools,
       teammates: [],
       teammateDiagnostics: [],
-      teammateManager,
       backgroundTasks,
       memory: memory?.provider,
       memoryService: memory?.service,
@@ -1128,25 +1153,8 @@ class ProjectRuntimeRegistry {
     const runtime = this.resolve(context.projectKey);
     await runtime.pluginRuntime.refresh();
     await this.ensureMcpReady(runtime);
+    await this.resolveWorkspaceTeammates(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
-    const teammateList = await runtime.teammateManager.list();
-    const invalidDefinitionIds = new Set(
-      teammateList.diagnostics
-        .filter((diagnostic) => diagnostic.severity === "error" && diagnostic.id)
-        .map((diagnostic) => diagnostic.id as string),
-    );
-    const runtimeDiagnostics = teammateList.teammates.flatMap((teammate) =>
-      validateTeammateRuntimeReferences(teammate, runtime, contributions));
-    const invalidRuntimeIds = new Set(
-      runtimeDiagnostics
-        .filter((diagnostic) => diagnostic.severity === "error" && diagnostic.id)
-        .map((diagnostic) => diagnostic.id as string),
-    );
-    runtime.teammates = teammateList.teammates
-      .filter((teammate) =>
-        !invalidDefinitionIds.has(teammate.id) && !invalidRuntimeIds.has(teammate.id))
-      .map(toRuntimeTeammateDefinition);
-    runtime.teammateDiagnostics = [...teammateList.diagnostics, ...runtimeDiagnostics];
 
     // -- per-session MCP runtime (e.g. browser-use) --------------------
     let sessionTools: ToolRegistry = runtime.tools;
@@ -1494,6 +1502,7 @@ class ProjectRuntimeRegistry {
         projectRoot,
         progressPath: storage.teamProgressPath,
         definitions: () => runtime.teammates,
+        diagnostics: () => runtime.teammateDiagnostics.map((diagnostic) => diagnostic.message),
         host: {
           run: (input) => this.runTeammateTurn(input),
           shutdown: (input) => this.shutdownTeammate(input),
@@ -1534,31 +1543,127 @@ class ProjectRuntimeRegistry {
     };
   }
 
-  getTeammateManager(projectKey: string): TeammateManager {
-    return this.resolve(projectKey).teammateManager;
+  getTeammateManager(): TeammateManager {
+    return this.teammateManager;
   }
 
-  async listTeammates(projectKey: string) {
+  async listAllTeammates() {
+    return this.teammateManager.list();
+  }
+
+  async getTeammateEnablement(projectKey: string) {
+    const canonicalProjectKey = await canonicalizeTeammateWorkspace(projectKey);
+    return {
+      canonicalProjectKey,
+      enabledTeammateIds: await this.teammateManager.getEnablement(canonicalProjectKey),
+      filePath: this.teammateManager.enablementStore.filePath,
+    };
+  }
+
+  async setTeammateEnablement(projectKey: string, enabledTeammateIds: string[]) {
+    if (!Array.isArray(enabledTeammateIds)) {
+      throw new TeammateManagerError(
+        "invalid_input",
+        "enabledTeammateIds must be a complete array of teammate IDs.",
+      );
+    }
+    const canonicalProjectKey = await canonicalizeTeammateWorkspace(projectKey);
+    const storedIds = await this.teammateManager.setEnablement(
+      canonicalProjectKey,
+      enabledTeammateIds,
+    );
+    // A worktree key and its canonical project can both own active sessions.
+    // Conservatively refresh every cached runtime/session after enablement changes.
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("teammate_enablement_changed");
+    return {
+      canonicalProjectKey,
+      enabledTeammateIds: storedIds,
+      filePath: this.teammateManager.enablementStore.filePath,
+    };
+  }
+
+  async listEnabledTeammates(projectKey: string) {
     const runtime = this.resolve(projectKey);
     await runtime.pluginRuntime.refresh();
     await this.ensureMcpReady(runtime);
-    const listed = await runtime.teammateManager.list();
-    const definitions = listed.teammates.map(toRuntimeTeammateDefinition);
-    const contributions = runtime.pluginRuntime.snapshotContributions();
-    const diagnostics = [
-      ...listed.diagnostics,
-      ...listed.teammates.flatMap((teammate) =>
-        validateTeammateRuntimeReferences(teammate, runtime, contributions)),
-    ];
-    const invalidIds = new Set(
-      diagnostics
-        .filter((entry) => entry.severity === "error" && entry.id)
-        .map((entry) => entry.id),
+    return this.resolveWorkspaceTeammates(runtime);
+  }
+
+  async listTeammates(projectKey: string) {
+    return this.listEnabledTeammates(projectKey);
+  }
+
+  private async resolveWorkspaceTeammates(
+    runtime: ProjectRuntime,
+  ): Promise<{ teammates: TeammateRecord[]; diagnostics: TeammateDiagnostic[] }> {
+    const listed = await this.teammateManager.list();
+    let enabledIds: string[] = [];
+    const enablementDiagnostics: TeammateDiagnostic[] = [];
+    try {
+      enabledIds = await this.teammateManager.getEnablement(runtime.projectRoot);
+    } catch (error) {
+      const detail = error instanceof TeammateEnablementStoreError
+        ? error.message
+        : `Unable to read teammate workspace enablement: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      enablementDiagnostics.push({
+        code: "TEAMMATE_ENABLEMENT_INVALID",
+        severity: "error",
+        message: `${detail} No teammates are enabled for this workspace.`,
+      });
+    }
+
+    const enabledSet = new Set(enabledIds);
+    const definitionDiagnostics = listed.diagnostics.filter(
+      (diagnostic) => Boolean(diagnostic.id && enabledSet.has(diagnostic.id)),
     );
-    runtime.teammates = definitions.filter((definition) => !invalidIds.has(definition.id));
+    const declaredIds = new Set([
+      ...listed.teammates.map((teammate) => teammate.id),
+      ...definitionDiagnostics
+        .map((diagnostic) => diagnostic.id)
+        .filter((id): id is string => Boolean(id)),
+    ]);
+    const staleDiagnostics: TeammateDiagnostic[] = enabledIds
+      .filter((id) => !declaredIds.has(id))
+      .map((id) => ({
+        code: "TEAMMATE_NOT_FOUND",
+        severity: "error",
+        id,
+        message:
+          `Enabled teammate "${id}" was not found in the global definitions. ` +
+          "Update teammate enablement in Settings.",
+      }));
+    const invalidDefinitionIds = new Set(
+      definitionDiagnostics
+        .filter((diagnostic) => diagnostic.severity === "error" && diagnostic.id)
+        .map((diagnostic) => diagnostic.id as string),
+    );
+    const enabledDefinitions = listed.teammates.filter(
+      (teammate) => enabledSet.has(teammate.id) && !invalidDefinitionIds.has(teammate.id),
+    );
+    const contributions = runtime.pluginRuntime.snapshotContributions();
+    const runtimeDiagnostics = enabledDefinitions.flatMap((teammate) =>
+      validateTeammateRuntimeReferences(teammate, runtime, contributions));
+    const diagnostics: TeammateDiagnostic[] = [
+      ...definitionDiagnostics,
+      ...enablementDiagnostics,
+      ...staleDiagnostics,
+      ...runtimeDiagnostics,
+    ];
+    const invalidRuntimeIds = new Set(
+      runtimeDiagnostics
+        .filter((entry) => entry.severity === "error" && entry.id)
+        .map((entry) => entry.id as string),
+    );
+    const validEnabledDefinitions = enabledDefinitions.filter(
+      (definition) => !invalidRuntimeIds.has(definition.id),
+    );
+    runtime.teammates = validEnabledDefinitions.map(toRuntimeTeammateDefinition);
     runtime.teammateDiagnostics = diagnostics;
     return {
-      teammates: listed.teammates,
+      teammates: validEnabledDefinitions,
       diagnostics,
     };
   }
@@ -1567,6 +1672,7 @@ class ProjectRuntimeRegistry {
     const runtime = this.resolve(projectKey);
     await runtime.pluginRuntime.refresh();
     await this.ensureMcpReady(runtime);
+    const { diagnostics } = await this.resolveWorkspaceTeammates(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
     const mcpServers = new Set<string>();
     for (const tool of runtime.tools.list()) {
@@ -1580,6 +1686,8 @@ class ProjectRuntimeRegistry {
       plugins: contributions.plugins.map((plugin) => plugin.name).sort(),
       skills: contributions.skills.map((skill) => skill.name).sort(),
       mcpServers: [...mcpServers].sort(),
+      diagnostics: diagnostics.filter((diagnostic) =>
+        WORKSPACE_TEAMMATE_DIAGNOSTIC_CODES.has(diagnostic.code)),
     };
   }
 
@@ -1849,6 +1957,12 @@ function handleExtensionWatchEvent(
   );
   registry.invalidate(event.scope.projectRoot);
   router?.markProjectDirty(event.scope.projectRoot, "extension_changed");
+}
+
+export function isGlobalTeammatePath(path: string, pilotHome: string): boolean {
+  const candidate = resolve(path);
+  const teammatesRoot = getPilotTeammatesDir(pilotHome);
+  return candidate === teammatesRoot || candidate.startsWith(`${teammatesRoot}${sep}`);
 }
 
 function describeExtensionScope(scope: ExtensionWatchEvent["scope"]): string {

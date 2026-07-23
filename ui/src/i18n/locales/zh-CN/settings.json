@@ -132,7 +132,7 @@
       "detail": "自动换行、行号、缩略图和字号"
     },
     "teammates": {
-      "detail": "创建项目级队友并配置其能力"
+      "detail": "管理全局队友，并按工作区启用"
     },
     "permissions": {
       "detail": "管理允许和禁用的工具规则"
@@ -147,16 +147,28 @@
   },
   "teammates": {
     "title": "队友",
-    "description": "管理项目级队友定义、提示词、模型和能力。",
-    "project": "项目",
-    "selectProject": "选择项目...",
-    "noProjects": "没有包含本地路径的可用项目，请先添加或打开一个项目。",
+    "description": "管理全局队友定义，并选择每个工作区可以使用哪些队友。",
+    "selectProject": "选择工作区...",
+    "noProjects": "没有包含本地路径的可用工作区。仍可编辑全局定义，但无法校验能力目录。",
     "loading": "正在加载队友...",
-    "empty": "此项目尚未定义队友。",
+    "empty": "尚未定义任何全局队友。",
     "list": {
-      "title": "项目队友",
+      "title": "全局队友",
       "count": "共 {{count}} 个队友",
       "count_plural": "共 {{count}} 个队友"
+    },
+    "workspace": {
+      "title": "为工作区启用",
+      "description": "这里选择的工作区仅用于启用状态、能力建议和运行时诊断；队友定义始终是全局的。",
+      "selector": "参考工作区",
+      "none": "选择工作区后可加载启用状态并校验能力。"
+    },
+    "enablement": {
+      "rowLabel": "为工作区启用",
+      "toggleLabel": "为工作区启用：{{name}}",
+      "loading": "正在加载工作区启用状态...",
+      "saving": "正在保存工作区启用状态...",
+      "summary": "此工作区已启用 {{count}} 个全局队友"
     },
     "editor": {
       "select": "选择一名队友进行编辑，或新建队友。",
@@ -204,11 +216,13 @@
       "promptRequired": "必须填写提示词。"
     },
     "diagnostics": {
-      "title": "定义校验错误",
+      "global": "全局定义错误",
+      "workspace": "工作区能力错误",
       "validation": "无法保存此定义"
     },
     "catalog": {
-      "manualOnly": "能力建议暂不可用，仍可手动填写工具、插件、技能和 MCP 服务器。"
+      "manualOnly": "此工作区的能力建议暂不可用，仍可手动填写工具、插件、技能和 MCP 服务器。",
+      "noWorkspace": "未选择参考工作区。仍可编辑文本配置，但无法根据工作区目录校验工具、插件、技能和 MCP 服务器。"
     },
     "confirmDelete": "确定删除队友“{{name}}”吗？此操作无法撤销。",
     "status": {
@@ -219,7 +233,10 @@
       "load": "加载队友失败。",
       "save": "保存队友失败。",
       "delete": "删除队友失败。",
-      "catalog": "加载能力建议失败。"
+      "catalog": "加载能力建议失败。",
+      "enablementLoad": "加载工作区队友启用状态失败。",
+      "enablementSave": "保存工作区队友启用状态失败。",
+      "enablementUnknown": "启用状态未知，请刷新以确认服务器状态。"
     }
   },
   "notifications": {

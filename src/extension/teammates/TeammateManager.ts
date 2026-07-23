@@ -11,6 +11,9 @@ import {
 } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
+import { getPilotTeammatesDir } from "../../pilot/paths.js";
+import { TeammateEnablementStore } from "./TeammateEnablementStore.js";
+import { isValidTeammateId } from "./teammateId.js";
 import {
   TEAMMATE_SCHEMA_VERSION,
   type TeammateCreateInput,
@@ -27,7 +30,6 @@ import {
   type TeammateWriteInput,
 } from "./types.js";
 
-const TEAMMATE_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
 const ARRAY_FIELDS = ["tools", "plugins", "skills", "mcpServers"] as const;
 const ALLOWED_FIELDS = new Set([
   "schemaVersion",
@@ -50,27 +52,31 @@ type ScannedFile = {
 };
 
 /**
- * Workspace-only storage for teammate definitions.
+ * Global storage for teammate definitions.
  *
- * The manager never inspects a home directory or another PilotDeck scope:
- * every operation is rooted at `<projectRoot>/.pilotdeck/teammates`.
+ * Every operation is rooted at `$PILOT_HOME/teammates`. Workspace-local
+ * `.pilotdeck/teammates` directories are never inspected or used as fallback.
  */
 export class TeammateManager {
-  readonly projectRoot: string;
+  readonly pilotHome: string;
   readonly teammatesRoot: string;
+  readonly enablementStore: TeammateEnablementStore;
 
   constructor(options: TeammateManagerOptions) {
-    if (!options || typeof options.projectRoot !== "string" || !options.projectRoot.trim()) {
-      throw new TeammateManagerError("invalid_input", "projectRoot is required.");
+    if (!options || typeof options.pilotHome !== "string" || !options.pilotHome.trim()) {
+      throw new TeammateManagerError("invalid_input", "pilotHome is required.");
     }
-    this.projectRoot = resolve(options.projectRoot);
-    this.teammatesRoot = join(this.projectRoot, ".pilotdeck", "teammates");
+    this.pilotHome = resolve(options.pilotHome);
+    this.teammatesRoot = getPilotTeammatesDir(this.pilotHome);
+    this.enablementStore = new TeammateEnablementStore({
+      pilotHome: this.pilotHome,
+    });
   }
 
   async list(): Promise<TeammateListResult> {
     const diagnostics: TeammateDiagnostic[] = [];
     const files: ScannedFile[] = [];
-    const unsafeComponent = await findSymlinkComponent(this.projectRoot, this.teammatesRoot);
+    const unsafeComponent = await findSymlinkComponent(this.pilotHome, this.teammatesRoot);
     if (unsafeComponent) {
       diagnostics.push(
         diagnostic(
@@ -91,7 +97,7 @@ export class TeammateManager {
     }
     if (!rootStat.isDirectory()) {
       diagnostics.push(
-        diagnostic("ROOT_NOT_DIRECTORY", "Workspace teammate path is not a directory."),
+        diagnostic("ROOT_NOT_DIRECTORY", "Global teammate path is not a directory."),
       );
       return { teammates: [], diagnostics };
     }
@@ -136,33 +142,36 @@ export class TeammateManager {
     if (!validation.ok || !validation.teammate) {
       throw new TeammateValidationError(validation);
     }
-
-    const listed = await this.list();
-    const idAlreadyDeclared =
-      listed.teammates.some((teammate) => teammate.id === validation.teammate?.id) ||
-      listed.diagnostics.some((item) => item.id === validation.teammate?.id);
-    if (idAlreadyDeclared) {
-      throw new TeammateManagerError(
-        "conflict",
-        `Teammate id "${validation.teammate.id}" already exists.`,
-      );
-    }
+    const teammate = validation.teammate;
 
     const relativePath = normalizeDefinitionPath(
-      input.relativePath ?? `${validation.teammate.id}.md`,
+      input.relativePath ?? `${teammate.id}.md`,
     );
     const filePath = this.resolveDefinitionPath(relativePath);
-    await this.assertSafeTarget(filePath);
-    await fs.mkdir(resolve(filePath, ".."), { recursive: true });
-    await atomicCreate(filePath, content);
-    return {
-      teammate: {
-        ...validation.teammate,
-        relativePath,
-        filePath,
-      },
-      content,
-    };
+    return this.enablementStore.mutationLock.runExclusive(async () => {
+      const listed = await this.list();
+      const idAlreadyDeclared =
+        listed.teammates.some((listedTeammate) => listedTeammate.id === teammate.id) ||
+        listed.diagnostics.some((item) => item.id === teammate.id);
+      if (idAlreadyDeclared) {
+        throw new TeammateManagerError(
+          "conflict",
+          `Teammate id "${teammate.id}" already exists.`,
+        );
+      }
+
+      await this.assertSafeTarget(filePath);
+      await fs.mkdir(resolve(filePath, ".."), { recursive: true });
+      await atomicCreate(filePath, content);
+      return {
+        teammate: {
+          ...teammate,
+          relativePath,
+          filePath,
+        },
+        content,
+      };
+    });
   }
 
   async write(input: TeammateWriteInput): Promise<TeammateReadResult> {
@@ -170,43 +179,107 @@ export class TeammateManager {
       throw new TeammateManagerError("invalid_input", "id and document are required.");
     }
     assertValidId(input.id);
-    const existing = await this.findUniqueRecord(input.id);
-    if (!existing) {
-      throw new TeammateManagerError("not_found", `Teammate "${input.id}" was not found.`);
-    }
-
     const content = renderTeammateDocument(input.document);
-    const validation = this.validate(content, existing.relativePath);
-    if (!validation.ok || !validation.teammate) {
-      throw new TeammateValidationError(validation);
-    }
-    if (validation.teammate.id !== input.id) {
-      throw new TeammateManagerError(
-        "id_mismatch",
-        `Definition id "${validation.teammate.id}" does not match target id "${input.id}".`,
-      );
-    }
+    return this.enablementStore.mutationLock.runExclusive(async () => {
+      const existing = await this.findUniqueRecord(input.id);
+      if (!existing) {
+        throw new TeammateManagerError("not_found", `Teammate "${input.id}" was not found.`);
+      }
 
-    await this.assertSafeTarget(existing.filePath);
-    await atomicReplace(existing.filePath, content);
-    return {
-      teammate: {
-        ...validation.teammate,
-        relativePath: existing.relativePath,
-        filePath: existing.filePath,
-      },
-      content,
-    };
+      const validation = this.validate(content, existing.relativePath);
+      if (!validation.ok || !validation.teammate) {
+        throw new TeammateValidationError(validation);
+      }
+      if (validation.teammate.id !== input.id) {
+        throw new TeammateManagerError(
+          "id_mismatch",
+          `Definition id "${validation.teammate.id}" does not match target id "${input.id}".`,
+        );
+      }
+
+      await this.assertSafeTarget(existing.filePath);
+      await atomicReplace(existing.filePath, content);
+      return {
+        teammate: {
+          ...validation.teammate,
+          relativePath: existing.relativePath,
+          filePath: existing.filePath,
+        },
+        content,
+      };
+    });
   }
 
   async delete(id: string): Promise<TeammateDeleteResult> {
-    const existing = await this.findUniqueRecord(id);
-    if (!existing) {
-      throw new TeammateManagerError("not_found", `Teammate "${id}" was not found.`);
+    assertValidId(id);
+    return this.enablementStore.runMutation(async (mutation) => {
+      const existing = await this.findUniqueRecord(id);
+      if (!existing) {
+        throw new TeammateManagerError("not_found", `Teammate "${id}" was not found.`);
+      }
+      await this.assertSafeTarget(existing.filePath);
+      const tombstonePath = join(
+        resolve(existing.filePath, ".."),
+        `.${filePathName(existing.filePath)}.${randomUUID()}.deleted`,
+      );
+      await fs.rename(existing.filePath, tombstonePath);
+      try {
+        await mutation.prune(id);
+      } catch (error) {
+        try {
+          await fs.rename(tombstonePath, existing.filePath);
+        } catch (restoreError) {
+          throw new TeammateManagerError(
+            "delete_recovery_failed",
+            `Unable to restore teammate "${id}" after delete failed: ${errorMessage(
+              restoreError,
+            )}. Original error: ${errorMessage(error)}.`,
+          );
+        }
+        throw error;
+      }
+      // The definition is already absent from discovery and its enablement
+      // references are committed. Tombstone cleanup is best-effort so a
+      // transient unlink failure cannot resurrect a globally disabled file.
+      await fs.unlink(tombstonePath).catch(() => undefined);
+      return { ok: true, id, relativePath: existing.relativePath };
+    });
+  }
+
+  async getEnablement(workspace: string): Promise<string[]> {
+    return this.enablementStore.get(workspace);
+  }
+
+  async setEnablement(workspace: string, enabledIds: string[]): Promise<string[]> {
+    if (!Array.isArray(enabledIds)) {
+      throw new TeammateManagerError(
+        "invalid_input",
+        "enabledIds must be a complete array of teammate IDs.",
+      );
     }
-    await this.assertSafeTarget(existing.filePath);
-    await fs.unlink(existing.filePath);
-    return { ok: true, id, relativePath: existing.relativePath };
+    return this.enablementStore.runMutation(async (mutation) => {
+      const listed = await this.list();
+      const invalidDefinitionIds = new Set(
+        listed.diagnostics
+          .filter((item) => item.severity === "error" && item.id)
+          .map((item) => item.id as string),
+      );
+      const validIds = new Set(
+        listed.teammates
+          .filter((teammate) => !invalidDefinitionIds.has(teammate.id))
+          .map((teammate) => teammate.id),
+      );
+      const normalizedIds = [...new Set(enabledIds)];
+      const unknownIds = normalizedIds.filter((teammateId) =>
+        !validIds.has(teammateId)).sort();
+      if (unknownIds.length > 0) {
+        throw new TeammateManagerError(
+          "invalid_input",
+          `Unknown or invalid teammate IDs: ${unknownIds.join(", ")}.`,
+        );
+      }
+      return mutation.set(workspace, normalizedIds);
+    });
   }
 
   private async scanDirectory(
@@ -304,7 +377,7 @@ export class TeammateManager {
   }
 
   private async assertSafeTarget(filePath: string): Promise<void> {
-    const unsafeComponent = await findSymlinkComponent(this.projectRoot, filePath);
+    const unsafeComponent = await findSymlinkComponent(this.pilotHome, filePath);
     if (unsafeComponent) {
       throw new TeammateManagerError(
         "unsafe_path",
@@ -329,14 +402,6 @@ export class TeammateValidationError extends TeammateManagerError {
     super("validation_failed", "Teammate definition validation failed.");
     this.name = "TeammateValidationError";
   }
-}
-
-export function isValidTeammateId(id: unknown): id is string {
-  return (
-    typeof id === "string" &&
-    TEAMMATE_ID_RE.test(id) &&
-    !id.includes("..")
-  );
 }
 
 function assertValidId(id: unknown): asserts id is string {

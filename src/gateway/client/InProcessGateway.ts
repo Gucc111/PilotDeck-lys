@@ -74,6 +74,9 @@ import type {
   TeammateCatalog,
   TeammateCatalogInput,
   TeammateDeleteResult,
+  TeammateEnablementGetInput,
+  TeammateEnablementResult,
+  TeammateEnablementSetInput,
   TeammateGatewayCreateInput,
   TeammateGatewayWriteInput,
   TeammateListResult,
@@ -161,9 +164,11 @@ export type InProcessGatewayOptions = {
    * SDK) reads and writes the same skill directory the agent loads from.
    */
   skillManager?: SkillManager;
-  teammateManager?: (projectKey: string) => TeammateManager;
-  teammatesList?: (projectKey: string) => Promise<TeammateListResult>;
+  teammateManager?: TeammateManager;
+  teammatesList?: () => Promise<TeammateListResult>;
   teammateCatalog?: (projectKey: string) => Promise<TeammateCatalog>;
+  teammateEnablementGet?: (input: TeammateEnablementGetInput) => Promise<TeammateEnablementResult>;
+  teammateEnablementSet?: (input: TeammateEnablementSetInput) => Promise<TeammateEnablementResult>;
   teamState?: (input: TeamStateInput) => Promise<TeamStateResult>;
   dispatchHookForSession?: (sessionKey: string, event: string, payload: Record<string, unknown>) => void;
   /** Directory to persist large tool outputs for TUI/Web viewing. */
@@ -860,39 +865,60 @@ export class InProcessGateway implements Gateway {
   }
 
   async teammatesList(input: TeammatesListInput): Promise<TeammateListResult> {
+    void input;
     if (this.options.teammatesList) {
-      return this.options.teammatesList(input.projectKey);
+      return this.options.teammatesList();
     }
-    return this.requireTeammates(input.projectKey).list();
+    return this.requireTeammates().list();
   }
 
   async teammateRead(input: TeammateAddressInput): Promise<TeammateReadResult | null> {
-    return this.requireTeammates(input.projectKey).read(input.id);
+    return this.requireTeammates().read(input.id);
   }
 
   async teammateCreate(input: TeammateGatewayCreateInput): Promise<TeammateReadResult> {
-    return this.requireTeammates(input.projectKey).create({
+    return this.requireTeammates().create({
       document: input.document,
       relativePath: input.relativePath,
     });
   }
 
   async teammateWrite(input: TeammateGatewayWriteInput): Promise<TeammateReadResult> {
-    return this.requireTeammates(input.projectKey).write({
+    return this.requireTeammates().write({
       id: input.id,
       document: input.document,
     });
   }
 
   async teammateDelete(input: TeammateAddressInput): Promise<TeammateDeleteResult> {
-    return this.requireTeammates(input.projectKey).delete(input.id);
+    return this.requireTeammates().delete(input.id);
   }
 
   async teammateCatalog(input: TeammateCatalogInput): Promise<TeammateCatalog> {
     if (!this.options.teammateCatalog) {
-      return { tools: [], plugins: [], skills: [], mcpServers: [] };
+      return { tools: [], plugins: [], skills: [], mcpServers: [], diagnostics: [] };
     }
     return this.options.teammateCatalog(input.projectKey);
+  }
+
+  async teammateEnablementGet(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult> {
+    if (!this.options.teammateEnablementGet) {
+      throw new TeammateManagerError(
+        "not_configured",
+        "Teammate enablement is not configured on this gateway.",
+      );
+    }
+    return this.options.teammateEnablementGet(input);
+  }
+
+  async teammateEnablementSet(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult> {
+    if (!this.options.teammateEnablementSet) {
+      throw new TeammateManagerError(
+        "not_configured",
+        "Teammate enablement is not configured on this gateway.",
+      );
+    }
+    return this.options.teammateEnablementSet(input);
   }
 
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {
@@ -902,14 +928,14 @@ export class InProcessGateway implements Gateway {
     return this.options.teamState(input);
   }
 
-  private requireTeammates(projectKey: string): TeammateManager {
+  private requireTeammates(): TeammateManager {
     if (!this.options.teammateManager) {
       throw new TeammateManagerError(
         "not_configured",
         "Teammate manager is not configured on this gateway.",
       );
     }
-    return this.options.teammateManager(projectKey);
+    return this.options.teammateManager;
   }
 
   async alwaysOnApply(input: AlwaysOnApplyInput): Promise<AlwaysOnApplyResult> {

@@ -29,6 +29,7 @@ export type TeammateSessionRuntimeOptions = {
   projectRoot: string;
   progressPath: string;
   definitions: () => RuntimeTeammateDefinition[];
+  diagnostics?: () => string[];
   host: TeammateTurnHost;
   now?: () => Date;
 };
@@ -49,6 +50,10 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       description: definition.description,
       ...(definition.model ? { model: definition.model } : {}),
     }));
+  }
+
+  listDiagnostics(): string[] {
+    return [...(this.options.diagnostics?.() ?? [])];
   }
 
   readProgress() {

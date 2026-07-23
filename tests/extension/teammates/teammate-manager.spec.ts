@@ -18,6 +18,16 @@ import {
 } from "../../../src/extension/teammates/index.js";
 
 async function writeDefinition(
+  pilotHome: string,
+  relativePath: string,
+  content: string,
+): Promise<void> {
+  const filePath = join(pilotHome, "teammates", relativePath);
+  await mkdir(join(filePath, ".."), { recursive: true });
+  await writeFile(filePath, content, "utf8");
+}
+
+async function writeProjectDefinition(
   projectRoot: string,
   relativePath: string,
   content: string,
@@ -31,13 +41,14 @@ function definition(frontmatter: string, prompt = "You are a reliable teammate."
   return `---\n${frontmatter.trim()}\n---\n\n${prompt}\n`;
 }
 
-test("TeammateManager scans recursively and remains isolated to one project", async () => {
+test("TeammateManager scans only the global root and ignores project definitions", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammates-isolation-"));
   try {
+    const pilotHome = join(root, "pilot-home");
     const projectA = join(root, "project-a");
     const projectB = join(root, "project-b");
     await writeDefinition(
-      projectA,
+      pilotHome,
       "engineering/backend.md",
       definition(`
 schemaVersion: 1
@@ -52,7 +63,7 @@ mcpServers: [linear]
 `),
     );
     await writeDefinition(
-      projectA,
+      pilotHome,
       "legacy.md",
       definition(`
 schemaVersion: 1
@@ -60,7 +71,7 @@ name: researcher
 description: Finds relevant evidence
 `),
     );
-    await writeDefinition(
+    await writeProjectDefinition(
       projectB,
       "other.md",
       definition(`
@@ -69,31 +80,33 @@ id: other-project
 name: Other Project
 `),
     );
-    // A global-looking definition deliberately sits outside either project.
-    await writeDefinition(
-      root,
-      "global.md",
+    await writeProjectDefinition(
+      projectA,
+      "shadow.md",
       definition(`
 schemaVersion: 1
-id: global
-name: Global
+id: shadow
+name: Shadow
 `),
     );
+    await writeFile(
+      join(pilotHome, "teammates", "workspace-enablement.json"),
+      '{"schemaVersion":1,"workspaces":{}}\n',
+      "utf8",
+    );
 
-    const managerA = new TeammateManager({ projectRoot: projectA });
-    const managerB = new TeammateManager({ projectRoot: projectB });
-    const listedA = await managerA.list();
-    const listedB = await managerB.list();
+    const manager = new TeammateManager({ pilotHome });
+    const listed = await manager.list();
 
-    assert.deepEqual(listedA.teammates.map((item) => item.id), ["backend", "researcher"]);
-    assert.deepEqual(listedA.diagnostics, []);
-    assert.equal(listedA.teammates[0]?.relativePath, "engineering/backend.md");
-    assert.deepEqual(listedA.teammates[0]?.tools, ["read", "edit"]);
-    assert.deepEqual(listedA.teammates[0]?.mcpServers, ["linear"]);
-    assert.equal(listedA.teammates[1]?.name, "researcher");
-    assert.deepEqual(listedB.teammates.map((item) => item.id), ["other-project"]);
-    assert.equal(await managerA.get("global"), null);
-    assert.equal(await managerA.get("other-project"), null);
+    assert.equal(manager.teammatesRoot, join(pilotHome, "teammates"));
+    assert.deepEqual(listed.teammates.map((item) => item.id), ["backend", "researcher"]);
+    assert.deepEqual(listed.diagnostics, []);
+    assert.equal(listed.teammates[0]?.relativePath, "engineering/backend.md");
+    assert.deepEqual(listed.teammates[0]?.tools, ["read", "edit"]);
+    assert.deepEqual(listed.teammates[0]?.mcpServers, ["linear"]);
+    assert.equal(listed.teammates[1]?.name, "researcher");
+    assert.equal(await manager.get("shadow"), null);
+    assert.equal(await manager.get("other-project"), null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -136,7 +149,7 @@ unexpected: true
       ),
     );
 
-    const manager = new TeammateManager({ projectRoot: root });
+    const manager = new TeammateManager({ pilotHome: root });
     const listed = await manager.list();
     const duplicateDiagnostics = listed.diagnostics.filter(
       (item) => item.code === "DUPLICATE_ID",
@@ -200,7 +213,7 @@ skills: [testing, false]
 test("TeammateManager provides validated atomic CRUD and blocks path traversal", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammates-crud-"));
   try {
-    const manager = new TeammateManager({ projectRoot: root });
+    const manager = new TeammateManager({ pilotHome: root });
     const created = await manager.create({
       relativePath: "product/planner.md",
       document: {
@@ -219,7 +232,7 @@ test("TeammateManager provides validated atomic CRUD and blocks path traversal",
     assert.match(created.content, /schemaVersion: 1/);
     assert.equal(
       await readFile(
-        join(root, ".pilotdeck", "teammates", "product", "planner.md"),
+        join(root, "teammates", "product", "planner.md"),
         "utf8",
       ),
       created.content,
@@ -241,7 +254,7 @@ test("TeammateManager provides validated atomic CRUD and blocks path traversal",
     assert.equal(written.teammate.name, "Senior Product Planner");
     assert.deepEqual((await manager.get("planner"))?.tools, ["read", "search"]);
     assert.deepEqual(
-      (await readdir(join(root, ".pilotdeck", "teammates", "product"))).filter((name) =>
+      (await readdir(join(root, "teammates", "product"))).filter((name) =>
         name.endsWith(".tmp"),
       ),
       [],

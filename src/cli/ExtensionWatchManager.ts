@@ -95,10 +95,12 @@ export class ExtensionWatchManager {
 
   private getWatchedPaths(scope: ExtensionWatchScope): string[] {
     if (scope.kind === "global") {
+      const paths = getPilotExtensionPaths(this.options.pilotHome, this.options.pilotHome);
       return [
         resolve(this.options.pilotHome, "mcp.json"),
-        resolve(this.options.pilotHome, "plugins"),
-        resolve(this.options.pilotHome, "skills"),
+        paths.globalPluginsDir,
+        paths.globalSkillsDir,
+        paths.globalTeammatesDir,
         ...(this.options.builtinSkillsRoot ? [resolve(this.options.builtinSkillsRoot)] : []),
       ];
     }
@@ -107,7 +109,6 @@ export class ExtensionWatchManager {
       resolve(scope.projectRoot, ".pilotdeck", "mcp.json"),
       paths.projectPluginsDir,
       paths.projectSkillsDir,
-      paths.projectTeammatesDir,
     ];
   }
 

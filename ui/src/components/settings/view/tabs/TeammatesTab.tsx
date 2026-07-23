@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Loader2,
@@ -18,6 +18,7 @@ import type {
   TeammateCatalog,
   TeammateDefinition,
   TeammateDiagnostic,
+  TeammateEnablement,
   TeammateRecord,
 } from '../../types/types';
 
@@ -75,10 +76,15 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
 
   const [projectPath, setProjectPath] = useState(projectOptions[0]?.value ?? '');
   const [teammates, setTeammates] = useState<TeammateRecord[]>([]);
-  const [diagnostics, setDiagnostics] = useState<TeammateDiagnostic[]>([]);
+  const [definitionDiagnostics, setDefinitionDiagnostics] = useState<TeammateDiagnostic[]>([]);
+  const [workspaceDiagnostics, setWorkspaceDiagnostics] = useState<TeammateDiagnostic[]>([]);
   const [catalog, setCatalog] = useState<TeammateCatalog | null>(null);
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [enabledTeammateIds, setEnabledTeammateIds] = useState<string[]>([]);
+  const [enablementSaving, setEnablementSaving] = useState(false);
+  const [enablementError, setEnablementError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -87,67 +93,114 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
   const [draft, setDraft] = useState<TeammateDraft>(EMPTY_DRAFT);
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
   const [serverDiagnostics, setServerDiagnostics] = useState<TeammateDiagnostic[]>([]);
+  const workspaceRequestId = useRef(0);
+  const projectPathRef = useRef(projectPath);
+  projectPathRef.current = projectPath;
 
   useEffect(() => {
     if (projectOptions.some((project) => project.value === projectPath)) return;
-    setProjectPath(projectOptions[0]?.value ?? '');
+    const nextProjectPath = projectOptions[0]?.value ?? '';
+    projectPathRef.current = nextProjectPath;
+    setProjectPath(nextProjectPath);
   }, [projectOptions, projectPath]);
 
   const loadTeammates = useCallback(async () => {
-    if (!projectPath) {
-      setTeammates([]);
-      setDiagnostics([]);
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
-      const response = await authenticatedFetch(
-        `/api/teammates?projectPath=${encodeURIComponent(projectPath)}`,
-      );
+      const response = await authenticatedFetch('/api/teammates');
       const data = await readJson(response);
       if (!response.ok) throw new Error(apiError(data, t('teammates.errors.load')));
       setTeammates(normalizeTeammates(data.teammates));
-      setDiagnostics(normalizeDiagnostics(data.diagnostics));
+      setDefinitionDiagnostics(normalizeDiagnostics(data.diagnostics));
     } catch (caught) {
       setTeammates([]);
-      setDiagnostics([]);
+      setDefinitionDiagnostics([]);
       setError(caught instanceof Error ? caught.message : t('teammates.errors.load'));
     } finally {
       setLoading(false);
     }
-  }, [projectPath, t]);
+  }, [t]);
 
-  const loadCatalog = useCallback(async () => {
-    if (!projectPath) {
+  const loadWorkspaceContext = useCallback(async (
+    targetProjectPath = projectPathRef.current,
+  ) => {
+    const requestId = ++workspaceRequestId.current;
+    const isCurrentRequest = () =>
+      requestId === workspaceRequestId.current
+      && targetProjectPath === projectPathRef.current;
+    if (!targetProjectPath) {
+      if (!isCurrentRequest()) return;
       setCatalog(null);
       setCatalogUnavailable(false);
+      setWorkspaceDiagnostics([]);
+      setEnabledTeammateIds([]);
+      setEnablementError(null);
+      setWorkspaceLoading(false);
       return;
     }
+    setWorkspaceLoading(true);
+    setEnablementError(null);
     try {
-      const response = await authenticatedFetch(
-        `/api/teammates/catalog?projectPath=${encodeURIComponent(projectPath)}`,
-        { suppressServerErrorToast: true },
+      const [catalogResult, enablementResult] = await Promise.allSettled([
+        authenticatedFetch(
+          `/api/teammates/catalog?projectPath=${encodeURIComponent(targetProjectPath)}`,
+          { suppressServerErrorToast: true },
+        ),
+        authenticatedFetch(
+          `/api/teammates/enablement?projectPath=${encodeURIComponent(targetProjectPath)}`,
+          { suppressServerErrorToast: true },
+        ),
+      ]);
+      if (!isCurrentRequest()) return;
+
+      if (catalogResult.status === 'fulfilled') {
+        const data = await readJson(catalogResult.value);
+        if (!isCurrentRequest()) return;
+        if (catalogResult.value.ok) {
+          const normalized = normalizeCatalog(data);
+          setCatalog(normalized);
+          setWorkspaceDiagnostics(normalized.diagnostics);
+          setCatalogUnavailable(false);
+        } else {
+          setCatalog(null);
+          setWorkspaceDiagnostics([]);
+          setCatalogUnavailable(true);
+        }
+      } else {
+        setCatalog(null);
+        setWorkspaceDiagnostics([]);
+        setCatalogUnavailable(true);
+      }
+
+      if (enablementResult.status === 'fulfilled') {
+        const data = await readJson(enablementResult.value);
+        if (!isCurrentRequest()) return;
+        if (!enablementResult.value.ok) {
+          throw new Error(apiError(data, t('teammates.errors.enablementLoad')));
+        }
+        setEnabledTeammateIds(normalizeEnablement(data).enabledTeammateIds);
+      } else {
+        throw enablementResult.reason;
+      }
+    } catch (caught) {
+      if (!isCurrentRequest()) return;
+      setEnabledTeammateIds([]);
+      setEnablementError(
+        caught instanceof Error ? caught.message : t('teammates.errors.enablementLoad'),
       );
-      const data = await readJson(response);
-      if (!response.ok) throw new Error(apiError(data, t('teammates.errors.catalog')));
-      setCatalog(normalizeCatalog(data));
-      setCatalogUnavailable(false);
-    } catch {
-      setCatalog(null);
-      setCatalogUnavailable(true);
+    } finally {
+      if (isCurrentRequest()) setWorkspaceLoading(false);
     }
-  }, [projectPath, t]);
+  }, [t]);
 
   useEffect(() => {
-    setEditorMode(null);
-    setDraft(EMPTY_DRAFT);
-    setValidationErrors({});
-    setServerDiagnostics([]);
-    setMessage(null);
     void loadTeammates();
-    void loadCatalog();
-  }, [loadCatalog, loadTeammates]);
+  }, [loadTeammates]);
+
+  useEffect(() => {
+    void loadWorkspaceContext(projectPath);
+  }, [loadWorkspaceContext, projectPath]);
 
   const startNew = () => {
     setEditorMode({ kind: 'new' });
@@ -181,7 +234,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
   };
 
   const save = async () => {
-    if (!projectPath || !editorMode) return;
+    if (!editorMode) return;
     const nextErrors = validateDraft(draft, t);
     setValidationErrors(nextErrors);
     setServerDiagnostics([]);
@@ -197,7 +250,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
         `/api/teammates/${encodeURIComponent(routeId)}`,
         {
           method: 'PUT',
-          body: JSON.stringify({ projectPath, definition }),
+          body: JSON.stringify({ definition }),
         },
       );
       const data = await readJson(response);
@@ -207,6 +260,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
         throw new Error(apiError(data, t('teammates.errors.save')));
       }
       await loadTeammates();
+      await loadWorkspaceContext();
       closeEditor();
       setMessage(t('teammates.status.saved'));
     } catch (caught) {
@@ -217,7 +271,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
   };
 
   const remove = async (teammate: TeammateRecord) => {
-    if (!projectPath || !window.confirm(t('teammates.confirmDelete', { name: teammate.name }))) {
+    if (!window.confirm(t('teammates.confirmDelete', { name: teammate.name }))) {
       return;
     }
     setDeletingId(teammate.id);
@@ -228,7 +282,6 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
         `/api/teammates/${encodeURIComponent(teammate.id)}`,
         {
           method: 'DELETE',
-          body: JSON.stringify({ projectPath }),
         },
       );
       const data = await readJson(response);
@@ -236,12 +289,68 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       if (editorMode?.kind === 'edit' && editorMode.originalId === teammate.id) {
         closeEditor();
       }
+      setEnabledTeammateIds((current) => current.filter((id) => id !== teammate.id));
       await loadTeammates();
+      await loadWorkspaceContext();
       setMessage(t('teammates.status.deleted'));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t('teammates.errors.delete'));
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const toggleEnablement = async (teammateId: string, enabled: boolean) => {
+    const targetProjectPath = projectPathRef.current;
+    if (!targetProjectPath || enablementSaving) return;
+    const previousIds = enabledTeammateIds;
+    const nextIds = toggleEnabledTeammateId(
+      previousIds,
+      teammateId,
+      enabled,
+      teammates.map((teammate) => teammate.id),
+    );
+    setEnabledTeammateIds(nextIds);
+    setEnablementSaving(true);
+    setEnablementError(null);
+    try {
+      const response = await authenticatedFetch('/api/teammates/enablement', {
+        method: 'PUT',
+        body: JSON.stringify({
+          projectPath: targetProjectPath,
+          enabledTeammateIds: nextIds,
+        }),
+      });
+      const data = await readJson(response);
+      if (!response.ok) {
+        throw new Error(apiError(data, t('teammates.errors.enablementSave')));
+      }
+      if (targetProjectPath === projectPathRef.current) {
+        setEnabledTeammateIds(normalizeEnablement(data).enabledTeammateIds);
+      }
+    } catch (caught) {
+      const saveError =
+        caught instanceof Error ? caught.message : t('teammates.errors.enablementSave');
+      try {
+        const response = await authenticatedFetch(
+          `/api/teammates/enablement?projectPath=${encodeURIComponent(targetProjectPath)}`,
+          { suppressServerErrorToast: true },
+        );
+        const data = await readJson(response);
+        if (!response.ok) {
+          throw new Error(apiError(data, t('teammates.errors.enablementLoad')));
+        }
+        if (targetProjectPath === projectPathRef.current) {
+          setEnabledTeammateIds(normalizeEnablement(data).enabledTeammateIds);
+          setEnablementError(saveError);
+        }
+      } catch {
+        if (targetProjectPath === projectPathRef.current) {
+          setEnablementError(`${saveError} ${t('teammates.errors.enablementUnknown')}`);
+        }
+      }
+    } finally {
+      setEnablementSaving(false);
     }
   };
 
@@ -267,44 +376,81 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
             size="sm"
             onClick={() => {
               void loadTeammates();
-              void loadCatalog();
+              void loadWorkspaceContext();
             }}
-            disabled={!projectPath || loading}
+            disabled={loading || workspaceLoading}
           >
-            <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+            <RefreshCw className={cn('h-4 w-4', (loading || workspaceLoading) && 'animate-spin')} />
             {t('teammates.actions.refresh')}
           </Button>
         </div>
       </div>
 
-      <label className="block space-y-2">
-        <span className="text-xs font-medium text-muted-foreground">{t('teammates.project')}</span>
-        <select
-          value={projectPath}
-          onChange={(event) => setProjectPath(event.target.value)}
-          disabled={projectOptions.length === 0}
-          className={cn(INPUT_CLASS, 'disabled:cursor-not-allowed disabled:opacity-60')}
+      <section className="space-y-3 rounded-lg border border-border bg-card/60 p-4">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">
+            {t('teammates.workspace.title')}
+          </h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            {t('teammates.workspace.description')}
+          </p>
+        </div>
+        <label className="block space-y-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            {t('teammates.workspace.selector')}
+          </span>
+          <select
+            value={projectPath}
+            onChange={(event) => {
+              projectPathRef.current = event.target.value;
+              setProjectPath(event.target.value);
+            }}
+            disabled={projectOptions.length === 0 || enablementSaving}
+            className={cn(INPUT_CLASS, 'disabled:cursor-not-allowed disabled:opacity-60')}
+          >
+            {projectOptions.length === 0 ? (
+              <option value="">{t('teammates.selectProject')}</option>
+            ) : (
+              projectOptions.map((project) => (
+                <option key={project.value} value={project.value}>
+                  {project.label}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+        <div
+          className="flex min-h-5 items-center gap-2 text-xs text-muted-foreground"
+          role="status"
+          aria-live="polite"
         >
-          {projectOptions.length === 0 ? (
-            <option value="">{t('teammates.selectProject')}</option>
-          ) : (
-            projectOptions.map((project) => (
-              <option key={project.value} value={project.value}>
-                {project.label}
-              </option>
-            ))
-          )}
-        </select>
-      </label>
+          {(workspaceLoading || enablementSaving) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {workspaceLoading
+            ? t('teammates.enablement.loading')
+            : enablementSaving
+              ? t('teammates.enablement.saving')
+              : projectPath
+                ? t('teammates.enablement.summary', { count: enabledTeammateIds.length })
+                : t('teammates.workspace.none')}
+        </div>
+        {enablementError && <Notice tone="error">{enablementError}</Notice>}
+      </section>
 
       {projectOptions.length === 0 && (
         <Notice tone="warning">{t('teammates.noProjects')}</Notice>
       )}
 
-      {diagnostics.length > 0 && (
+      {definitionDiagnostics.length > 0 && (
         <DiagnosticList
-          title={t('teammates.diagnostics.title')}
-          diagnostics={diagnostics}
+          title={t('teammates.diagnostics.global')}
+          diagnostics={definitionDiagnostics}
+        />
+      )}
+
+      {workspaceDiagnostics.length > 0 && (
+        <DiagnosticList
+          title={t('teammates.diagnostics.workspace')}
+          diagnostics={workspaceDiagnostics}
         />
       )}
 
@@ -321,7 +467,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
                 {t('teammates.list.count', { count: teammates.length })}
               </p>
             </div>
-            <Button size="sm" onClick={startNew} disabled={!projectPath}>
+            <Button size="sm" onClick={startNew}>
               <Plus className="h-4 w-4" />
               {t('teammates.actions.new')}
             </Button>
@@ -362,10 +508,22 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
                       )}
                     </div>
                     <div className="mt-3 flex items-center gap-2">
+                      <label className="mr-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={enabledTeammateIds.includes(teammate.id)}
+                          onChange={(event) => {
+                            void toggleEnablement(teammate.id, event.target.checked);
+                          }}
+                          disabled={!projectPath || workspaceLoading || enablementSaving}
+                          aria-label={t('teammates.enablement.toggleLabel', { name: teammate.name })}
+                          className="h-4 w-4 rounded border-border accent-primary disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                        <span className="truncate">{t('teammates.enablement.rowLabel')}</span>
+                      </label>
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1"
                         onClick={() => startEdit(teammate)}
                       >
                         <Pencil className="h-4 w-4" />
@@ -492,7 +650,14 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
                   />
                 ))}
 
-                {catalogUnavailable && (
+                {!projectPath && (
+                  <div className="flex gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                    <span>{t('teammates.catalog.noWorkspace')}</span>
+                  </div>
+                )}
+
+                {projectPath && catalogUnavailable && (
                   <div className="flex gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
                     <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
                     <span>{t('teammates.catalog.manualOnly')}</span>
@@ -504,7 +669,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
                 <Button type="button" variant="outline" onClick={closeEditor} disabled={saving}>
                   {t('teammates.actions.cancel')}
                 </Button>
-                <Button type="submit" disabled={saving || !projectPath}>
+                <Button type="submit" disabled={saving}>
                   {saving ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
@@ -635,6 +800,7 @@ function Notice({
 }) {
   return (
     <div
+      role={tone === 'error' ? 'alert' : undefined}
       className={cn(
         'rounded-lg border px-4 py-3 text-sm',
         tone === 'error' && 'border-destructive/40 bg-destructive/5 text-destructive',
@@ -735,6 +901,10 @@ function normalizeDiagnostics(value: unknown): TeammateDiagnostic[] {
       message: entry.message,
       ...(typeof entry.relativePath === 'string' ? { relativePath: entry.relativePath } : {}),
       ...(typeof entry.field === 'string' ? { field: entry.field } : {}),
+      ...(typeof entry.id === 'string' ? { id: entry.id } : {}),
+      ...(Array.isArray(entry.relatedPaths)
+        ? { relatedPaths: normalizeStringArray(entry.relatedPaths) }
+        : {}),
     }];
   });
 }
@@ -745,7 +915,31 @@ function normalizeCatalog(value: Record<string, unknown>): TeammateCatalog {
     plugins: normalizeStringArray(value.plugins),
     skills: normalizeStringArray(value.skills),
     mcpServers: normalizeStringArray(value.mcpServers),
+    diagnostics: normalizeDiagnostics(value.diagnostics),
   };
+}
+
+function normalizeEnablement(value: Record<string, unknown>): TeammateEnablement {
+  return {
+    canonicalProjectKey:
+      typeof value.canonicalProjectKey === 'string' ? value.canonicalProjectKey : '',
+    enabledTeammateIds: normalizeStringArray(value.enabledTeammateIds),
+  };
+}
+
+function toggleEnabledTeammateId(
+  currentIds: string[],
+  teammateId: string,
+  enabled: boolean,
+  definitionOrder: string[],
+): string[] {
+  const next = new Set(currentIds);
+  if (enabled) next.add(teammateId);
+  else next.delete(teammateId);
+  const order = new Map(definitionOrder.map((id, index) => [id, index]));
+  return [...next]
+    .filter((id) => order.has(id))
+    .sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
 }
 
 function normalizeStringArray(value: unknown): string[] {

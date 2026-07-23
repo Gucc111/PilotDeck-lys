@@ -594,7 +594,7 @@ export default function ComposerV2({
                                   }) as string)
                                 : isTeam
                                   ? (t('input.runModes.teamDescription', {
-                                      defaultValue: 'Coordinate workspace-defined Teammates without doing implementation directly',
+                                      defaultValue: 'Coordinate global Teammates enabled for this workspace without implementing directly',
                                     }) as string)
                               : (t('input.runModes.agentDescription', {
                                   defaultValue: 'Directly process and execute the task',

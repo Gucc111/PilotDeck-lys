@@ -273,13 +273,13 @@
       "agentDescription": "Directly process and execute the task",
       "planDescription": "Generate a plan first, then execute after confirmation",
       "askDescription": "Only answers questions without modifying files",
-      "teamDescription": "Coordinate workspace-defined Teammates without doing implementation directly"
+      "teamDescription": "Coordinate global Teammates enabled for this workspace without implementing directly"
     }
   },
   "team": {
     "statusTitle": "Team status",
     "running": "running",
-    "noTeammates": "No Teammates are configured in this workspace."
+    "noTeammates": "The current workspace has no enabled and valid Teammate."
   },
   "documentReferences": {
     "defaultPrompt": "Please answer based on the document selection I quoted.",

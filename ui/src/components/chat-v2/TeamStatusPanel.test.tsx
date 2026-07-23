@@ -45,4 +45,22 @@ describe('Agent Teams chat UI', () => {
       '/api/teammates/state?projectPath=%2Fworkspace&sessionId=leader',
     );
   });
+
+  it('explains that the current workspace has no enabled and valid teammates', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      progress: { items: [] },
+      teammates: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    render(<TeamStatusPanel projectPath="/workspace" sessionId="leader" />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('The current workspace has no enabled and valid Teammate.'),
+      ).toBeTruthy();
+    });
+  });
 });

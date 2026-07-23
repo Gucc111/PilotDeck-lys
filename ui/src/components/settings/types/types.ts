@@ -41,6 +41,8 @@ export type TeammateDiagnostic = {
   message: string;
   relativePath?: string;
   field?: string;
+  id?: string;
+  relatedPaths?: string[];
 };
 
 export type TeammateCatalog = {
@@ -48,6 +50,12 @@ export type TeammateCatalog = {
   plugins: string[];
   skills: string[];
   mcpServers: string[];
+  diagnostics: TeammateDiagnostic[];
+};
+
+export type TeammateEnablement = {
+  canonicalProjectKey: string;
+  enabledTeammateIds: string[];
 };
 
 export type CodeEditorSettingsState = {

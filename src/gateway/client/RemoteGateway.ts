@@ -51,6 +51,9 @@ import type {
   TeammateCatalog,
   TeammateCatalogInput,
   TeammateDeleteResult,
+  TeammateEnablementGetInput,
+  TeammateEnablementResult,
+  TeammateEnablementSetInput,
   TeammateGatewayCreateInput,
   TeammateGatewayWriteInput,
   TeammateListResult,
@@ -233,6 +236,14 @@ export class RemoteGateway implements Gateway {
 
   async teammateCatalog(input: TeammateCatalogInput): Promise<TeammateCatalog> {
     return (await this.client.request("teammate_catalog", input)) as TeammateCatalog;
+  }
+
+  async teammateEnablementGet(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult> {
+    return (await this.client.request("teammate_enablement_get", input)) as TeammateEnablementResult;
+  }
+
+  async teammateEnablementSet(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult> {
+    return (await this.client.request("teammate_enablement_set", input)) as TeammateEnablementResult;
   }
 
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {

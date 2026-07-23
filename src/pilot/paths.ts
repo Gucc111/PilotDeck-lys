@@ -9,13 +9,14 @@ export type PilotPathEnv = Record<string, string | undefined>;
 export const DEFAULT_PILOT_HOME = "~/.pilotdeck";
 export const PILOT_CONFIG_FILE_NAME = "pilotdeck.yaml";
 export const PILOT_PROJECT_DIR_NAME = ".pilotdeck";
+export const TEAMMATE_ENABLEMENT_FILE_NAME = "workspace-enablement.json";
 
 export type PilotExtensionPaths = {
   globalPluginsDir: string;
   globalSkillsDir: string;
+  globalTeammatesDir: string;
   projectPluginsDir: string;
   projectSkillsDir: string;
-  projectTeammatesDir: string;
 };
 
 export function resolvePilotHome(env: PilotPathEnv = process.env): string {
@@ -32,6 +33,14 @@ export function getPilotProjectConfigFilePath(projectRoot: string): string {
 
 export function getPilotMemoryRootDir(pilotHome: string): string {
   return resolve(pilotHome, "memory");
+}
+
+export function getPilotTeammatesDir(pilotHome: string): string {
+  return resolve(pilotHome, "teammates");
+}
+
+export function getPilotTeammateEnablementFilePath(pilotHome: string): string {
+  return resolve(getPilotTeammatesDir(pilotHome), TEAMMATE_ENABLEMENT_FILE_NAME);
 }
 
 export function getPilotProjectChatDir(projectRoot: string, pilotHome: string): string {
@@ -58,14 +67,10 @@ export function getPilotExtensionPaths(projectRoot: string, pilotHome: string): 
   return {
     globalPluginsDir: resolve(pilotHome, "plugins"),
     globalSkillsDir: resolve(pilotHome, "skills"),
+    globalTeammatesDir: getPilotTeammatesDir(pilotHome),
     projectPluginsDir: resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "plugins"),
     projectSkillsDir: resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "skills"),
-    projectTeammatesDir: resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "teammates"),
   };
-}
-
-export function getPilotProjectTeammatesDir(projectRoot: string): string {
-  return resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "teammates");
 }
 
 export function createProjectId(projectRoot: string): string {

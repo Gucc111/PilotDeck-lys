@@ -20,7 +20,7 @@ export function createDelegateToTeammateTool(): PilotDeckToolDefinition<
     name: "delegate_to_teammate",
     title: "Delegate to Teammate",
     description: [
-      "Dispatch a complete task or follow-up to a workspace-defined, long-lived Teammate.",
+      "Dispatch a complete task or follow-up to a globally defined, long-lived Teammate enabled and valid for the current workspace.",
       "The teammate keeps its own context between calls.",
       "Use action=run for a new assignment, follow_up to refine previous work, and shutdown to stop the teammate.",
       "Different teammates may be dispatched in parallel; do not dispatch two concurrent turns to the same teammate.",
@@ -33,7 +33,7 @@ export function createDelegateToTeammateTool(): PilotDeckToolDefinition<
       properties: {
         teammateId: {
           type: "string",
-          description: "Stable id of a Teammate defined in the current workspace.",
+          description: "Stable id of a global Teammate enabled and valid for the current workspace.",
         },
         action: {
           type: "string",

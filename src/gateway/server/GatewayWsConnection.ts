@@ -4,6 +4,7 @@ import { PILOTDECK_GATEWAY_PROTOCOL_VERSION } from "../protocol/version.js";
 import { TextWebSocketConnection } from "./websocket.js";
 import { SkillManagerError, SkillValidationError } from "../../extension/skills/index.js";
 import {
+  TeammateEnablementStoreError,
   TeammateManagerError,
   TeammateValidationError,
 } from "../../extension/teammates/index.js";
@@ -158,7 +159,11 @@ export class GatewayWsConnection {
         );
         return;
       }
-      if (error instanceof SkillManagerError || error instanceof TeammateManagerError) {
+      if (
+        error instanceof SkillManagerError ||
+        error instanceof TeammateManagerError ||
+        error instanceof TeammateEnablementStoreError
+      ) {
         this.ws.sendText(
           JSON.stringify({
             type: "response",
@@ -287,6 +292,10 @@ export class GatewayWsConnection {
         return requireTeammateMethod(this.options.gateway.teammateDelete, this.options.gateway)(frame.params as never);
       case "teammate_catalog":
         return requireTeammateMethod(this.options.gateway.teammateCatalog, this.options.gateway)(frame.params as never);
+      case "teammate_enablement_get":
+        return requireTeammateMethod(this.options.gateway.teammateEnablementGet, this.options.gateway)(frame.params as never);
+      case "teammate_enablement_set":
+        return requireTeammateMethod(this.options.gateway.teammateEnablementSet, this.options.gateway)(frame.params as never);
       case "team_state":
         return requireTeammateMethod(this.options.gateway.teamState, this.options.gateway)(frame.params as never);
       case "always_on_apply":

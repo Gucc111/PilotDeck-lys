@@ -1,6 +1,9 @@
 export const TEAMMATE_SCHEMA_VERSION = 1 as const;
+export const TEAMMATE_ENABLEMENT_SCHEMA_VERSION = 1 as const;
 
 export type TeammateSchemaVersion = typeof TEAMMATE_SCHEMA_VERSION;
+export type TeammateEnablementSchemaVersion =
+  typeof TEAMMATE_ENABLEMENT_SCHEMA_VERSION;
 
 export interface TeammateDocumentInput {
   schemaVersion?: TeammateSchemaVersion;
@@ -32,9 +35,25 @@ export interface TeammateDefinition {
 }
 
 export interface TeammateRecord extends TeammateDefinition {
-  /** Path relative to `<projectRoot>/.pilotdeck/teammates`. */
+  /** POSIX path relative to `$PILOT_HOME/teammates`. */
   relativePath: string;
   filePath: string;
+}
+
+export interface TeammateEnablementDocument {
+  schemaVersion: TeammateEnablementSchemaVersion;
+  /** Canonical, absolute workspace paths mapped to complete enabled-ID sets. */
+  workspaces: Record<string, string[]>;
+}
+
+export type TeammateEnablementStoreErrorCode =
+  | "invalid_input"
+  | "invalid_json"
+  | "invalid_schema"
+  | "unsafe_path";
+
+export interface TeammateEnablementStoreOptions {
+  pilotHome: string;
 }
 
 export type TeammateDiagnosticSeverity = "error" | "warning";
@@ -55,6 +74,8 @@ export type TeammateDiagnosticCode =
   | "ID_INVALID"
   | "PROMPT_REQUIRED"
   | "DUPLICATE_ID"
+  | "TEAMMATE_NOT_FOUND"
+  | "TEAMMATE_ENABLEMENT_INVALID"
   | "MODEL_NOT_FOUND"
   | "TOOL_NOT_FOUND"
   | "PLUGIN_NOT_FOUND"
@@ -90,7 +111,7 @@ export interface TeammateReadResult {
 export interface TeammateCreateInput {
   document: TeammateDocumentInput;
   /**
-   * Optional nested path below the workspace teammate root.
+   * Optional nested POSIX path below `$PILOT_HOME/teammates`.
    * Defaults to `<resolved-id>.md`.
    */
   relativePath?: string;
@@ -109,26 +130,21 @@ export interface TeammateDeleteResult {
 }
 
 export interface TeammateManagerOptions {
-  projectRoot: string;
+  pilotHome: string;
 }
 
-export type TeammatesListInput = {
-  projectKey: string;
-};
+export type TeammatesListInput = Record<string, never>;
 
 export type TeammateAddressInput = {
-  projectKey: string;
   id: string;
 };
 
 export type TeammateGatewayCreateInput = {
-  projectKey: string;
   document: TeammateDocumentInput;
   relativePath?: string;
 };
 
 export type TeammateGatewayWriteInput = {
-  projectKey: string;
   id: string;
   document: TeammateDocumentInput;
 };
@@ -138,8 +154,26 @@ export type TeammateCatalog = {
   plugins: string[];
   skills: string[];
   mcpServers: string[];
+  /** Diagnostics caused by enablement or capabilities in the selected workspace. */
+  diagnostics: TeammateDiagnostic[];
 };
 
 export type TeammateCatalogInput = {
   projectKey: string;
+};
+
+export type TeammateEnablementGetInput = {
+  projectKey: string;
+};
+
+export type TeammateEnablementSetInput = {
+  projectKey: string;
+  enabledTeammateIds: string[];
+};
+
+export type TeammateEnablementResult = {
+  canonicalProjectKey: string;
+  enabledTeammateIds: string[];
+  /** Absolute global enablement document path, used by hosts for reloads. */
+  filePath: string;
 };

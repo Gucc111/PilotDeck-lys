@@ -121,10 +121,11 @@ export type PilotDeckTeamDelegateResult = {
 /**
  * Session-scoped Agent Teams control plane. The Leader only receives this
  * narrow surface: structured progress persistence and dispatch to
- * workspace-defined, long-lived teammate sessions.
+ * globally defined teammates enabled and valid for the current workspace.
  */
 export type PilotDeckTeamRuntimeApi = {
   listDefinitions(): PilotDeckTeamDefinitionSummary[];
+  listDiagnostics?(): string[];
   readProgress(): Promise<PilotDeckTeamProgressSnapshot>;
   updateProgress(input: {
     items?: PilotDeckTeamProgressUpdate[];

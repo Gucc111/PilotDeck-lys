@@ -1706,17 +1706,23 @@ export class AgentLoop {
       );
     }
     const requestMessages = normalizeMessagesForModelRequest(messages);
+    const teamDefinitions = this.config.runMode === "team"
+      ? this.dependencies.team?.listDefinitions() ?? []
+      : [];
     let tools = toolDefinitions.map(toolToCanonicalSchema);
     if (this.config.runMode === "ask") {
       tools = filterAskModeTools(toolDefinitions);
     } else if (this.config.runMode === "team") {
       tools = filterTeamModeTools(
         toolDefinitions,
-        this.dependencies.team?.listDefinitions() ?? [],
+        teamDefinitions,
       );
     }
     const teamPrompt = this.config.runMode === "team"
-      ? buildTeamLeaderPrompt(this.dependencies.team?.listDefinitions() ?? [])
+      ? buildTeamLeaderPrompt(
+          teamDefinitions,
+          this.dependencies.team?.listDiagnostics?.() ?? [],
+        )
       : undefined;
     const appendSystemPrompt = [
       planTodo?.buildPromptAddendum(),
@@ -2394,7 +2400,7 @@ function filterTeamModeTools(
         description: [
           schema.description,
           "",
-          "Available Teammates in this workspace:",
+          "Globally defined Teammates enabled and valid for this workspace:",
           ...teammates.map((teammate) =>
             `- ${teammate.id}: ${teammate.description}${teammate.model ? ` (model: ${teammate.model})` : ""}`),
         ].join("\n"),
@@ -2412,10 +2418,16 @@ function filterTeamModeTools(
     });
 }
 
-function buildTeamLeaderPrompt(teammates: PilotDeckTeamDefinitionSummary[]): string {
+function buildTeamLeaderPrompt(
+  teammates: PilotDeckTeamDefinitionSummary[],
+  diagnostics: string[],
+): string {
   const catalog = teammates.length > 0
     ? teammates.map((teammate) => `- ${teammate.id}: ${teammate.description}`).join("\n")
-    : "- No Teammates are configured for this workspace.";
+    : "- No globally defined Teammates are enabled and valid for this workspace.";
+  const configurationDiagnostics = diagnostics.length > 0
+    ? ["", "Configuration diagnostics:", ...diagnostics.map((message) => `- ${message}`)]
+    : [];
   return [
     "<team-leader-mode>",
     "You are the Team Leader. You coordinate work but never perform the user's task directly.",
@@ -2424,11 +2436,12 @@ function buildTeamLeaderPrompt(teammates: PilotDeckTeamDefinitionSummary[]): str
     "Break the request into bounded assignments, keep progress current, delegate all execution, review returned reports, send follow-ups when needed, then synthesize the final answer.",
     "Different Teammates may work in parallel when their assignments do not overlap. Avoid assigning concurrent edits to the same files.",
     teammates.length === 0
-      ? "CONFIGURATION ERROR: No Teammates are available. Do not attempt the task; tell the user to add a project-scoped definition under .pilotdeck/teammates/ or Settings > Teammates."
+      ? "CONFIGURATION ERROR: No Teammates are available. Do not attempt the task; tell the user to configure globally defined Teammates and enable them for this workspace in Settings > Teammates."
       : "Only use Teammate ids from the catalog below.",
     "",
-    "Workspace Teammates:",
+    "Enabled global Teammates for this workspace:",
     catalog,
+    ...configurationDiagnostics,
     "</team-leader-mode>",
   ].join("\n");
 }

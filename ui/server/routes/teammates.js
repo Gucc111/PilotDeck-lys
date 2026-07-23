@@ -50,11 +50,38 @@ router.get('/state', async (req, res) => {
   }
 });
 
-router.get('/', async (req, res) => {
+router.get('/enablement', async (req, res) => {
   try {
     const projectKey = requireProjectPath(req.query.projectPath);
     const gateway = await getPilotDeckGateway();
-    res.json(await gateway.teammatesList({ projectKey }));
+    res.json(await gateway.teammateEnablementGet({ projectKey }));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.put('/enablement', async (req, res) => {
+  try {
+    const projectKey = requireProjectPath(req.body?.projectPath);
+    const enabledTeammateIds = req.body?.enabledTeammateIds;
+    if (!Array.isArray(enabledTeammateIds)) {
+      return res.status(400).json({ error: 'enabledTeammateIds must be an array.' });
+    }
+    const gateway = await getPilotDeckGateway();
+    const result = await gateway.teammateEnablementSet({
+      projectKey,
+      enabledTeammateIds,
+    });
+    res.json(result);
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.get('/', async (req, res) => {
+  try {
+    const gateway = await getPilotDeckGateway();
+    res.json(await gateway.teammatesList({}));
   } catch (error) {
     sendError(res, error);
   }
@@ -62,7 +89,6 @@ router.get('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const projectKey = requireProjectPath(req.body?.projectPath);
     const id = String(req.params.id || '').trim();
     const definition = req.body?.definition || {};
     const document = {
@@ -78,13 +104,12 @@ router.put('/:id', async (req, res) => {
       prompt: definition.prompt || '',
     };
     const gateway = await getPilotDeckGateway();
-    const existing = await gateway.teammateRead({ projectKey, id });
+    const existing = await gateway.teammateRead({ id });
     const result = existing
-      ? await gateway.teammateWrite({ projectKey, id, document })
-      : await gateway.teammateCreate({ projectKey, document });
+      ? await gateway.teammateWrite({ id, document })
+      : await gateway.teammateCreate({ document });
     await gateway.reloadExtensions?.({
-      projectKey,
-      changedPaths: [`.pilotdeck/teammates/${result.teammate.relativePath}`],
+      changedPaths: [result.teammate.filePath],
     });
     res.json(result);
   } catch (error) {
@@ -94,13 +119,12 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const projectKey = requireProjectPath(req.body?.projectPath || req.query.projectPath);
     const id = String(req.params.id || '').trim();
     const gateway = await getPilotDeckGateway();
-    const result = await gateway.teammateDelete({ projectKey, id });
+    const existing = await gateway.teammateRead({ id });
+    const result = await gateway.teammateDelete({ id });
     await gateway.reloadExtensions?.({
-      projectKey,
-      changedPaths: [`.pilotdeck/teammates/${result.relativePath}`],
+      changedPaths: existing?.teammate?.filePath ? [existing.teammate.filePath] : [],
     });
     res.json(result);
   } catch (error) {

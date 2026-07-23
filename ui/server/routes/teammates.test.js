@@ -9,6 +9,8 @@ const { gateway } = vi.hoisted(() => ({
     teammateWrite: vi.fn(),
     teammateDelete: vi.fn(),
     teammateCatalog: vi.fn(),
+    teammateEnablementGet: vi.fn(),
+    teammateEnablementSet: vi.fn(),
     teamState: vi.fn(),
     reloadExtensions: vi.fn(),
   },
@@ -42,24 +44,27 @@ afterEach(async () => {
 });
 
 describe('teammate settings routes', () => {
-  it('lists only the requested workspace', async () => {
+  it('lists global definitions without requiring a project path', async () => {
     gateway.teammatesList.mockResolvedValue({ teammates: [], diagnostics: [] });
-    const response = await fetch(`${baseUrl}/api/teammates?projectPath=${encodeURIComponent('/workspace/a')}`);
+    const response = await fetch(`${baseUrl}/api/teammates`);
 
     expect(response.status).toBe(200);
-    expect(gateway.teammatesList).toHaveBeenCalledWith({ projectKey: '/workspace/a' });
+    expect(gateway.teammatesList).toHaveBeenCalledWith({});
   });
 
-  it('creates a project teammate and reloads extensions', async () => {
+  it('creates a global teammate and reloads its global path', async () => {
     gateway.teammateRead.mockResolvedValue(null);
     gateway.teammateCreate.mockResolvedValue({
-      teammate: { id: 'implementer', relativePath: 'implementer.md' },
+      teammate: {
+        id: 'implementer',
+        relativePath: 'implementer.md',
+        filePath: '/pilot-home/teammates/implementer.md',
+      },
     });
     const response = await fetch(`${baseUrl}/api/teammates/implementer`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        projectPath: '/workspace/a',
         definition: {
           name: 'Implementer',
           description: 'Implements work',
@@ -75,7 +80,6 @@ describe('teammate settings routes', () => {
 
     expect(response.status).toBe(200);
     expect(gateway.teammateCreate).toHaveBeenCalledWith(expect.objectContaining({
-      projectKey: '/workspace/a',
       document: expect.objectContaining({
         schemaVersion: 1,
         id: 'implementer',
@@ -83,8 +87,71 @@ describe('teammate settings routes', () => {
       }),
     }));
     expect(gateway.reloadExtensions).toHaveBeenCalledWith({
-      projectKey: '/workspace/a',
-      changedPaths: ['.pilotdeck/teammates/implementer.md'],
+      changedPaths: ['/pilot-home/teammates/implementer.md'],
     });
+  });
+
+  it('deletes a global teammate without a project path', async () => {
+    gateway.teammateRead.mockResolvedValue({
+      teammate: {
+        id: 'reviewer',
+        relativePath: 'reviewer.md',
+        filePath: '/pilot-home/teammates/reviewer.md',
+      },
+    });
+    gateway.teammateDelete.mockResolvedValue({
+      ok: true,
+      id: 'reviewer',
+      relativePath: 'reviewer.md',
+    });
+
+    const response = await fetch(`${baseUrl}/api/teammates/reviewer`, {
+      method: 'DELETE',
+    });
+
+    expect(response.status).toBe(200);
+    expect(gateway.teammateRead).toHaveBeenCalledWith({ id: 'reviewer' });
+    expect(gateway.teammateDelete).toHaveBeenCalledWith({ id: 'reviewer' });
+    expect(gateway.reloadExtensions).toHaveBeenCalledWith({
+      changedPaths: ['/pilot-home/teammates/reviewer.md'],
+    });
+  });
+
+  it('gets and replaces workspace enablement before the id route', async () => {
+    gateway.reloadExtensions.mockRejectedValue(new Error('Reload failed.'));
+    gateway.teammateEnablementGet.mockResolvedValue({
+      canonicalProjectKey: '/workspace/a',
+      enabledTeammateIds: ['implementer'],
+      filePath: '/pilot-home/teammate-enablement.json',
+    });
+    gateway.teammateEnablementSet.mockResolvedValue({
+      canonicalProjectKey: '/workspace/a',
+      enabledTeammateIds: ['implementer', 'reviewer'],
+      filePath: '/pilot-home/teammate-enablement.json',
+    });
+
+    const getResponse = await fetch(
+      `${baseUrl}/api/teammates/enablement?projectPath=${encodeURIComponent('/workspace/a')}`,
+    );
+    expect(getResponse.status).toBe(200);
+    expect(gateway.teammateEnablementGet).toHaveBeenCalledWith({
+      projectKey: '/workspace/a',
+    });
+
+    const putResponse = await fetch(`${baseUrl}/api/teammates/enablement`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectPath: '/workspace/a',
+        enabledTeammateIds: ['reviewer', 'implementer'],
+      }),
+    });
+    expect(putResponse.status).toBe(200);
+    expect(gateway.teammateEnablementSet).toHaveBeenCalledWith({
+      projectKey: '/workspace/a',
+      enabledTeammateIds: ['reviewer', 'implementer'],
+    });
+    expect(gateway.reloadExtensions).not.toHaveBeenCalled();
+    expect(gateway.teammateRead).not.toHaveBeenCalled();
   });
 });
