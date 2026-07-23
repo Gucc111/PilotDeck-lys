@@ -14,6 +14,7 @@ import type {
   CronStopResult,
 } from "../../cron/protocol/types.js";
 import type { CanonicalUsage } from "../../model/index.js";
+import type { PilotDeckTeamProgressSnapshot } from "../../tool/protocol/types.js";
 import type { TelemetryExecutionKind, TelemetryModule } from "../../telemetry/index.js";
 import type { SessionInfo as ProjectSessionInfo } from "../../session/index.js";
 import type {
@@ -48,6 +49,17 @@ import type {
   SkillsListInput,
   SkillsListResult,
 } from "../../extension/skills/types.js";
+import type {
+  TeammateAddressInput,
+  TeammateCatalog,
+  TeammateCatalogInput,
+  TeammateDeleteResult,
+  TeammateGatewayCreateInput,
+  TeammateGatewayWriteInput,
+  TeammateListResult,
+  TeammateReadResult,
+  TeammatesListInput,
+} from "../../extension/teammates/types.js";
 
 export type GatewayChannelKey =
   | "cli" | "tui" | "feishu" | "weixin" | "qq" | "web" | "test"
@@ -59,6 +71,21 @@ export type GatewayChannelKey =
   | (string & {});
 
 export type GatewayMode = "default" | "plan" | "bypassPermissions";
+
+export type TeamStateInput = {
+  projectKey: string;
+  leaderSessionId: string;
+};
+
+export type TeamStateResult = {
+  progress: PilotDeckTeamProgressSnapshot;
+  teammates: {
+    id: string;
+    sessionId: string;
+    status: "idle" | "running" | "failed" | "aborted" | "not_started";
+    currentTask?: string;
+  }[];
+};
 
 export type ChannelAttachment = {
   type: "file" | "image" | "text" | "unknown";
@@ -490,4 +517,11 @@ export interface Gateway {
   skillImport?(input: SkillImportInput): Promise<SkillImportResult>;
   skillValidate?(input: SkillValidateInput): Promise<SkillValidationResult>;
   skillScan?(input: SkillScanInput): Promise<SkillScanResult>;
+  teammatesList?(input: TeammatesListInput): Promise<TeammateListResult>;
+  teammateRead?(input: TeammateAddressInput): Promise<TeammateReadResult | null>;
+  teammateCreate?(input: TeammateGatewayCreateInput): Promise<TeammateReadResult>;
+  teammateWrite?(input: TeammateGatewayWriteInput): Promise<TeammateReadResult>;
+  teammateDelete?(input: TeammateAddressInput): Promise<TeammateDeleteResult>;
+  teammateCatalog?(input: TeammateCatalogInput): Promise<TeammateCatalog>;
+  teamState?(input: TeamStateInput): Promise<TeamStateResult>;
 }

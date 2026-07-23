@@ -68,6 +68,80 @@ export type PilotDeckSubagentForkApi = {
   }>;
 };
 
+export type PilotDeckTeamDefinitionSummary = {
+  id: string;
+  description: string;
+  model?: string;
+};
+
+export type PilotDeckTeamProgressStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type PilotDeckTeamProgressItem = {
+  id: string;
+  content: string;
+  status: PilotDeckTeamProgressStatus;
+  teammateId?: string;
+  blockedBy?: string[];
+  summary?: string;
+  updatedAt: string;
+};
+
+export type PilotDeckTeamProgressSnapshot = {
+  version: 1;
+  summary?: string;
+  items: PilotDeckTeamProgressItem[];
+  updatedAt: string;
+};
+
+export type PilotDeckTeamProgressUpdate = {
+  id: string;
+  content?: string;
+  status?: PilotDeckTeamProgressStatus;
+  teammateId?: string | null;
+  blockedBy?: string[];
+  summary?: string | null;
+};
+
+export type PilotDeckTeamDelegateResult = {
+  teammateId: string;
+  teammateSessionId: string;
+  action: "run" | "follow_up" | "shutdown";
+  taskId?: string;
+  status: "completed" | "failed" | "cancelled" | "shutdown";
+  summary: string;
+  turns?: number;
+  durationMs: number;
+};
+
+/**
+ * Session-scoped Agent Teams control plane. The Leader only receives this
+ * narrow surface: structured progress persistence and dispatch to
+ * workspace-defined, long-lived teammate sessions.
+ */
+export type PilotDeckTeamRuntimeApi = {
+  listDefinitions(): PilotDeckTeamDefinitionSummary[];
+  readProgress(): Promise<PilotDeckTeamProgressSnapshot>;
+  updateProgress(input: {
+    items?: PilotDeckTeamProgressUpdate[];
+    merge?: boolean;
+    summary?: string | null;
+  }): Promise<PilotDeckTeamProgressSnapshot>;
+  delegate(input: {
+    teammateId: string;
+    action: "run" | "follow_up" | "shutdown";
+    prompt?: string;
+    taskId?: string;
+    parentTurnId: string;
+    toolCallId?: string;
+    abortSignal?: AbortSignal;
+  }): Promise<PilotDeckTeamDelegateResult>;
+};
+
 export type PilotDeckToolKind =
   | "filesystem"
   | "shell"
@@ -307,6 +381,8 @@ export type PilotDeckToolRuntimeContext = {
    * call so unit tests still work.
    */
   subagent?: PilotDeckSubagentForkApi;
+  /** Agent Teams control plane, present only for project-backed sessions. */
+  team?: PilotDeckTeamRuntimeApi;
   /**
    * Plan directory handle for plan-mode tools (`enter_plan_mode` /
    * `exit_plan_mode`). When plan mode is active the model may create and

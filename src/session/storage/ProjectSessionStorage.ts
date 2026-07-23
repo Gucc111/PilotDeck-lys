@@ -26,6 +26,9 @@ export type AgentProjectSessionStorage = {
    */
   subagentsDir: string;
   subagentTranscriptPath(subagentId: string): string;
+  /** Persistent Agent Teams control state owned by this leader session. */
+  teamDir: string;
+  teamProgressPath: string;
   transcript: JsonlTranscriptWriter;
 };
 
@@ -65,6 +68,8 @@ export function createAgentProjectSessionStorage(
   const toolResultsDir = resolve(options.projectRoot, ".pilotdeck", "tool-results", safeId);
   const fileHistoryDir = resolve(chatDir, safeId, "file-history");
   const subagentsDir = resolve(chatDir, safeId, "subagents");
+  const teamDir = resolve(chatDir, safeId, "team");
+  const teamProgressPath = resolve(teamDir, "progress.json");
   const subagentTranscriptPath = (subagentId: string): string =>
     resolve(subagentsDir, `${sanitizeSessionIdForPath(subagentId)}.jsonl`);
   return {
@@ -74,6 +79,8 @@ export function createAgentProjectSessionStorage(
     fileHistoryDir,
     subagentsDir,
     subagentTranscriptPath,
+    teamDir,
+    teamProgressPath,
     transcript: new JsonlTranscriptWriter({
       path: transcriptPath,
       now: options.now,

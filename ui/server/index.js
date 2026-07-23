@@ -82,6 +82,7 @@ import memoryRoutes, { MEMORY_DASHBOARD_DIR } from './routes/memory.js';
 import mcpUtilsRoutes from './routes/mcp-utils.js';
 import commandsRoutes from './routes/commands.js';
 import skillsRoutes from './routes/skills.js';
+import teammatesRoutes from './routes/teammates.js';
 import settingsRoutes from './routes/settings.js';
 import configRoutes from './routes/config.js';
 import gatewayRoutes from './routes/gateway.js';
@@ -494,6 +495,7 @@ app.use('/api/commands', authenticateToken, commandsRoutes);
 // top-right Skills tab. Backed by bundled skills, ~/.pilotdeck/skills/, and
 // project-level .pilotdeck/skills/ via PilotDeck plugin runtime.
 app.use('/api/skills', authenticateToken, skillsRoutes);
+app.use('/api/teammates', authenticateToken, teammatesRoutes);
 
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);

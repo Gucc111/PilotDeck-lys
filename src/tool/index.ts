@@ -50,6 +50,13 @@ export type {
   PilotDeckToolResultContent,
   PilotDeckToolRuntimeContext,
   PilotDeckSubagentForkApi,
+  PilotDeckTeamDefinitionSummary,
+  PilotDeckTeamDelegateResult,
+  PilotDeckTeamProgressItem,
+  PilotDeckTeamProgressSnapshot,
+  PilotDeckTeamProgressStatus,
+  PilotDeckTeamProgressUpdate,
+  PilotDeckTeamRuntimeApi,
   PilotDeckWriteSnapshotEntry,
   PilotDeckWriteSnapshotMap,
 } from "./protocol/types.js";
@@ -222,6 +229,14 @@ export {
   type TodoWriteOutput,
 } from "./builtin/todoWrite.js";
 export {
+  createTeamProgressTool,
+  type TeamProgressInput,
+} from "./builtin/teamProgress.js";
+export {
+  createDelegateToTeammateTool,
+  type DelegateToTeammateInput,
+} from "./builtin/delegateToTeammate.js";
+export {
   PLAN_MODE_ALLOWED_TOOLS,
   buildPlanModeViolationMessage,
   buildPlanModeBashViolationMessage,
@@ -236,3 +251,10 @@ export {
   isAskModeAllowedTool,
   isAskModeViolationText,
 } from "./askModeConstraints.js";
+export {
+  TEAM_MODE_ALLOWED_TOOLS,
+  buildTeamModeViolationMessage,
+  getTeamModeViolation,
+  isTeamModeAllowedTool,
+  isTeamModeViolationText,
+} from "./teamModeConstraints.js";

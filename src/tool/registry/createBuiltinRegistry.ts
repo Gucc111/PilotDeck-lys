@@ -24,6 +24,8 @@ import { createWebFetchTool, type CreateWebFetchToolOptions } from "../builtin/w
 import { createWebSearchTool, type CreateWebSearchToolOptions } from "../builtin/webSearch.js";
 import { createReadSkillTool, type ReadSkillDeps } from "../builtin/readSkill.js";
 import { createWriteFileTool } from "../builtin/writeFile.js";
+import { createTeamProgressTool } from "../builtin/teamProgress.js";
+import { createDelegateToTeammateTool } from "../builtin/delegateToTeammate.js";
 import { ToolRegistry } from "./ToolRegistry.js";
 
 export type CreateBuiltinRegistryOptions = {
@@ -129,6 +131,8 @@ export function createBuiltinRegistry(options?: CreateBuiltinRegistryOptions): T
     registry.register(createExitPlanModeTool());
   }
   registry.register(createTodoWriteTool());
+  registry.register(createTeamProgressTool());
+  registry.register(createDelegateToTeammateTool());
   if (options?.readSkill) {
     registry.register(createReadSkillTool(options.readSkill));
   }

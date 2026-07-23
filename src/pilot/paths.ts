@@ -15,6 +15,7 @@ export type PilotExtensionPaths = {
   globalSkillsDir: string;
   projectPluginsDir: string;
   projectSkillsDir: string;
+  projectTeammatesDir: string;
 };
 
 export function resolvePilotHome(env: PilotPathEnv = process.env): string {
@@ -59,7 +60,12 @@ export function getPilotExtensionPaths(projectRoot: string, pilotHome: string): 
     globalSkillsDir: resolve(pilotHome, "skills"),
     projectPluginsDir: resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "plugins"),
     projectSkillsDir: resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "skills"),
+    projectTeammatesDir: resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "teammates"),
   };
+}
+
+export function getPilotProjectTeammatesDir(projectRoot: string): string {
+  return resolve(projectRoot, PILOT_PROJECT_DIR_NAME, "teammates");
 }
 
 export function createProjectId(projectRoot: string): string {

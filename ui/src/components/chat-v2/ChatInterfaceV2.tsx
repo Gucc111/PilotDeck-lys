@@ -19,6 +19,7 @@ import { getDraftInputStorageKey, safeLocalStorage } from '../chat/utils/chatSto
 import { useSessionWatch } from '../../hooks/useSessionWatch';
 import MessagesPaneV2 from './MessagesPaneV2';
 import ComposerV2 from './ComposerV2';
+import TeamStatusPanel from './TeamStatusPanel';
 import { buildReconnectStatusMessage, refreshSessionAfterReconnect, shouldRefreshSessionOnReconnect } from './reconnectRecovery';
 
 type PendingViewSession = {
@@ -110,6 +111,7 @@ function ChatInterfaceV2({
     setRunMode((currentMode) => {
       if (currentMode === 'agent') return 'plan';
       if (currentMode === 'plan') return 'ask';
+      if (currentMode === 'ask') return 'team';
       return 'agent';
     });
   }, []);
@@ -376,7 +378,15 @@ function ChatInterfaceV2({
       if (!newSessionId) {
         throw new Error('Fork did not return a new session id');
       }
-      setRunMode(result.runMode === 'ask' ? 'ask' : result.mode === 'plan' || result.runMode === 'plan' ? 'plan' : 'agent');
+      setRunMode(
+        result.runMode === 'team'
+          ? 'team'
+          : result.runMode === 'ask'
+            ? 'ask'
+            : result.mode === 'plan' || result.runMode === 'plan'
+              ? 'plan'
+              : 'agent',
+      );
 
       if (typeof window.refreshProjects === 'function') {
         try {
@@ -636,6 +646,12 @@ function ChatInterfaceV2({
         onFork={sessionIsReadOnly ? undefined : handleFork}
         forkDisabled={isForkPending}
       />
+      {runMode === 'team' && (currentSessionId || selectedSession?.id) && selectedProject && (
+        <TeamStatusPanel
+          sessionId={(currentSessionId || selectedSession?.id) as string}
+          projectPath={selectedProject.fullPath || selectedProject.path || ''}
+        />
+      )}
       {composer}
     </div>
   );

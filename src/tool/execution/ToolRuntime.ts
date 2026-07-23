@@ -9,6 +9,7 @@ import {
   buildPlanModeViolationMessage,
 } from "../planModeConstraints.js";
 import { getAskModeViolation } from "../askModeConstraints.js";
+import { getTeamModeViolation } from "../teamModeConstraints.js";
 import { isReadOnlyShellCommand } from "../builtin/bash/permissions.js";
 import {
   applyResultSizeLimit,
@@ -100,6 +101,20 @@ export class ToolRuntime {
         tool.name,
         "ask_mode_violation",
         askModeViolation,
+        startedAt,
+        runtimeContext,
+      );
+    }
+
+    const teamModeViolation = runtimeContext.runMode === "team"
+      ? getTeamModeViolation(tool)
+      : undefined;
+    if (teamModeViolation) {
+      return this.errorResult(
+        call.id,
+        tool.name,
+        "team_mode_violation",
+        teamModeViolation,
         startedAt,
         runtimeContext,
       );

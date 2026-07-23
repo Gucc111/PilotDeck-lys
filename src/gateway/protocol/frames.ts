@@ -51,6 +51,13 @@ export type WsGatewayMethod =
   | "skill_import"
   | "skill_validate"
   | "skill_scan"
+  | "teammate_list"
+  | "teammate_read"
+  | "teammate_create"
+  | "teammate_write"
+  | "teammate_delete"
+  | "teammate_catalog"
+  | "team_state"
   | "always_on_apply"
   | "always_on_rerun_plan";
 

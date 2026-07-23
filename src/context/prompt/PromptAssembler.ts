@@ -191,6 +191,8 @@ function formatRunMode(mode: string | undefined): string | undefined {
       return "Run mode: ask — read-only analysis mode; write/action tools are blocked at tool runtime even when permission mode is bypassPermissions.";
     case "plan":
       return "Run mode: plan — planning mode is active.";
+    case "team":
+      return "Run mode: team — this session is a coordination-only Team Leader; direct implementation tools are blocked.";
     default:
       return undefined;
   }

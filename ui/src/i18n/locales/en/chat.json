@@ -268,11 +268,18 @@
       "agent": "Agent",
       "plan": "Plan",
       "ask": "Ask",
+      "team": "Team",
       "change": "Select run mode",
       "agentDescription": "Directly process and execute the task",
       "planDescription": "Generate a plan first, then execute after confirmation",
-      "askDescription": "Only answers questions without modifying files"
+      "askDescription": "Only answers questions without modifying files",
+      "teamDescription": "Coordinate workspace-defined Teammates without doing implementation directly"
     }
+  },
+  "team": {
+    "statusTitle": "Team status",
+    "running": "running",
+    "noTeammates": "No Teammates are configured in this workspace."
   },
   "documentReferences": {
     "defaultPrompt": "Please answer based on the document selection I quoted.",

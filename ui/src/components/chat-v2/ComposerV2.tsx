@@ -21,6 +21,7 @@ import {
   Hand,
   ListChecks,
   Loader2,
+  Network,
   Paperclip,
   ShieldAlert,
   Square,
@@ -180,7 +181,7 @@ type RunModeOption = {
   defaultLabel: string;
 };
 
-const RUN_MODE_OPTIONS: RunModeOption[] = [
+export const RUN_MODE_OPTIONS: RunModeOption[] = [
   {
     mode: 'agent',
     Icon: Bot,
@@ -198,6 +199,12 @@ const RUN_MODE_OPTIONS: RunModeOption[] = [
     Icon: CircleHelp,
     labelKey: 'input.runModes.ask',
     defaultLabel: 'Ask',
+  },
+  {
+    mode: 'team',
+    Icon: Network,
+    labelKey: 'input.runModes.team',
+    defaultLabel: 'Team',
   },
 ];
 
@@ -572,6 +579,7 @@ export default function ComposerV2({
                             const isSelected = runMode === option.mode;
                             const isPlan = option.mode === 'plan';
                             const isAsk = option.mode === 'ask';
+                            const isTeam = option.mode === 'team';
                             const optionDisabled = isPlan && !planModeAvailable;
                             const label = t(option.labelKey, {
                               defaultValue: option.defaultLabel,
@@ -584,6 +592,10 @@ export default function ComposerV2({
                                 ? (t('input.runModes.askDescription', {
                                     defaultValue: 'Only answers questions without modifying files',
                                   }) as string)
+                                : isTeam
+                                  ? (t('input.runModes.teamDescription', {
+                                      defaultValue: 'Coordinate workspace-defined Teammates without doing implementation directly',
+                                    }) as string)
                               : (t('input.runModes.agentDescription', {
                                   defaultValue: 'Directly process and execute the task',
                                 }) as string);

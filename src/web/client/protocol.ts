@@ -19,7 +19,8 @@ export type WebGatewayMode =
 export type WebAgentRunMode =
   | "agent"
   | "plan"
-  | "ask";
+  | "ask"
+  | "team";
 
 export type WebGatewayChannelKey =
   | "cli"

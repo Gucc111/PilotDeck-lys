@@ -251,11 +251,18 @@
       "agent": "智能体",
       "plan": "计划",
       "ask": "询问",
+      "team": "团队",
       "change": "选择运行模式",
       "agentDescription": "直接处理并执行任务",
       "planDescription": "先产出计划，确认后再执行",
-      "askDescription": "仅回答问题，不修改文件"
+      "askDescription": "仅回答问题，不修改文件",
+      "teamDescription": "仅协调当前工作区预定义的 Teammate，不直接实施任务"
     }
+  },
+  "team": {
+    "statusTitle": "团队状态",
+    "running": "运行中",
+    "noTeammates": "当前工作区尚未配置 Teammate。"
   },
   "documentReferences": {
     "defaultPrompt": "请根据我引用的文档内容回答。",

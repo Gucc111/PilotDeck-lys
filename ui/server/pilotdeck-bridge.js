@@ -388,7 +388,7 @@ function normalizePermissionMode(value) {
 
 function normalizeRunMode(value) {
     if (value === undefined || value === null || value === '') return undefined;
-    if (value === 'agent' || value === 'plan' || value === 'ask') return value;
+    if (value === 'agent' || value === 'plan' || value === 'ask' || value === 'team') return value;
     return 'agent';
 }
 

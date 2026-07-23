@@ -87,6 +87,13 @@ export class TurnRunner {
     const messages = [...options.messages, ...allAcceptedMessages];
 
     try {
+      const desiredMode = options.runMode === "team" ? "coordinator" : "normal";
+      if (
+        this.turnDependencies.metadataStore
+        && this.turnDependencies.metadataStore.getSnapshot().mode !== desiredMode
+      ) {
+        await this.turnDependencies.metadataStore.saveMode(desiredMode, options.turnId);
+      }
       await this.transcript.recordAcceptedInput(
         options.sessionId,
         options.turnId,

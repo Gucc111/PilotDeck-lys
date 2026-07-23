@@ -3,6 +3,10 @@ import type { WsHelloFrame, WsRequestFrame } from "../protocol/frames.js";
 import { PILOTDECK_GATEWAY_PROTOCOL_VERSION } from "../protocol/version.js";
 import { TextWebSocketConnection } from "./websocket.js";
 import { SkillManagerError, SkillValidationError } from "../../extension/skills/index.js";
+import {
+  TeammateManagerError,
+  TeammateValidationError,
+} from "../../extension/teammates/index.js";
 
 export type GatewayWsConnectionOptions = {
   gateway: Gateway;
@@ -139,7 +143,22 @@ export class GatewayWsConnection {
         );
         return;
       }
-      if (error instanceof SkillManagerError) {
+      if (error instanceof TeammateValidationError) {
+        this.ws.sendText(
+          JSON.stringify({
+            type: "response",
+            id: frame.id,
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+              validation: error.validation,
+            },
+          }),
+        );
+        return;
+      }
+      if (error instanceof SkillManagerError || error instanceof TeammateManagerError) {
         this.ws.sendText(
           JSON.stringify({
             type: "response",
@@ -256,6 +275,20 @@ export class GatewayWsConnection {
         return requireSkillMethod(this.options.gateway.skillValidate, this.options.gateway)(frame.params as never);
       case "skill_scan":
         return requireSkillMethod(this.options.gateway.skillScan, this.options.gateway)(frame.params as never);
+      case "teammate_list":
+        return requireTeammateMethod(this.options.gateway.teammatesList, this.options.gateway)(frame.params as never);
+      case "teammate_read":
+        return requireTeammateMethod(this.options.gateway.teammateRead, this.options.gateway)(frame.params as never);
+      case "teammate_create":
+        return requireTeammateMethod(this.options.gateway.teammateCreate, this.options.gateway)(frame.params as never);
+      case "teammate_write":
+        return requireTeammateMethod(this.options.gateway.teammateWrite, this.options.gateway)(frame.params as never);
+      case "teammate_delete":
+        return requireTeammateMethod(this.options.gateway.teammateDelete, this.options.gateway)(frame.params as never);
+      case "teammate_catalog":
+        return requireTeammateMethod(this.options.gateway.teammateCatalog, this.options.gateway)(frame.params as never);
+      case "team_state":
+        return requireTeammateMethod(this.options.gateway.teamState, this.options.gateway)(frame.params as never);
       case "always_on_apply":
         if (this.options.gateway.alwaysOnApply) {
           return this.options.gateway.alwaysOnApply(frame.params as never);
@@ -288,6 +321,19 @@ function requireSkillMethod<TArg, TRet>(
     throw new SkillManagerError(
       "not_configured",
       "Skill management is not enabled on this gateway.",
+    );
+  }
+  return method.bind(gateway);
+}
+
+function requireTeammateMethod<TArg, TRet>(
+  method: ((arg: TArg) => Promise<TRet>) | undefined,
+  gateway: Gateway,
+): (arg: TArg) => Promise<TRet> {
+  if (!method) {
+    throw new TeammateManagerError(
+      "not_configured",
+      "Teammate management is not enabled on this gateway.",
     );
   }
   return method.bind(gateway);

@@ -16,6 +16,8 @@ import type {
   ReloadConfigResult,
   ReloadExtensionsInput,
   ReloadExtensionsResult,
+  TeamStateInput,
+  TeamStateResult,
   WebDescribeProjectInput,
   WebListProjectsResult,
   WebProjectSummary,
@@ -44,6 +46,17 @@ import type {
   SkillsListInput,
   SkillsListResult,
 } from "../../extension/skills/types.js";
+import type {
+  TeammateAddressInput,
+  TeammateCatalog,
+  TeammateCatalogInput,
+  TeammateDeleteResult,
+  TeammateGatewayCreateInput,
+  TeammateGatewayWriteInput,
+  TeammateListResult,
+  TeammateReadResult,
+  TeammatesListInput,
+} from "../../extension/teammates/types.js";
 import type {
   CronCreateInput,
   CronCreateResult,
@@ -196,6 +209,34 @@ export class RemoteGateway implements Gateway {
 
   async skillScan(input: SkillScanInput): Promise<SkillScanResult> {
     return (await this.client.request("skill_scan", input)) as SkillScanResult;
+  }
+
+  async teammatesList(input: TeammatesListInput): Promise<TeammateListResult> {
+    return (await this.client.request("teammate_list", input)) as TeammateListResult;
+  }
+
+  async teammateRead(input: TeammateAddressInput): Promise<TeammateReadResult | null> {
+    return (await this.client.request("teammate_read", input)) as TeammateReadResult | null;
+  }
+
+  async teammateCreate(input: TeammateGatewayCreateInput): Promise<TeammateReadResult> {
+    return (await this.client.request("teammate_create", input)) as TeammateReadResult;
+  }
+
+  async teammateWrite(input: TeammateGatewayWriteInput): Promise<TeammateReadResult> {
+    return (await this.client.request("teammate_write", input)) as TeammateReadResult;
+  }
+
+  async teammateDelete(input: TeammateAddressInput): Promise<TeammateDeleteResult> {
+    return (await this.client.request("teammate_delete", input)) as TeammateDeleteResult;
+  }
+
+  async teammateCatalog(input: TeammateCatalogInput): Promise<TeammateCatalog> {
+    return (await this.client.request("teammate_catalog", input)) as TeammateCatalog;
+  }
+
+  async teamState(input: TeamStateInput): Promise<TeamStateResult> {
+    return (await this.client.request("team_state", input)) as TeamStateResult;
   }
 
   async alwaysOnApply(input: AlwaysOnApplyInput): Promise<AlwaysOnApplyResult> {

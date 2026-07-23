@@ -5,6 +5,7 @@ import type {
   PilotDeckFileUpdateNotifier,
   PilotDeckToolFileHistorySink,
   PilotDeckToolScheduler,
+  PilotDeckTeamRuntimeApi,
   ToolRegistry,
 } from "../../tool/index.js";
 import type { PlanFileManager } from "../../tool/builtin/planFile.js";
@@ -136,6 +137,8 @@ export type AgentRuntimeDependencies = {
   planFileManager?: PlanFileManager;
   /** Session-scoped state tracking required `todo_write` calls after plan approval. */
   planTodoManager?: PlanTodoStateManager;
+  /** Session-scoped Agent Teams control plane used by Team Leaders. */
+  team?: PilotDeckTeamRuntimeApi;
   eventEmitter?: AgentEventEmitter;
   drainEvents?: () => AgentEvent[];
 };

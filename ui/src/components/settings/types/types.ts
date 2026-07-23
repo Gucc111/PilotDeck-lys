@@ -6,7 +6,7 @@ import type { Dispatch, SetStateAction } from 'react';
 // for those to land. The agents/git/api/tasks/notifications/plugins/router/
 // about tabs and their MCP form modals stay removed — see git history if
 // you ever need to recover the multi-provider surface.
-export type SettingsMainTab = 'appearance' | 'permissions' | 'config' | 'mcp' | 'gateway';
+export type SettingsMainTab = 'appearance' | 'permissions' | 'config' | 'mcp' | 'gateway' | 'teammates';
 
 export type ProjectSortOrder = 'name' | 'date';
 export type SaveStatus = 'success' | 'error' | null;
@@ -16,6 +16,38 @@ export type SettingsProject = {
   displayName?: string;
   fullPath?: string;
   path?: string;
+};
+
+export type TeammateDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  model?: string;
+  tools: string[];
+  plugins: string[];
+  skills: string[];
+  mcpServers: string[];
+};
+
+export type TeammateRecord = TeammateDefinition & {
+  relativePath?: string;
+  filePath?: string;
+};
+
+export type TeammateDiagnostic = {
+  code: string;
+  severity: 'error' | 'warning';
+  message: string;
+  relativePath?: string;
+  field?: string;
+};
+
+export type TeammateCatalog = {
+  tools: string[];
+  plugins: string[];
+  skills: string[];
+  mcpServers: string[];
 };
 
 export type CodeEditorSettingsState = {

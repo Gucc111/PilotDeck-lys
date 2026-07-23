@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -72,7 +73,7 @@ import { readWebSessionMessages, readSubagentWebMessages } from "../web/server/r
 import { forkWebSession } from "../web/server/forkSession.js";
 import { describeWebProject, listWebProjects } from "../web/server/listProjects.js";
 import { BackgroundTaskRuntime, type BackgroundTaskCompletionEvent } from "../task/runtime/BackgroundTaskRuntime.js";
-import { createBuiltinRegistry, createPlanFileManager, filterAvailableTools } from "../tool/index.js";
+import { createBuiltinRegistry, createPlanFileManager, createReadSkillTool, filterAvailableTools } from "../tool/index.js";
 import type {
   PilotDeckElicitationChannel,
   PilotDeckToolDefinition,
@@ -85,8 +86,23 @@ import type { RouterEventBus, RouterEvent } from "../router/protocol/events.js";
 import type { EdgeClawMemoryProvider } from "../context/index.js";
 import { loadBuiltinPlugins } from "../extension/plugins/builtin/loadBuiltinPlugins.js";
 import { SkillManager, migrateLegacyBundledSkillCopies } from "../extension/skills/index.js";
+import {
+  TeammateManager,
+  type TeammateDiagnostic,
+  type TeammateRecord,
+} from "../extension/teammates/index.js";
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
+import { TeammateSessionRuntime } from "../agent/team/TeammateSessionRuntime.js";
+import { TeamProgressStore } from "../agent/team/TeamProgressStore.js";
+import { TeammateExtensionResolver } from "../agent/team/TeammateExtensionResolver.js";
+import {
+  teammateSessionKey,
+  type RuntimeTeammateDefinition,
+  type TeammateSessionBinding,
+} from "../agent/team/types.js";
+import type { PilotDeckTeamDelegateResult } from "../tool/protocol/types.js";
+import { buildMcpToolWireName, parseMcpToolWireName } from "../mcp/runtime/wireName.js";
 
 export type CreateLocalGatewayOptions = {
   projectRoot?: string;
@@ -280,6 +296,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         }
       : undefined,
   });
+  registry.setSessionRouter(router);
   const skillManager = new SkillManager({ pilotHome, builtinSkillsRoot });
   const gateway = new InProcessGateway(router, {
     now,
@@ -288,6 +305,38 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     toolResultsDir: resolve(tmpdir(), "pilotdeck-tool-output", process.pid.toString()),
     cron: options.cron,
     skillManager,
+    teammateManager: (projectKey) => registry.getTeammateManager(projectKey),
+    teammatesList: (projectKey) => registry.listTeammates(projectKey),
+    teammateCatalog: (projectKey) => registry.getTeammateCatalog(projectKey),
+    teamState: async ({ projectKey, leaderSessionId }) => {
+      const storage = createAgentProjectSessionStorage({
+        projectRoot: projectKey,
+        pilotHome,
+        sessionId: leaderSessionId,
+        now,
+      });
+      const progress = await new TeamProgressStore({
+        path: storage.teamProgressPath,
+        now,
+      }).read();
+      const listed = await registry.getTeammateManager(projectKey).list();
+      return {
+        progress,
+        teammates: listed.teammates.map((teammate) => {
+          const sessionId = teammateSessionKey(leaderSessionId, teammate.id);
+          const snapshot = router?.snapshotSession(sessionId);
+          const currentTask = progress.items.find(
+            (item) => item.teammateId === teammate.id && item.status === "in_progress",
+          )?.content;
+          return {
+            id: teammate.id,
+            sessionId,
+            status: snapshot?.status ?? "not_started",
+            ...(currentTask ? { currentTask } : {}),
+          };
+        }),
+      };
+    },
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
     readSessionMessages: (input) =>
       readWebSessionMessages(input, {
@@ -455,6 +504,9 @@ type ProjectRuntime = {
   router: RouterRuntime;
   pluginRuntime: PluginRuntime;
   tools: ToolRegistry;
+  teammates: RuntimeTeammateDefinition[];
+  teammateDiagnostics: TeammateDiagnostic[];
+  teammateManager: TeammateManager;
   unavailableTools?: PilotDeckUnavailableToolDiagnostic[];
   projectStorage: GatewayProjectStorageOptions;
   /** Per-project background task runtime (shared across sessions). C5. */
@@ -489,6 +541,8 @@ const DEFAULT_BROWSER_NAVIGATION_TIMEOUT_MS = 90_000;
 class ProjectRuntimeRegistry {
   private readonly runtimes = new Map<string, ProjectRuntime>();
   private gateway?: InProcessGateway;
+  private sessionRouter?: SessionRouter;
+  private readonly teammateBindings = new Map<string, TeammateSessionBinding>();
   /**
    * Per-session live permission rules used when no `sessionOverrides`
    * entry exists. Same array reference is handed to:
@@ -540,6 +594,10 @@ class ProjectRuntimeRegistry {
 
   setGateway(gateway: InProcessGateway): void {
     this.gateway = gateway;
+  }
+
+  setSessionRouter(router: SessionRouter): void {
+    this.sessionRouter = router;
   }
 
   private emitBackgroundTaskCompletion(event: BackgroundTaskCompletionEvent): void {
@@ -710,6 +768,7 @@ class ProjectRuntimeRegistry {
       now: this.options.now,
       onCompletion: (event) => this.emitBackgroundTaskCompletion(event),
     });
+    const teammateManager = new TeammateManager({ projectRoot });
     const webSearchConfig = snapshot.config.tools?.webSearch;
     const tools = createBuiltinRegistry({
       backgroundTasks: { runtime: backgroundTasks },
@@ -752,6 +811,9 @@ class ProjectRuntimeRegistry {
       router,
       pluginRuntime,
       tools,
+      teammates: [],
+      teammateDiagnostics: [],
+      teammateManager,
       backgroundTasks,
       memory: memory?.provider,
       memoryService: memory?.service,
@@ -857,6 +919,170 @@ class ProjectRuntimeRegistry {
     return runtime.mcpReady;
   }
 
+  private async compileTeammateBinding(
+    leaderSessionId: string,
+    projectRoot: string,
+    definition: RuntimeTeammateDefinition,
+  ): Promise<{ sessionKey: string; binding: TeammateSessionBinding }> {
+    const runtime = this.resolve(projectRoot);
+    const skillSections: string[] = [];
+    for (const skill of definition.skills ?? []) {
+      const content = await runtime.pluginRuntime.loadSkillPrompt(skill);
+      if (content) {
+        skillSections.push(`<preloaded-skill name="${skill}">\n${content}\n</preloaded-skill>`);
+      }
+    }
+    const systemPrompt = [
+      "You are a long-lived PilotDeck Teammate. Execute assignments from the Team Leader in your own context.",
+      "Stay within your configured capabilities. Do not create or delegate to another team.",
+      "When complete, return a concise report with evidence, files changed, tests run, and remaining issues.",
+      definition.prompt,
+      ...skillSections,
+    ].join("\n\n");
+    const sessionKey = teammateSessionKey(leaderSessionId, definition.id);
+    const binding: TeammateSessionBinding = {
+      leaderSessionId,
+      projectRoot,
+      definition,
+      systemPrompt,
+    };
+    this.teammateBindings.set(sessionKey, binding);
+    return { sessionKey, binding };
+  }
+
+  private async runTeammateTurn(input: {
+    leaderSessionId: string;
+    projectRoot: string;
+    definition: RuntimeTeammateDefinition;
+    action: "run" | "follow_up";
+    prompt: string;
+    taskId?: string;
+    parentTurnId: string;
+    toolCallId?: string;
+    abortSignal?: AbortSignal;
+  }): Promise<PilotDeckTeamDelegateResult> {
+    const startedAt = Date.now();
+    const router = this.sessionRouter;
+    if (!router) throw new Error("Team runtime is not connected to the session router.");
+    const { sessionKey } = await this.compileTeammateBinding(
+      input.leaderSessionId,
+      input.projectRoot,
+      input.definition,
+    );
+    const runId = `team-${randomUUID()}`;
+    if (!router.beginTurn(sessionKey, runId)) {
+      throw new Error(`Teammate "${input.definition.id}" is already running a turn.`);
+    }
+    let session: AgentSession;
+    try {
+      session = await router.getOrCreate({
+        sessionKey,
+        projectKey: input.projectRoot,
+        channelKey: "team",
+      });
+    } catch (error) {
+      router.endTurn(sessionKey, runId);
+      throw error;
+    }
+    const abort = () => session.abort("Leader turn aborted.");
+    input.abortSignal?.addEventListener("abort", abort, { once: true });
+    this.gateway?.emitForSession(input.leaderSessionId, {
+      type: "agent_status",
+      event: "teammate_started",
+      detail: {
+        teammateId: input.definition.id,
+        teammateSessionId: sessionKey,
+        taskId: input.taskId,
+        action: input.action,
+        toolCallId: input.toolCallId,
+      },
+    });
+    let finalSummary = "";
+    let status: PilotDeckTeamDelegateResult["status"] = "completed";
+    let turns: number | undefined;
+    try {
+      for await (const event of session.submit(
+        { type: "text", text: input.prompt },
+        {
+          runMode: "agent",
+          permissionMode: this.options.permissionMode,
+          basePermissionMode: this.options.permissionMode,
+          canPrompt: true,
+        },
+      )) {
+        if (event.type !== "turn_completed") continue;
+        turns = event.result.turns;
+        finalSummary = event.result.finalMessage?.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("\n")
+          .trim() ?? "";
+        status = event.result.type === "success"
+          ? "completed"
+          : event.result.type === "aborted"
+            ? "cancelled"
+            : "failed";
+        if (!finalSummary && event.result.errors?.length) {
+          finalSummary = event.result.errors.map((error) => error.message).join("\n");
+        }
+      }
+      if (!finalSummary) {
+        finalSummary = status === "cancelled"
+          ? "Teammate turn was cancelled."
+          : "Teammate completed without a textual report.";
+      }
+      const result: PilotDeckTeamDelegateResult = {
+        teammateId: input.definition.id,
+        teammateSessionId: sessionKey,
+        action: input.action,
+        taskId: input.taskId,
+        status,
+        summary: finalSummary,
+        turns,
+        durationMs: Date.now() - startedAt,
+      };
+      this.gateway?.emitForSession(input.leaderSessionId, {
+        type: "agent_status",
+        event: status === "completed" ? "teammate_completed" : "teammate_failed",
+        detail: {
+          teammateId: input.definition.id,
+          teammateSessionId: sessionKey,
+          taskId: input.taskId,
+          status,
+          durationMs: result.durationMs,
+          summary: finalSummary.slice(0, 4_096),
+        },
+      });
+      return result;
+    } finally {
+      input.abortSignal?.removeEventListener("abort", abort);
+      router.endTurn(sessionKey, runId);
+    }
+  }
+
+  private async shutdownTeammate(input: {
+    leaderSessionId: string;
+    projectRoot: string;
+    definition: RuntimeTeammateDefinition;
+  }): Promise<PilotDeckTeamDelegateResult> {
+    const sessionKey = teammateSessionKey(input.leaderSessionId, input.definition.id);
+    await this.sessionRouter?.abort(sessionKey, "Teammate shutdown requested.");
+    await this.sessionRouter?.close(sessionKey);
+    this.gateway?.emitForSession(input.leaderSessionId, {
+      type: "agent_status",
+      event: "teammate_shutdown",
+      detail: { teammateId: input.definition.id, teammateSessionId: sessionKey },
+    });
+    return {
+      teammateId: input.definition.id,
+      teammateSessionId: sessionKey,
+      action: "shutdown",
+      status: "shutdown",
+      summary: "Teammate shut down. Its transcript remains available for a future dispatch.",
+      durationMs: 0,
+    };
+  }
+
   async createSession(context: GatewaySessionContext) {
     const prepared = await this.prepareSessionRuntime(context);
     const resumed = await resumeAgentSession({
@@ -903,6 +1129,24 @@ class ProjectRuntimeRegistry {
     await runtime.pluginRuntime.refresh();
     await this.ensureMcpReady(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
+    const teammateList = await runtime.teammateManager.list();
+    const invalidDefinitionIds = new Set(
+      teammateList.diagnostics
+        .filter((diagnostic) => diagnostic.severity === "error" && diagnostic.id)
+        .map((diagnostic) => diagnostic.id as string),
+    );
+    const runtimeDiagnostics = teammateList.teammates.flatMap((teammate) =>
+      validateTeammateRuntimeReferences(teammate, runtime, contributions));
+    const invalidRuntimeIds = new Set(
+      runtimeDiagnostics
+        .filter((diagnostic) => diagnostic.severity === "error" && diagnostic.id)
+        .map((diagnostic) => diagnostic.id as string),
+    );
+    runtime.teammates = teammateList.teammates
+      .filter((teammate) =>
+        !invalidDefinitionIds.has(teammate.id) && !invalidRuntimeIds.has(teammate.id))
+      .map(toRuntimeTeammateDefinition);
+    runtime.teammateDiagnostics = [...teammateList.diagnostics, ...runtimeDiagnostics];
 
     // -- per-session MCP runtime (e.g. browser-use) --------------------
     let sessionTools: ToolRegistry = runtime.tools;
@@ -968,6 +1212,27 @@ class ProjectRuntimeRegistry {
       }
     }
 
+    const teammateBinding = this.teammateBindings.get(context.sessionKey);
+    if (teammateBinding) {
+      sessionTools = scopeTeammateTools(sessionTools, teammateBinding.definition);
+      if (sessionTools.has("read_skill")) {
+        const explicitSkills = new Set(teammateBinding.definition.skills ?? []);
+        const selectedPlugins = new Set(teammateBinding.definition.plugins ?? []);
+        const allowedSkills = new Set([
+          ...explicitSkills,
+          ...contributions.skills
+            .filter((skill) => Boolean(skill.namespace && selectedPlugins.has(skill.namespace)))
+            .map((skill) => skill.name),
+        ]);
+        sessionTools.replace(createReadSkillTool({
+          loader: (name) => allowedSkills.has(name)
+            ? runtime.pluginRuntime.loadSkillPrompt(name)
+            : Promise.resolve(undefined),
+          lister: () => contributions.skills.filter((skill) => allowedSkills.has(skill.name)),
+        }));
+      }
+    }
+
     // -- Strip always_on_* tools from non-Always-On sessions -------------
     // These tools require an AlwaysOnRunContext to execute; surfacing them
     // in regular user sessions just pollutes the model's tool list.
@@ -1005,12 +1270,16 @@ class ProjectRuntimeRegistry {
     // client is actively streaming, `gw.emitForSession()` returns false
     // and the hook auto-denies — better than silently hanging.
     const gw = this.gateway;
-    const liveRuleSet = this.getLiveRuleSet(context.sessionKey);
+    const permissionUiSessionKey = teammateBinding?.leaderSessionId ?? context.sessionKey;
+    const liveRuleSet = this.getLiveRuleSet(permissionUiSessionKey);
+    const scopedContributionHooks: typeof contributions.hooks = teammateBinding
+      ? {}
+      : contributions.hooks;
     const hookSettings: typeof contributions.hooks = gw
       ? {
-          ...contributions.hooks,
+          ...scopedContributionHooks,
           PermissionRequest: [
-            ...(contributions.hooks.PermissionRequest ?? []),
+            ...(scopedContributionHooks.PermissionRequest ?? []),
             {
               hooks: [
                 { type: "callback", name: GATEWAY_PERMISSION_CALLBACK_NAME },
@@ -1018,28 +1287,40 @@ class ProjectRuntimeRegistry {
             },
           ],
         }
-      : contributions.hooks;
+      : scopedContributionHooks;
     const hookRuntime = new HookRuntime(hookSettings);
     if (gw) {
       hookRuntime.getCallbackExecutor().register(
         GATEWAY_PERMISSION_CALLBACK_NAME,
         createGatewayPermissionHook({
-          sessionKey: context.sessionKey,
+          sessionKey: permissionUiSessionKey,
           bus: gw.getPermissionBus(),
-          emit: (event) => gw.emitForSession(context.sessionKey, event),
+          emit: (event) => gw.emitForSession(permissionUiSessionKey, event),
           permissionRules: liveRuleSet.allow,
         }),
       );
     }
     const lifecycle = new LifecycleRuntime(hookRuntime);
-    const extension = new PluginRuntimeExtensionResolver(runtime.pluginRuntime);
+    const extension = teammateBinding
+      ? new TeammateExtensionResolver(runtime.pluginRuntime, teammateBinding.definition)
+      : new PluginRuntimeExtensionResolver(runtime.pluginRuntime);
     const projectRoot = runtime.projectRoot;
     const memoryResolver = runtime.memory;
     const now = this.options.now;
     const eventBuf = createAgentEventBuffer();
+    const sessionModelRouter = teammateBinding?.definition.model
+      ? createRouterRuntime({ enabled: false }, {
+          modelRuntime: runtime.model,
+          now: this.options.now,
+          customRouterRegistry: runtime.pluginRuntime,
+          loadSkillPrompt: (extensionId) => runtime.pluginRuntime.loadSkillPrompt(extensionId),
+          events: this.buildRouterEventBus(),
+          telemetry: this.options.telemetry,
+        })
+      : runtime.router;
 
     const baseDependencies: CreateAgentSessionOptions["dependencies"] = {
-      router: runtime.router,
+      router: sessionModelRouter,
       tools: { registry: sessionTools },
       lifecycle,
       now: this.options.now,
@@ -1079,7 +1360,7 @@ class ProjectRuntimeRegistry {
       const compactionEngine = new CompactionEngine({
         model: {
           stream: (request, signal) =>
-            runtime.router.stream(request, {
+            sessionModelRouter.stream(request, {
               sessionId: context.sessionKey,
               turnId: "compact",
               projectPath: context.projectKey,
@@ -1208,6 +1489,17 @@ class ProjectRuntimeRegistry {
       };
       const planFileManager = createPlanFileManager({ projectRoot });
       const planTodoManager = createPlanTodoStateManager();
+      const team = new TeammateSessionRuntime({
+        leaderSessionId: context.sessionKey,
+        projectRoot,
+        progressPath: storage.teamProgressPath,
+        definitions: () => runtime.teammates,
+        host: {
+          run: (input) => this.runTeammateTurn(input),
+          shutdown: (input) => this.shutdownTeammate(input),
+        },
+        now: this.options.now,
+      });
       return {
         context: contextRuntime,
         fileHistory,
@@ -1215,6 +1507,7 @@ class ProjectRuntimeRegistry {
         elicitation,
         planFileManager,
         planTodoManager,
+        team,
       };
     };
     return {
@@ -1241,11 +1534,66 @@ class ProjectRuntimeRegistry {
     };
   }
 
+  getTeammateManager(projectKey: string): TeammateManager {
+    return this.resolve(projectKey).teammateManager;
+  }
+
+  async listTeammates(projectKey: string) {
+    const runtime = this.resolve(projectKey);
+    await runtime.pluginRuntime.refresh();
+    await this.ensureMcpReady(runtime);
+    const listed = await runtime.teammateManager.list();
+    const definitions = listed.teammates.map(toRuntimeTeammateDefinition);
+    const contributions = runtime.pluginRuntime.snapshotContributions();
+    const diagnostics = [
+      ...listed.diagnostics,
+      ...listed.teammates.flatMap((teammate) =>
+        validateTeammateRuntimeReferences(teammate, runtime, contributions)),
+    ];
+    const invalidIds = new Set(
+      diagnostics
+        .filter((entry) => entry.severity === "error" && entry.id)
+        .map((entry) => entry.id),
+    );
+    runtime.teammates = definitions.filter((definition) => !invalidIds.has(definition.id));
+    runtime.teammateDiagnostics = diagnostics;
+    return {
+      teammates: listed.teammates,
+      diagnostics,
+    };
+  }
+
+  async getTeammateCatalog(projectKey: string) {
+    const runtime = this.resolve(projectKey);
+    await runtime.pluginRuntime.refresh();
+    await this.ensureMcpReady(runtime);
+    const contributions = runtime.pluginRuntime.snapshotContributions();
+    const mcpServers = new Set<string>();
+    for (const tool of runtime.tools.list()) {
+      const mcp = parseMcpToolWireName(tool.name);
+      if (mcp) mcpServers.add(mcp.serverId);
+    }
+    return {
+      tools: runtime.tools.list()
+        .map((tool) => tool.name)
+        .filter((name) => name !== "team_progress" && name !== "delegate_to_teammate"),
+      plugins: contributions.plugins.map((plugin) => plugin.name).sort(),
+      skills: contributions.skills.map((skill) => skill.name).sort(),
+      mcpServers: [...mcpServers].sort(),
+    };
+  }
+
   private createAgentConfig(
     runtime: ProjectRuntime,
     sessionKey: string,
   ): CreateAgentSessionOptions["config"] {
     const agent = runtime.snapshot.config.agent;
+    const teammateBinding = this.teammateBindings.get(sessionKey);
+    const teammateModel = teammateBinding?.definition.model
+      ? parseTeammateModelRef(teammateBinding.definition.model)
+      : undefined;
+    const provider = teammateModel?.provider ?? agent.model.provider;
+    const model = teammateModel?.model ?? agent.model.model;
     const override = this._sessionOverrides?.get(sessionKey);
     const permissionMode = override?.permissionMode ?? this.options.permissionMode;
     const cwd = override?.cwd ?? runtime.projectRoot;
@@ -1255,17 +1603,17 @@ class ProjectRuntimeRegistry {
     // hook is visible to `PermissionRuntime.decide` on the very next
     // tool call inside the same turn — no roundtrip back to the client
     // needed, even when the client lives in a different process.
-    const liveRuleSet = this.getLiveRuleSet(sessionKey);
+    const liveRuleSet = this.getLiveRuleSet(teammateBinding?.leaderSessionId ?? sessionKey);
     let modelMultimodal: import("../model/index.js").MultimodalConstraints | undefined;
     try {
-      modelMultimodal = runtime.model.getMultimodal(agent.model.provider, agent.model.model);
+      modelMultimodal = runtime.model.getMultimodal(provider, model);
     } catch {
       // Model or provider not found — fall back to text-only.
     }
     let maxContextTokens: number | undefined;
     let maxOutputTokens: number | undefined;
     try {
-      const caps = runtime.model.getCapabilities(agent.model.provider, agent.model.model);
+      const caps = runtime.model.getCapabilities(provider, model);
       maxContextTokens = agent.maxContextTokens ?? caps.maxContextTokens;
       maxOutputTokens = caps.maxOutputTokens;
     } catch {
@@ -1275,8 +1623,8 @@ class ProjectRuntimeRegistry {
       ?? agent.maxOutputTokens
       ?? maxOutputTokens;
     return {
-      provider: agent.model.provider,
-      model: agent.model.model,
+      provider,
+      model,
       modelMultimodal,
       cwd,
       permissionMode,
@@ -1285,6 +1633,18 @@ class ProjectRuntimeRegistry {
       maxContextTokens,
       maxOutputTokens,
       thinking: agent.thinking,
+      ...(teammateBinding
+        ? {
+            systemPrompt: teammateBinding.systemPrompt,
+            isSubagent: true,
+            subagentDepth: 1,
+            maxSubagentDepth: 1,
+            metadata: {
+              teamLeaderSessionId: teammateBinding.leaderSessionId,
+              teammateId: teammateBinding.definition.id,
+            },
+          }
+        : {}),
       permissionContext: createDefaultPermissionContext({
         cwd,
         mode: permissionMode,
@@ -1306,7 +1666,7 @@ function mergeSessionDependencies(
   extension: Partial<
     Pick<
       AgentRuntimeDependencies,
-      "context" | "fileHistory" | "subagentTranscript" | "elicitation" | "eventEmitter" | "drainEvents" | "planFileManager" | "planTodoManager"
+      "context" | "fileHistory" | "subagentTranscript" | "elicitation" | "eventEmitter" | "drainEvents" | "planFileManager" | "planTodoManager" | "team"
     >
   >,
 ): CreateAgentSessionOptions["dependencies"] {
@@ -1320,6 +1680,152 @@ function mergeSessionDependencies(
     ...(extension.drainEvents ? { drainEvents: extension.drainEvents } : {}),
     ...(extension.planFileManager ? { planFileManager: extension.planFileManager } : {}),
     ...(extension.planTodoManager ? { planTodoManager: extension.planTodoManager } : {}),
+    ...(extension.team ? { team: extension.team } : {}),
+  };
+}
+
+function scopeTeammateTools(
+  source: ToolRegistry,
+  definition: RuntimeTeammateDefinition,
+): ToolRegistry {
+  const scoped = source.clone();
+  const allow = definition.tools ? new Set(definition.tools) : undefined;
+  const allowedMcpServers = definition.mcpServers
+    ? new Set(
+        definition.mcpServers.map((serverId) => {
+          const wire = buildMcpToolWireName(serverId, "tool");
+          return parseMcpToolWireName(wire)?.serverId ?? serverId;
+        }),
+      )
+    : undefined;
+  for (const tool of scoped.list()) {
+    if (
+      tool.name === "agent"
+      || tool.name === "delegate_to_teammate"
+      || tool.name === "team_progress"
+      || tool.name === "enter_plan_mode"
+      || tool.name === "exit_plan_mode"
+      || tool.name === "ask_user_question"
+    ) {
+      scoped.unregister(tool.name);
+      continue;
+    }
+    const mcp = parseMcpToolWireName(tool.name);
+    if (mcp) {
+      const serverAllowed = !allowedMcpServers || allowedMcpServers.has(mcp.serverId);
+      const toolAllowed = !allow || allow.has(tool.name) || allow.has("mcp");
+      if (!serverAllowed || !toolAllowed) scoped.unregister(tool.name);
+      continue;
+    }
+    if (allow && !allow.has(tool.name)) {
+      scoped.unregister(tool.name);
+    }
+  }
+  return scoped;
+}
+
+function toRuntimeTeammateDefinition(teammate: TeammateRecord): RuntimeTeammateDefinition {
+  return {
+    id: teammate.id,
+    name: teammate.name,
+    description: teammate.description?.trim() || teammate.name,
+    prompt: teammate.prompt,
+    ...(teammate.model ? { model: teammate.model } : {}),
+    ...(teammate.tools.length > 0 ? { tools: [...teammate.tools] } : {}),
+    plugins: [...teammate.plugins],
+    skills: [...teammate.skills],
+    mcpServers: [...teammate.mcpServers],
+    sourcePath: teammate.filePath,
+  };
+}
+
+function validateTeammateRuntimeReferences(
+  teammate: TeammateRecord,
+  runtime: ProjectRuntime,
+  contributions: ReturnType<PluginRuntime["snapshotContributions"]>,
+): TeammateDiagnostic[] {
+  const diagnostics: TeammateDiagnostic[] = [];
+  const push = (
+    code: TeammateDiagnostic["code"],
+    field: string,
+    message: string,
+  ) => diagnostics.push({
+    code,
+    severity: "error",
+    message,
+    id: teammate.id,
+    field,
+    relativePath: teammate.relativePath,
+  });
+
+  if (teammate.model) {
+    const model = parseTeammateModelRef(teammate.model);
+    try {
+      if (!model) throw new Error("invalid model reference");
+      runtime.model.getCapabilities(model.provider, model.model);
+    } catch {
+      push(
+        "MODEL_NOT_FOUND",
+        "model",
+        `Teammate "${teammate.id}" references unavailable model "${teammate.model}".`,
+      );
+    }
+  }
+
+  const forbiddenTools = new Set(["agent", "team_progress", "delegate_to_teammate"]);
+  for (const tool of teammate.tools) {
+    if (!runtime.tools.has(tool) || forbiddenTools.has(tool)) {
+      push(
+        "TOOL_NOT_FOUND",
+        "tools",
+        `Teammate "${teammate.id}" references unavailable or nested-agent tool "${tool}".`,
+      );
+    }
+  }
+  const plugins = new Set(contributions.plugins.map((plugin) => plugin.name));
+  for (const plugin of teammate.plugins) {
+    if (!plugins.has(plugin)) {
+      push(
+        "PLUGIN_NOT_FOUND",
+        "plugins",
+        `Teammate "${teammate.id}" references unavailable plugin "${plugin}".`,
+      );
+    }
+  }
+  const skills = new Set(contributions.skills.map((skill) => skill.name));
+  for (const skill of teammate.skills) {
+    if (!skills.has(skill)) {
+      push(
+        "SKILL_NOT_FOUND",
+        "skills",
+        `Teammate "${teammate.id}" references unavailable skill "${skill}".`,
+      );
+    }
+  }
+  const mcpServers = new Set(
+    runtime.tools.list()
+      .map((tool) => parseMcpToolWireName(tool.name)?.serverId)
+      .filter((server): server is string => Boolean(server)),
+  );
+  for (const server of teammate.mcpServers) {
+    const normalized = parseMcpToolWireName(buildMcpToolWireName(server, "tool"))?.serverId ?? server;
+    if (!mcpServers.has(normalized)) {
+      push(
+        "MCP_SERVER_NOT_FOUND",
+        "mcpServers",
+        `Teammate "${teammate.id}" references unavailable MCP server "${server}".`,
+      );
+    }
+  }
+  return diagnostics;
+}
+
+function parseTeammateModelRef(value: string): { provider: string; model: string } | undefined {
+  const separator = value.indexOf("/");
+  if (separator <= 0 || separator === value.length - 1) return undefined;
+  return {
+    provider: value.slice(0, separator),
+    model: value.slice(separator + 1),
   };
 }
 

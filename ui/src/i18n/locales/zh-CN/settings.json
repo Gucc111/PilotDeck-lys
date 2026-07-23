@@ -100,6 +100,7 @@
     "plugins": "插件",
     "router": "路由",
     "config": "服务配置",
+    "teammates": "队友",
     "about": "关于"
   },
   "settingsHome": {
@@ -130,6 +131,9 @@
     "codeEditor": {
       "detail": "自动换行、行号、缩略图和字号"
     },
+    "teammates": {
+      "detail": "创建项目级队友并配置其能力"
+    },
     "permissions": {
       "detail": "管理允许和禁用的工具规则"
     },
@@ -139,6 +143,83 @@
     },
     "gateway": {
       "detail": "连接飞书、微信等 IM 通道"
+    }
+  },
+  "teammates": {
+    "title": "队友",
+    "description": "管理项目级队友定义、提示词、模型和能力。",
+    "project": "项目",
+    "selectProject": "选择项目...",
+    "noProjects": "没有包含本地路径的可用项目，请先添加或打开一个项目。",
+    "loading": "正在加载队友...",
+    "empty": "此项目尚未定义队友。",
+    "list": {
+      "title": "项目队友",
+      "count": "共 {{count}} 个队友",
+      "count_plural": "共 {{count}} 个队友"
+    },
+    "editor": {
+      "select": "选择一名队友进行编辑，或新建队友。",
+      "new": "新建队友",
+      "edit": "编辑队友"
+    },
+    "fields": {
+      "id": "稳定 ID",
+      "idHelp": "使用 1–100 个 ASCII 字母、数字、点、下划线或连字符，且不能包含“..”。",
+      "name": "显示名称",
+      "description": "描述",
+      "prompt": "提示词",
+      "model": "模型",
+      "modelHelp": "可选的模型覆盖；留空则使用默认模型。",
+      "tools": "工具",
+      "plugins": "插件",
+      "skills": "技能",
+      "mcpServers": "MCP 服务器",
+      "arrayHelp": "每行填写一个值，也可以使用逗号分隔。"
+    },
+    "placeholders": {
+      "id": "code-reviewer",
+      "name": "代码审查员",
+      "description": "审查变更的正确性和可维护性。",
+      "prompt": "你是一名严谨的代码审查员……",
+      "model": "provider/model",
+      "tools": "read\nsearch",
+      "plugins": "plugin-name",
+      "skills": "skill-name",
+      "mcpServers": "server-name"
+    },
+    "actions": {
+      "new": "新建",
+      "edit": "编辑",
+      "delete": "删除",
+      "refresh": "刷新",
+      "cancel": "取消",
+      "save": "保存队友",
+      "saving": "保存中..."
+    },
+    "validation": {
+      "idRequired": "必须填写稳定 ID。",
+      "idInvalid": "请使用 1–100 个 ASCII 字母、数字、点、下划线或连字符；首尾必须是字母或数字，且不能使用“..”。",
+      "nameRequired": "必须填写显示名称。",
+      "promptRequired": "必须填写提示词。"
+    },
+    "diagnostics": {
+      "title": "定义校验错误",
+      "validation": "无法保存此定义"
+    },
+    "catalog": {
+      "manualOnly": "能力建议暂不可用，仍可手动填写工具、插件、技能和 MCP 服务器。"
+    },
+    "confirmDelete": "确定删除队友“{{name}}”吗？此操作无法撤销。",
+    "status": {
+      "saved": "队友已保存，列表已刷新。",
+      "deleted": "队友已删除，列表已刷新。"
+    },
+    "errors": {
+      "load": "加载队友失败。",
+      "save": "保存队友失败。",
+      "delete": "删除队友失败。",
+      "catalog": "加载能力建议失败。"
     }
   },
   "notifications": {

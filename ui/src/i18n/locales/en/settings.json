@@ -100,6 +100,7 @@
     "plugins": "Plugins",
     "router": "Router",
     "config": "Service Config",
+    "teammates": "Teammates",
     "about": "About"
   },
   "settingsHome": {
@@ -130,6 +131,9 @@
     "codeEditor": {
       "detail": "Word wrap, line numbers, minimap, and font size"
     },
+    "teammates": {
+      "detail": "Create project-scoped teammates and configure their capabilities"
+    },
     "permissions": {
       "detail": "Manage allowed and blocked tool rules"
     },
@@ -139,6 +143,83 @@
     },
     "gateway": {
       "detail": "Connect Feishu, WeChat, and other IM channels"
+    }
+  },
+  "teammates": {
+    "title": "Teammates",
+    "description": "Manage project-scoped teammate definitions, prompts, models, and capabilities.",
+    "project": "Project",
+    "selectProject": "Select a project...",
+    "noProjects": "No project with a local path is available. Add or open a project first.",
+    "loading": "Loading teammates...",
+    "empty": "No teammates are defined for this project yet.",
+    "list": {
+      "title": "Project teammates",
+      "count": "{{count}} teammate",
+      "count_plural": "{{count}} teammates"
+    },
+    "editor": {
+      "select": "Select a teammate to edit, or create a new one.",
+      "new": "New teammate",
+      "edit": "Edit teammate"
+    },
+    "fields": {
+      "id": "Stable ID",
+      "idHelp": "1–100 ASCII letters, numbers, dots, underscores, or hyphens. It cannot contain \"..\".",
+      "name": "Display name",
+      "description": "Description",
+      "prompt": "Prompt",
+      "model": "Model",
+      "modelHelp": "Optional model override. Leave empty to use the default.",
+      "tools": "Tools",
+      "plugins": "Plugins",
+      "skills": "Skills",
+      "mcpServers": "MCP servers",
+      "arrayHelp": "Enter one value per line or separate values with commas."
+    },
+    "placeholders": {
+      "id": "code-reviewer",
+      "name": "Code Reviewer",
+      "description": "Reviews changes for correctness and maintainability.",
+      "prompt": "You are a careful code reviewer...",
+      "model": "provider/model",
+      "tools": "read\nsearch",
+      "plugins": "plugin-name",
+      "skills": "skill-name",
+      "mcpServers": "server-name"
+    },
+    "actions": {
+      "new": "New",
+      "edit": "Edit",
+      "delete": "Delete",
+      "refresh": "Refresh",
+      "cancel": "Cancel",
+      "save": "Save teammate",
+      "saving": "Saving..."
+    },
+    "validation": {
+      "idRequired": "A stable ID is required.",
+      "idInvalid": "Use 1–100 ASCII letters, numbers, dots, underscores, or hyphens; start and end with a letter or number and do not use \"..\".",
+      "nameRequired": "A display name is required.",
+      "promptRequired": "A prompt is required."
+    },
+    "diagnostics": {
+      "title": "Definition validation errors",
+      "validation": "Unable to save this definition"
+    },
+    "catalog": {
+      "manualOnly": "Capability suggestions are unavailable. You can still enter tools, plugins, skills, and MCP servers manually."
+    },
+    "confirmDelete": "Delete teammate \"{{name}}\"? This cannot be undone.",
+    "status": {
+      "saved": "Teammate saved and list refreshed.",
+      "deleted": "Teammate deleted and list refreshed."
+    },
+    "errors": {
+      "load": "Failed to load teammates.",
+      "save": "Failed to save teammate.",
+      "delete": "Failed to delete teammate.",
+      "catalog": "Failed to load capability suggestions."
     }
   },
   "notifications": {

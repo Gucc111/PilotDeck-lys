@@ -11,6 +11,7 @@ export {
   getPilotProjectConfigFilePath,
   getPilotProjectChatDir,
   getPilotProjectChatDirAsync,
+  getPilotProjectTeammatesDir,
   resolvePilotHome,
   type PilotExtensionPaths,
   type PilotPathEnv,

@@ -1,7 +1,7 @@
 import type { CanonicalContentBlock } from "../../model/index.js";
 import type { PermissionMode, PermissionRuleSet } from "../../permission/index.js";
 
-export type AgentRunMode = "agent" | "plan" | "ask";
+export type AgentRunMode = "agent" | "plan" | "ask" | "team";
 
 export type AgentInput =
   | { type: "text"; text: string; isMeta?: boolean }

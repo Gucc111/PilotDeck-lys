@@ -31,6 +31,8 @@ import type {
   GatewaySubmitTurnInput,
   ListSessionsInput,
   ListSessionsResult,
+  TeamStateInput,
+  TeamStateResult,
   NewSessionInput,
   PrepareWeixinLoginResult,
   AlwaysOnApplyInput,
@@ -63,6 +65,21 @@ import type {
 import { permissionEntryToRule, permissionSettingsToRuleSet, readPermissionSettings } from "../../permission/index.js";
 import type { PermissionRule } from "../../permission/index.js";
 import { SkillManagerError, type SkillManager } from "../../extension/skills/index.js";
+import {
+  TeammateManagerError,
+  type TeammateManager,
+} from "../../extension/teammates/index.js";
+import type {
+  TeammateAddressInput,
+  TeammateCatalog,
+  TeammateCatalogInput,
+  TeammateDeleteResult,
+  TeammateGatewayCreateInput,
+  TeammateGatewayWriteInput,
+  TeammateListResult,
+  TeammateReadResult,
+  TeammatesListInput,
+} from "../../extension/teammates/types.js";
 import { AttachmentResolver, type AttachmentRequest } from "../../context/attachments/AttachmentResolver.js";
 import type {
   SkillAddressInput,
@@ -144,6 +161,10 @@ export type InProcessGatewayOptions = {
    * SDK) reads and writes the same skill directory the agent loads from.
    */
   skillManager?: SkillManager;
+  teammateManager?: (projectKey: string) => TeammateManager;
+  teammatesList?: (projectKey: string) => Promise<TeammateListResult>;
+  teammateCatalog?: (projectKey: string) => Promise<TeammateCatalog>;
+  teamState?: (input: TeamStateInput) => Promise<TeamStateResult>;
   dispatchHookForSession?: (sessionKey: string, event: string, payload: Record<string, unknown>) => void;
   /** Directory to persist large tool outputs for TUI/Web viewing. */
   toolResultsDir?: string;
@@ -838,6 +859,59 @@ export class InProcessGateway implements Gateway {
     return this.options.skillManager;
   }
 
+  async teammatesList(input: TeammatesListInput): Promise<TeammateListResult> {
+    if (this.options.teammatesList) {
+      return this.options.teammatesList(input.projectKey);
+    }
+    return this.requireTeammates(input.projectKey).list();
+  }
+
+  async teammateRead(input: TeammateAddressInput): Promise<TeammateReadResult | null> {
+    return this.requireTeammates(input.projectKey).read(input.id);
+  }
+
+  async teammateCreate(input: TeammateGatewayCreateInput): Promise<TeammateReadResult> {
+    return this.requireTeammates(input.projectKey).create({
+      document: input.document,
+      relativePath: input.relativePath,
+    });
+  }
+
+  async teammateWrite(input: TeammateGatewayWriteInput): Promise<TeammateReadResult> {
+    return this.requireTeammates(input.projectKey).write({
+      id: input.id,
+      document: input.document,
+    });
+  }
+
+  async teammateDelete(input: TeammateAddressInput): Promise<TeammateDeleteResult> {
+    return this.requireTeammates(input.projectKey).delete(input.id);
+  }
+
+  async teammateCatalog(input: TeammateCatalogInput): Promise<TeammateCatalog> {
+    if (!this.options.teammateCatalog) {
+      return { tools: [], plugins: [], skills: [], mcpServers: [] };
+    }
+    return this.options.teammateCatalog(input.projectKey);
+  }
+
+  async teamState(input: TeamStateInput): Promise<TeamStateResult> {
+    if (!this.options.teamState) {
+      throw new TeammateManagerError("not_configured", "Team state is not configured on this gateway.");
+    }
+    return this.options.teamState(input);
+  }
+
+  private requireTeammates(projectKey: string): TeammateManager {
+    if (!this.options.teammateManager) {
+      throw new TeammateManagerError(
+        "not_configured",
+        "Teammate manager is not configured on this gateway.",
+      );
+    }
+    return this.options.teammateManager(projectKey);
+  }
+
   async alwaysOnApply(input: AlwaysOnApplyInput): Promise<AlwaysOnApplyResult> {
     if (!this.options.alwaysOnApply) {
       return { sessionKey: "", error: { code: "not_configured", message: "Always-On apply is not configured on this gateway." } };
@@ -975,7 +1049,7 @@ export function normalizeGatewayRunMode(value: unknown): GatewaySubmitTurnInput[
   if (value === undefined || value === null || value === "") {
     return undefined;
   }
-  if (value === "agent" || value === "plan" || value === "ask") {
+  if (value === "agent" || value === "plan" || value === "ask" || value === "team") {
     return value;
   }
   return "agent";

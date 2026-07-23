@@ -59,7 +59,7 @@ function getForkMode(entry: AgentAcceptedInputTranscriptEntry): WebGatewayMode |
 
 function getForkRunMode(entry: AgentAcceptedInputTranscriptEntry): WebAgentRunMode | undefined {
   const value = entry.metadata?.runMode;
-  return value === "agent" || value === "plan" || value === "ask" ? value : undefined;
+  return value === "agent" || value === "plan" || value === "ask" || value === "team" ? value : undefined;
 }
 
 function buildForkTitle(

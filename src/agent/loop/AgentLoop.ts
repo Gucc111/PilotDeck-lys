@@ -25,6 +25,7 @@ import type {
   PilotDeckToolDefinition,
   PilotDeckReadFileStateMap,
   PilotDeckSubagentForkApi,
+  PilotDeckTeamDefinitionSummary,
   PilotDeckToolErrorResult,
   PilotDeckToolResult,
   PilotDeckToolRuntimeContext,
@@ -56,6 +57,7 @@ import {
   ASK_MODE_DESCRIPTION_SUFFIX,
   isAskModeAllowedTool,
 } from "../../tool/askModeConstraints.js";
+import { isTeamModeAllowedTool } from "../../tool/teamModeConstraints.js";
 import { buildAskModeAgentToolSchema } from "../../tool/builtin/agent.js";
 import { repairToolName } from "../../model/streaming/repairToolName.js";
 import {
@@ -1693,6 +1695,11 @@ export class AgentLoop {
         );
     let toolDefinitions = this.dependencies.tools.registry.list()
       .filter((tool) => !promptBlockedToolNames.has(tool.name));
+    if (this.config.runMode !== "team") {
+      toolDefinitions = toolDefinitions.filter(
+        (tool) => tool.name !== "team_progress" && tool.name !== "delegate_to_teammate",
+      );
+    }
     if (input.allowPlanModeTools !== true) {
       toolDefinitions = toolDefinitions.filter(
         (tool) => tool.name !== "enter_plan_mode" && tool.name !== "exit_plan_mode",
@@ -1702,7 +1709,19 @@ export class AgentLoop {
     let tools = toolDefinitions.map(toolToCanonicalSchema);
     if (this.config.runMode === "ask") {
       tools = filterAskModeTools(toolDefinitions);
+    } else if (this.config.runMode === "team") {
+      tools = filterTeamModeTools(
+        toolDefinitions,
+        this.dependencies.team?.listDefinitions() ?? [],
+      );
     }
+    const teamPrompt = this.config.runMode === "team"
+      ? buildTeamLeaderPrompt(this.dependencies.team?.listDefinitions() ?? [])
+      : undefined;
+    const appendSystemPrompt = [
+      planTodo?.buildPromptAddendum(),
+      teamPrompt,
+    ].filter((part): part is string => Boolean(part)).join("\n\n") || undefined;
     const prepared = await contextRuntime.prepareForModel({
       sessionId: input.sessionId,
       turnId: input.turnId,
@@ -1716,7 +1735,7 @@ export class AgentLoop {
       tools,
       maxMessages: this.config.maxContextMessages,
       customSystemPrompt: this.config.systemPrompt,
-      appendSystemPrompt: planTodo?.buildPromptAddendum(),
+      appendSystemPrompt,
       abortSignal: input.abortSignal,
     });
 
@@ -1961,6 +1980,7 @@ export class AgentLoop {
       fileHistory: this.dependencies.fileHistory,
       subagentDepth: this.config.subagentDepth ?? 0,
       subagent: this.buildSubagentForkApi(input, messages),
+      team: this.dependencies.team,
       modelMultimodal: this.config.modelMultimodal,
       maxOutputTokens: this.config.maxOutputTokens,
       readFileState: this.readFileState,
@@ -2355,6 +2375,62 @@ function filterAskModeTools(tools: PilotDeckToolDefinition[]): CanonicalToolSche
       const schema = toolToCanonicalSchema(tool);
       return suffix ? { ...schema, description: schema.description + suffix } : schema;
     });
+}
+
+function filterTeamModeTools(
+  tools: PilotDeckToolDefinition[],
+  teammates: PilotDeckTeamDefinitionSummary[],
+): CanonicalToolSchema[] {
+  return tools
+    .filter(isTeamModeAllowedTool)
+    .map((tool) => {
+      const schema = toolToCanonicalSchema(tool);
+      if (tool.name !== "delegate_to_teammate") return schema;
+      const properties = (
+        schema.inputSchema as { properties?: Record<string, Record<string, unknown>> }
+      ).properties ?? {};
+      return {
+        ...schema,
+        description: [
+          schema.description,
+          "",
+          "Available Teammates in this workspace:",
+          ...teammates.map((teammate) =>
+            `- ${teammate.id}: ${teammate.description}${teammate.model ? ` (model: ${teammate.model})` : ""}`),
+        ].join("\n"),
+        inputSchema: {
+          ...schema.inputSchema,
+          properties: {
+            ...properties,
+            teammateId: {
+              ...properties.teammateId,
+              ...(teammates.length > 0 ? { enum: teammates.map((teammate) => teammate.id) } : {}),
+            },
+          },
+        },
+      };
+    });
+}
+
+function buildTeamLeaderPrompt(teammates: PilotDeckTeamDefinitionSummary[]): string {
+  const catalog = teammates.length > 0
+    ? teammates.map((teammate) => `- ${teammate.id}: ${teammate.description}`).join("\n")
+    : "- No Teammates are configured for this workspace.";
+  return [
+    "<team-leader-mode>",
+    "You are the Team Leader. You coordinate work but never perform the user's task directly.",
+    "You may only maintain the persistent team progress file and delegate complete assignments to predefined Teammates.",
+    "Never inspect the workspace, run commands, edit files, use ordinary subagents, or invent/create a Teammate.",
+    "Break the request into bounded assignments, keep progress current, delegate all execution, review returned reports, send follow-ups when needed, then synthesize the final answer.",
+    "Different Teammates may work in parallel when their assignments do not overlap. Avoid assigning concurrent edits to the same files.",
+    teammates.length === 0
+      ? "CONFIGURATION ERROR: No Teammates are available. Do not attempt the task; tell the user to add a project-scoped definition under .pilotdeck/teammates/ or Settings > Teammates."
+      : "Only use Teammate ids from the catalog below.",
+    "",
+    "Workspace Teammates:",
+    catalog,
+    "</team-leader-mode>",
+  ].join("\n");
 }
 
 function toolToCanonicalSchema(tool: PilotDeckToolDefinition): CanonicalToolSchema {
