@@ -745,6 +745,7 @@ export function useChatRealtimeHandlers({
             toolName: msg.toolName || 'UnknownTool',
             input: msg.input,
             context: msg.context,
+            metadata: msg.metadata,
             sessionId: sid,
             receivedAt: new Date(),
             isElicitation: Boolean((msg as { isElicitation?: boolean }).isElicitation),

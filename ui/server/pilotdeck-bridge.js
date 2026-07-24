@@ -392,8 +392,12 @@ function normalizeRunMode(value) {
     return 'agent';
 }
 
-function resolvePermissionMode(options) {
+export function resolvePermissionMode(options) {
     const explicit = normalizePermissionMode(options?.permissionMode || options?.mode);
+    // In Team mode the composer selector governs the entire Team. A selected
+    // "default" is therefore an explicit Team policy and must not be replaced
+    // by the account-level skip-permissions preference.
+    if (options?.runMode === 'team' && explicit) return explicit;
     // A literal "default" from the chat composer is the implicit
     // no-special-mode position of the per-turn picker, not a real
     // per-turn override. Let the user-level skipPermissions toggle
@@ -405,6 +409,26 @@ function resolvePermissionMode(options) {
         return 'bypassPermissions';
     }
     return explicit || normalizePermissionMode(WEB_DEFAULT_PERMISSION_MODE) || 'default';
+}
+
+function permissionRequestFields(metadata, provider) {
+    const normalizedMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? metadata
+        : undefined;
+    const origin = {};
+    for (const key of ['teammateId', 'taskId', 'controlRequestId', 'originSessionKey']) {
+        if (typeof normalizedMetadata?.[key] === 'string' && normalizedMetadata[key]) {
+            origin[key] = normalizedMetadata[key];
+        }
+    }
+    return {
+        ...(normalizedMetadata ? { metadata: normalizedMetadata } : {}),
+        context: {
+            provider,
+            ...origin,
+            ...(normalizedMetadata ? { metadata: normalizedMetadata } : {}),
+        },
+    };
 }
 
 /**
@@ -525,18 +549,21 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                 }),
             ];
         }
-        case 'permission_request':
+        case 'permission_request': {
+            const requestFields = permissionRequestFields(event.metadata, provider);
             return [
                 createNormalizedMessage({
                     ...base,
+                    ...requestFields,
                     kind: 'permission_request',
                     requestId: event.requestId,
                     toolName: event.toolName,
                     input: event.payload,
-                    context: { provider },
                 }),
             ];
-        case 'elicitation_request':
+        }
+        case 'elicitation_request': {
+            const requestFields = permissionRequestFields(event.metadata, provider);
             // Route structured elicitation through the same `permission_request`
             // shape the UI already uses for the permission banner, so the
             // registered `AskUserQuestion` PermissionPanel (rich multi-step
@@ -550,6 +577,7 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                 return [
                     createNormalizedMessage({
                         ...base,
+                        ...requestFields,
                         kind: 'permission_request',
                         requestId: event.requestId,
                         toolCallId: event.toolCallId,
@@ -560,7 +588,10 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                             questions: event.questions,
                             metadata: event.metadata,
                         },
-                        context: { provider, originalToolName: event.toolName },
+                        context: {
+                            ...requestFields.context,
+                            originalToolName: event.toolName,
+                        },
                         isElicitation: true,
                     }),
                 ];
@@ -568,6 +599,7 @@ export function gatewayEventToFrames(event, sessionId, provider) {
             return [
                 createNormalizedMessage({
                     ...base,
+                    ...requestFields,
                     kind: 'permission_request',
                     requestId: event.requestId,
                     toolCallId: event.toolCallId,
@@ -576,10 +608,14 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                         questions: event.questions,
                         metadata: event.metadata,
                     },
-                    context: { provider, originalToolName: event.toolName },
+                    context: {
+                        ...requestFields.context,
+                        originalToolName: event.toolName,
+                    },
                     isElicitation: true,
                 }),
             ];
+        }
         case 'elicitation_cancelled':
             return [
                 createNormalizedMessage({
@@ -2184,11 +2220,20 @@ export function registerAlwaysOnNotificationForwarding(clients) {
 
     ensureGateway().then((gw) => {
         gw.onNotification((name, payload) => {
-            if (name !== 'always-on:turn-event') return;
             const { sessionKey, channelKey, event } = payload ?? {};
             if (!sessionKey || !event) return;
 
             const provider = 'pilotdeck';
+            if (name === 'team-control:event') {
+                for (const frame of gatewayEventToFrames(event, sessionKey, provider)) {
+                    const msg = JSON.stringify(frame);
+                    for (const client of clients) {
+                        if (client.readyState === 1) client.send(msg);
+                    }
+                }
+                return;
+            }
+            if (name !== 'always-on:turn-event') return;
 
             if (!knownSessions.has(sessionKey)) {
                 knownSessions.add(sessionKey);

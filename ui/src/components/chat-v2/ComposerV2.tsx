@@ -153,6 +153,10 @@ type PermissionModeOption = {
   defaultLabel: string;
   descriptionKey: string;
   defaultDescription: string;
+  teamLabelKey: string;
+  defaultTeamLabel: string;
+  teamDescriptionKey: string;
+  defaultTeamDescription: string;
 };
 
 const PERMISSION_MODE_OPTIONS: PermissionModeOption[] = [
@@ -163,6 +167,10 @@ const PERMISSION_MODE_OPTIONS: PermissionModeOption[] = [
     defaultLabel: 'Default Permissions',
     descriptionKey: 'input.permissions.defaultDescription',
     defaultDescription: 'Ask before risky operations',
+    teamLabelKey: 'input.permissions.teamDefault',
+    defaultTeamLabel: 'Team Permissions',
+    teamDescriptionKey: 'input.permissions.teamDefaultDescription',
+    defaultTeamDescription: 'Ask before risky Teammate execution',
   },
   {
     mode: 'bypassPermissions',
@@ -171,6 +179,10 @@ const PERMISSION_MODE_OPTIONS: PermissionModeOption[] = [
     defaultLabel: 'Full Access',
     descriptionKey: 'input.permissions.bypassPermissionsDescription',
     defaultDescription: 'Skip confirmations and allow full access',
+    teamLabelKey: 'input.permissions.teamBypassPermissions',
+    defaultTeamLabel: 'Full Team Access',
+    teamDescriptionKey: 'input.permissions.teamBypassPermissionsDescription',
+    defaultTeamDescription: 'Let Teammates execute without confirmations',
   },
 ];
 
@@ -381,9 +393,15 @@ export default function ComposerV2({
     defaultValue: selectedRunModeOption.defaultLabel,
   }) as string;
   const SelectedPermissionIcon = selectedPermissionOption.Icon;
-  const selectedPermissionLabel = t(selectedPermissionOption.labelKey, {
-    defaultValue: selectedPermissionOption.defaultLabel,
-  }) as string;
+  const isTeamMode = runMode === 'team';
+  const selectedPermissionLabel = t(
+    isTeamMode ? selectedPermissionOption.teamLabelKey : selectedPermissionOption.labelKey,
+    {
+      defaultValue: isTeamMode
+        ? selectedPermissionOption.defaultTeamLabel
+        : selectedPermissionOption.defaultLabel,
+    },
+  ) as string;
   const contextStatusTitle = contextStatus.known
     ? (t('input.contextStatus', {
         percent: contextStatus.percent,
@@ -693,9 +711,14 @@ export default function ComposerV2({
                             ? 'text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/30'
                             : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800',
                       )}
-                      title={t('input.permissions.change', {
-                        defaultValue: 'Select permission mode',
-                      }) as string}
+                      title={t(
+                        isTeamMode ? 'input.permissions.teamChange' : 'input.permissions.change',
+                        {
+                          defaultValue: isTeamMode
+                            ? 'Select Teammate execution permissions'
+                            : 'Select permission mode',
+                        },
+                      ) as string}
                       aria-haspopup="menu"
                       aria-expanded={permissionSelectorDisabled ? false : isPermissionMenuOpen}
                     >
@@ -718,12 +741,22 @@ export default function ComposerV2({
                           const Icon = option.Icon;
                           const isSelected = permissionMode === option.mode;
                           const isDangerous = option.mode === 'bypassPermissions';
-                          const label = t(option.labelKey, {
-                            defaultValue: option.defaultLabel,
-                          }) as string;
-                          const description = t(option.descriptionKey, {
-                            defaultValue: option.defaultDescription,
-                          }) as string;
+                          const label = t(
+                            isTeamMode ? option.teamLabelKey : option.labelKey,
+                            {
+                              defaultValue: isTeamMode
+                                ? option.defaultTeamLabel
+                                : option.defaultLabel,
+                            },
+                          ) as string;
+                          const description = t(
+                            isTeamMode ? option.teamDescriptionKey : option.descriptionKey,
+                            {
+                              defaultValue: isTeamMode
+                                ? option.defaultTeamDescription
+                                : option.defaultDescription,
+                            },
+                          ) as string;
 
                           return (
                             <button

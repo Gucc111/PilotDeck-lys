@@ -3,7 +3,21 @@ import { describe, expect, it } from 'vitest';
 import {
     gatewayEventToFrames,
     isGatewayUnavailableError,
+    resolvePermissionMode,
 } from './pilotdeck-bridge.js';
+
+describe('Team permission selection', () => {
+    it('treats Team default as an explicit whole-Team permission policy', () => {
+        expect(resolvePermissionMode({
+            runMode: 'team',
+            permissionMode: 'default',
+        })).toBe('default');
+        expect(resolvePermissionMode({
+            runMode: 'team',
+            permissionMode: 'bypassPermissions',
+        })).toBe('bypassPermissions');
+    });
+});
 
 describe('gatewayEventToFrames agent status errors', () => {
     it('maps tool result detail availability to a mergeable tool_result frame', () => {
@@ -129,6 +143,78 @@ describe('gatewayEventToFrames agent status errors', () => {
             content: 'PilotDeck gateway is unavailable.',
             code: 'gateway_unavailable',
             userHint: 'Start or restart the PilotDeck gateway, then retry this message.',
+        });
+    });
+});
+
+describe('gatewayEventToFrames permission origins', () => {
+    it('preserves Team metadata on permission requests without changing tool input', () => {
+        const metadata = {
+            originSessionKey: 'web:s_leader',
+            teammateId: 'implementer',
+            controlRequestId: 'control-1',
+            extra: { source: 'team' },
+        };
+        const payload = { command: 'npm test' };
+        const [frame] = gatewayEventToFrames({
+            type: 'permission_request',
+            requestId: 'permission-1',
+            toolName: 'bash',
+            payload,
+            metadata,
+        }, 'web:s_leader', 'pilotdeck');
+
+        expect(frame).toMatchObject({
+            kind: 'permission_request',
+            requestId: 'permission-1',
+            input: payload,
+            metadata,
+            context: {
+                provider: 'pilotdeck',
+                originSessionKey: 'web:s_leader',
+                teammateId: 'implementer',
+                controlRequestId: 'control-1',
+                metadata,
+            },
+        });
+        expect(frame.input).toBe(payload);
+    });
+
+    it('fully forwards Team metadata for exit plan elicitation', () => {
+        const metadata = {
+            plan: '# Plan\n\nRun the implementation.',
+            planFilePath: '/tmp/plan.md',
+            originSessionKey: 'web:s_leader',
+            teammateId: 'planner',
+            controlRequestId: 'control-plan',
+            custom: 'preserved',
+        };
+        const [frame] = gatewayEventToFrames({
+            type: 'elicitation_request',
+            requestId: 'elicitation-1',
+            toolCallId: 'tool-1',
+            toolName: 'exit_plan_mode',
+            questions: [{ question: 'What should happen next?', options: [] }],
+            metadata,
+        }, 'web:s_leader', 'pilotdeck');
+
+        expect(frame).toMatchObject({
+            toolName: 'ExitPlanModeV2',
+            isElicitation: true,
+            metadata,
+            input: {
+                plan: metadata.plan,
+                planFilePath: metadata.planFilePath,
+                metadata,
+            },
+            context: {
+                provider: 'pilotdeck',
+                originalToolName: 'exit_plan_mode',
+                originSessionKey: 'web:s_leader',
+                teammateId: 'planner',
+                controlRequestId: 'control-plan',
+                metadata,
+            },
         });
     });
 });

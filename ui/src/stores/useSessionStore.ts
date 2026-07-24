@@ -100,6 +100,7 @@ export interface NormalizedMessage {
   requestId?: string;
   input?: unknown;
   context?: unknown;
+  metadata?: Record<string, unknown>;
   newSessionId?: string;
   status?: string;
   summary?: string;

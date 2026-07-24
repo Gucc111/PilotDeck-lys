@@ -207,7 +207,13 @@ export type GatewayEvent = GatewayTurnScopedEventMetadata & (
       data?: Record<string, unknown>;
     }
   | { type: "tool_result_detail_available"; toolCallId: string; resultPath?: string; fullText?: string }
-  | { type: "permission_request"; requestId: string; toolName: string; payload: unknown }
+  | {
+      type: "permission_request";
+      requestId: string;
+      toolName: string;
+      payload: unknown;
+      metadata?: Record<string, unknown>;
+    }
   /**
    * B1 elicitation request: a tool (`ask_user_question`) wants the host
    * channel to render a multiple-choice dialog. The host MUST eventually

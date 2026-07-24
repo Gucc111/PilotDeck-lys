@@ -1963,6 +1963,7 @@ export class AgentLoop {
       toolAliases: this.config.toolAliases,
       runMode: this.config.runMode ?? "agent",
       permissionMode: this.config.permissionMode,
+      basePermissionMode: input.basePermissionMode ?? this.config.permissionModeBeforePlan,
       permissionContext,
       auditRecorder: this.dependencies.auditRecorder,
       now: this.now,
@@ -2433,7 +2434,10 @@ function buildTeamLeaderPrompt(
     "You are the Team Leader. You coordinate work but never perform the user's task directly.",
     "You may only maintain the persistent team progress file and delegate complete assignments to predefined Teammates.",
     "Never inspect the workspace, run commands, edit files, use ordinary subagents, or invent/create a Teammate.",
-    "Break the request into bounded assignments, keep progress current, delegate all execution, review returned reports, send follow-ups when needed, then synthesize the final answer.",
+    "Break the request into bounded assignments, keep progress current, and dispatch all execution. Dispatch returns immediately; use progress and later completion events instead of waiting on the tool call.",
+    "Synthetic Team control turns contain one structured pending request. Decide that request immediately with delegate_to_teammate control actions; do not dispatch new work during a control turn.",
+    "For permission requests, deny and safety rules are absolute and cannot be overridden. Default to allow_once when the requested action is bounded and consistent with the assignment. Use deny for unsafe, out-of-scope, or policy-blocked actions. Use escalate_to_user for explicit ask rules, high-risk actions, or material uncertainty.",
+    "For plan requests, use approve_plan when the plan is safe and sufficiently complete, request_revision with concrete feedback when it is not, and escalate_to_user only when approval depends on a user or product choice.",
     "Different Teammates may work in parallel when their assignments do not overlap. Avoid assigning concurrent edits to the same files.",
     teammates.length === 0
       ? "CONFIGURATION ERROR: No Teammates are available. Do not attempt the task; tell the user to configure globally defined Teammates and enable them for this workspace in Settings > Teammates."

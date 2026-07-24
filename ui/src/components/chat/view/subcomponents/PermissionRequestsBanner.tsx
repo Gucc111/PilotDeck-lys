@@ -22,6 +22,31 @@ interface PermissionRequestsBannerProps {
   onPlanExecutionApproved?: () => void;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getPermissionRequestTeammateId(request: PendingPermissionRequest): string | null {
+  const input = asRecord(request.input);
+  const context = asRecord(request.context);
+  const candidates = [
+    request.metadata,
+    context,
+    asRecord(context?.metadata),
+    input,
+    asRecord(input?.metadata),
+  ];
+  for (const candidate of candidates) {
+    const teammateId = candidate?.teammateId;
+    if (typeof teammateId === 'string' && teammateId.trim()) {
+      return teammateId;
+    }
+  }
+  return null;
+}
+
 export default function PermissionRequestsBanner({
   pendingPermissionRequests,
   handlePermissionDecision,
@@ -44,11 +69,12 @@ export default function PermissionRequestsBanner({
     }
     const rawInput = formatToolInputForDisplay(request.input);
     const entry = buildPilotDeckToolPermissionEntry(request.toolName, rawInput) ?? request.requestId;
-    const group = grouped.get(entry);
+    const groupKey = `${entry}\u0000${getPermissionRequestTeammateId(request) ?? ''}`;
+    const group = grouped.get(groupKey);
     if (group) {
       group.push(request);
     } else {
-      grouped.set(entry, [request]);
+      grouped.set(groupKey, [request]);
     }
   }
 
@@ -56,18 +82,26 @@ export default function PermissionRequestsBanner({
     <div className="mb-3 space-y-2">
       {customPanelRequests.map((request) => {
         const CustomPanel = getPermissionPanel(request.toolName)!;
+        const teammateId = getPermissionRequestTeammateId(request);
         return (
-          <CustomPanel
-            key={request.requestId}
-            request={request}
-            onDecision={handlePermissionDecision}
-            onPlanExecutionApproved={onPlanExecutionApproved}
-          />
+          <div key={request.requestId} className="space-y-1.5">
+            {teammateId ? (
+              <div className="px-1 text-xs font-medium text-blue-700 dark:text-blue-300">
+                {t('permissionBanner.fromTeammate', { id: teammateId })}
+              </div>
+            ) : null}
+            <CustomPanel
+              request={request}
+              onDecision={handlePermissionDecision}
+              onPlanExecutionApproved={onPlanExecutionApproved}
+            />
+          </div>
         );
       })}
 
-      {Array.from(grouped.entries()).map(([entry, requests]) => {
+      {Array.from(grouped.entries()).map(([groupKey, requests]) => {
         const first = requests[0];
+        const teammateId = getPermissionRequestTeammateId(first);
         const allIds = requests.map((r) => r.requestId);
         const rawInput = formatToolInputForDisplay(first.input);
         const permissionEntry = buildPilotDeckToolPermissionEntry(first.toolName, rawInput);
@@ -77,7 +111,7 @@ export default function PermissionRequestsBanner({
 
         return (
           <div
-            key={entry}
+            key={groupKey}
             className="rounded-lg border border-amber-200 bg-amber-50 p-3 shadow-sm dark:border-amber-800 dark:bg-amber-900/20"
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -90,6 +124,11 @@ export default function PermissionRequestsBanner({
                 <div className="text-xs text-amber-800 dark:text-amber-200">
                   {t('permissionBanner.tool')} <span className="font-mono">{first.toolName}</span>
                 </div>
+                {teammateId ? (
+                  <div className="mt-0.5 text-xs font-medium text-amber-800 dark:text-amber-200">
+                    {t('permissionBanner.fromTeammate', { id: teammateId })}
+                  </div>
+                ) : null}
               </div>
               {permissionEntry && (
                 <div className="text-xs text-amber-700 dark:text-amber-300">

@@ -1,9 +1,12 @@
 import type {
+  PilotDeckTeamControlDecisionAction,
   PilotDeckTeamDelegateResult,
+  PilotDeckTeamPermissionSnapshot,
   PilotDeckTeamRuntimeApi,
 } from "../../tool/protocol/types.js";
+import { TeamControlCoordinator } from "./TeamControlCoordinator.js";
 import { TeamProgressStore } from "./TeamProgressStore.js";
-import type { RuntimeTeammateDefinition } from "./types.js";
+import { teammateSessionKey, type RuntimeTeammateDefinition } from "./types.js";
 
 export type TeammateTurnHost = {
   run(input: {
@@ -15,6 +18,7 @@ export type TeammateTurnHost = {
     taskId?: string;
     parentTurnId: string;
     toolCallId?: string;
+    permission: PilotDeckTeamPermissionSnapshot;
     abortSignal?: AbortSignal;
   }): Promise<PilotDeckTeamDelegateResult>;
   shutdown(input: {
@@ -28,6 +32,7 @@ export type TeammateSessionRuntimeOptions = {
   leaderSessionId: string;
   projectRoot: string;
   progressPath: string;
+  control: TeamControlCoordinator;
   definitions: () => RuntimeTeammateDefinition[];
   diagnostics?: () => string[];
   host: TeammateTurnHost;
@@ -36,6 +41,7 @@ export type TeammateSessionRuntimeOptions = {
 
 export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
   private readonly progress: TeamProgressStore;
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly options: TeammateSessionRuntimeOptions) {
     this.progress = new TeamProgressStore({
@@ -64,6 +70,29 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     return this.progress.update(input);
   }
 
+  listControlRequests(input?: Parameters<PilotDeckTeamRuntimeApi["listControlRequests"]>[0]) {
+    return this.options.control.list(input);
+  }
+
+  readControlRequest(requestId: string) {
+    return this.options.control.read(requestId);
+  }
+
+  controlRequest(input: {
+    action: PilotDeckTeamControlDecisionAction | "escalate_to_user";
+    requestId: string;
+    feedback?: string;
+  }) {
+    if (input.action === "escalate_to_user") {
+      return this.options.control.escalate(input.requestId, input.feedback);
+    }
+    return this.options.control.decide({
+      requestId: input.requestId,
+      action: input.action,
+      feedback: input.feedback,
+    });
+  }
+
   async delegate(
     input: Parameters<PilotDeckTeamRuntimeApi["delegate"]>[0],
   ): Promise<PilotDeckTeamDelegateResult> {
@@ -83,6 +112,9 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     if (!prompt) {
       throw new Error(`Teammate ${input.action} requires a prompt.`);
     }
+    if (this.inFlight.has(definition.id)) {
+      throw new Error(`Teammate "${definition.id}" is already running a turn.`);
+    }
     if (input.taskId) {
       await this.progress.update({
         merge: true,
@@ -94,16 +126,36 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
         }],
       });
     }
+    this.inFlight.add(definition.id);
+    void this.runInBackground(definition, input, input.action, prompt);
+    return {
+      teammateId: definition.id,
+      teammateSessionId: teammateSessionKey(this.options.leaderSessionId, definition.id),
+      action: input.action,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      status: "dispatched",
+      summary: `Teammate "${definition.id}" was dispatched in the background.`,
+      durationMs: 0,
+    };
+  }
+
+  private async runInBackground(
+    definition: RuntimeTeammateDefinition,
+    input: Parameters<PilotDeckTeamRuntimeApi["delegate"]>[0],
+    action: "run" | "follow_up",
+    prompt: string,
+  ): Promise<void> {
     try {
       const result = await this.options.host.run({
         leaderSessionId: this.options.leaderSessionId,
         projectRoot: this.options.projectRoot,
         definition,
-        action: input.action,
+        action,
         prompt,
         taskId: input.taskId,
         parentTurnId: input.parentTurnId,
         toolCallId: input.toolCallId,
+        permission: input.permission,
         abortSignal: input.abortSignal,
       });
       if (input.taskId) {
@@ -111,13 +163,14 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
           merge: true,
           items: [{
             id: input.taskId,
-            status: result.status === "shutdown" ? "cancelled" : result.status,
+            status: result.status === "shutdown" || result.status === "dispatched"
+              ? "cancelled"
+              : result.status,
             summary: result.summary,
             teammateId: definition.id,
           }],
         });
       }
-      return result;
     } catch (error) {
       if (input.taskId) {
         await this.progress.update({
@@ -130,7 +183,8 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
           }],
         });
       }
-      throw error;
+    } finally {
+      this.inFlight.delete(definition.id);
     }
   }
 }

@@ -180,7 +180,8 @@
     "allowOnce": "仅允许一次",
     "allowRemember": "允许并记住",
     "allowSaved": "允许（已保存）",
-    "deny": "拒绝"
+    "deny": "拒绝",
+    "fromTeammate": "来自 Teammate {{id}}"
   },
   "todo": {
     "updated": "待办列表已成功更新",
@@ -245,7 +246,12 @@
       "defaultDescription": "需要风险操作时先询问",
       "bypassPermissions": "完全访问权限",
       "bypassPermissionsDescription": "跳过确认并允许完全访问",
-      "change": "选择权限模式"
+      "change": "选择权限模式",
+      "teamDefault": "团队执行权限",
+      "teamDefaultDescription": "Teammate 执行风险操作前先询问",
+      "teamBypassPermissions": "团队完全访问权限",
+      "teamBypassPermissionsDescription": "允许 Teammate 无需确认即可执行",
+      "teamChange": "选择 Teammate 执行权限"
     },
     "runModes": {
       "agent": "智能体",

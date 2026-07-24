@@ -180,7 +180,8 @@
     "allowOnce": "Allow once",
     "allowRemember": "Allow & remember",
     "allowSaved": "Allow (saved)",
-    "deny": "Deny"
+    "deny": "Deny",
+    "fromTeammate": "From Teammate {{id}}"
   },
   "todo": {
     "updated": "Todo list has been updated successfully",
@@ -262,7 +263,12 @@
       "defaultDescription": "Ask before risky operations",
       "bypassPermissions": "Full Access",
       "bypassPermissionsDescription": "Skip confirmations and allow full access",
-      "change": "Select permission mode"
+      "change": "Select permission mode",
+      "teamDefault": "Team Permissions",
+      "teamDefaultDescription": "Ask before risky Teammate execution",
+      "teamBypassPermissions": "Full Team Access",
+      "teamBypassPermissionsDescription": "Let Teammates execute without confirmations",
+      "teamChange": "Select Teammate execution permissions"
     },
     "runModes": {
       "agent": "Agent",

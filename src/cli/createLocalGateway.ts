@@ -45,8 +45,10 @@ import {
   summarizeCanonicalMessages,
   type Gateway,
   type GatewayCronController,
+  type GatewayEvent,
   type GatewayProjectStorageOptions,
   type GatewaySessionContext,
+  type GatewaySubmitTurnInput,
   type ListSessionsInput,
   type ListSessionsResult,
 } from "../gateway/index.js";
@@ -102,6 +104,14 @@ import {
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
 import { TeammateSessionRuntime } from "../agent/team/TeammateSessionRuntime.js";
+import { TeamControlCoordinator } from "../agent/team/TeamControlCoordinator.js";
+import {
+  TEAM_PERMISSION_CALLBACK_NAME,
+  TeamControlGatewayEscalationAdapter,
+  TeamLeaderControlTurnScheduler,
+  createTeamPermissionHook,
+  createTeamPlanElicitationChannel,
+} from "../agent/team/TeamControlChannels.js";
 import { TeamProgressStore } from "../agent/team/TeamProgressStore.js";
 import { TeammateExtensionResolver } from "../agent/team/TeammateExtensionResolver.js";
 import {
@@ -109,7 +119,10 @@ import {
   type RuntimeTeammateDefinition,
   type TeammateSessionBinding,
 } from "../agent/team/types.js";
-import type { PilotDeckTeamDelegateResult } from "../tool/protocol/types.js";
+import type {
+  PilotDeckTeamDelegateResult,
+  PilotDeckTeamPermissionSnapshot,
+} from "../tool/protocol/types.js";
 import { buildMcpToolWireName, parseMcpToolWireName } from "../mcp/runtime/wireName.js";
 
 const WORKSPACE_TEAMMATE_DIAGNOSTIC_CODES = new Set<TeammateDiagnostic["code"]>([
@@ -473,7 +486,11 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         void telemetry.shutdown();
       }
     },
-    bindServer: (server) => { boundServer = server; },
+    bindServer: (server) => {
+      boundServer = server;
+      registry.setNotificationBroadcaster((name, payload) =>
+        server.broadcastNotification(name, payload));
+    },
     isProjectBusy: (projectKey: string) => router!.hasActiveUserTurn(projectKey),
     updateSubsystems: (update: SubsystemUpdate) => {
       registry.updateSubsystems({
@@ -567,6 +584,9 @@ class ProjectRuntimeRegistry {
   private gateway?: InProcessGateway;
   private sessionRouter?: SessionRouter;
   private readonly teammateBindings = new Map<string, TeammateSessionBinding>();
+  private readonly teammateActiveTasks = new Map<string, string>();
+  private readonly teamControlCoordinators = new Map<string, TeamControlCoordinator>();
+  private notificationBroadcaster?: (name: string, payload?: unknown) => void;
   /**
    * Per-session live permission rules used when no `sessionOverrides`
    * entry exists. Same array reference is handed to:
@@ -625,6 +645,107 @@ class ProjectRuntimeRegistry {
 
   setSessionRouter(router: SessionRouter): void {
     this.sessionRouter = router;
+  }
+
+  setNotificationBroadcaster(
+    broadcaster: ((name: string, payload?: unknown) => void) | undefined,
+  ): void {
+    this.notificationBroadcaster = broadcaster;
+  }
+
+  private getTeamControlCoordinator(
+    projectRoot: string,
+    leaderSessionId: string,
+  ): TeamControlCoordinator {
+    const key = `${resolve(projectRoot)}::${leaderSessionId}`;
+    let coordinator = this.teamControlCoordinators.get(key);
+    if (!coordinator) {
+      const storage = createAgentProjectSessionStorage({
+        projectRoot,
+        pilotHome: this.options.pilotHome,
+        sessionId: leaderSessionId,
+        now: this.options.now,
+      });
+      let created!: TeamControlCoordinator;
+      const scheduler = new TeamLeaderControlTurnScheduler({
+        leaderSessionId,
+        projectRoot,
+        submitTurn: (input) => this.submitLeaderControlTurn(leaderSessionId, input),
+        shouldRetry: async (request) => {
+          const current = await created.read(request.id);
+          return current?.status === "pending" || current?.status === "escalated";
+        },
+      });
+      created = new TeamControlCoordinator({
+        path: storage.teamControlPath,
+        leaderSessionId,
+        now: this.options.now,
+        onPending: (request) => {
+          scheduler.enqueue(request);
+        },
+        onEscalation: async (request) => {
+          const gateway = this.gateway;
+          if (!gateway) {
+            if (request.kind === "permission") {
+              await created.decide({
+                requestId: request.id,
+                action: "deny",
+                feedback: "Team control escalation failed because the Gateway is unavailable.",
+              });
+            } else {
+              await created.cancelRequest(
+                request.id,
+                "Team plan escalation failed because the Gateway is unavailable.",
+              );
+            }
+            return;
+          }
+          await new TeamControlGatewayEscalationAdapter({
+            coordinator: created,
+            leaderSessionId,
+            permissionBus: gateway.getPermissionBus(),
+            elicitationBus: gateway.getElicitationBus(),
+            emit: (event) =>
+              gateway.emitForSession(leaderSessionId, event)
+              && this.notificationBroadcaster !== undefined,
+            log: (message, error) => {
+              // eslint-disable-next-line no-console
+              console.warn(`[pilotdeck] ${message}`, error);
+            },
+          }).handle(request);
+        },
+      });
+      coordinator = created;
+      this.teamControlCoordinators.set(key, coordinator);
+      void coordinator.reconcile().catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn("[pilotdeck] Failed to reconcile persisted Team control requests.", error);
+      });
+    }
+    return coordinator;
+  }
+
+  private async *submitLeaderControlTurn(
+    leaderSessionId: string,
+    input: GatewaySubmitTurnInput,
+  ): AsyncIterable<GatewayEvent> {
+    if (!this.gateway) {
+      throw new Error("Gateway is not ready for a Team control turn.");
+    }
+    for await (const event of this.gateway.submitTurn(input)) {
+      if (
+        event.type === "permission_request"
+        || event.type === "elicitation_request"
+        || event.type === "elicitation_cancelled"
+      ) {
+        this.notificationBroadcaster?.("team-control:event", {
+          sessionKey: leaderSessionId,
+          channelKey: "team_control",
+          event,
+        });
+      }
+      yield event;
+    }
   }
 
   private emitBackgroundTaskCompletion(event: BackgroundTaskCompletionEvent): void {
@@ -984,6 +1105,7 @@ class ProjectRuntimeRegistry {
     taskId?: string;
     parentTurnId: string;
     toolCallId?: string;
+    permission: PilotDeckTeamPermissionSnapshot;
     abortSignal?: AbortSignal;
   }): Promise<PilotDeckTeamDelegateResult> {
     const startedAt = Date.now();
@@ -998,6 +1120,7 @@ class ProjectRuntimeRegistry {
     if (!router.beginTurn(sessionKey, runId)) {
       throw new Error(`Teammate "${input.definition.id}" is already running a turn.`);
     }
+    if (input.taskId) this.teammateActiveTasks.set(sessionKey, input.taskId);
     let session: AgentSession;
     try {
       session = await router.getOrCreate({
@@ -1006,6 +1129,7 @@ class ProjectRuntimeRegistry {
         channelKey: "team",
       });
     } catch (error) {
+      this.teammateActiveTasks.delete(sessionKey);
       router.endTurn(sessionKey, runId);
       throw error;
     }
@@ -1030,8 +1154,16 @@ class ProjectRuntimeRegistry {
         { type: "text", text: input.prompt },
         {
           runMode: "agent",
-          permissionMode: this.options.permissionMode,
-          basePermissionMode: this.options.permissionMode,
+          allowPlanModeTools: true,
+          permissionMode: input.permission.permissionMode,
+          basePermissionMode: input.permission.basePermissionMode,
+          permissionRules: {
+            allow: input.permission.rules.allow.map((rule) => ({ ...rule })),
+            deny: input.permission.rules.deny.map((rule) => ({ ...rule })),
+            ask: input.permission.rules.ask.map((rule) => ({ ...rule })),
+          },
+          // Teammate prompts are handled by the internal Team coordinator,
+          // never by a user-facing gateway.
           canPrompt: true,
         },
       )) {
@@ -1081,6 +1213,7 @@ class ProjectRuntimeRegistry {
       return result;
     } finally {
       input.abortSignal?.removeEventListener("abort", abort);
+      this.teammateActiveTasks.delete(sessionKey);
       router.endTurn(sessionKey, runId);
     }
   }
@@ -1280,10 +1413,19 @@ class ProjectRuntimeRegistry {
     const gw = this.gateway;
     const permissionUiSessionKey = teammateBinding?.leaderSessionId ?? context.sessionKey;
     const liveRuleSet = this.getLiveRuleSet(permissionUiSessionKey);
+    const teamControl = teammateBinding
+      ? this.getTeamControlCoordinator(runtime.projectRoot, teammateBinding.leaderSessionId)
+      : undefined;
     const scopedContributionHooks: typeof contributions.hooks = teammateBinding
       ? {}
       : contributions.hooks;
-    const hookSettings: typeof contributions.hooks = gw
+    const hookSettings: typeof contributions.hooks = teammateBinding && teamControl
+      ? {
+          PermissionRequest: [{
+            hooks: [{ type: "callback", name: TEAM_PERMISSION_CALLBACK_NAME }],
+          }],
+        }
+      : gw
       ? {
           ...scopedContributionHooks,
           PermissionRequest: [
@@ -1297,7 +1439,17 @@ class ProjectRuntimeRegistry {
         }
       : scopedContributionHooks;
     const hookRuntime = new HookRuntime(hookSettings);
-    if (gw) {
+    if (teammateBinding && teamControl) {
+      hookRuntime.getCallbackExecutor().register(
+        TEAM_PERMISSION_CALLBACK_NAME,
+        createTeamPermissionHook({
+          coordinator: teamControl,
+          teammateId: teammateBinding.definition.id,
+          teammateSessionId: context.sessionKey,
+          getTaskId: () => this.teammateActiveTasks.get(context.sessionKey),
+        }),
+      );
+    } else if (gw) {
       hookRuntime.getCallbackExecutor().register(
         GATEWAY_PERMISSION_CALLBACK_NAME,
         createGatewayPermissionHook({
@@ -1363,6 +1515,17 @@ class ProjectRuntimeRegistry {
       agentModel: runtime.snapshot.config.agent.model,
     });
     const extendDependencies = (storage: ReturnType<typeof createAgentProjectSessionStorage>) => {
+      const leaderSessionId = teammateBinding?.leaderSessionId ?? context.sessionKey;
+      const leaderStorage = teammateBinding
+        ? createAgentProjectSessionStorage({
+            projectRoot,
+            pilotHome: this.options.pilotHome,
+            sessionId: leaderSessionId,
+            now: this.options.now,
+          })
+        : storage;
+      const control = teamControl
+        ?? this.getTeamControlCoordinator(projectRoot, leaderSessionId);
       const toolResultBudget = new ToolResultBudget({ toolResultsDir: storage.toolResultsDir });
       const tokenBudget = new TokenBudgetManager();
       const compactionEngine = new CompactionEngine({
@@ -1439,7 +1602,14 @@ class ProjectRuntimeRegistry {
         now: this.options.now,
       });
       const gw = this.gateway;
-      const elicitation = this.options.autoElicitation
+      const elicitation = teammateBinding
+        ? createTeamPlanElicitationChannel({
+            coordinator: control,
+            teammateId: teammateBinding.definition.id,
+            teammateSessionId: context.sessionKey,
+            getTaskId: () => this.teammateActiveTasks.get(context.sessionKey),
+          })
+        : this.options.autoElicitation
         ? createAutoElicitationChannel()
         : gw
           ? new GatewayElicitationChannel({
@@ -1498,9 +1668,10 @@ class ProjectRuntimeRegistry {
       const planFileManager = createPlanFileManager({ projectRoot });
       const planTodoManager = createPlanTodoStateManager();
       const team = new TeammateSessionRuntime({
-        leaderSessionId: context.sessionKey,
+        leaderSessionId,
         projectRoot,
-        progressPath: storage.teamProgressPath,
+        progressPath: leaderStorage.teamProgressPath,
+        control,
         definitions: () => runtime.teammates,
         diagnostics: () => runtime.teammateDiagnostics.map((diagnostic) => diagnostic.message),
         host: {
@@ -1811,11 +1982,12 @@ function scopeTeammateTools(
       tool.name === "agent"
       || tool.name === "delegate_to_teammate"
       || tool.name === "team_progress"
-      || tool.name === "enter_plan_mode"
-      || tool.name === "exit_plan_mode"
       || tool.name === "ask_user_question"
     ) {
       scoped.unregister(tool.name);
+      continue;
+    }
+    if (tool.name === "enter_plan_mode" || tool.name === "exit_plan_mode") {
       continue;
     }
     const mcp = parseMcpToolWireName(tool.name);

@@ -192,6 +192,7 @@ export interface PendingPermissionRequest {
   toolName: string;
   input?: unknown;
   context?: unknown;
+  metadata?: Record<string, unknown>;
   sessionId?: string | null;
   receivedAt?: Date;
   /**

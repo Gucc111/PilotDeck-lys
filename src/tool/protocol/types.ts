@@ -10,6 +10,7 @@ import type {
   PermissionDecision,
   PermissionMode,
   PermissionResult,
+  PermissionRuleSet,
 } from "../../permission/index.js";
 import type { AgentRunMode } from "../../agent/protocol/input.js";
 import type { PilotDeckToolAuditRecorder } from "../audit/ToolAuditRecorder.js";
@@ -112,10 +113,78 @@ export type PilotDeckTeamDelegateResult = {
   teammateSessionId: string;
   action: "run" | "follow_up" | "shutdown";
   taskId?: string;
-  status: "completed" | "failed" | "cancelled" | "shutdown";
+  status: "dispatched" | "completed" | "failed" | "cancelled" | "shutdown";
   summary: string;
   turns?: number;
   durationMs: number;
+};
+
+export type PilotDeckTeamControlRequestStatus =
+  | "pending"
+  | "decided"
+  | "escalated"
+  | "resolved"
+  | "cancelled";
+
+export type PilotDeckTeamControlRequestKind = "permission" | "plan";
+
+export type PilotDeckTeamControlDecisionAction =
+  | "allow_once"
+  | "deny"
+  | "request_revision"
+  | "approve_plan";
+
+export type PilotDeckTeamControlRequest = {
+  id: string;
+  kind: PilotDeckTeamControlRequestKind;
+  status: PilotDeckTeamControlRequestStatus;
+  leaderSessionId: string;
+  teammateId: string;
+  teammateSessionId: string;
+  taskId?: string;
+  toolCallId: string;
+  toolName: string;
+  createdAt: string;
+  updatedAt: string;
+  permission?: {
+    input: unknown;
+    suggestions?: unknown[];
+  };
+  plan?: {
+    content: string;
+    filePath?: string;
+  };
+  decision?: {
+    action: PilotDeckTeamControlDecisionAction;
+    feedback?: string;
+  };
+  escalation?: {
+    reason?: string;
+    requestedAt: string;
+  };
+};
+
+export type PilotDeckTeamControlSnapshot = {
+  version: 1;
+  requests: PilotDeckTeamControlRequest[];
+  updatedAt: string;
+};
+
+export type PilotDeckTeamControlActionResult = {
+  action:
+    | "list_requests"
+    | "read_request"
+    | PilotDeckTeamControlDecisionAction
+    | "escalate_to_user";
+  request?: PilotDeckTeamControlRequest;
+  requests?: PilotDeckTeamControlRequest[];
+};
+
+export type PilotDeckTeamPermissionSnapshot = {
+  permissionMode: PermissionMode;
+  basePermissionMode: PermissionMode;
+  rules: PermissionRuleSet;
+  canPrompt: boolean;
 };
 
 /**
@@ -132,6 +201,16 @@ export type PilotDeckTeamRuntimeApi = {
     merge?: boolean;
     summary?: string | null;
   }): Promise<PilotDeckTeamProgressSnapshot>;
+  listControlRequests(input?: {
+    status?: PilotDeckTeamControlRequestStatus;
+    kind?: PilotDeckTeamControlRequestKind;
+  }): Promise<PilotDeckTeamControlRequest[]>;
+  readControlRequest(requestId: string): Promise<PilotDeckTeamControlRequest | undefined>;
+  controlRequest(input: {
+    action: PilotDeckTeamControlDecisionAction | "escalate_to_user";
+    requestId: string;
+    feedback?: string;
+  }): Promise<PilotDeckTeamControlRequest>;
   delegate(input: {
     teammateId: string;
     action: "run" | "follow_up" | "shutdown";
@@ -139,6 +218,7 @@ export type PilotDeckTeamRuntimeApi = {
     taskId?: string;
     parentTurnId: string;
     toolCallId?: string;
+    permission: PilotDeckTeamPermissionSnapshot;
     abortSignal?: AbortSignal;
   }): Promise<PilotDeckTeamDelegateResult>;
 };
@@ -319,6 +399,8 @@ export type PilotDeckToolRuntimeContext = {
    */
   toolAliases?: Record<string, string>;
   permissionMode: PermissionMode;
+  /** User-selected mode before a tool-driven mode transition. */
+  basePermissionMode?: PermissionMode;
   permissionContext: PermissionContext;
   auditRecorder?: PilotDeckToolAuditRecorder;
   /**
