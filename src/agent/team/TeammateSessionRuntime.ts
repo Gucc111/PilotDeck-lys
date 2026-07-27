@@ -1,7 +1,7 @@
 import type {
   PilotDeckTeamControlDecisionAction,
   PilotDeckTeamDelegateResult,
-  PilotDeckTeamMessageKind,
+  PilotDeckTeamLifecycleStatus,
   PilotDeckTeamPermissionSnapshot,
   PilotDeckTeamRuntimeApi,
 } from "../../tool/protocol/types.js";
@@ -172,11 +172,19 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       throw new Error(`Teammate "${definition.id}" is already running a turn.`);
     }
     if (input.taskId) {
+      const existing = (await this.progress.read()).items.find(
+        (item) => item.id === input.taskId,
+      );
       await this.progress.update({
         merge: true,
         items: [{
           id: input.taskId,
-          content: prompt,
+          subject: existing?.subject ?? subjectFromPrompt(prompt),
+          ...(
+            input.action === "run" || !existing?.briefing
+              ? { briefing: prompt }
+              : {}
+          ),
           status: "in_progress",
           teammateId: definition.id,
         }],
@@ -222,12 +230,20 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
             status: result.status === "shutdown" || result.status === "dispatched"
               ? "cancelled"
               : result.status,
-            summary: result.summary,
+            summary: result.status === "completed"
+              ? null
+              : result.summary.slice(0, 1_000),
             teammateId: definition.id,
           }],
         });
       }
-      await this.reportResultSafely(definition, result.status, result.summary, input.taskId);
+      await this.reportIdleSafely(
+        definition,
+        result.status,
+        result.summary,
+        input.taskId,
+        lifecycleIdFor(input, definition.id, this.options.leaderSessionId),
+      );
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
       if (input.taskId) {
@@ -236,49 +252,53 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
           items: [{
             id: input.taskId,
             status: input.abortSignal?.aborted ? "cancelled" : "failed",
-            summary,
+            summary: summary.slice(0, 1_000),
             teammateId: definition.id,
           }],
         });
       }
-      await this.reportResultSafely(
+      await this.reportIdleSafely(
         definition,
         input.abortSignal?.aborted ? "cancelled" : "failed",
         summary,
         input.taskId,
+        lifecycleIdFor(input, definition.id, this.options.leaderSessionId),
       );
     } finally {
       this.inFlight.delete(definition.id);
     }
   }
 
-  private async reportResultSafely(
+  private async reportIdleSafely(
     definition: RuntimeTeammateDefinition,
     status: PilotDeckTeamDelegateResult["status"],
     summary: string,
     taskId?: string,
+    lifecycleId?: string,
   ): Promise<void> {
     try {
-      await this.reportResult(definition, status, summary, taskId);
+      await this.reportIdle(definition, status, summary, taskId, lifecycleId);
     } catch {
-      // Message persistence must not rewrite an otherwise valid task result.
-      // A later Team runtime reconciliation can only recover messages that
-      // reached disk, so this remains best-effort when storage itself fails.
+      // Lifecycle persistence must not rewrite an otherwise valid task result.
     }
   }
 
-  private async reportResult(
+  private async reportIdle(
     definition: RuntimeTeammateDefinition,
     status: PilotDeckTeamDelegateResult["status"],
     summary: string,
     taskId?: string,
+    lifecycleId?: string,
   ): Promise<void> {
     if (status === "dispatched" || status === "shutdown") return;
-    const kind: PilotDeckTeamMessageKind = status === "completed"
-      ? "completion"
+    const lifecycleStatus: PilotDeckTeamLifecycleStatus = status === "completed"
+      ? "available"
       : status === "cancelled"
         ? "cancelled"
-        : "failure";
+        : "failed";
+    const text = lifecycleStatus === "available"
+      ? `Teammate "${definition.id}" is idle.`
+      : `Teammate "${definition.id}" is idle after ${lifecycleStatus}: ${summary.slice(0, 1_000)}`;
     await this.options.messages.enqueue({
       from: {
         role: "teammate",
@@ -290,10 +310,32 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
         id: "leader",
         sessionId: this.options.leaderSessionId,
       },
-      kind,
-      text: summary,
-      summary: summary.slice(0, 4_096),
+      kind: "idle",
+      text,
       ...(taskId ? { taskId } : {}),
+      ...(lifecycleId ? { lifecycleId } : {}),
+      lifecycleStatus,
     });
   }
+}
+
+function subjectFromPrompt(prompt: string): string {
+  const firstLine = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) ?? "Team task";
+  return firstLine.slice(0, 160);
+}
+
+function lifecycleIdFor(
+  input: Parameters<PilotDeckTeamRuntimeApi["delegate"]>[0],
+  teammateId: string,
+  leaderSessionId: string,
+): string {
+  const sourceId = [
+    input.toolCallId ?? input.parentTurnId,
+    input.action,
+    input.taskId ?? "no-task",
+  ].join(":");
+  return `team-lifecycle:${leaderSessionId}:${teammateId}:${sourceId}`;
 }

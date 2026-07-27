@@ -467,7 +467,12 @@ export class InProcessGateway implements Gateway {
         const syntheticMessages: CanonicalMessage[] = (input.syntheticMessages ?? []).map((s) => ({
           role: "user" as const,
           content: [{ type: "text" as const, text: s.text }],
-          metadata: { synthetic: true, purpose: s.purpose ?? "channel_hint" },
+          metadata: {
+            synthetic: true,
+            purpose: s.purpose ?? "channel_hint",
+            ...(s.transient ? { transient: true } : {}),
+            ...(s.transientId ? { transientId: s.transientId } : {}),
+          },
         }));
         for await (const event of session.submit(
           agentInput,

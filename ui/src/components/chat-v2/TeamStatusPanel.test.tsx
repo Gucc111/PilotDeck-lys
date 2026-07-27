@@ -20,7 +20,7 @@ describe('Agent Teams chat UI', () => {
         summary: 'Implementation in progress',
         items: [{
           id: 'task-1',
-          content: 'Implement runtime',
+          subject: 'Implement runtime',
           status: 'in_progress',
           teammateId: 'implementer',
         }],

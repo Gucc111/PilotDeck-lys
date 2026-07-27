@@ -84,16 +84,18 @@ export type PilotDeckTeamProgressStatus =
 
 export type PilotDeckTeamProgressItem = {
   id: string;
-  content: string;
+  subject: string;
+  briefing?: string;
   status: PilotDeckTeamProgressStatus;
   teammateId?: string;
   blockedBy?: string[];
+  /** Legacy diagnostic text retained when reading v1 progress snapshots. */
   summary?: string;
   updatedAt: string;
 };
 
 export type PilotDeckTeamProgressSnapshot = {
-  version: 1;
+  version: 2;
   summary?: string;
   items: PilotDeckTeamProgressItem[];
   updatedAt: string;
@@ -101,11 +103,42 @@ export type PilotDeckTeamProgressSnapshot = {
 
 export type PilotDeckTeamProgressUpdate = {
   id: string;
+  subject?: string;
+  /** Deprecated v1 input alias for subject. */
   content?: string;
+  briefing?: string | null;
   status?: PilotDeckTeamProgressStatus;
   teammateId?: string | null;
   blockedBy?: string[];
   summary?: string | null;
+};
+
+export type PilotDeckTeamProgressListItem = Omit<
+  PilotDeckTeamProgressItem,
+  "briefing" | "summary"
+>;
+
+export type PilotDeckTeamProgressCounts = Record<PilotDeckTeamProgressStatus, number>;
+
+export type PilotDeckTeamProgressListResult = {
+  version: 2;
+  summary?: string;
+  items: PilotDeckTeamProgressListItem[];
+  counts: PilotDeckTeamProgressCounts;
+  updatedAt: string;
+};
+
+export type PilotDeckTeamProgressGetResult = {
+  version: 2;
+  task: PilotDeckTeamProgressItem | null;
+  updatedAt: string;
+};
+
+export type PilotDeckTeamProgressUpdateResult = {
+  version: 2;
+  updated: PilotDeckTeamProgressListItem[];
+  counts: PilotDeckTeamProgressCounts;
+  updatedAt: string;
 };
 
 export type PilotDeckTeamDelegateResult = {
@@ -125,8 +158,14 @@ export type PilotDeckTeamMessageActor =
 
 export type PilotDeckTeamMessageKind =
   | "explicit"
+  | "idle"
   | "completion"
   | "failure"
+  | "cancelled";
+
+export type PilotDeckTeamLifecycleStatus =
+  | "available"
+  | "failed"
   | "cancelled";
 
 export type PilotDeckTeamMessageStatus = "pending" | "delivered" | "failed";
@@ -140,6 +179,8 @@ export type PilotDeckTeamMessage = {
   text: string;
   summary?: string;
   taskId?: string;
+  lifecycleId?: string;
+  lifecycleStatus?: PilotDeckTeamLifecycleStatus;
   permission?: PilotDeckTeamPermissionSnapshot;
   status: PilotDeckTeamMessageStatus;
   createdAt: string;

@@ -113,7 +113,10 @@ import {
   createTeamPermissionHook,
   createTeamPlanElicitationChannel,
 } from "../agent/team/TeamControlChannels.js";
-import { TeamProgressStore } from "../agent/team/TeamProgressStore.js";
+import {
+  TeamProgressStore,
+  toProgressListResult,
+} from "../agent/team/TeamProgressStore.js";
 import { TeamMessageCoordinator } from "../agent/team/TeamMessageCoordinator.js";
 import {
   PermanentTeamMessageDeliveryError,
@@ -364,15 +367,16 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         path: storage.teamProgressPath,
         now,
       }).read();
+      const progressList = toProgressListResult(progress);
       const listed = await registry.listEnabledTeammates(projectKey);
       return {
-        progress,
+        progress: progressList,
         teammates: listed.teammates.map((teammate) => {
           const sessionId = teammateSessionKey(leaderSessionId, teammate.id);
           const snapshot = router?.snapshotSession(sessionId);
           const currentTask = progress.items.find(
             (item) => item.teammateId === teammate.id && item.status === "in_progress",
-          )?.content;
+          )?.subject;
           return {
             id: teammate.id,
             sessionId,
@@ -823,10 +827,15 @@ class ProjectRuntimeRegistry {
                 sessionId: message.to.sessionId,
               },
               to: { role: "leader", id: "leader", sessionId: leaderSessionId },
-              kind: "failure",
-              text: `Team message delivery to "${message.to.id}" failed: ${error.message}`,
-              summary: error.message,
+              kind: "idle",
+              text: `Teammate "${message.to.id}" is unavailable after Team message delivery failed: ${error.message}`,
               ...(messages[0]?.taskId ? { taskId: messages[0].taskId } : {}),
+              lifecycleId: teamLifecycleId(
+                leaderSessionId,
+                message.to.id,
+                `delivery-failed:${messages.map((entry) => entry.id).join(":")}`,
+              ),
+              lifecycleStatus: "failed",
             });
           }
         : undefined,
@@ -879,6 +888,11 @@ class ProjectRuntimeRegistry {
         permission: deliveryPermission,
       });
       if (result.status !== "dispatched" && result.status !== "shutdown") {
+        const lifecycleStatus = result.status === "completed"
+          ? "available"
+          : result.status === "cancelled"
+            ? "cancelled"
+            : "failed";
         await this.getTeamMessageCoordinator(projectRoot, leaderSessionId).enqueue({
           from: {
             role: "teammate",
@@ -886,14 +900,17 @@ class ProjectRuntimeRegistry {
             sessionId: result.teammateSessionId,
           },
           to: { role: "leader", id: "leader", sessionId: leaderSessionId },
-          kind: result.status === "completed"
-            ? "completion"
-            : result.status === "cancelled"
-              ? "cancelled"
-              : "failure",
-          text: result.summary,
-          summary: result.summary.slice(0, 4_096),
+          kind: "idle",
+          text: lifecycleStatus === "available"
+            ? `Teammate "${definition.id}" is idle.`
+            : `Teammate "${definition.id}" is idle after ${lifecycleStatus}: ${result.summary.slice(0, 1_000)}`,
           ...(result.taskId ? { taskId: result.taskId } : {}),
+          lifecycleId: teamLifecycleId(
+            leaderSessionId,
+            definition.id,
+            `message:${messages.map((message) => message.id).join(":")}`,
+          ),
+          lifecycleStatus,
         });
       }
       return true;
@@ -933,6 +950,7 @@ class ProjectRuntimeRegistry {
   ): Promise<void> {
     if (!this.gateway) return;
     for (const message of messages) {
+      if (message.kind === "idle") continue;
       const event = message.kind === "completion"
         ? "teammate_completed"
         : message.kind === "failure" || message.kind === "cancelled"
@@ -1329,9 +1347,9 @@ class ProjectRuntimeRegistry {
     const systemPrompt = [
       "You are a long-lived PilotDeck Teammate. Execute assignments from the Team Leader in your own context.",
       "Stay within your configured capabilities. Do not create or delegate to another team.",
-      'Use send_team_message with to="leader" when the Leader needs an explicit finding, question, blocker, or decision before your turn ends.',
-      "A concise completion or failure report is delivered automatically after every turn; do not send a duplicate completion message.",
-      "When complete, return a concise report with evidence, files changed, tests run, and remaining issues.",
+      'Your plain final response is not delivered to the Leader. Before your turn ends, use send_team_message with to="leader" for every result, finding, question, blocker, or decision the Leader needs.',
+      "The runtime reports only that you became idle. Do not send structured completion or idle status messages yourself.",
+      "When complete, send the Leader a concise report with evidence, files changed, tests run, and remaining issues.",
       definition.prompt,
       ...skillSections,
     ].join("\n\n");
@@ -1448,18 +1466,6 @@ class ProjectRuntimeRegistry {
         turns,
         durationMs: Date.now() - startedAt,
       };
-      this.gateway?.emitForSession(input.leaderSessionId, {
-        type: "agent_status",
-        event: status === "completed" ? "teammate_completed" : "teammate_failed",
-        detail: {
-          teammateId: input.definition.id,
-          teammateSessionId: sessionKey,
-          taskId: input.taskId,
-          status,
-          durationMs: result.durationMs,
-          summary: finalSummary.slice(0, 4_096),
-        },
-      });
       return result;
     } finally {
       input.abortSignal?.removeEventListener("abort", abort);
@@ -2614,4 +2620,12 @@ function resolveBrowserProxyBypass(
 function cleanEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function teamLifecycleId(
+  leaderSessionId: string,
+  teammateId: string,
+  sourceId: string,
+): string {
+  return `team-lifecycle:${leaderSessionId}:${teammateId}:${sourceId}`;
 }

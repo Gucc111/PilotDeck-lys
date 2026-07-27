@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,6 +62,62 @@ test("TeamMessageCoordinator persists concurrent messages and reconciles pending
   });
   await resumed.reconcile();
   assert.equal(new Set(reconciled).size, 8);
+});
+
+test("TeamMessageCoordinator stores one idle message per lifecycleId", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-lifecycle-"));
+  const coordinator = new TeamMessageCoordinator({
+    path: join(dir, "messages.json"),
+    leaderSessionId: "leader-1",
+  });
+  const message = {
+    from: {
+      role: "teammate" as const,
+      id: "implementer",
+      sessionId: "leader-1::teammate::implementer",
+    },
+    to: { role: "leader" as const, id: "leader" as const, sessionId: "leader-1" },
+    kind: "idle" as const,
+    text: 'Teammate "implementer" is idle.',
+    lifecycleId: "lifecycle-1",
+    lifecycleStatus: "available" as const,
+  };
+  await Promise.all([coordinator.enqueue(message), coordinator.enqueue(message)]);
+  const pending = await coordinator.listPending(message.to);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.id, "lifecycle-1");
+});
+
+test("TeamMessageCoordinator keeps legacy completion messages readable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-legacy-message-"));
+  const path = join(dir, "messages.json");
+  const leader = { role: "leader" as const, id: "leader" as const, sessionId: "leader-1" };
+  await writeFile(path, JSON.stringify({
+    version: 1,
+    messages: [{
+      id: "legacy-completion",
+      leaderSessionId: "leader-1",
+      from: {
+        role: "teammate",
+        id: "implementer",
+        sessionId: "leader-1::teammate::implementer",
+      },
+      to: leader,
+      kind: "completion",
+      text: "Legacy report",
+      status: "pending",
+      createdAt: "2026-07-24T00:00:00.000Z",
+      updatedAt: "2026-07-24T00:00:00.000Z",
+    }],
+    updatedAt: "2026-07-24T00:00:00.000Z",
+  }));
+  const coordinator = new TeamMessageCoordinator({
+    path,
+    leaderSessionId: "leader-1",
+  });
+  const pending = await coordinator.listPending(leader);
+  assert.equal(pending[0]?.kind, "completion");
+  assert.equal(pending[0]?.text, "Legacy report");
 });
 
 test("TeamMessageDeliveryScheduler retries busy recipients and marks a batch delivered once", async () => {
@@ -164,10 +220,10 @@ test("send_team_message delegates plain text without mutating task progress", as
   };
   const team: PilotDeckTeamRuntimeApi = {
     listDefinitions: () => [{ id: "implementer", description: "Implements changes" }],
-    readProgress: async () => ({ version: 1, items: [], updatedAt: new Date().toISOString() }),
+    readProgress: async () => ({ version: 2, items: [], updatedAt: new Date().toISOString() }),
     updateProgress: async () => {
       progressUpdates += 1;
-      return { version: 1, items: [], updatedAt: new Date().toISOString() };
+      return { version: 2, items: [], updatedAt: new Date().toISOString() };
     },
     listControlRequests: async () => [],
     readControlRequest: async () => undefined,
@@ -194,7 +250,7 @@ test("send_team_message delegates plain text without mutating task progress", as
   assert.equal(progressUpdates, 0);
 });
 
-test("TeammateSessionRuntime enforces message direction and reports completed turns", async () => {
+test("TeammateSessionRuntime enforces message direction and reports idle lifecycle", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-message-runtime-"));
   const pending: string[] = [];
   const messages = new TeamMessageCoordinator({
@@ -253,7 +309,7 @@ test("TeammateSessionRuntime enforces message direction and reports completed tu
     parentTurnId: "turn-1",
     permission,
   });
-  await waitFor(() => Promise.resolve(pending.includes("completion:implementer:leader")));
+  await waitFor(() => Promise.resolve(pending.includes("idle:implementer:leader")));
   assert.ok(pending.includes("explicit:leader:implementer"));
 
   const teammateRuntime = new TeammateSessionRuntime({
@@ -318,6 +374,48 @@ test("Leader message turns include teammate reports as synthetic Team context", 
   assert.equal(input.runMode, "team");
   assert.equal(input.syntheticMessages?.[0]?.purpose, "team_message");
   assert.match(input.syntheticMessages?.[0]?.text ?? "", /Review complete/);
+});
+
+test("idle lifecycle is transient and separated from explicit Team reports", () => {
+  const base = {
+    leaderSessionId: "leader-1",
+    from: {
+      role: "teammate" as const,
+      id: "reviewer",
+      sessionId: "leader-1::teammate::reviewer",
+    },
+    to: { role: "leader" as const, id: "leader" as const, sessionId: "leader-1" },
+    status: "pending" as const,
+    createdAt: "2026-07-24T00:00:00.000Z",
+    updatedAt: "2026-07-24T00:00:00.000Z",
+  };
+  const input = buildLeaderMessageTurnInput({
+    leaderSessionId: "leader-1",
+    projectRoot: "/tmp/project",
+    messages: [
+      {
+        ...base,
+        id: "report-1",
+        kind: "explicit",
+        text: "Evidence report.",
+      },
+      {
+        ...base,
+        id: "idle-1",
+        kind: "idle",
+        text: 'Teammate "reviewer" is idle.',
+        lifecycleId: "idle-1",
+        lifecycleStatus: "available",
+      },
+    ],
+  });
+  assert.equal(input.syntheticMessages?.length, 2);
+  assert.equal(input.syntheticMessages?.[0]?.purpose, "team_message");
+  assert.equal(input.syntheticMessages?.[0]?.transient, undefined);
+  assert.equal(input.syntheticMessages?.[1]?.purpose, "team_lifecycle");
+  assert.equal(input.syntheticMessages?.[1]?.transient, true);
+  assert.doesNotMatch(input.syntheticMessages?.[0]?.text ?? "", /is idle/);
+  assert.doesNotMatch(input.syntheticMessages?.[1]?.text ?? "", /Evidence report/);
 });
 
 test("Leader message delivery retries non-busy error streams", async () => {

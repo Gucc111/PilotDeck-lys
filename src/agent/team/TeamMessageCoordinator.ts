@@ -3,6 +3,7 @@ import type {
   PilotDeckTeamMessage,
   PilotDeckTeamMessageActor,
   PilotDeckTeamMessageKind,
+  PilotDeckTeamLifecycleStatus,
   PilotDeckTeamPermissionSnapshot,
 } from "../../tool/protocol/types.js";
 import { TeamMessageStore } from "./TeamMessageStore.js";
@@ -33,11 +34,13 @@ export class TeamMessageCoordinator {
     text: string;
     summary?: string;
     taskId?: string;
+    lifecycleId?: string;
+    lifecycleStatus?: PilotDeckTeamLifecycleStatus;
     permission?: PilotDeckTeamPermissionSnapshot;
   }): Promise<PilotDeckTeamMessage> {
     const timestamp = this.now().toISOString();
     const message = await this.store.enqueue({
-      id: this.uuid(),
+      id: input.lifecycleId ?? this.uuid(),
       leaderSessionId: this.options.leaderSessionId,
       from: input.from,
       to: input.to,
@@ -45,12 +48,16 @@ export class TeamMessageCoordinator {
       text: input.text,
       ...(input.summary ? { summary: input.summary } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.lifecycleId ? { lifecycleId: input.lifecycleId } : {}),
+      ...(input.lifecycleStatus
+        ? { lifecycleStatus: input.lifecycleStatus }
+        : {}),
       ...(input.permission ? { permission: input.permission } : {}),
       status: "pending",
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    this.options.onPending?.(message);
+    if (message.status === "pending") this.options.onPending?.(message);
     return message;
   }
 

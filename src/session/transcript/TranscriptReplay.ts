@@ -61,12 +61,15 @@ export function replayTranscriptEntries(entries: AgentTranscriptEntry[]): AgentT
     switch (entry.type) {
       case "accepted_input":
         if (!beforeBoundary) {
-          messages.push(...cloneMessages(entry.messages));
+          const durableInput = entry.messages.filter(
+            (message) => message.metadata?.transient !== true,
+          );
+          messages.push(...cloneMessages(durableInput));
           events.push({
             type: "input_accepted",
             sessionId: entry.sessionId,
             turnId: entry.turnId,
-            messages: cloneMessages(entry.messages),
+            messages: cloneMessages(durableInput),
           });
         }
         break;

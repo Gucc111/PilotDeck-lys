@@ -69,9 +69,21 @@ test("TeamProgressStore persists and merges structured progress", async () => {
 
   assert.equal(merged.items.length, 1);
   assert.equal(merged.items[0]?.status, "completed");
-  assert.equal(merged.items[0]?.content, "Inspect runtime");
+  assert.equal(merged.items[0]?.subject, "Inspect runtime");
   assert.equal(merged.summary, "Started");
   assert.match(await readFile(path, "utf8"), /Runtime inspected/);
+  await store.update({
+    merge: true,
+    items: [{
+      id: "task-b",
+      subject: "Use runtime findings",
+      blockedBy: ["task-a", "missing-task"],
+    }],
+  });
+  assert.deepEqual(
+    (await store.list()).items.find((item) => item.id === "task-b")?.blockedBy,
+    ["missing-task"],
+  );
 });
 
 test("team_progress delegates persistence to the session team API", async () => {
@@ -98,16 +110,61 @@ test("team_progress delegates persistence to the session team API", async () => 
     items: [{ id: "task-a", content: "Delegate work", status: "pending" }],
   }, context(team));
 
-  assert.equal(result.data?.items[0]?.id, "task-a");
+  assert.ok(result.data && "updated" in result.data);
+  assert.equal(result.data?.updated[0]?.id, "task-a");
   assert.equal((await store.read()).items.length, 1);
+
+  await store.update({
+    merge: true,
+    items: [{
+      id: "task-a",
+      briefing: `Full briefing ${"x".repeat(50_000)}`,
+    }],
+  });
+  const listed = await createTeamProgressTool().execute(
+    { action: "list" },
+    context(team),
+  );
+  assert.ok(listed.data && "items" in listed.data);
+  assert.equal(JSON.stringify(listed.data).includes("Full briefing"), false);
+  assert.ok(JSON.stringify(listed.data).length < 2_000);
+
+  const detail = await createTeamProgressTool().execute(
+    { action: "get", taskId: "task-a" },
+    context(team),
+  );
+  assert.ok(detail.data && "task" in detail.data);
+  assert.match(detail.data?.task?.briefing ?? "", /Full briefing/);
+});
+
+test("TeamProgressStore lazily normalizes v1 content into v2 subject and briefing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-v1-"));
+  const path = join(dir, "progress.json");
+  await writeFile(path, JSON.stringify({
+    version: 1,
+    items: [{
+      id: "legacy",
+      content: "Inspect runtime\n\nRead every implementation detail.",
+      status: "pending",
+      updatedAt: "2026-07-22T00:00:00.000Z",
+    }],
+    updatedAt: "2026-07-22T00:00:00.000Z",
+  }));
+  const store = new TeamProgressStore({ path });
+  const snapshot = await store.read();
+  assert.equal(snapshot.version, 2);
+  assert.equal(snapshot.items[0]?.subject, "Inspect runtime");
+  assert.match(snapshot.items[0]?.briefing ?? "", /implementation detail/);
+  assert.equal("briefing" in ((await store.list()).items[0] ?? {}), false);
+  assert.match((await store.get("legacy")).task?.briefing ?? "", /implementation detail/);
 });
 
 test("delegate_to_teammate passes an internal stable Team permission snapshot", async () => {
   let delegated: Parameters<PilotDeckTeamRuntimeApi["delegate"]>[0] | undefined;
   const team: PilotDeckTeamRuntimeApi = {
     listDefinitions: () => [{ id: "implementer", description: "Implements changes" }],
-    readProgress: async () => ({ version: 1, items: [], updatedAt: new Date().toISOString() }),
-    updateProgress: async () => ({ version: 1, items: [], updatedAt: new Date().toISOString() }),
+    readProgress: async () => ({ version: 2, items: [], updatedAt: new Date().toISOString() }),
+    updateProgress: async () => ({ version: 2, items: [], updatedAt: new Date().toISOString() }),
     listControlRequests: async () => [],
     readControlRequest: async () => undefined,
     controlRequest: async () => {
@@ -179,8 +236,8 @@ test("ToolRuntime hard-blocks forged non-Team calls", async () => {
     input: { path: "/tmp/secret" },
   }, context({
     listDefinitions: () => [],
-    readProgress: async () => ({ version: 1, items: [], updatedAt: new Date().toISOString() }),
-    updateProgress: async () => ({ version: 1, items: [], updatedAt: new Date().toISOString() }),
+    readProgress: async () => ({ version: 2, items: [], updatedAt: new Date().toISOString() }),
+    updateProgress: async () => ({ version: 2, items: [], updatedAt: new Date().toISOString() }),
     listControlRequests: async () => [],
     readControlRequest: async () => undefined,
     controlRequest: async () => {
@@ -262,13 +319,13 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
     },
   });
   await runtime.updateProgress({
-    items: [{ id: "task-1", content: "Implement feature", status: "pending" }],
+    items: [{ id: "task-1", subject: "Implement feature", status: "pending" }],
   });
 
   const dispatched = await runtime.delegate({
     teammateId: "implementer",
     action: "run",
-    prompt: "Implement feature",
+    prompt: "Implement feature with full verification and evidence.",
     taskId: "task-1",
     parentTurnId: "turn-1",
     permission,
@@ -287,9 +344,98 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
   release();
   await waitFor(async () => (await runtime.readProgress()).items[0]?.status === "completed");
 
-  assert.deepEqual(calls, ["implementer:run:Implement feature"]);
+  assert.deepEqual(calls, ["implementer:run:Implement feature with full verification and evidence."]);
   assert.deepEqual(runtime.listDiagnostics(), ["Workspace enablement is invalid."]);
   assert.equal((await runtime.readProgress()).items[0]?.status, "completed");
+  assert.equal((await runtime.readProgress()).items[0]?.subject, "Implement feature");
+  assert.equal(
+    (await runtime.readProgress()).items[0]?.briefing,
+    "Implement feature with full verification and evidence.",
+  );
+});
+
+test("two Teammates emit one explicit report and one idle lifecycle each with compact progress", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-two-teammates-"));
+  const permission = {
+    permissionMode: "bypassPermissions" as const,
+    basePermissionMode: "bypassPermissions" as const,
+    canPrompt: true,
+    rules: { allow: [], deny: [], ask: [] },
+  };
+  const progressPath = join(dir, "progress.json");
+  const messages = new TeamMessageCoordinator({
+    path: join(dir, "messages.json"),
+    leaderSessionId: "leader-1",
+  });
+  const definitions = ["researcher", "reviewer"].map((id) => ({
+    id,
+    name: id,
+    description: `${id} role`,
+    prompt: `${id} prompt`,
+    sourcePath: join(dir, `teammates/${id}.md`),
+  }));
+  const runtime = new TeammateSessionRuntime({
+    leaderSessionId: "leader-1",
+    projectRoot: dir,
+    progressPath,
+    control: new TeamControlCoordinator({
+      path: join(dir, "control.json"),
+      leaderSessionId: "leader-1",
+    }),
+    messages,
+    definitions: () => definitions,
+    host: {
+      run: async (input) => {
+        await messages.enqueue({
+          from: {
+            role: "teammate",
+            id: input.definition.id,
+            sessionId: `leader-1::teammate::${input.definition.id}`,
+          },
+          to: { role: "leader", id: "leader", sessionId: "leader-1" },
+          kind: "explicit",
+          text: `${input.definition.id} evidence`,
+          taskId: input.taskId,
+        });
+        return {
+          teammateId: input.definition.id,
+          teammateSessionId: `leader-1::teammate::${input.definition.id}`,
+          action: input.action,
+          taskId: input.taskId,
+          status: "completed",
+          summary: "plain final text is not forwarded",
+          durationMs: 1,
+        };
+      },
+      shutdown: async () => {
+        throw new Error("not used");
+      },
+    },
+  });
+  const longBriefing = `Bounded assignment\n${"detail ".repeat(10_000)}`;
+  await Promise.all(definitions.map((definition, index) => runtime.delegate({
+    teammateId: definition.id,
+    action: "run",
+    prompt: longBriefing,
+    taskId: `task-${index + 1}`,
+    parentTurnId: "turn-1",
+    toolCallId: `tool-${index + 1}`,
+    permission,
+  })));
+  await waitFor(async () =>
+    (await runtime.readProgress()).items.every((item) => item.status === "completed"));
+
+  const pending = await messages.listPending({
+    role: "leader",
+    id: "leader",
+    sessionId: "leader-1",
+  });
+  assert.equal(pending.filter((message) => message.kind === "explicit").length, 2);
+  assert.equal(pending.filter((message) => message.kind === "idle").length, 2);
+  assert.equal(pending.some((message) => message.kind === "completion"), false);
+  const compact = await new TeamProgressStore({ path: progressPath }).list();
+  assert.equal(JSON.stringify(compact).includes("detail detail"), false);
+  assert.ok(JSON.stringify(compact).length < 2_000);
 });
 
 test("TeamControlCoordinator persists and resolves permission and plan requests", async () => {

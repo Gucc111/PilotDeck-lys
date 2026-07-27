@@ -7,10 +7,9 @@ type TeamState = {
     summary?: string;
     items: Array<{
       id: string;
-      content: string;
+      subject: string;
       status: string;
       teammateId?: string;
-      summary?: string;
     }>;
   };
   teammates: Array<{
@@ -120,7 +119,7 @@ export default function TeamStatusPanel({
               <div className="mt-2 border-t border-neutral-200 pt-2 dark:border-neutral-800">
                 {state.progress.items.map((item) => (
                   <p key={item.id} className="truncate text-[11px] text-neutral-500">
-                    [{item.status}] {item.content}
+                    [{item.status}] {item.subject}
                   </p>
                 ))}
               </div>

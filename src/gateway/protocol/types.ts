@@ -14,7 +14,7 @@ import type {
   CronStopResult,
 } from "../../cron/protocol/types.js";
 import type { CanonicalUsage } from "../../model/index.js";
-import type { PilotDeckTeamProgressSnapshot } from "../../tool/protocol/types.js";
+import type { PilotDeckTeamProgressListResult } from "../../tool/protocol/types.js";
 import type { TelemetryExecutionKind, TelemetryModule } from "../../telemetry/index.js";
 import type { SessionInfo as ProjectSessionInfo } from "../../session/index.js";
 import type {
@@ -81,7 +81,7 @@ export type TeamStateInput = {
 };
 
 export type TeamStateResult = {
-  progress: PilotDeckTeamProgressSnapshot;
+  progress: PilotDeckTeamProgressListResult;
   teammates: {
     id: string;
     sessionId: string;
@@ -147,7 +147,12 @@ export type GatewaySubmitTurnInput = {
    * These are stored in the transcript with `metadata.synthetic: true`
    * so they are visible to the model but hidden from the Web UI.
    */
-  syntheticMessages?: Array<{ text: string; purpose?: string }>;
+  syntheticMessages?: Array<{
+    text: string;
+    purpose?: string;
+    transient?: boolean;
+    transientId?: string;
+  }>;
 };
 
 export type GatewayRecordAgentStatusMessageInput = {

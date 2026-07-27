@@ -1,7 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type {
+  PilotDeckTeamProgressCounts,
+  PilotDeckTeamProgressGetResult,
   PilotDeckTeamProgressItem,
+  PilotDeckTeamProgressListItem,
+  PilotDeckTeamProgressListResult,
   PilotDeckTeamProgressSnapshot,
   PilotDeckTeamProgressUpdate,
 } from "../../tool/protocol/types.js";
@@ -11,7 +15,7 @@ export type TeamProgressStoreOptions = {
   now?: () => Date;
 };
 
-const EMPTY_VERSION = 1 as const;
+const VERSION = 2 as const;
 
 export class TeamProgressStore {
   private readonly now: () => Date;
@@ -33,6 +37,19 @@ export class TeamProgressStore {
     }
   }
 
+  async list(): Promise<PilotDeckTeamProgressListResult> {
+    return toProgressListResult(await this.read());
+  }
+
+  async get(taskId: string): Promise<PilotDeckTeamProgressGetResult> {
+    const snapshot = await this.read();
+    return {
+      version: VERSION,
+      task: snapshot.items.find((item) => item.id === taskId) ?? null,
+      updatedAt: snapshot.updatedAt,
+    };
+  }
+
   async update(input: {
     items?: PilotDeckTeamProgressUpdate[];
     merge?: boolean;
@@ -44,7 +61,7 @@ export class TeamProgressStore {
       const timestamp = this.now().toISOString();
       const items = applyUpdates(current.items, input.items, Boolean(input.merge), timestamp);
       result = {
-        version: EMPTY_VERSION,
+        version: VERSION,
         ...(input.summary === null
           ? {}
           : typeof input.summary === "string"
@@ -65,7 +82,7 @@ export class TeamProgressStore {
 
 function emptySnapshot(now: () => Date): PilotDeckTeamProgressSnapshot {
   return {
-    version: EMPTY_VERSION,
+    version: VERSION,
     items: [],
     updatedAt: now().toISOString(),
   };
@@ -80,7 +97,7 @@ function normalizeSnapshot(value: unknown, now: () => Date): PilotDeckTeamProgre
     ? record.items.flatMap((item) => normalizeItem(item, now))
     : [];
   return {
-    version: EMPTY_VERSION,
+    version: VERSION,
     ...(typeof record.summary === "string" && record.summary.trim()
       ? { summary: record.summary.trim() }
       : {}),
@@ -92,14 +109,28 @@ function normalizeSnapshot(value: unknown, now: () => Date): PilotDeckTeamProgre
 function normalizeItem(value: unknown, now: () => Date): PilotDeckTeamProgressItem[] {
   if (!value || typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
-  if (typeof record.id !== "string" || typeof record.content !== "string") return [];
+  if (typeof record.id !== "string") return [];
+  const legacyContent = typeof record.content === "string"
+    ? record.content.trim()
+    : undefined;
+  const subject = typeof record.subject === "string" && record.subject.trim()
+    ? subjectFromText(record.subject.trim())
+    : legacyContent
+      ? subjectFromText(legacyContent)
+      : undefined;
+  if (!subject) return [];
   const statuses = new Set(["pending", "in_progress", "completed", "failed", "cancelled"]);
   const status = typeof record.status === "string" && statuses.has(record.status)
     ? record.status as PilotDeckTeamProgressItem["status"]
     : "pending";
   return [{
     id: record.id,
-    content: record.content,
+    subject,
+    ...(typeof record.briefing === "string"
+      ? { briefing: record.briefing }
+      : legacyContent
+        ? { briefing: legacyContent }
+        : {}),
     status,
     ...(typeof record.teammateId === "string" ? { teammateId: record.teammateId } : {}),
     ...(Array.isArray(record.blockedBy)
@@ -124,13 +155,23 @@ function applyUpdates(
     const id = update.id.trim();
     if (!id) continue;
     const previous = existing.get(id);
-    const content = update.content?.trim() ?? previous?.content;
-    if (!content) {
-      throw new Error(`Team progress item "${id}" requires content.`);
+    const subjectCandidate = update.subject?.trim()
+      ?? update.content?.trim()
+      ?? previous?.subject;
+    if (!subjectCandidate) {
+      throw new Error(`Team progress item "${id}" requires subject.`);
     }
+    const subject = subjectFromText(subjectCandidate);
     const next: PilotDeckTeamProgressItem = {
       id,
-      content,
+      subject,
+      ...(update.briefing === null
+        ? {}
+        : update.briefing !== undefined
+          ? { briefing: update.briefing }
+          : previous?.briefing
+            ? { briefing: previous.briefing }
+            : {}),
       status: update.status ?? previous?.status ?? "pending",
       ...(update.teammateId === null
         ? {}
@@ -157,6 +198,68 @@ function applyUpdates(
     if (!order.includes(id)) order.push(id);
   }
   return order.map((id) => existing.get(id)).filter((item): item is PilotDeckTeamProgressItem => Boolean(item));
+}
+
+export function toProgressListItem(
+  item: PilotDeckTeamProgressItem,
+  resolvedTaskIds: ReadonlySet<string> = new Set(),
+): PilotDeckTeamProgressListItem {
+  const {
+    briefing: _briefing,
+    summary: _summary,
+    ...compact
+  } = item;
+  const blockedBy = compact.blockedBy?.filter(
+    (taskId) => !resolvedTaskIds.has(taskId),
+  );
+  return {
+    ...compact,
+    ...(blockedBy ? { blockedBy } : {}),
+  };
+}
+
+export function toProgressListResult(
+  snapshot: PilotDeckTeamProgressSnapshot,
+): PilotDeckTeamProgressListResult {
+  const resolvedTaskIds = new Set(
+    snapshot.items
+      .filter((item) => item.status === "completed")
+      .map((item) => item.id),
+  );
+  return {
+    version: VERSION,
+    ...(snapshot.summary ? { summary: snapshot.summary } : {}),
+    items: snapshot.items.map((item) =>
+      toProgressListItem(item, resolvedTaskIds)),
+    counts: progressCounts(snapshot.items),
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
+export function progressCounts(
+  items: PilotDeckTeamProgressItem[],
+): PilotDeckTeamProgressCounts {
+  const counts: PilotDeckTeamProgressCounts = {
+    pending: 0,
+    in_progress: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+  };
+  for (const item of items) {
+    counts[item.status] += 1;
+  }
+  return counts;
+}
+
+function subjectFromText(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean)
+    ?? "Team task"
+  ).slice(0, 160);
 }
 
 async function atomicWriteJson(path: string, value: unknown): Promise<void> {

@@ -17,6 +17,7 @@ export type TeamMessageStoreOptions = {
 const VERSION = 1 as const;
 const KINDS = new Set<PilotDeckTeamMessageKind>([
   "explicit",
+  "idle",
   "completion",
   "failure",
   "cancelled",
@@ -45,7 +46,12 @@ export class TeamMessageStore {
     let result = message;
     const operation = this.writeQueue.catch(() => undefined).then(async () => {
       const current = await this.read();
-      const existing = current.messages.find((entry) => entry.id === message.id);
+      const existing = current.messages.find((entry) =>
+        entry.id === message.id
+        || (
+          message.lifecycleId
+          && entry.lifecycleId === message.lifecycleId
+        ));
       if (existing) {
         result = existing;
         return;
@@ -180,6 +186,14 @@ function normalizeMessage(value: unknown): PilotDeckTeamMessage[] {
     text: value.text as string,
     ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
     ...(typeof value.taskId === "string" ? { taskId: value.taskId } : {}),
+    ...(typeof value.lifecycleId === "string"
+      ? { lifecycleId: value.lifecycleId }
+      : {}),
+    ...(value.lifecycleStatus === "available"
+        || value.lifecycleStatus === "failed"
+        || value.lifecycleStatus === "cancelled"
+      ? { lifecycleStatus: value.lifecycleStatus }
+      : {}),
     ...(normalizePermission(value.permission)
       ? { permission: normalizePermission(value.permission) }
       : {}),

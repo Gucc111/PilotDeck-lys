@@ -88,7 +88,9 @@ export class AgentSession {
       abortSignal: this.state.abortController.signal,
     });
 
-    this.state.messages = runResult.messages;
+    this.state.messages = runResult.messages.filter(
+      (message) => message.metadata?.transient !== true,
+    );
     this.state.usage = mergeSessionUsage(this.state.usage, runResult.result.usage);
     this.state.permissionDenials = appendPermissionDenials(
       this.state.permissionDenials,
