@@ -119,6 +119,48 @@ export type PilotDeckTeamDelegateResult = {
   durationMs: number;
 };
 
+export type PilotDeckTeamMessageActor =
+  | { role: "leader"; id: "leader"; sessionId: string }
+  | { role: "teammate"; id: string; sessionId: string };
+
+export type PilotDeckTeamMessageKind =
+  | "explicit"
+  | "completion"
+  | "failure"
+  | "cancelled";
+
+export type PilotDeckTeamMessageStatus = "pending" | "delivered" | "failed";
+
+export type PilotDeckTeamMessage = {
+  id: string;
+  leaderSessionId: string;
+  from: PilotDeckTeamMessageActor;
+  to: PilotDeckTeamMessageActor;
+  kind: PilotDeckTeamMessageKind;
+  text: string;
+  summary?: string;
+  taskId?: string;
+  permission?: PilotDeckTeamPermissionSnapshot;
+  status: PilotDeckTeamMessageStatus;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt?: string;
+  failureReason?: string;
+};
+
+export type PilotDeckTeamMessageSnapshot = {
+  version: 1;
+  messages: PilotDeckTeamMessage[];
+  updatedAt: string;
+};
+
+export type PilotDeckTeamSendMessageResult = {
+  messageId: string;
+  from: PilotDeckTeamMessageActor;
+  to: PilotDeckTeamMessageActor;
+  status: "queued";
+};
+
 export type PilotDeckTeamControlRequestStatus =
   | "pending"
   | "decided"
@@ -221,6 +263,14 @@ export type PilotDeckTeamRuntimeApi = {
     permission: PilotDeckTeamPermissionSnapshot;
     abortSignal?: AbortSignal;
   }): Promise<PilotDeckTeamDelegateResult>;
+  sendMessage(input: {
+    to: string;
+    message: string;
+    summary?: string;
+    parentTurnId: string;
+    toolCallId?: string;
+    permission: PilotDeckTeamPermissionSnapshot;
+  }): Promise<PilotDeckTeamSendMessageResult>;
 };
 
 export type PilotDeckToolKind =

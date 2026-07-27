@@ -237,6 +237,10 @@ export {
   type DelegateToTeammateInput,
 } from "./builtin/delegateToTeammate.js";
 export {
+  createSendTeamMessageTool,
+  type SendTeamMessageInput,
+} from "./builtin/sendTeamMessage.js";
+export {
   PLAN_MODE_ALLOWED_TOOLS,
   buildPlanModeViolationMessage,
   buildPlanModeBashViolationMessage,

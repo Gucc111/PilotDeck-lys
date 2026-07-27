@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { TeamProgressStore } from "../../src/agent/team/TeamProgressStore.js";
 import { TeamControlCoordinator } from "../../src/agent/team/TeamControlCoordinator.js";
+import { TeamMessageCoordinator } from "../../src/agent/team/TeamMessageCoordinator.js";
 import {
   TeamControlGatewayEscalationAdapter,
   TeamLeaderControlTurnScheduler,
@@ -16,6 +17,7 @@ import { GatewayPermissionBus } from "../../src/gateway/permission/GatewayPermis
 import { GatewayElicitationBus } from "../../src/gateway/elicitation/GatewayElicitationBus.js";
 import { TeammateSessionRuntime } from "../../src/agent/team/TeammateSessionRuntime.js";
 import { createDelegateToTeammateTool } from "../../src/tool/builtin/delegateToTeammate.js";
+import { createSendTeamMessageTool } from "../../src/tool/builtin/sendTeamMessage.js";
 import { createTeamProgressTool } from "../../src/tool/builtin/teamProgress.js";
 import { getTeamModeViolation } from "../../src/tool/teamModeConstraints.js";
 import { createReadFileTool } from "../../src/tool/builtin/readFile.js";
@@ -87,6 +89,9 @@ test("team_progress delegates persistence to the session team API", async () => 
     delegate: async () => {
       throw new Error("not used");
     },
+    sendMessage: async () => {
+      throw new Error("not used");
+    },
   };
 
   const result = await createTeamProgressTool().execute({
@@ -118,6 +123,9 @@ test("delegate_to_teammate passes an internal stable Team permission snapshot", 
         summary: "dispatched",
         durationMs: 0,
       };
+    },
+    sendMessage: async () => {
+      throw new Error("not used");
     },
   };
   const baseContext = context(team);
@@ -181,6 +189,9 @@ test("ToolRuntime hard-blocks forged non-Team calls", async () => {
     delegate: async () => {
       throw new Error("not used");
     },
+    sendMessage: async () => {
+      throw new Error("not used");
+    },
   }));
 
   assert.equal(result.type, "error");
@@ -203,6 +214,10 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
     path: join(dir, "control.json"),
     leaderSessionId: "leader-1",
   });
+  const messages = new TeamMessageCoordinator({
+    path: join(dir, "messages.json"),
+    leaderSessionId: "leader-1",
+  });
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -212,6 +227,7 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
     projectRoot: dir,
     progressPath: join(dir, "progress.json"),
     control,
+    messages,
     definitions: () => [{
       id: "implementer",
       name: "Implementer",

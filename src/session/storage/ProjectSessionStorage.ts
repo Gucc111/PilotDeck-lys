@@ -30,6 +30,7 @@ export type AgentProjectSessionStorage = {
   teamDir: string;
   teamProgressPath: string;
   teamControlPath: string;
+  teamMessagesPath: string;
   transcript: JsonlTranscriptWriter;
 };
 
@@ -72,6 +73,7 @@ export function createAgentProjectSessionStorage(
   const teamDir = resolve(chatDir, safeId, "team");
   const teamProgressPath = resolve(teamDir, "progress.json");
   const teamControlPath = resolve(teamDir, "control.json");
+  const teamMessagesPath = resolve(teamDir, "messages.json");
   const subagentTranscriptPath = (subagentId: string): string =>
     resolve(subagentsDir, `${sanitizeSessionIdForPath(subagentId)}.jsonl`);
   return {
@@ -84,6 +86,7 @@ export function createAgentProjectSessionStorage(
     teamDir,
     teamProgressPath,
     teamControlPath,
+    teamMessagesPath,
     transcript: new JsonlTranscriptWriter({
       path: transcriptPath,
       now: options.now,

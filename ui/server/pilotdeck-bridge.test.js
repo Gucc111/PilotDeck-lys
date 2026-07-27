@@ -20,6 +20,30 @@ describe('Team permission selection', () => {
 });
 
 describe('gatewayEventToFrames agent status errors', () => {
+    it('maps durable Team messages into Leader chat activity', () => {
+        const frames = gatewayEventToFrames({
+            type: 'agent_status',
+            event: 'team_message',
+            detail: {
+                messageId: 'message-1',
+                teammateId: 'reviewer',
+                message: 'The API contract needs a product decision.',
+                kind: 'explicit',
+            },
+        }, 'web:s_test', 'pilotdeck');
+
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toMatchObject({
+            id: 'team_message_message-1',
+            kind: 'agent_activity',
+            phase: 'team',
+            state: 'completed',
+            title: 'Message from reviewer',
+            detail: 'The API contract needs a product decision.',
+            teammateId: 'reviewer',
+        });
+    });
+
     it('maps tool result detail availability to a mergeable tool_result frame', () => {
         const frames = gatewayEventToFrames({
             type: 'tool_result_detail_available',

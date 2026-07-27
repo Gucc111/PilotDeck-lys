@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve, sep, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
@@ -113,6 +114,13 @@ import {
   createTeamPlanElicitationChannel,
 } from "../agent/team/TeamControlChannels.js";
 import { TeamProgressStore } from "../agent/team/TeamProgressStore.js";
+import { TeamMessageCoordinator } from "../agent/team/TeamMessageCoordinator.js";
+import {
+  PermanentTeamMessageDeliveryError,
+  TeamMessageDeliveryScheduler,
+  formatMessagesForTeammate,
+  submitLeaderTeamMessages,
+} from "../agent/team/TeamMessageChannels.js";
 import { TeammateExtensionResolver } from "../agent/team/TeammateExtensionResolver.js";
 import {
   teammateSessionKey,
@@ -121,6 +129,7 @@ import {
 } from "../agent/team/types.js";
 import type {
   PilotDeckTeamDelegateResult,
+  PilotDeckTeamMessage,
   PilotDeckTeamPermissionSnapshot,
 } from "../tool/protocol/types.js";
 import { buildMcpToolWireName, parseMcpToolWireName } from "../mcp/runtime/wireName.js";
@@ -344,6 +353,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     teammateEnablementSet: ({ projectKey, enabledTeammateIds }) =>
       registry.setTeammateEnablement(projectKey, enabledTeammateIds),
     teamState: async ({ projectKey, leaderSessionId }) => {
+      registry.reconcileTeamMessages(projectKey, leaderSessionId);
       const storage = createAgentProjectSessionStorage({
         projectRoot: projectKey,
         pilotHome,
@@ -373,14 +383,17 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       };
     },
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
-    readSessionMessages: (input) =>
-      readWebSessionMessages(input, {
-        projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
+    readSessionMessages: (input) => {
+      const resolvedProjectRoot = input.projectKey ? input.projectKey : fallbackProjectRoot;
+      registry.reconcileTeamMessages(resolvedProjectRoot, input.sessionKey);
+      return readWebSessionMessages(input, {
+        projectRoot: resolvedProjectRoot,
         pilotHome,
         maxContextTokens: defaultRuntime.snapshot.config.agent.maxContextTokens,
         maxOutputTokens: defaultRuntime.snapshot.config.agent.maxOutputTokens,
         now,
-      }),
+      });
+    },
     readSubagentMessages: (input) =>
       readSubagentWebMessages(input, {
         projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
@@ -586,6 +599,8 @@ class ProjectRuntimeRegistry {
   private readonly teammateBindings = new Map<string, TeammateSessionBinding>();
   private readonly teammateActiveTasks = new Map<string, string>();
   private readonly teamControlCoordinators = new Map<string, TeamControlCoordinator>();
+  private readonly teamMessageCoordinators = new Map<string, TeamMessageCoordinator>();
+  private readonly teamMessageSchedulers = new Map<string, TeamMessageDeliveryScheduler>();
   private notificationBroadcaster?: (name: string, payload?: unknown) => void;
   /**
    * Per-session live permission rules used when no `sessionOverrides`
@@ -651,6 +666,10 @@ class ProjectRuntimeRegistry {
     broadcaster: ((name: string, payload?: unknown) => void) | undefined,
   ): void {
     this.notificationBroadcaster = broadcaster;
+  }
+
+  reconcileTeamMessages(projectRoot: string, leaderSessionId: string): void {
+    this.getTeamMessageCoordinator(projectRoot, leaderSessionId);
   }
 
   private getTeamControlCoordinator(
@@ -723,6 +742,235 @@ class ProjectRuntimeRegistry {
       });
     }
     return coordinator;
+  }
+
+  private getTeamMessageCoordinator(
+    projectRoot: string,
+    leaderSessionId: string,
+  ): TeamMessageCoordinator {
+    const key = `${resolve(projectRoot)}::${leaderSessionId}`;
+    let coordinator = this.teamMessageCoordinators.get(key);
+    if (!coordinator) {
+      const storage = createAgentProjectSessionStorage({
+        projectRoot,
+        pilotHome: this.options.pilotHome,
+        sessionId: leaderSessionId,
+        now: this.options.now,
+      });
+      coordinator = new TeamMessageCoordinator({
+        path: storage.teamMessagesPath,
+        leaderSessionId,
+        now: this.options.now,
+        onPending: (message) => {
+          this.getTeamMessageScheduler(projectRoot, leaderSessionId, message).enqueue(message);
+        },
+      });
+      this.teamMessageCoordinators.set(key, coordinator);
+      void coordinator.reconcile().catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn("[pilotdeck] Failed to reconcile persisted Team messages.", error);
+      });
+    }
+    return coordinator;
+  }
+
+  private getTeamMessageScheduler(
+    projectRoot: string,
+    leaderSessionId: string,
+    message: PilotDeckTeamMessage,
+  ): TeamMessageDeliveryScheduler {
+    const recipientKey = message.to.role === "leader"
+      ? "leader"
+      : `teammate:${message.to.id}`;
+    const key = `${resolve(projectRoot)}::${leaderSessionId}::${recipientKey}`;
+    let scheduler = this.teamMessageSchedulers.get(key);
+    if (scheduler) return scheduler;
+    const coordinator = this.getTeamMessageCoordinator(projectRoot, leaderSessionId);
+    scheduler = new TeamMessageDeliveryScheduler({
+      recipient: message.to,
+      coordinator,
+      deliver: message.to.role === "leader"
+        ? async (messages) => {
+            if (!this.gateway) return false;
+            if (await this.transcriptContainsTeamMessageBatch(
+              projectRoot,
+              leaderSessionId,
+              messages,
+            )) {
+              return true;
+            }
+            return submitLeaderTeamMessages(
+              (input) => this.gateway!.submitTurn(input),
+              { leaderSessionId, projectRoot, messages },
+            );
+          }
+        : async (messages) =>
+            this.deliverMessagesToTeammate(
+              projectRoot,
+              leaderSessionId,
+              message.to.id,
+              messages,
+            ),
+      onDelivered: message.to.role === "leader"
+        ? (messages) => this.recordDeliveredLeaderMessages(projectRoot, leaderSessionId, messages)
+        : undefined,
+      onFailed: message.to.role === "teammate"
+        ? async (messages, error) => {
+            await coordinator.enqueue({
+              from: {
+                role: "teammate",
+                id: message.to.id,
+                sessionId: message.to.sessionId,
+              },
+              to: { role: "leader", id: "leader", sessionId: leaderSessionId },
+              kind: "failure",
+              text: `Team message delivery to "${message.to.id}" failed: ${error.message}`,
+              summary: error.message,
+              ...(messages[0]?.taskId ? { taskId: messages[0].taskId } : {}),
+            });
+          }
+        : undefined,
+    });
+    this.teamMessageSchedulers.set(key, scheduler);
+    return scheduler;
+  }
+
+  private async deliverMessagesToTeammate(
+    projectRoot: string,
+    leaderSessionId: string,
+    teammateId: string,
+    messages: PilotDeckTeamMessage[],
+  ): Promise<boolean> {
+    const definition = this.resolve(projectRoot).teammates.find((entry) => entry.id === teammateId);
+    if (!definition) {
+      throw new PermanentTeamMessageDeliveryError(`Unknown Teammate "${teammateId}".`);
+    }
+    const override = this._sessionOverrides?.get(leaderSessionId);
+    const permissionMode = override?.permissionMode ?? this.options.permissionMode;
+    const rules = this.getLiveRuleSet(leaderSessionId);
+    if (await this.transcriptContainsTeamMessageBatch(
+      projectRoot,
+      teammateSessionKey(leaderSessionId, teammateId),
+      messages,
+    )) {
+      return true;
+    }
+    const deliveryPermission = restrictTeamMessagePermissions([
+      {
+        permissionMode,
+        basePermissionMode: permissionMode,
+        canPrompt: override?.canPrompt ?? true,
+        rules: {
+          allow: rules.allow.map((rule) => ({ ...rule })),
+          deny: rules.deny.map((rule) => ({ ...rule })),
+          ask: rules.ask.map((rule) => ({ ...rule })),
+        },
+      },
+      ...messages.flatMap((message) => message.permission ? [message.permission] : []),
+    ]);
+    try {
+      const result = await this.runTeammateTurn({
+        leaderSessionId,
+        projectRoot,
+        definition,
+        action: "follow_up",
+        prompt: formatMessagesForTeammate(messages),
+        parentTurnId: `team-message-${messages[0]?.id ?? randomUUID()}`,
+        permission: deliveryPermission,
+      });
+      if (result.status !== "dispatched" && result.status !== "shutdown") {
+        await this.getTeamMessageCoordinator(projectRoot, leaderSessionId).enqueue({
+          from: {
+            role: "teammate",
+            id: definition.id,
+            sessionId: result.teammateSessionId,
+          },
+          to: { role: "leader", id: "leader", sessionId: leaderSessionId },
+          kind: result.status === "completed"
+            ? "completion"
+            : result.status === "cancelled"
+              ? "cancelled"
+              : "failure",
+          text: result.summary,
+          summary: result.summary.slice(0, 4_096),
+          ...(result.taskId ? { taskId: result.taskId } : {}),
+        });
+      }
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("already running a turn")) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async transcriptContainsTeamMessageBatch(
+    projectRoot: string,
+    sessionId: string,
+    messages: PilotDeckTeamMessage[],
+  ): Promise<boolean> {
+    if (messages.length === 0) return true;
+    const storage = createAgentProjectSessionStorage({
+      projectRoot,
+      pilotHome: this.options.pilotHome,
+      sessionId,
+      now: this.options.now,
+    });
+    try {
+      const transcript = await readFile(storage.transcriptPath, "utf8");
+      return messages.every((message) => transcript.includes(`id=\\\"${message.id}\\\"`));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  private async recordDeliveredLeaderMessages(
+    projectRoot: string,
+    leaderSessionId: string,
+    messages: PilotDeckTeamMessage[],
+  ): Promise<void> {
+    if (!this.gateway) return;
+    for (const message of messages) {
+      const event = message.kind === "completion"
+        ? "teammate_completed"
+        : message.kind === "failure" || message.kind === "cancelled"
+          ? "teammate_failed"
+          : "team_message";
+      const text = message.kind === "explicit"
+        ? `${message.from.id}: ${message.text}`
+        : message.text;
+      const detail = {
+        messageId: message.id,
+        teammateId: message.from.id,
+        teammateSessionId: message.from.sessionId,
+        kind: message.kind,
+        taskId: message.taskId,
+        message: message.text,
+        summary: message.summary ?? message.text.slice(0, 4_096),
+      };
+      await this.gateway.recordAgentStatusMessage?.({
+        sessionKey: leaderSessionId,
+        projectKey: projectRoot,
+        turnId: `team-message-${message.id}`,
+        status: {
+          event,
+          kind: message.kind === "failure" ? "error" : "status",
+          text,
+          detail,
+        },
+      });
+      this.notificationBroadcaster?.("team-message:event", {
+        sessionKey: leaderSessionId,
+        channelKey: "team_message",
+        event: {
+          type: "agent_status",
+          event,
+          detail,
+        } satisfies GatewayEvent,
+      });
+    }
   }
 
   private async *submitLeaderControlTurn(
@@ -1081,6 +1329,8 @@ class ProjectRuntimeRegistry {
     const systemPrompt = [
       "You are a long-lived PilotDeck Teammate. Execute assignments from the Team Leader in your own context.",
       "Stay within your configured capabilities. Do not create or delegate to another team.",
+      'Use send_team_message with to="leader" when the Leader needs an explicit finding, question, blocker, or decision before your turn ends.',
+      "A concise completion or failure report is delivered automatically after every turn; do not send a duplicate completion message.",
       "When complete, return a concise report with evidence, files changed, tests run, and remaining issues.",
       definition.prompt,
       ...skillSections,
@@ -1672,6 +1922,10 @@ class ProjectRuntimeRegistry {
         projectRoot,
         progressPath: leaderStorage.teamProgressPath,
         control,
+        messages: this.getTeamMessageCoordinator(projectRoot, leaderSessionId),
+        ...(teammateBinding
+          ? { actorTeammateId: teammateBinding.definition.id }
+          : {}),
         definitions: () => runtime.teammates,
         diagnostics: () => runtime.teammateDiagnostics.map((diagnostic) => diagnostic.message),
         host: {
@@ -1853,7 +2107,10 @@ class ProjectRuntimeRegistry {
     return {
       tools: runtime.tools.list()
         .map((tool) => tool.name)
-        .filter((name) => name !== "team_progress" && name !== "delegate_to_teammate"),
+        .filter((name) =>
+          name !== "team_progress"
+          && name !== "delegate_to_teammate"
+          && name !== "send_team_message"),
       plugins: contributions.plugins.map((plugin) => plugin.name).sort(),
       skills: contributions.skills.map((skill) => skill.name).sort(),
       mcpServers: [...mcpServers].sort(),
@@ -1940,6 +2197,50 @@ class ProjectRuntimeRegistry {
   }
 }
 
+function restrictTeamMessagePermissions(
+  snapshots: PilotDeckTeamPermissionSnapshot[],
+): PilotDeckTeamPermissionSnapshot {
+  const [first, ...rest] = snapshots;
+  if (!first) {
+    throw new Error("Team message delivery requires a permission snapshot.");
+  }
+  const intersectRules = (rules: PermissionRule[][]): PermissionRule[] => {
+    const remaining = new Map(
+      rules[0]?.map((rule) => [JSON.stringify(rule), rule]) ?? [],
+    );
+    for (const entries of rules.slice(1)) {
+      const allowed = new Set(entries.map((rule) => JSON.stringify(rule)));
+      for (const key of remaining.keys()) {
+        if (!allowed.has(key)) remaining.delete(key);
+      }
+    }
+    return [...remaining.values()].map((rule) => ({ ...rule }));
+  };
+  const unionRules = (rules: PermissionRule[][]): PermissionRule[] => {
+    const union = new Map<string, PermissionRule>();
+    for (const entries of rules) {
+      for (const rule of entries) union.set(JSON.stringify(rule), rule);
+    }
+    return [...union.values()].map((rule) => ({ ...rule }));
+  };
+  const rank = { plan: 0, default: 1, bypassPermissions: 2 } as const;
+  const mostRestrictive = (
+    values: PilotDeckTeamPermissionSnapshot["permissionMode"][],
+  ) => values.reduce((current, value) =>
+    rank[value] < rank[current] ? value : current);
+  const all = [first, ...rest];
+  return {
+    permissionMode: mostRestrictive(all.map((snapshot) => snapshot.permissionMode)),
+    basePermissionMode: mostRestrictive(all.map((snapshot) => snapshot.basePermissionMode)),
+    canPrompt: all.every((snapshot) => snapshot.canPrompt),
+    rules: {
+      allow: intersectRules(all.map((snapshot) => snapshot.rules.allow)),
+      deny: unionRules(all.map((snapshot) => snapshot.rules.deny)),
+      ask: unionRules(all.map((snapshot) => snapshot.rules.ask)),
+    },
+  };
+}
+
 function mergeSessionDependencies(
   base: CreateAgentSessionOptions["dependencies"],
   extension: Partial<
@@ -1978,6 +2279,9 @@ function scopeTeammateTools(
       )
     : undefined;
   for (const tool of scoped.list()) {
+    if (tool.name === "send_team_message") {
+      continue;
+    }
     if (
       tool.name === "agent"
       || tool.name === "delegate_to_teammate"

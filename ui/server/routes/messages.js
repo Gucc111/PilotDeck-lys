@@ -144,7 +144,7 @@ router.get('/:sessionId/subagent/:subagentId/messages', async (req, res) => {
   }
 });
 
-function mapWebMessageToNormalized(message, sessionId) {
+export function mapWebMessageToNormalized(message, sessionId) {
   const base = {
     id: message.id,
     sessionId,
@@ -152,6 +152,8 @@ function mapWebMessageToNormalized(message, sessionId) {
     provider: message.provider || 'pilotdeck',
     ...(message.entryId ? { entryId: message.entryId } : {}),
   };
+  const teamMessage = mapTeamMessageHistory(message, base);
+  if (teamMessage) return teamMessage;
   switch (message.kind) {
     case 'text': {
       const payload = message.payload && typeof message.payload === 'object'
@@ -281,6 +283,48 @@ function mapWebMessageToNormalized(message, sessionId) {
     default:
       return createNormalizedMessage({ ...base, kind: 'status', text: message.kind });
   }
+}
+
+function mapTeamMessageHistory(message, base) {
+  if (!isTeamMessagePayload(message.payload)) return null;
+  const detail = message.payload.detail;
+  const failed = message.payload.event === 'teammate_failed';
+  const teammateId = String(detail.teammateId || 'teammate');
+  return createNormalizedMessage({
+    ...base,
+    id: `team_message_${sanitizeStableId(detail.messageId)}`,
+    kind: 'agent_activity',
+    activityId: `team-message:${detail.messageId}`,
+    runId: `team-message:${detail.messageId}`,
+    phase: 'team',
+    state: failed ? 'failed' : 'completed',
+    title: message.payload.event === 'team_message'
+      ? `Message from ${teammateId}`
+      : failed
+        ? `${teammateId} reported a failure`
+        : `${teammateId} completed a turn`,
+    detail: detail.message || detail.summary || message.text || '',
+    teammateId,
+    taskId: detail.taskId,
+    startedAt: message.createdAt,
+    endedAt: message.createdAt,
+    durationMs: 0,
+    severity: failed ? 'error' : undefined,
+    toolName: 'send_team_message',
+  });
+}
+
+function isTeamMessagePayload(payload) {
+  return Boolean(
+    payload
+    && ['team_message', 'teammate_completed', 'teammate_failed'].includes(payload.event)
+    && payload.detail
+    && typeof payload.detail.messageId === 'string',
+  );
+}
+
+function sanitizeStableId(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 export default router;

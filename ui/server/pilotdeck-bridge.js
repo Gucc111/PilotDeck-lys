@@ -682,6 +682,9 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                 }),
             ];
         case 'agent_status': {
+            const teamMessageFrames = createTeamMessageStatusFrames(event, base);
+            if (teamMessageFrames && teamMessageFrames.length > 0) return teamMessageFrames;
+
             const subagentFrames = createSubagentStatusFrames(event, base);
             if (subagentFrames && subagentFrames.length > 0) return subagentFrames;
 
@@ -805,6 +808,42 @@ export function gatewayEventToFrames(event, sessionId, provider) {
         default:
             return [];
     }
+}
+
+function createTeamMessageStatusFrames(event, base) {
+    const detail = event?.detail || {};
+    if (!detail.messageId) return null;
+    if (!['team_message', 'teammate_completed', 'teammate_failed'].includes(event?.event)) {
+        return null;
+    }
+    const teammateId = String(detail.teammateId || 'teammate');
+    const failed = event.event === 'teammate_failed';
+    const title = event.event === 'team_message'
+        ? `Message from ${teammateId}`
+        : failed
+            ? `${teammateId} reported a failure`
+            : `${teammateId} completed a turn`;
+    const timestamp = new Date().toISOString();
+    return [
+        createNormalizedMessage({
+            ...base,
+            id: `team_message_${sanitizeMessageId(detail.messageId)}`,
+            kind: 'agent_activity',
+            activityId: `team-message:${detail.messageId}`,
+            runId: `team-message:${detail.messageId}`,
+            phase: 'team',
+            state: failed ? 'failed' : 'completed',
+            title,
+            detail: detail.message || detail.summary || '',
+            teammateId,
+            taskId: detail.taskId,
+            startedAt: timestamp,
+            endedAt: timestamp,
+            durationMs: 0,
+            severity: failed ? 'error' : undefined,
+            toolName: 'send_team_message',
+        }),
+    ];
 }
 
 function createSubagentStatusFrames(event, base) {
@@ -2224,7 +2263,7 @@ export function registerAlwaysOnNotificationForwarding(clients) {
             if (!sessionKey || !event) return;
 
             const provider = 'pilotdeck';
-            if (name === 'team-control:event') {
+            if (name === 'team-control:event' || name === 'team-message:event') {
                 for (const frame of gatewayEventToFrames(event, sessionKey, provider)) {
                     const msg = JSON.stringify(frame);
                     for (const client of clients) {

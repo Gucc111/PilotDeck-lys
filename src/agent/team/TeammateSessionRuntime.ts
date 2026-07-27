@@ -1,10 +1,12 @@
 import type {
   PilotDeckTeamControlDecisionAction,
   PilotDeckTeamDelegateResult,
+  PilotDeckTeamMessageKind,
   PilotDeckTeamPermissionSnapshot,
   PilotDeckTeamRuntimeApi,
 } from "../../tool/protocol/types.js";
 import { TeamControlCoordinator } from "./TeamControlCoordinator.js";
+import { TeamMessageCoordinator } from "./TeamMessageCoordinator.js";
 import { TeamProgressStore } from "./TeamProgressStore.js";
 import { teammateSessionKey, type RuntimeTeammateDefinition } from "./types.js";
 
@@ -33,6 +35,8 @@ export type TeammateSessionRuntimeOptions = {
   projectRoot: string;
   progressPath: string;
   control: TeamControlCoordinator;
+  messages: TeamMessageCoordinator;
+  actorTeammateId?: string;
   definitions: () => RuntimeTeammateDefinition[];
   diagnostics?: () => string[];
   host: TeammateTurnHost;
@@ -91,6 +95,58 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       action: input.action,
       feedback: input.feedback,
     });
+  }
+
+  async sendMessage(
+    input: Parameters<PilotDeckTeamRuntimeApi["sendMessage"]>[0],
+  ) {
+    const text = input.message.trim();
+    if (!text) throw new Error("Team message requires non-empty text.");
+    const leader = {
+      role: "leader" as const,
+      id: "leader" as const,
+      sessionId: this.options.leaderSessionId,
+    };
+    const actorTeammateId = this.options.actorTeammateId;
+    if (actorTeammateId) {
+      if (input.to !== "leader") {
+        throw new Error('Teammates may only send Team messages to "leader".');
+      }
+      const from = {
+        role: "teammate" as const,
+        id: actorTeammateId,
+        sessionId: teammateSessionKey(this.options.leaderSessionId, actorTeammateId),
+      };
+      const message = await this.options.messages.enqueue({
+        from,
+        to: leader,
+        kind: "explicit",
+        text,
+        ...(input.summary ? { summary: input.summary } : {}),
+      });
+      return { messageId: message.id, from, to: leader, status: "queued" as const };
+    }
+
+    if (input.to === "leader") {
+      throw new Error("The Team Leader cannot send a Team message to itself.");
+    }
+    const definition = this.options.definitions().find((entry) => entry.id === input.to);
+    if (!definition) throw new Error(`Unknown Teammate "${input.to}".`);
+    const from = leader;
+    const to = {
+      role: "teammate" as const,
+      id: definition.id,
+      sessionId: teammateSessionKey(this.options.leaderSessionId, definition.id),
+    };
+    const message = await this.options.messages.enqueue({
+      from,
+      to,
+      kind: "explicit",
+      text,
+      ...(input.summary ? { summary: input.summary } : {}),
+      permission: input.permission,
+    });
+    return { messageId: message.id, from, to, status: "queued" as const };
   }
 
   async delegate(
@@ -171,20 +227,73 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
           }],
         });
       }
+      await this.reportResultSafely(definition, result.status, result.summary, input.taskId);
     } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
       if (input.taskId) {
         await this.progress.update({
           merge: true,
           items: [{
             id: input.taskId,
             status: input.abortSignal?.aborted ? "cancelled" : "failed",
-            summary: error instanceof Error ? error.message : String(error),
+            summary,
             teammateId: definition.id,
           }],
         });
       }
+      await this.reportResultSafely(
+        definition,
+        input.abortSignal?.aborted ? "cancelled" : "failed",
+        summary,
+        input.taskId,
+      );
     } finally {
       this.inFlight.delete(definition.id);
     }
+  }
+
+  private async reportResultSafely(
+    definition: RuntimeTeammateDefinition,
+    status: PilotDeckTeamDelegateResult["status"],
+    summary: string,
+    taskId?: string,
+  ): Promise<void> {
+    try {
+      await this.reportResult(definition, status, summary, taskId);
+    } catch {
+      // Message persistence must not rewrite an otherwise valid task result.
+      // A later Team runtime reconciliation can only recover messages that
+      // reached disk, so this remains best-effort when storage itself fails.
+    }
+  }
+
+  private async reportResult(
+    definition: RuntimeTeammateDefinition,
+    status: PilotDeckTeamDelegateResult["status"],
+    summary: string,
+    taskId?: string,
+  ): Promise<void> {
+    if (status === "dispatched" || status === "shutdown") return;
+    const kind: PilotDeckTeamMessageKind = status === "completed"
+      ? "completion"
+      : status === "cancelled"
+        ? "cancelled"
+        : "failure";
+    await this.options.messages.enqueue({
+      from: {
+        role: "teammate",
+        id: definition.id,
+        sessionId: teammateSessionKey(this.options.leaderSessionId, definition.id),
+      },
+      to: {
+        role: "leader",
+        id: "leader",
+        sessionId: this.options.leaderSessionId,
+      },
+      kind,
+      text: summary,
+      summary: summary.slice(0, 4_096),
+      ...(taskId ? { taskId } : {}),
+    });
   }
 }

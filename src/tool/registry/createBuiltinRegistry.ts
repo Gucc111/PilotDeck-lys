@@ -26,6 +26,7 @@ import { createReadSkillTool, type ReadSkillDeps } from "../builtin/readSkill.js
 import { createWriteFileTool } from "../builtin/writeFile.js";
 import { createTeamProgressTool } from "../builtin/teamProgress.js";
 import { createDelegateToTeammateTool } from "../builtin/delegateToTeammate.js";
+import { createSendTeamMessageTool } from "../builtin/sendTeamMessage.js";
 import { ToolRegistry } from "./ToolRegistry.js";
 
 export type CreateBuiltinRegistryOptions = {
@@ -133,6 +134,7 @@ export function createBuiltinRegistry(options?: CreateBuiltinRegistryOptions): T
   registry.register(createTodoWriteTool());
   registry.register(createTeamProgressTool());
   registry.register(createDelegateToTeammateTool());
+  registry.register(createSendTeamMessageTool());
   if (options?.readSkill) {
     registry.register(createReadSkillTool(options.readSkill));
   }
