@@ -23,6 +23,8 @@ vi.mock('react-i18next', () => ({
         'teammates.fields.idHelp': 'Stable ID help',
         'teammates.fields.name': 'Display name',
         'teammates.fields.prompt': 'Prompt',
+        'teammates.fields.tools': 'Tools',
+        'teammates.fields.toolsHelp': 'Leave empty to grant no ordinary tools.',
         'teammates.confirmDelete': `Delete teammate "${String(options?.name ?? '')}"?`,
         'teammates.enablement.toggleLabel': `Enabled for workspace: ${String(options?.name ?? '')}`,
         'teammates.errors.enablementLoad': 'Failed to load workspace teammate enablement.',
@@ -167,6 +169,7 @@ describe('TeammatesTab', () => {
     await waitFor(() => expect(screen.getByText('Implementer')).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    expect(screen.getByText('Leave empty to grant no ordinary tools.')).toBeTruthy();
     fireEvent.change(screen.getByLabelText(/Stable ID/), {
       target: { value: 'new-teammate' },
     });
@@ -192,6 +195,7 @@ describe('TeammatesTab', () => {
         id: 'new-teammate',
         name: 'New teammate',
         prompt: 'Do the assigned work.',
+        tools: [],
       }),
     });
     expect(JSON.parse(putCall?.[1]?.body as string)).not.toHaveProperty('projectPath');

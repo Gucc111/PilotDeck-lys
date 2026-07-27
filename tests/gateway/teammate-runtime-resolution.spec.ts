@@ -105,6 +105,7 @@ mcpServers: [missing_mcp]`,
 
     const listedA = await local.registry.listEnabledTeammates(projectA);
     assert.deepEqual(listedA.teammates.map((entry) => entry.id), ["valid"]);
+    assert.deepEqual(local.registry.resolve(projectA).teammates[0]?.tools, []);
     assert.equal(
       listedA.diagnostics.some((entry) => entry.code === "FRONTMATTER_MISSING"),
       false,

@@ -4,7 +4,7 @@ export type RuntimeTeammateDefinition = {
   description: string;
   prompt: string;
   model?: string;
-  tools?: string[];
+  tools: string[];
   plugins?: string[];
   skills?: string[];
   mcpServers?: string[];

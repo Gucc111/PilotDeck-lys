@@ -187,6 +187,7 @@
       "plugins": "插件",
       "skills": "技能",
       "mcpServers": "MCP 服务器",
+      "toolsHelp": "每行填写一个值，也可以使用逗号分隔。留空表示不授予普通工具；Team 消息和计划控制工具仍然可用。",
       "arrayHelp": "每行填写一个值，也可以使用逗号分隔。"
     },
     "placeholders": {

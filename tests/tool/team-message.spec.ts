@@ -272,6 +272,7 @@ test("TeammateSessionRuntime enforces message direction and reports idle lifecyc
       name: "Implementer",
       description: "Implements changes",
       prompt: "Implement carefully.",
+      tools: [],
       sourcePath: join(dir, "teammates/implementer.md"),
     }],
     host: {

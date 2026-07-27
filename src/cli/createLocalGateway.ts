@@ -125,6 +125,7 @@ import {
   submitLeaderTeamMessages,
 } from "../agent/team/TeamMessageChannels.js";
 import { TeammateExtensionResolver } from "../agent/team/TeammateExtensionResolver.js";
+import { scopeTeammateTools } from "../agent/team/TeammateToolScope.js";
 import {
   teammateSessionKey,
   type RuntimeTeammateDefinition,
@@ -2270,50 +2271,6 @@ function mergeSessionDependencies(
   };
 }
 
-function scopeTeammateTools(
-  source: ToolRegistry,
-  definition: RuntimeTeammateDefinition,
-): ToolRegistry {
-  const scoped = source.clone();
-  const allow = definition.tools ? new Set(definition.tools) : undefined;
-  const allowedMcpServers = definition.mcpServers
-    ? new Set(
-        definition.mcpServers.map((serverId) => {
-          const wire = buildMcpToolWireName(serverId, "tool");
-          return parseMcpToolWireName(wire)?.serverId ?? serverId;
-        }),
-      )
-    : undefined;
-  for (const tool of scoped.list()) {
-    if (tool.name === "send_team_message") {
-      continue;
-    }
-    if (
-      tool.name === "agent"
-      || tool.name === "delegate_to_teammate"
-      || tool.name === "team_progress"
-      || tool.name === "ask_user_question"
-    ) {
-      scoped.unregister(tool.name);
-      continue;
-    }
-    if (tool.name === "enter_plan_mode" || tool.name === "exit_plan_mode") {
-      continue;
-    }
-    const mcp = parseMcpToolWireName(tool.name);
-    if (mcp) {
-      const serverAllowed = !allowedMcpServers || allowedMcpServers.has(mcp.serverId);
-      const toolAllowed = !allow || allow.has(tool.name) || allow.has("mcp");
-      if (!serverAllowed || !toolAllowed) scoped.unregister(tool.name);
-      continue;
-    }
-    if (allow && !allow.has(tool.name)) {
-      scoped.unregister(tool.name);
-    }
-  }
-  return scoped;
-}
-
 function toRuntimeTeammateDefinition(teammate: TeammateRecord): RuntimeTeammateDefinition {
   return {
     id: teammate.id,
@@ -2321,7 +2278,7 @@ function toRuntimeTeammateDefinition(teammate: TeammateRecord): RuntimeTeammateD
     description: teammate.description?.trim() || teammate.name,
     prompt: teammate.prompt,
     ...(teammate.model ? { model: teammate.model } : {}),
-    ...(teammate.tools.length > 0 ? { tools: [...teammate.tools] } : {}),
+    tools: [...teammate.tools],
     plugins: [...teammate.plugins],
     skills: [...teammate.skills],
     mcpServers: [...teammate.mcpServers],

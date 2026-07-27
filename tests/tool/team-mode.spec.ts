@@ -290,6 +290,7 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
       name: "Implementer",
       description: "Implements scoped changes",
       prompt: "Implement carefully.",
+      tools: [],
       sourcePath: join(dir, "teammates/implementer.md"),
     }],
     diagnostics: () => ["Workspace enablement is invalid."],
@@ -372,6 +373,7 @@ test("two Teammates emit one explicit report and one idle lifecycle each with co
     name: id,
     description: `${id} role`,
     prompt: `${id} prompt`,
+    tools: [],
     sourcePath: join(dir, `teammates/${id}.md`),
   }));
   const runtime = new TeammateSessionRuntime({

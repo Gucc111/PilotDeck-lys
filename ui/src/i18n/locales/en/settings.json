@@ -187,6 +187,7 @@
       "plugins": "Plugins",
       "skills": "Skills",
       "mcpServers": "MCP servers",
+      "toolsHelp": "Enter one value per line or separate values with commas. Leave empty to grant no ordinary tools; Team messaging and plan controls remain available.",
       "arrayHelp": "Enter one value per line or separate values with commas."
     },
     "placeholders": {

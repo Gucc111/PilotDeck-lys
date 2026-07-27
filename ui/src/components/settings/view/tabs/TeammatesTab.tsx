@@ -705,7 +705,11 @@ function ArrayField({
   return (
     <Field
       label={t(`teammates.fields.${field}`)}
-      description={t('teammates.fields.arrayHelp')}
+      description={t(
+        field === 'tools'
+          ? 'teammates.fields.toolsHelp'
+          : 'teammates.fields.arrayHelp',
+      )}
     >
       <textarea
         value={value}
