@@ -1,8 +1,13 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PendingPermissionRequest } from '../../types/types';
-import { buildPilotDeckToolPermissionEntry, formatToolInputForDisplay } from '../../utils/chatPermissions';
+import type { PendingPermissionRequest, PilotDeckPermissionSuggestion } from '../../types/types';
+import {
+  buildPilotDeckToolPermissionRule,
+  formatPermissionRuleSummary,
+  formatToolInputForDisplay,
+} from '../../utils/chatPermissions';
 import { getPilotDeckSettings } from '../../utils/chatStorage';
+import { permissionRuleKey, serializePermissionRule } from '../../../../../../src/permission/settingsSchema';
 import { getPermissionPanel, registerPermissionPanel } from '../../tools/configs/permissionPanelRegistry';
 import { AskUserQuestionPanel, ExitPlanModePanel } from '../../tools/components/InteractiveRenderers';
 
@@ -18,7 +23,7 @@ interface PermissionRequestsBannerProps {
     requestIds: string | string[],
     decision: { allow?: boolean; message?: string; rememberEntry?: string | null; updatedInput?: unknown },
   ) => void;
-  handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
+  handleGrantToolPermission: (suggestion: PilotDeckPermissionSuggestion) => { success: boolean };
   onPlanExecutionApproved?: () => void;
 }
 
@@ -68,7 +73,8 @@ export default function PermissionRequestsBanner({
       continue;
     }
     const rawInput = formatToolInputForDisplay(request.input);
-    const entry = buildPilotDeckToolPermissionEntry(request.toolName, rawInput) ?? request.requestId;
+    const rule = buildPilotDeckToolPermissionRule(request.toolName, rawInput);
+    const entry = rule ? serializePermissionRule(rule) : request.requestId;
     const groupKey = `${entry}\u0000${getPermissionRequestTeammateId(request) ?? ''}`;
     const group = grouped.get(groupKey);
     if (group) {
@@ -104,9 +110,15 @@ export default function PermissionRequestsBanner({
         const teammateId = getPermissionRequestTeammateId(first);
         const allIds = requests.map((r) => r.requestId);
         const rawInput = formatToolInputForDisplay(first.input);
-        const permissionEntry = buildPilotDeckToolPermissionEntry(first.toolName, rawInput);
+        const permissionRule = buildPilotDeckToolPermissionRule(first.toolName, rawInput);
+        const permissionEntry = permissionRule ? serializePermissionRule(permissionRule) : null;
+        const permissionSummary = permissionRule ? formatPermissionRuleSummary(permissionRule) : null;
         const settings = getPilotDeckSettings();
-        const alreadyAllowed = permissionEntry ? settings.allowedTools.includes(permissionEntry) : false;
+        const alreadyAllowed = permissionRule
+          ? settings.rules.some((candidate) =>
+              candidate.behavior === 'allow'
+              && permissionRuleKey(candidate) === permissionRuleKey(permissionRule))
+          : false;
         const rememberLabel = alreadyAllowed ? t('permissionBanner.allowSaved') : t('permissionBanner.allowRemember');
 
         return (
@@ -132,7 +144,7 @@ export default function PermissionRequestsBanner({
               </div>
               {permissionEntry && (
                 <div className="text-xs text-amber-700 dark:text-amber-300">
-                  {t('permissionBanner.allowRule')} <span className="font-mono">{permissionEntry}</span>
+                  {t('permissionBanner.allowRule')} <span className="font-mono">{permissionSummary}</span>
                 </div>
               )}
             </div>
@@ -177,8 +189,14 @@ export default function PermissionRequestsBanner({
               <button
                 type="button"
                 onClick={() => {
-                  if (permissionEntry && !alreadyAllowed) {
-                    handleGrantToolPermission({ entry: permissionEntry, toolName: first.toolName });
+                  if (permissionRule && permissionEntry && !alreadyAllowed) {
+                    handleGrantToolPermission({
+                      entry: permissionEntry,
+                      rule: permissionRule,
+                      summary: permissionSummary ?? first.toolName,
+                      toolName: first.toolName,
+                      isAllowed: false,
+                    });
                   }
                   handlePermissionDecision(allIds, { allow: true, rememberEntry: permissionEntry });
                 }}

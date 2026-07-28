@@ -58,6 +58,9 @@ import type {
   TeammateGatewayWriteInput,
   TeammateListResult,
   TeammateReadResult,
+  TeammateWorkspaceBindingSetInput,
+  TeammateWorkspaceBindingsGetInput,
+  TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
 import type {
@@ -244,6 +247,24 @@ export class RemoteGateway implements Gateway {
 
   async teammateEnablementSet(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult> {
     return (await this.client.request("teammate_enablement_set", input)) as TeammateEnablementResult;
+  }
+
+  async teammateWorkspaceBindingsGet(
+    input: TeammateWorkspaceBindingsGetInput,
+  ): Promise<TeammateWorkspaceBindingsResult> {
+    return (await this.client.request(
+      "teammate_workspace_bindings_get",
+      input,
+    )) as TeammateWorkspaceBindingsResult;
+  }
+
+  async teammateWorkspaceBindingSet(
+    input: TeammateWorkspaceBindingSetInput,
+  ): Promise<TeammateWorkspaceBindingsResult> {
+    return (await this.client.request(
+      "teammate_workspace_binding_set",
+      input,
+    )) as TeammateWorkspaceBindingsResult;
   }
 
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {

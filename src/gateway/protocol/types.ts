@@ -61,6 +61,9 @@ import type {
   TeammateGatewayWriteInput,
   TeammateListResult,
   TeammateReadResult,
+  TeammateWorkspaceBindingSetInput,
+  TeammateWorkspaceBindingsGetInput,
+  TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
 
@@ -539,5 +542,11 @@ export interface Gateway {
   teammateCatalog?(input: TeammateCatalogInput): Promise<TeammateCatalog>;
   teammateEnablementGet?(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult>;
   teammateEnablementSet?(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult>;
+  teammateWorkspaceBindingsGet?(
+    input: TeammateWorkspaceBindingsGetInput,
+  ): Promise<TeammateWorkspaceBindingsResult>;
+  teammateWorkspaceBindingSet?(
+    input: TeammateWorkspaceBindingSetInput,
+  ): Promise<TeammateWorkspaceBindingsResult>;
   teamState?(input: TeamStateInput): Promise<TeamStateResult>;
 }

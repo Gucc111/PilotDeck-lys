@@ -1075,14 +1075,9 @@ function sendBridgeStatusEvent(writer, statusEvent, sessionKey, provider) {
  * it). The transcript on disk is named after the same key, so
  * `/api/sessions/<sessionKey>/messages` resolves cleanly.
  *
- * Permission grants accumulated via the in-banner "Allow + remember"
- * action are stored server-side for the duration of the agent session
- * (see `createGatewayPermissionHook`) — `toolsSettings.allowedTools`
- * pre-population from the legacy settings panel is currently NOT
- * re-played here because the override map lives in another process.
- * That feature can be restored by extending `submitTurn` to carry an
- * optional `permissionAllow[]` payload; not needed for the common
- * banner-driven flow.
+ * The gateway reads persisted global V2 rules from permissions.json on each
+ * turn. Session-only grants use the grant_session_permission RPC and stay in
+ * the gateway's in-memory session rule set.
  *
  * @param {string} command User prompt text.
  * @param {object} options Legacy options blob from the WS frame.

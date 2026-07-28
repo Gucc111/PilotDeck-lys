@@ -11,6 +11,7 @@ import type {
   PermissionMode,
   PermissionResult,
   PermissionRuleSet,
+  ToolCallSelector,
 } from "../../permission/index.js";
 import type { AgentRunMode } from "../../agent/protocol/input.js";
 import type { PilotDeckToolAuditRecorder } from "../audit/ToolAuditRecorder.js";
@@ -409,6 +410,16 @@ export type PilotDeckToolProgressEvent = {
 
 export type PilotDeckToolProgressSink = (event: PilotDeckToolProgressEvent) => void;
 
+export type PilotDeckTeammateCapability = {
+  teammateId: string;
+  allow: readonly ToolCallSelector[];
+  deny: readonly ToolCallSelector[];
+  activeProjectRoot: string;
+  canonicalWorkspace: string;
+  workspaceBindingRevision: string;
+  workspaceBindingFingerprint: string;
+};
+
 export type PilotDeckTodoItem = {
   id?: string;
   content: string;
@@ -493,6 +504,8 @@ export type PilotDeckToolRuntimeContext = {
   /** User-selected mode before a tool-driven mode transition. */
   basePermissionMode?: PermissionMode;
   permissionContext: PermissionContext;
+  /** Hard parameter-level capability boundary, present only for Teammate sessions. */
+  teammateCapability?: PilotDeckTeammateCapability;
   auditRecorder?: PilotDeckToolAuditRecorder;
   /**
    * The final allow decision for the current tool call, populated by

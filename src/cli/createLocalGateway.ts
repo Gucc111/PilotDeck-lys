@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve, sep, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,7 @@ import {
   TeammateManagerError,
   type TeammateDiagnostic,
   type TeammateRecord,
+  type TeammateWorkspaceBinding,
 } from "../extension/teammates/index.js";
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
@@ -128,6 +129,7 @@ import { TeammateExtensionResolver } from "../agent/team/TeammateExtensionResolv
 import { scopeTeammateTools } from "../agent/team/TeammateToolScope.js";
 import {
   teammateSessionKey,
+  type CompiledTeammateToolConstraints,
   type RuntimeTeammateDefinition,
   type TeammateSessionBinding,
 } from "../agent/team/types.js";
@@ -356,6 +358,20 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       registry.getTeammateEnablement(projectKey),
     teammateEnablementSet: ({ projectKey, enabledTeammateIds }) =>
       registry.setTeammateEnablement(projectKey, enabledTeammateIds),
+    teammateWorkspaceBindingsGet: ({ projectKey }) =>
+      registry.getTeammateWorkspaceBindings(projectKey),
+    teammateWorkspaceBindingSet: ({
+      projectKey,
+      teammateId,
+      binding,
+      expectedRevision,
+    }) =>
+      registry.setTeammateWorkspaceBinding(
+        projectKey,
+        teammateId,
+        binding,
+        expectedRevision,
+      ),
     teamState: async ({ projectKey, leaderSessionId }) => {
       registry.reconcileTeamMessages(projectKey, leaderSessionId);
       const storage = createAgentProjectSessionStorage({
@@ -1360,6 +1376,10 @@ class ProjectRuntimeRegistry {
       projectRoot,
       definition,
       systemPrompt,
+      constraints: definition.constraints,
+      canonicalWorkspace: definition.canonicalWorkspace,
+      workspaceBindingRevision: definition.workspaceBindingRevision,
+      workspaceBindingFingerprint: definition.workspaceBindingFingerprint,
     };
     this.teammateBindings.set(sessionKey, binding);
     return { sessionKey, binding };
@@ -2004,6 +2024,7 @@ class ProjectRuntimeRegistry {
       canonicalProjectKey,
       enabledTeammateIds,
     );
+    await this.abortTeammateSessionsForWorkspace(canonicalProjectKey);
     // A worktree key and its canonical project can both own active sessions.
     // Conservatively refresh every cached runtime/session after enablement changes.
     this.invalidate();
@@ -2013,6 +2034,59 @@ class ProjectRuntimeRegistry {
       enabledTeammateIds: storedIds,
       filePath: this.teammateManager.enablementStore.filePath,
     };
+  }
+
+  async getTeammateWorkspaceBindings(projectKey: string) {
+    const snapshot = await this.teammateManager.getWorkspaceBindings(projectKey);
+    return {
+      canonicalProjectKey: snapshot.canonicalWorkspace,
+      bindings: snapshot.bindings,
+      revision: snapshot.revision,
+      filePath: this.teammateManager.enablementStore.filePath,
+    };
+  }
+
+  async setTeammateWorkspaceBinding(
+    projectKey: string,
+    teammateId: string,
+    binding: import("../extension/teammates/types.js").TeammateWorkspaceBinding,
+    expectedRevision: string,
+  ) {
+    const snapshot = await this.teammateManager.setWorkspaceBinding(
+      projectKey,
+      teammateId,
+      binding,
+      expectedRevision,
+    );
+    await this.abortTeammateSessionsForWorkspace(
+      snapshot.canonicalWorkspace,
+      teammateId,
+    );
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("teammate_enablement_changed");
+    return {
+      canonicalProjectKey: snapshot.canonicalWorkspace,
+      bindings: snapshot.bindings,
+      revision: snapshot.revision,
+      filePath: this.teammateManager.enablementStore.filePath,
+    };
+  }
+
+  private async abortTeammateSessionsForWorkspace(
+    canonicalWorkspace: string,
+    teammateId?: string,
+  ): Promise<void> {
+    if (!this.sessionRouter) return;
+    const aborts: Promise<void>[] = [];
+    for (const [sessionKey, binding] of this.teammateBindings) {
+      if (binding.canonicalWorkspace !== canonicalWorkspace) continue;
+      if (teammateId && binding.definition.id !== teammateId) continue;
+      aborts.push(this.sessionRouter.abort(
+        sessionKey,
+        "Teammate workspace capabilities changed. Restart the delegated task with the updated profile.",
+      ));
+    }
+    await Promise.all(aborts);
   }
 
   async listEnabledTeammates(projectKey: string) {
@@ -2030,10 +2104,15 @@ class ProjectRuntimeRegistry {
     runtime: ProjectRuntime,
   ): Promise<{ teammates: TeammateRecord[]; diagnostics: TeammateDiagnostic[] }> {
     const listed = await this.teammateManager.list();
-    let enabledIds: string[] = [];
+    let bindings: Record<string, TeammateWorkspaceBinding> = {};
+    let canonicalWorkspace = "";
+    let workspaceBindingRevision = "";
     const enablementDiagnostics: TeammateDiagnostic[] = [];
     try {
-      enabledIds = await this.teammateManager.getEnablement(runtime.projectRoot);
+      const snapshot = await this.teammateManager.getWorkspaceBindings(runtime.projectRoot);
+      bindings = snapshot.bindings;
+      canonicalWorkspace = snapshot.canonicalWorkspace;
+      workspaceBindingRevision = snapshot.revision;
     } catch (error) {
       const detail = error instanceof TeammateEnablementStoreError
         ? error.message
@@ -2047,6 +2126,9 @@ class ProjectRuntimeRegistry {
       });
     }
 
+    const enabledIds = Object.entries(bindings)
+      .filter(([, binding]) => binding.enabled)
+      .map(([id]) => id);
     const enabledSet = new Set(enabledIds);
     const definitionDiagnostics = listed.diagnostics.filter(
       (diagnostic) => Boolean(diagnostic.id && enabledSet.has(diagnostic.id)),
@@ -2072,9 +2154,11 @@ class ProjectRuntimeRegistry {
         .filter((diagnostic) => diagnostic.severity === "error" && diagnostic.id)
         .map((diagnostic) => diagnostic.id as string),
     );
-    const enabledDefinitions = listed.teammates.filter(
-      (teammate) => enabledSet.has(teammate.id) && !invalidDefinitionIds.has(teammate.id),
-    );
+    const enabledDefinitions = listed.teammates
+      .filter(
+        (teammate) => enabledSet.has(teammate.id) && !invalidDefinitionIds.has(teammate.id),
+      )
+      .map((teammate) => applyWorkspaceToolProfile(teammate, bindings[teammate.id]!));
     const contributions = runtime.pluginRuntime.snapshotContributions();
     const runtimeDiagnostics = enabledDefinitions.flatMap((teammate) =>
       validateTeammateRuntimeReferences(teammate, runtime, contributions));
@@ -2092,7 +2176,13 @@ class ProjectRuntimeRegistry {
     const validEnabledDefinitions = enabledDefinitions.filter(
       (definition) => !invalidRuntimeIds.has(definition.id),
     );
-    runtime.teammates = validEnabledDefinitions.map(toRuntimeTeammateDefinition);
+    runtime.teammates = validEnabledDefinitions.map((teammate) =>
+      toRuntimeTeammateDefinition(teammate, {
+        binding: bindings[teammate.id]!,
+        canonicalWorkspace,
+        workspaceBindingRevision,
+        activeProjectRoot: runtime.projectRoot,
+      }));
     runtime.teammateDiagnostics = diagnostics;
     return {
       teammates: validEnabledDefinitions,
@@ -2182,9 +2272,22 @@ class ProjectRuntimeRegistry {
             isSubagent: true,
             subagentDepth: 1,
             maxSubagentDepth: 1,
+            teammateCapability: {
+              teammateId: teammateBinding.definition.id,
+              allow: teammateBinding.constraints.allow,
+              deny: teammateBinding.constraints.deny,
+              activeProjectRoot: teammateBinding.projectRoot,
+              canonicalWorkspace: teammateBinding.canonicalWorkspace,
+              workspaceBindingRevision: teammateBinding.workspaceBindingRevision,
+              workspaceBindingFingerprint: teammateBinding.workspaceBindingFingerprint,
+            },
             metadata: {
               teamLeaderSessionId: teammateBinding.leaderSessionId,
               teammateId: teammateBinding.definition.id,
+              teammateCanonicalWorkspace: teammateBinding.canonicalWorkspace,
+              teammateWorkspaceBindingRevision: teammateBinding.workspaceBindingRevision,
+              teammateWorkspaceBindingFingerprint: teammateBinding.workspaceBindingFingerprint,
+              teammateActiveProjectRoot: teammateBinding.projectRoot,
             },
           }
         : {}),
@@ -2271,7 +2374,51 @@ function mergeSessionDependencies(
   };
 }
 
-function toRuntimeTeammateDefinition(teammate: TeammateRecord): RuntimeTeammateDefinition {
+function applyWorkspaceToolProfile(
+  teammate: TeammateRecord,
+  binding: TeammateWorkspaceBinding,
+): TeammateRecord {
+  return binding.toolProfile.mode === "inherit"
+    ? teammate
+    : {
+        ...teammate,
+        tools: [...binding.toolProfile.tools],
+      };
+}
+
+function compileTeammateToolConstraints(
+  binding: TeammateWorkspaceBinding,
+): CompiledTeammateToolConstraints {
+  if (binding.toolProfile.mode === "inherit") {
+    return { allow: [], deny: [] };
+  }
+  return {
+    allow: structuredClone(binding.toolProfile.constraints.allow),
+    deny: structuredClone(binding.toolProfile.constraints.deny),
+  };
+}
+
+function teammateWorkspaceBindingFingerprint(input: {
+  teammateId: string;
+  canonicalWorkspace: string;
+  binding: TeammateWorkspaceBinding;
+}): string {
+  return createHash("sha256").update(JSON.stringify({
+    canonicalWorkspace: input.canonicalWorkspace,
+    teammateId: input.teammateId,
+    binding: input.binding,
+  })).digest("hex");
+}
+
+function toRuntimeTeammateDefinition(
+  teammate: TeammateRecord,
+  workspace: {
+    binding: TeammateWorkspaceBinding;
+    canonicalWorkspace: string;
+    workspaceBindingRevision: string;
+    activeProjectRoot: string;
+  },
+): RuntimeTeammateDefinition {
   return {
     id: teammate.id,
     name: teammate.name,
@@ -2283,6 +2430,15 @@ function toRuntimeTeammateDefinition(teammate: TeammateRecord): RuntimeTeammateD
     skills: [...teammate.skills],
     mcpServers: [...teammate.mcpServers],
     sourcePath: teammate.filePath,
+    constraints: compileTeammateToolConstraints(workspace.binding),
+    canonicalWorkspace: workspace.canonicalWorkspace,
+    workspaceBindingRevision: workspace.workspaceBindingRevision,
+    workspaceBindingFingerprint: teammateWorkspaceBindingFingerprint({
+      teammateId: teammate.id,
+      canonicalWorkspace: workspace.canonicalWorkspace,
+      binding: workspace.binding,
+    }),
+    activeProjectRoot: workspace.activeProjectRoot,
   };
 }
 
@@ -2320,8 +2476,10 @@ function validateTeammateRuntimeReferences(
   }
 
   const forbiddenTools = new Set(["agent", "team_progress", "delegate_to_teammate"]);
+  const hasMcpTools = runtime.tools.list().some((tool) => Boolean(parseMcpToolWireName(tool.name)))
+    || Boolean(runtime.perSessionServerSpecs?.length);
   for (const tool of teammate.tools) {
-    if (!runtime.tools.has(tool) || forbiddenTools.has(tool)) {
+    if ((!runtime.tools.has(tool) && !(tool === "mcp" && hasMcpTools)) || forbiddenTools.has(tool)) {
       push(
         "TOOL_NOT_FOUND",
         "tools",
@@ -2350,9 +2508,12 @@ function validateTeammateRuntimeReferences(
     }
   }
   const mcpServers = new Set(
-    runtime.tools.list()
-      .map((tool) => parseMcpToolWireName(tool.name)?.serverId)
-      .filter((server): server is string => Boolean(server)),
+    [
+      ...runtime.tools.list()
+        .map((tool) => parseMcpToolWireName(tool.name)?.serverId)
+        .filter((server): server is string => Boolean(server)),
+      ...(runtime.perSessionServerSpecs?.map((server) => server.id) ?? []),
+    ],
   );
   for (const server of teammate.mcpServers) {
     const normalized = parseMcpToolWireName(buildMcpToolWireName(server, "tool"))?.serverId ?? server;

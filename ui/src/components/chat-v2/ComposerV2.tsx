@@ -27,7 +27,12 @@ import {
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import type { ChatRunMode, PendingPermissionRequest, PermissionMode } from '../chat/types/types';
+import type {
+  ChatRunMode,
+  PendingPermissionRequest,
+  PermissionMode,
+  PilotDeckPermissionSuggestion,
+} from '../chat/types/types';
 import { MAX_ATTACHMENTS_ERROR_KEY } from '../chat/hooks/useChatComposerState';
 import { thinkingModes, type ThinkingModeId } from '../chat/constants/thinkingModes';
 import { getEffectiveThinkingMode, type ThinkingModeAvailability } from '../chat/constants/thinkingModeAvailability';
@@ -119,10 +124,7 @@ export type ComposerV2Props = {
       updatedInput?: unknown;
     },
   ) => void;
-  handleGrantToolPermission: (suggestion: {
-    entry: string;
-    toolName: string;
-  }) => { success: boolean };
+  handleGrantToolPermission: (suggestion: PilotDeckPermissionSuggestion) => { success: boolean };
   permissionMode: PermissionMode;
   onPermissionModeChange: (mode: PermissionMode) => void;
   runMode: ChatRunMode;

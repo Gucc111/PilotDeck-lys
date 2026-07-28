@@ -10,6 +10,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { ToolCallSelector } from '../../../../../../src/permission/protocol/types';
 import { Button } from '../../../../shared/view/ui';
 import { authenticatedFetch } from '../../../../utils/api';
 import { cn } from '../../../../lib/utils';
@@ -18,9 +19,11 @@ import type {
   TeammateCatalog,
   TeammateDefinition,
   TeammateDiagnostic,
-  TeammateEnablement,
   TeammateRecord,
+  TeammateWorkspaceBinding,
+  TeammateWorkspaceBindings,
 } from '../../types/types';
+import WorkspaceTeammateBindings from './WorkspaceTeammateBindings';
 
 type EditorMode =
   | { kind: 'new' }
@@ -82,9 +85,13 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
   const [loading, setLoading] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
-  const [enabledTeammateIds, setEnabledTeammateIds] = useState<string[]>([]);
-  const [enablementSaving, setEnablementSaving] = useState(false);
-  const [enablementError, setEnablementError] = useState<string | null>(null);
+  const [workspaceBindings, setWorkspaceBindings] = useState<
+    Record<string, TeammateWorkspaceBinding>
+  >({});
+  const [workspaceRevision, setWorkspaceRevision] = useState('');
+  const [canonicalProjectKey, setCanonicalProjectKey] = useState('');
+  const [bindingSavingId, setBindingSavingId] = useState<string | null>(null);
+  const [bindingError, setBindingError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -134,21 +141,23 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       setCatalog(null);
       setCatalogUnavailable(false);
       setWorkspaceDiagnostics([]);
-      setEnabledTeammateIds([]);
-      setEnablementError(null);
+      setWorkspaceBindings({});
+      setWorkspaceRevision('');
+      setCanonicalProjectKey('');
+      setBindingError(null);
       setWorkspaceLoading(false);
       return;
     }
     setWorkspaceLoading(true);
-    setEnablementError(null);
+    setBindingError(null);
     try {
-      const [catalogResult, enablementResult] = await Promise.allSettled([
+      const [catalogResult, bindingsResult] = await Promise.allSettled([
         authenticatedFetch(
           `/api/teammates/catalog?projectPath=${encodeURIComponent(targetProjectPath)}`,
           { suppressServerErrorToast: true },
         ),
         authenticatedFetch(
-          `/api/teammates/enablement?projectPath=${encodeURIComponent(targetProjectPath)}`,
+          `/api/teammates/bindings?projectPath=${encodeURIComponent(targetProjectPath)}`,
           { suppressServerErrorToast: true },
         ),
       ]);
@@ -173,21 +182,26 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
         setCatalogUnavailable(true);
       }
 
-      if (enablementResult.status === 'fulfilled') {
-        const data = await readJson(enablementResult.value);
+      if (bindingsResult.status === 'fulfilled') {
+        const data = await readJson(bindingsResult.value);
         if (!isCurrentRequest()) return;
-        if (!enablementResult.value.ok) {
-          throw new Error(apiError(data, t('teammates.errors.enablementLoad')));
+        if (!bindingsResult.value.ok) {
+          throw new Error(apiError(data, t('teammates.errors.bindingsLoad')));
         }
-        setEnabledTeammateIds(normalizeEnablement(data).enabledTeammateIds);
+        const normalized = normalizeWorkspaceBindings(data);
+        setWorkspaceBindings(normalized.bindings);
+        setWorkspaceRevision(normalized.revision);
+        setCanonicalProjectKey(normalized.canonicalProjectKey);
       } else {
-        throw enablementResult.reason;
+        throw bindingsResult.reason;
       }
     } catch (caught) {
       if (!isCurrentRequest()) return;
-      setEnabledTeammateIds([]);
-      setEnablementError(
-        caught instanceof Error ? caught.message : t('teammates.errors.enablementLoad'),
+      setWorkspaceBindings({});
+      setWorkspaceRevision('');
+      setCanonicalProjectKey('');
+      setBindingError(
+        caught instanceof Error ? caught.message : t('teammates.errors.bindingsLoad'),
       );
     } finally {
       if (isCurrentRequest()) setWorkspaceLoading(false);
@@ -289,7 +303,6 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       if (editorMode?.kind === 'edit' && editorMode.originalId === teammate.id) {
         closeEditor();
       }
-      setEnabledTeammateIds((current) => current.filter((id) => id !== teammate.id));
       await loadTeammates();
       await loadWorkspaceContext();
       setMessage(t('teammates.status.deleted'));
@@ -300,57 +313,53 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
     }
   };
 
-  const toggleEnablement = async (teammateId: string, enabled: boolean) => {
+  const saveWorkspaceBinding = async (
+    teammateId: string,
+    binding: TeammateWorkspaceBinding,
+  ) => {
     const targetProjectPath = projectPathRef.current;
-    if (!targetProjectPath || enablementSaving) return;
-    const previousIds = enabledTeammateIds;
-    const nextIds = toggleEnabledTeammateId(
-      previousIds,
-      teammateId,
-      enabled,
-      teammates.map((teammate) => teammate.id),
-    );
-    setEnabledTeammateIds(nextIds);
-    setEnablementSaving(true);
-    setEnablementError(null);
+    const expectedRevision = workspaceRevision;
+    if (!targetProjectPath || bindingSavingId || !expectedRevision) return;
+    setBindingSavingId(teammateId);
+    setBindingError(null);
     try {
-      const response = await authenticatedFetch('/api/teammates/enablement', {
+      const response = await authenticatedFetch(
+        `/api/teammates/bindings/${encodeURIComponent(teammateId)}`,
+        {
         method: 'PUT',
         body: JSON.stringify({
           projectPath: targetProjectPath,
-          enabledTeammateIds: nextIds,
+          binding,
+          expectedRevision,
         }),
-      });
+        },
+      );
       const data = await readJson(response);
       if (!response.ok) {
-        throw new Error(apiError(data, t('teammates.errors.enablementSave')));
+        if (response.status === 409 && data.code === 'revision_conflict') {
+          await loadWorkspaceContext(targetProjectPath);
+          if (targetProjectPath === projectPathRef.current) {
+            setBindingError(t('teammates.errors.revisionConflict'));
+          }
+          return;
+        }
+        throw new Error(apiError(data, t('teammates.errors.bindingsSave')));
       }
       if (targetProjectPath === projectPathRef.current) {
-        setEnabledTeammateIds(normalizeEnablement(data).enabledTeammateIds);
+        const normalized = normalizeWorkspaceBindings(data);
+        setWorkspaceBindings(normalized.bindings);
+        setWorkspaceRevision(normalized.revision);
+        setCanonicalProjectKey(normalized.canonicalProjectKey);
       }
     } catch (caught) {
-      const saveError =
-        caught instanceof Error ? caught.message : t('teammates.errors.enablementSave');
-      try {
-        const response = await authenticatedFetch(
-          `/api/teammates/enablement?projectPath=${encodeURIComponent(targetProjectPath)}`,
-          { suppressServerErrorToast: true },
+      if (targetProjectPath === projectPathRef.current) {
+        setBindingError(
+          caught instanceof Error ? caught.message : t('teammates.errors.bindingsSave'),
         );
-        const data = await readJson(response);
-        if (!response.ok) {
-          throw new Error(apiError(data, t('teammates.errors.enablementLoad')));
-        }
-        if (targetProjectPath === projectPathRef.current) {
-          setEnabledTeammateIds(normalizeEnablement(data).enabledTeammateIds);
-          setEnablementError(saveError);
-        }
-      } catch {
-        if (targetProjectPath === projectPathRef.current) {
-          setEnablementError(`${saveError} ${t('teammates.errors.enablementUnknown')}`);
-        }
+        await loadWorkspaceContext(targetProjectPath).catch(() => {});
       }
     } finally {
-      setEnablementSaving(false);
+      setBindingSavingId(null);
     }
   };
 
@@ -405,7 +414,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
               projectPathRef.current = event.target.value;
               setProjectPath(event.target.value);
             }}
-            disabled={projectOptions.length === 0 || enablementSaving}
+            disabled={projectOptions.length === 0 || bindingSavingId !== null}
             className={cn(INPUT_CLASS, 'disabled:cursor-not-allowed disabled:opacity-60')}
           >
             {projectOptions.length === 0 ? (
@@ -424,16 +433,35 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
           role="status"
           aria-live="polite"
         >
-          {(workspaceLoading || enablementSaving) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {(workspaceLoading || bindingSavingId) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {workspaceLoading
-            ? t('teammates.enablement.loading')
-            : enablementSaving
-              ? t('teammates.enablement.saving')
+            ? t('teammates.bindings.loading')
+            : bindingSavingId
+              ? t('teammates.bindings.saving')
               : projectPath
-                ? t('teammates.enablement.summary', { count: enabledTeammateIds.length })
+                ? t('teammates.bindings.summary', {
+                    count: Object.values(workspaceBindings).filter((binding) => binding.enabled).length,
+                  })
                 : t('teammates.workspace.none')}
         </div>
-        {enablementError && <Notice tone="error">{enablementError}</Notice>}
+        {canonicalProjectKey && (
+          <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            <div>{t('teammates.workspace.canonical', { path: canonicalProjectKey })}</div>
+            <div>{t('teammates.workspace.worktreeHint')}</div>
+          </div>
+        )}
+        {bindingError && <Notice tone="error">{bindingError}</Notice>}
+        <WorkspaceTeammateBindings
+          teammates={teammates}
+          catalog={catalog}
+          bindings={workspaceBindings}
+          projectPath={projectPath}
+          loading={workspaceLoading}
+          savingId={bindingSavingId}
+          onChange={(teammateId, binding) => {
+            void saveWorkspaceBinding(teammateId, binding);
+          }}
+        />
       </section>
 
       {projectOptions.length === 0 && (
@@ -457,6 +485,15 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       {(error || message) && (
         <Notice tone={error ? 'error' : 'success'}>{error || message}</Notice>
       )}
+
+      <section className="rounded-lg border border-border bg-card/60 p-4">
+        <h3 className="text-sm font-semibold text-foreground">
+          {t('teammates.global.title')}
+        </h3>
+        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+          {t('teammates.global.description')}
+        </p>
+      </section>
 
       <div className="grid gap-5 md:grid-cols-[minmax(230px,0.85fr)_minmax(0,1.45fr)]">
         <section className="overflow-hidden rounded-lg border border-border bg-card/60">
@@ -507,20 +544,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
                         </p>
                       )}
                     </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <label className="mr-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          checked={enabledTeammateIds.includes(teammate.id)}
-                          onChange={(event) => {
-                            void toggleEnablement(teammate.id, event.target.checked);
-                          }}
-                          disabled={!projectPath || workspaceLoading || enablementSaving}
-                          aria-label={t('teammates.enablement.toggleLabel', { name: teammate.name })}
-                          className="h-4 w-4 rounded border-border accent-primary disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                        <span className="truncate">{t('teammates.enablement.rowLabel')}</span>
-                      </label>
+                    <div className="mt-3 flex items-center justify-end gap-2">
                       <Button
                         variant="outline"
                         size="sm"
@@ -923,27 +947,57 @@ function normalizeCatalog(value: Record<string, unknown>): TeammateCatalog {
   };
 }
 
-function normalizeEnablement(value: Record<string, unknown>): TeammateEnablement {
+function normalizeWorkspaceBindings(
+  value: Record<string, unknown>,
+): TeammateWorkspaceBindings {
+  const bindings: Record<string, TeammateWorkspaceBinding> = {};
+  if (isRecord(value.bindings)) {
+    for (const [id, candidate] of Object.entries(value.bindings)) {
+      if (!isRecord(candidate) || typeof candidate.enabled !== 'boolean') continue;
+      const profile = candidate.toolProfile;
+      if (!isRecord(profile)) continue;
+      if (profile.mode === 'inherit') {
+        bindings[id] = {
+          enabled: candidate.enabled,
+          toolProfile: { mode: 'inherit' },
+        };
+        continue;
+      }
+      if (profile.mode !== 'custom' || !isRecord(profile.constraints)) continue;
+      bindings[id] = {
+        enabled: candidate.enabled,
+        toolProfile: {
+          mode: 'custom',
+          tools: normalizeStringArray(profile.tools),
+          constraints: {
+            allow: normalizeSelectors(profile.constraints.allow),
+            deny: normalizeSelectors(profile.constraints.deny),
+          },
+        },
+      };
+    }
+  }
   return {
     canonicalProjectKey:
       typeof value.canonicalProjectKey === 'string' ? value.canonicalProjectKey : '',
-    enabledTeammateIds: normalizeStringArray(value.enabledTeammateIds),
+    bindings,
+    revision: typeof value.revision === 'string' ? value.revision : '',
+    filePath: typeof value.filePath === 'string' ? value.filePath : '',
   };
 }
 
-function toggleEnabledTeammateId(
-  currentIds: string[],
-  teammateId: string,
-  enabled: boolean,
-  definitionOrder: string[],
-): string[] {
-  const next = new Set(currentIds);
-  if (enabled) next.add(teammateId);
-  else next.delete(teammateId);
-  const order = new Map(definitionOrder.map((id, index) => [id, index]));
-  return [...next]
-    .filter((id) => order.has(id))
-    .sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
+function normalizeSelectors(value: unknown): ToolCallSelector[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (
+      !isRecord(candidate)
+      || candidate.version !== 2
+      || typeof candidate.toolName !== 'string'
+    ) {
+      return [];
+    }
+    return [candidate as ToolCallSelector];
+  });
 }
 
 function normalizeStringArray(value: unknown): string[] {

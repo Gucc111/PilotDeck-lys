@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Download, Plus, Shield, Upload, X } from 'lucide-react';
+import { AlertTriangle, Download, Shield, Trash2, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input } from '../../../../shared/view/ui';
-import { isImeEnterEvent } from '../../../../utils/ime';
+import type {
+  PermissionRule,
+  PermissionRuleBehavior,
+  ToolCallSelector,
+} from '../../../../../../src/permission/protocol/types';
+import {
+  normalizePermissionSettings,
+  permissionRuleKey,
+} from '../../../../../../src/permission/settingsSchema';
+import { Button } from '../../../../shared/view/ui';
 import {
   PILOTDECK_SETTINGS_KEY,
   fetchPilotDeckPermissionSettings,
@@ -15,59 +23,23 @@ import SettingsCard from '../SettingsCard';
 import SettingsRow from '../SettingsRow';
 import SettingsSection from '../SettingsSection';
 import SettingsToggle from '../SettingsToggle';
+import { ToolCallSelectorBuilder } from '../ToolCallSelectorBuilder';
+import {
+  TOOL_SELECTOR_DESCRIPTORS,
+  toolCallSelectorSummary,
+} from '../toolCallSelectorMetadata';
 
-const IS_WINDOWS = typeof navigator !== 'undefined'
-  && /win/i.test(navigator.userAgent)
-  && !/darwin/i.test(navigator.userAgent);
-
-// Curated convenience shortcuts shown in the Permissions tab. Users can
-// still type any free-form pattern the PilotDeck permission DSL accepts —
-// these are just one-click presets for the most common allow-list entries.
-const QUICK_ADD_TOOLS = [
-  'bash:git log:*',
-  'bash:git diff:*',
-  'bash:git status:*',
-  'read_file',
-  'write_file',
-  'edit_file',
-  'glob',
-  'grep',
-  'agent',
-  'task_create',
-  'web_fetch',
-  'web_search',
-];
-
-const QUICK_BLOCK_TOOLS_UNIX = ['bash:rm:*', 'bash:sudo:*'];
-const QUICK_BLOCK_TOOLS_WINDOWS = [
-  'bash:rm:*',
-  'bash:Remove-Item:*',
-  'bash:del /s:*',
-  'bash:rd /s:*',
-  'bash:Format-Volume:*',
-  'bash:Start-Process:*',
-];
-const QUICK_BLOCK_TOOLS = IS_WINDOWS ? QUICK_BLOCK_TOOLS_WINDOWS : QUICK_BLOCK_TOOLS_UNIX;
-
-const addUnique = (items: string[], value: string): string[] => {
-  const trimmed = value.trim();
-  if (!trimmed || items.includes(trimmed)) return items;
-  return [...items, trimmed];
-};
-
-const removeValue = (items: string[], value: string): string[] =>
-  items.filter((item) => item !== value);
+type RuleEffect = PermissionRuleBehavior;
 
 function persist(updates: Partial<PilotDeckSettings>) {
   const current = getPilotDeckSettings();
   const next: PilotDeckSettings = {
     ...current,
     ...updates,
+    version: 2,
     lastUpdated: new Date().toISOString(),
   };
   safeLocalStorage.setItem(PILOTDECK_SETTINGS_KEY, JSON.stringify(next));
-  // Tell other tabs / mounted components (notably the chat permission
-  // suggestion in MessageComponent) to re-read from localStorage.
   window.dispatchEvent(new Event('pilotdeck-settings-changed'));
   savePilotDeckPermissionSettings(updates).catch((error) => {
     console.error('Failed to persist permission settings to backend:', error);
@@ -75,341 +47,198 @@ function persist(updates: Partial<PilotDeckSettings>) {
   return next;
 }
 
-// Import/export payload shape. Versioned so future migrations can bump it
-// without breaking older exports — we'll widen the validator if/when the
-// shape changes.
-type PermissionsExport = {
-  version: 2;
-  exportedAt: string;
-  source: 'pilotdeck';
-  allowedTools: string[];
-  disallowedTools: string[];
-  skipPermissions: boolean;
-};
-
-function buildExportPayload(): PermissionsExport {
-  const settings = getPilotDeckSettings();
-  return {
-    version: 2,
-    exportedAt: new Date().toISOString(),
-    source: 'pilotdeck',
-    allowedTools: settings.allowedTools,
-    disallowedTools: settings.disallowedTools,
-    skipPermissions: settings.skipPermissions,
-  };
+function mergeRules(current: PermissionRule[], imported: PermissionRule[]): PermissionRule[] {
+  const seen = new Set(current.map(permissionRuleKey));
+  const next = [...current];
+  for (const rule of imported) {
+    const key = permissionRuleKey(rule);
+    if (!seen.has(key)) {
+      seen.add(key);
+      next.push(rule);
+    }
+  }
+  return next;
 }
 
-function downloadJson(filename: string, payload: unknown) {
+function ruleSummary(rule: PermissionRule): string {
+  if (!rule.selector) {
+    return rule.pattern ? `${rule.toolName}: ${rule.pattern}` : rule.toolName;
+  }
+  return toolCallSelectorSummary(rule.selector);
+}
+
+function downloadJson(payload: unknown) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json;charset=utf-8',
   });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = filename;
+  anchor.download = `pilotdeck-permissions-${new Date().toISOString().slice(0, 10)}.json`;
   anchor.rel = 'noopener';
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  // Defer revoke so Safari has a tick to start the download.
   setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
-// Lenient parser — accepts the canonical shape we export but also any object
-// that has at least one of the known array fields. Anything we don't
-// recognize is silently dropped.
-function parsePermissionsImport(raw: string): {
-  allowedTools: string[];
-  disallowedTools: string[];
-  skipPermissions?: boolean;
-} | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object') return null;
-  const obj = parsed as Record<string, unknown>;
-
-  const toStringArray = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return [];
-    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
-  };
-
-  const allowedTools = toStringArray(obj.allowedTools);
-  const disallowedTools = toStringArray(obj.disallowedTools);
-
-  if (allowedTools.length === 0 && disallowedTools.length === 0 && typeof obj.skipPermissions !== 'boolean') {
-    return null;
-  }
-
-  return {
-    allowedTools,
-    disallowedTools,
-    skipPermissions: typeof obj.skipPermissions === 'boolean' ? obj.skipPermissions : undefined,
-  };
-}
-
-const mergeUnique = (a: string[], b: string[]): string[] => {
-  const seen = new Set(a);
-  const out = [...a];
-  for (const item of b) {
-    if (!seen.has(item)) {
-      seen.add(item);
-      out.push(item);
-    }
-  }
-  return out;
-};
-
-type StatusBanner =
-  | { kind: 'success'; message: string }
-  | { kind: 'error'; message: string }
-  | null;
-
 export default function PermissionsSettingsTab() {
   const { t } = useTranslation('settings');
-  const [allowedTools, setAllowedTools] = useState<string[]>([]);
-  const [disallowedTools, setDisallowedTools] = useState<string[]>([]);
+  const [rules, setRules] = useState<PermissionRule[]>([]);
   const [skipPermissions, setSkipPermissions] = useState(false);
-  const [newAllowed, setNewAllowed] = useState('');
-  const [newBlocked, setNewBlocked] = useState('');
-  const [banner, setBanner] = useState<StatusBanner>(null);
+  const [banner, setBanner] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const reload = useCallback(() => {
-    const settings = getPilotDeckSettings();
-    setAllowedTools(settings.allowedTools);
-    setDisallowedTools(settings.disallowedTools);
+  const applySettings = useCallback((settings: PilotDeckSettings) => {
+    setRules(settings.rules);
     setSkipPermissions(settings.skipPermissions);
   }, []);
+
+  const reload = useCallback(() => applySettings(getPilotDeckSettings()), [applySettings]);
 
   useEffect(() => {
     reload();
     fetchPilotDeckPermissionSettings()
       .then((settings) => {
         safeLocalStorage.setItem(PILOTDECK_SETTINGS_KEY, JSON.stringify(settings));
-        setAllowedTools(settings.allowedTools);
-        setDisallowedTools(settings.disallowedTools);
-        setSkipPermissions(settings.skipPermissions);
+        applySettings(settings);
       })
       .catch((error) => {
         console.error('Failed to load permission settings from backend:', error);
       });
-    // so users can flip back and forth between the chat and this dialog
-    // without seeing stale state.
     const onStorage = (event: StorageEvent) => {
       if (event.key === PILOTDECK_SETTINGS_KEY) reload();
     };
-    const onCustom = () => reload();
     window.addEventListener('storage', onStorage);
-    window.addEventListener('pilotdeck-settings-changed', onCustom);
+    window.addEventListener('pilotdeck-settings-changed', reload);
     return () => {
       window.removeEventListener('storage', onStorage);
-      window.removeEventListener('pilotdeck-settings-changed', onCustom);
+      window.removeEventListener('pilotdeck-settings-changed', reload);
     };
-  }, [reload]);
+  }, [applySettings, reload]);
 
-  const handleAddAllowed = (value: string) => {
-    const next = addUnique(allowedTools, value);
-    if (next === allowedTools) return;
-    setAllowedTools(next);
-    persist({ allowedTools: next });
-    setNewAllowed('');
-  };
-
-  const handleRemoveAllowed = (value: string) => {
-    const next = removeValue(allowedTools, value);
-    setAllowedTools(next);
-    persist({ allowedTools: next });
-  };
-
-  const handleAddBlocked = (value: string) => {
-    const next = addUnique(disallowedTools, value);
-    if (next === disallowedTools) return;
-    setDisallowedTools(next);
-    persist({ disallowedTools: next });
-    setNewBlocked('');
-  };
-
-  const handleRemoveBlocked = (value: string) => {
-    const next = removeValue(disallowedTools, value);
-    setDisallowedTools(next);
-    persist({ disallowedTools: next });
-  };
-
-  const handleSkipPermissionsChange = (value: boolean) => {
-    setSkipPermissions(value);
-    persist({ skipPermissions: value });
-  };
-
-  // Auto-dismiss the import/export banner after 4s. The user gets to read
-  // the result without it lingering forever.
   useEffect(() => {
     if (!banner) return;
     const timer = window.setTimeout(() => setBanner(null), 4_000);
     return () => window.clearTimeout(timer);
   }, [banner]);
 
-  const handleExport = () => {
-    try {
-      const payload = buildExportPayload();
-      const stamp = new Date().toISOString().slice(0, 10);
-      downloadJson(`pilotdeck-permissions-${stamp}.json`, payload);
-      setBanner({
-        kind: 'success',
-        message: t('permissions.exportSuccess', {
-          allowed: payload.allowedTools.length,
-          blocked: payload.disallowedTools.length,
-          defaultValue:
-            'Exported {{allowed}} allowed and {{blocked}} blocked tools.',
-        }),
-      });
-    } catch (err) {
-      console.error('Failed to export permissions:', err);
-      setBanner({
-        kind: 'error',
-        message: t('permissions.exportError', {
-          defaultValue: 'Failed to export permissions.',
-        }),
-      });
-    }
+  const handleAddRule = (effect: string, selector: ToolCallSelector) => {
+    const rule: PermissionRule = {
+      source: 'user',
+      behavior: effect as RuleEffect,
+      toolName: selector.toolName,
+      selector,
+    };
+    const next = mergeRules(rules, [rule]);
+    setRules(next);
+    persist({ rules: next });
   };
 
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
+  const handleDeleteRule = (index: number) => {
+    const next = rules.filter((_, ruleIndex) => ruleIndex !== index);
+    setRules(next);
+    persist({ rules: next });
   };
 
-  const handleFileChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    // Reset the input so picking the same file twice still fires `change`.
     event.target.value = '';
     if (!file) return;
-
-    let raw: string;
     try {
-      raw = await file.text();
-    } catch (err) {
-      console.error('Failed to read import file:', err);
+      const parsed = JSON.parse(await file.text()) as unknown;
+      const normalized = normalizePermissionSettings(parsed);
+      const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+      const recognized = Array.isArray(record.rules)
+        || Array.isArray(record.allowedTools)
+        || Array.isArray(record.disallowedTools)
+        || typeof record.skipPermissions === 'boolean';
+      if (!recognized) throw new Error('Unrecognized permission settings');
+      const nextRules = mergeRules(rules, normalized.rules);
+      const nextSkip = typeof record.skipPermissions === 'boolean'
+        ? normalized.skipPermissions
+        : skipPermissions;
+      setRules(nextRules);
+      setSkipPermissions(nextSkip);
+      persist({ rules: nextRules, skipPermissions: nextSkip });
       setBanner({
-        kind: 'error',
-        message: t('permissions.importReadError', {
-          defaultValue: 'Could not read the selected file.',
+        kind: 'success',
+        message: t('permissions.importSuccess', {
+          added: nextRules.length - rules.length,
+          defaultValue: 'Imported {{added}} new rules.',
         }),
       });
-      return;
-    }
-
-    const parsed = parsePermissionsImport(raw);
-    if (!parsed) {
+    } catch (error) {
+      console.error('Failed to import permissions:', error);
       setBanner({
         kind: 'error',
         message: t('permissions.importInvalid', {
-          defaultValue:
-            'Not a valid permissions export. Expected JSON with allowedTools / disallowedTools.',
+          defaultValue: 'Choose a valid V1 or V2 permissions JSON file.',
         }),
       });
-      return;
     }
-
-    // Default to merge — safer than replace, and we de-dup. If users want a
-    // hard reset they can clear entries first or hit "Replace" via the
-    // confirm prompt (a real Replace path is a future-nice; merge covers
-    // the common "share my allowlist with a teammate" case fully).
-    const summary = t('permissions.importConfirmBody', {
-      allowed: parsed.allowedTools.length,
-      blocked: parsed.disallowedTools.length,
-      defaultValue:
-        'Merge {{allowed}} allowed and {{blocked}} blocked tools into your existing permissions?',
-    });
-    if (!window.confirm(summary)) {
-      setBanner(null);
-      return;
-    }
-
-    const current = getPilotDeckSettings();
-    const nextAllowed = mergeUnique(current.allowedTools, parsed.allowedTools);
-    const nextBlocked = mergeUnique(current.disallowedTools, parsed.disallowedTools);
-    const updates: Partial<PilotDeckSettings> = {
-      allowedTools: nextAllowed,
-      disallowedTools: nextBlocked,
-      ...(parsed.skipPermissions !== undefined ? { skipPermissions: parsed.skipPermissions } : {}),
-    };
-    persist(updates);
-
-    setAllowedTools(nextAllowed);
-    setDisallowedTools(nextBlocked);
-    if (parsed.skipPermissions !== undefined) {
-      setSkipPermissions(parsed.skipPermissions);
-    }
-
-    const addedAllowed = nextAllowed.length - current.allowedTools.length;
-    const addedBlocked = nextBlocked.length - current.disallowedTools.length;
-    setBanner({
-      kind: 'success',
-      message: t('permissions.importSuccess', {
-        addedAllowed,
-        addedBlocked,
-        defaultValue:
-          'Imported. Added {{addedAllowed}} allowed and {{addedBlocked}} blocked tools.',
-      }),
-    });
   };
 
   return (
     <div className="space-y-8">
       <SettingsSection
-        title={t('permissions.title', { defaultValue: 'Permissions' })}
-        description={t('permissions.description', {
-          defaultValue:
-            'Manage which tools the assistant can run without asking. Grants from the chat "Add permission" button land here too.',
-        })}
+        title={t('permissions.title')}
+        description={t('permissions.description')}
       >
-        {/* Import / export. Hidden file input lives outside flow so the
-            keyboard handler still works and sr-only screen reader users
-            can still trigger it via the labelled button. */}
         <input
           ref={fileInputRef}
           type="file"
           accept="application/json,.json"
           className="hidden"
-          onChange={handleFileChosen}
+          onChange={handleImport}
         />
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            onClick={handleExport}
             className="h-8 gap-1.5 text-xs"
+            onClick={() => {
+              downloadJson({
+                version: 2,
+                source: 'pilotdeck',
+                exportedAt: new Date().toISOString(),
+                rules,
+                skipPermissions,
+              });
+              setBanner({
+                kind: 'success',
+                message: t('permissions.exportSuccess', {
+                  count: rules.length,
+                  defaultValue: 'Exported {{count}} rules.',
+                }),
+              });
+            }}
           >
             <Download className="h-3.5 w-3.5" />
-            {t('permissions.export', { defaultValue: 'Export' })}
+            {t('permissions.export')}
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={handleImportClick}
             className="h-8 gap-1.5 text-xs"
+            onClick={() => fileInputRef.current?.click()}
           >
             <Upload className="h-3.5 w-3.5" />
-            {t('permissions.import', { defaultValue: 'Import' })}
+            {t('permissions.import')}
           </Button>
           <span className="text-xs text-muted-foreground">
-            {t('permissions.importExportHint', {
-              defaultValue: 'Share or back up your tool permissions as JSON.',
-            })}
+            {t('permissions.importExportHint')}
           </span>
         </div>
 
         {banner ? (
           <div
             role="status"
-            className={
-              banner.kind === 'success'
-                ? 'mb-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800 dark:border-green-900/50 dark:bg-green-950/30 dark:text-green-200'
-                : 'mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200'
-            }
+            className={banner.kind === 'success'
+              ? 'mb-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800 dark:border-green-900/50 dark:bg-green-950/30 dark:text-green-200'
+              : 'mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200'}
           >
             {banner.message}
           </div>
@@ -420,26 +249,23 @@ export default function PermissionsSettingsTab() {
             label={
               <span className="inline-flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-                {t('permissions.skipPermissions.title', { defaultValue: 'Skip permission prompts' })}
+                {t('permissions.skipPermissions.title')}
               </span>
             }
-            description={t('permissions.skipPermissions.description', {
-              defaultValue:
-                'Run tool calls without asking for confirmation. This maps to bypassPermissions and should only be used in trusted workspaces.',
-            })}
+            description={t('permissions.skipPermissions.description')}
           >
             <SettingsToggle
               checked={skipPermissions}
-              ariaLabel={t('permissions.skipPermissions.title', { defaultValue: 'Skip permission prompts' })}
-              onChange={handleSkipPermissionsChange}
+              ariaLabel={t('permissions.skipPermissions.title')}
+              onChange={(next) => {
+                setSkipPermissions(next);
+                persist({ skipPermissions: next });
+              }}
             />
           </SettingsRow>
           {skipPermissions ? (
             <div className="border-t border-border px-4 py-2.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
-              {t('permissions.skipPermissions.warning', {
-                defaultValue:
-                  'Permission prompts are currently bypassed. Allowed and blocked rules below are still saved, but this global mode lets the agent run without asking.',
-              })}
+              {t('permissions.skipPermissions.warning')}
             </div>
           ) : null}
         </SettingsCard>
@@ -448,221 +274,97 @@ export default function PermissionsSettingsTab() {
       <SettingsSection
         title={
           <span className="inline-flex items-center gap-2">
-            <Shield className="h-4 w-4 text-green-600 dark:text-green-400" />
-            {t('permissions.allowedTools.title', { defaultValue: 'Allowed tools' })}
+            <Shield className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            {t('permissions.builder.title', { defaultValue: 'Add rule' })}
           </span>
         }
-        description={t('permissions.allowedTools.description', {
-          defaultValue: 'Tools that auto-run without prompting.',
+        description={t('permissions.builder.description', {
+          defaultValue: 'Build a scoped tool rule. Leave Subject as Entire tool for an unscoped rule.',
         })}
       >
-        <SettingsCard className="space-y-3 p-3">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              value={newAllowed}
-              onChange={(event) => setNewAllowed(event.target.value)}
-              placeholder={t('permissions.allowedTools.placeholder', {
-                defaultValue: 'e.g. "bash:git log:*" or "write_file"',
-              })}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  if (isImeEnterEvent(event)) {
-                    return;
-                  }
-                  event.preventDefault();
-                  handleAddAllowed(newAllowed);
-                }
-              }}
-              className="h-10 flex-1"
-            />
-            <Button
-              onClick={() => handleAddAllowed(newAllowed)}
-              disabled={!newAllowed.trim()}
-              size="sm"
-              className="h-10 px-4"
-            >
-              <Plus className="mr-1.5 h-4 w-4" />
-              {t('permissions.actions.add', { defaultValue: 'Add' })}
-            </Button>
-          </div>
-
-          <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              {t('permissions.allowedTools.quickAdd', { defaultValue: 'Quick add:' })}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_ADD_TOOLS.map((tool) => (
-                <Button
-                  key={tool}
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleAddAllowed(tool)}
-                  disabled={allowedTools.includes(tool)}
-                  className="h-7 text-xs"
-                >
-                  {tool}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            {allowedTools.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border py-5 text-center text-xs text-muted-foreground">
-                {t('permissions.allowedTools.empty', {
-                  defaultValue: 'No allowed tools configured yet.',
-                })}
-              </div>
-            ) : (
-              allowedTools.map((tool) => (
-                <div
-                  key={tool}
-                  className="flex items-center justify-between rounded-lg border border-green-200 bg-green-50 px-3 py-2 dark:border-green-900/50 dark:bg-green-950/30"
-                >
-                  <code className="font-mono text-xs text-green-800 dark:text-green-200">
-                    {tool}
-                  </code>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleRemoveAllowed(tool)}
-                    className="h-7 w-7 p-0 text-green-700 hover:text-green-900 dark:text-green-300"
-                    aria-label={t('permissions.actions.remove', { defaultValue: 'Remove' })}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))
-            )}
-          </div>
+        <SettingsCard className="space-y-3 p-4">
+          <ToolCallSelectorBuilder
+            availableTools={TOOL_SELECTOR_DESCRIPTORS.map((tool) => tool.name)}
+            effects={[
+              { value: 'allow', label: t('permissions.effects.allow') },
+              { value: 'ask', label: t('permissions.effects.ask') },
+              { value: 'deny', label: t('permissions.effects.deny') },
+            ]}
+            allowEntireTool
+            labels={{
+              effect: t('permissions.builder.effect'),
+              tool: t('permissions.builder.tool'),
+              subject: t('permissions.builder.subject'),
+              entireTool: t('permissions.builder.entireTool'),
+              operator: t('permissions.builder.operator'),
+              add: t('permissions.actions.add'),
+              emptyTools: t('permissions.builder.emptyTools', {
+                defaultValue: 'No supported tools are available.',
+              }),
+              pathPlaceholder: t('permissions.builder.pathPlaceholder'),
+              argvPlaceholder: t('permissions.builder.argvPlaceholder'),
+              executablePlaceholder: t('permissions.builder.executablePlaceholder'),
+              workspaceHint: t('permissions.builder.workspaceHint'),
+              commandHint: t('permissions.builder.commandHint'),
+              operatorLabel: (operator) => t(`permissions.operators.${operator}`),
+            }}
+            onAdd={handleAddRule}
+          />
         </SettingsCard>
       </SettingsSection>
 
       <SettingsSection
-        title={
-          <span className="inline-flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400" />
-            {t('permissions.blockedTools.title', { defaultValue: 'Blocked tools' })}
-          </span>
-        }
-        description={t('permissions.blockedTools.description', {
-          defaultValue: 'Tools the assistant is never allowed to use.',
+        title={t('permissions.rules.title', { defaultValue: 'Rules' })}
+        description={t('permissions.rules.description', {
+          defaultValue: 'Structured and migrated legacy rules are evaluated by the same runtime.',
         })}
       >
-        <SettingsCard className="space-y-3 p-3">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              value={newBlocked}
-              onChange={(event) => setNewBlocked(event.target.value)}
-              placeholder={t('permissions.blockedTools.placeholder', {
-                defaultValue: 'e.g. "Bash(rm:*)"',
-              })}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  if (isImeEnterEvent(event)) {
-                    return;
-                  }
-                  event.preventDefault();
-                  handleAddBlocked(newBlocked);
-                }
-              }}
-              className="h-10 flex-1"
-            />
-            <Button
-              onClick={() => handleAddBlocked(newBlocked)}
-              disabled={!newBlocked.trim()}
-              size="sm"
-              className="h-10 px-4"
-            >
-              <Plus className="mr-1.5 h-4 w-4" />
-              {t('permissions.actions.add', { defaultValue: 'Add' })}
-            </Button>
-          </div>
-
-          <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              {t('permissions.allowedTools.quickAdd', { defaultValue: 'Quick add:' })}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_BLOCK_TOOLS.map((tool) => (
-                <Button
-                  key={tool}
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleAddBlocked(tool)}
-                  disabled={disallowedTools.includes(tool)}
-                  className="h-7 text-xs"
-                >
-                  {tool}
-                </Button>
-              ))}
+        <SettingsCard className="space-y-2 p-3">
+          {rules.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
+              {t('permissions.rules.empty', { defaultValue: 'No permission rules configured.' })}
             </div>
-          </div>
-
-          <div className="space-y-2">
-            {disallowedTools.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border py-5 text-center text-xs text-muted-foreground">
-                {t('permissions.blockedTools.empty', {
-                  defaultValue: 'No blocked tools configured.',
-                })}
-              </div>
-            ) : (
-              disallowedTools.map((tool) => (
-                <div
-                  key={tool}
-                  className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/50 dark:bg-red-950/30"
-                >
-                  <code className="font-mono text-xs text-red-800 dark:text-red-200">{tool}</code>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleRemoveBlocked(tool)}
-                    className="h-7 w-7 p-0 text-red-700 hover:text-red-900 dark:text-red-300"
-                    aria-label={t('permissions.actions.remove', { defaultValue: 'Remove' })}
+          ) : rules.map((rule, index) => (
+            <div
+              key={`${permissionRuleKey(rule)}-${index}`}
+              className="flex items-start justify-between gap-3 rounded-lg border border-border px-3 py-2"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
+                    rule.behavior === 'allow'
+                      ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200'
+                      : rule.behavior === 'deny'
+                        ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200'
+                        : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200'
+                  }`}
                   >
-                    <X className="h-4 w-4" />
-                  </Button>
+                    {t(`permissions.effects.${rule.behavior}`, {
+                      defaultValue: rule.behavior === 'deny' ? 'Block' : rule.behavior,
+                    })}
+                  </span>
+                  {!rule.selector ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                      {t('permissions.rules.legacy', { defaultValue: 'Legacy' })}
+                    </span>
+                  ) : null}
+                  <code className="font-mono text-xs font-semibold">{rule.toolName}</code>
                 </div>
-              ))
-            )}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t('permissions.toolExamples.title', { defaultValue: 'Pattern examples' })}
-      >
-        <SettingsCard className="p-4">
-          <ul className="space-y-1.5 text-xs text-muted-foreground">
-            <li>
-              <code className="rounded bg-muted px-1 py-0.5 text-foreground">bash:git log:*</code>{' '}
-              {t('permissions.toolExamples.bashGitLog', { defaultValue: '— allow all git log commands' })}
-            </li>
-            <li>
-              <code className="rounded bg-muted px-1 py-0.5 text-foreground">bash:git diff:*</code>{' '}
-              {t('permissions.toolExamples.bashGitDiff', { defaultValue: '— allow all git diff commands' })}
-            </li>
-            <li>
-              <code className="rounded bg-muted px-1 py-0.5 text-foreground">write_file</code>{' '}
-              {t('permissions.toolExamples.write', { defaultValue: '— allow all writes' })}
-            </li>
-            <li>
-              <code className="rounded bg-muted px-1 py-0.5 text-foreground">bash:rm:*</code>{' '}
-              {t('permissions.toolExamples.bashRm', { defaultValue: '— block all rm commands (dangerous)' })}
-            </li>
-            {IS_WINDOWS ? (
-              <>
-                <li>
-                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">bash:Remove-Item:*</code>{' '}
-                  {t('permissions.toolExamples.bashRemoveItem', { defaultValue: '— block PowerShell Remove-Item' })}
-                </li>
-                <li>
-                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">bash:del /s:*</code>{' '}
-                  {t('permissions.toolExamples.bashDel', { defaultValue: '— block CMD recursive delete' })}
-                </li>
-              </>
-            ) : null}
-          </ul>
+                <code className="mt-1 block break-all font-mono text-xs text-muted-foreground">
+                  {ruleSummary(rule)}
+                </code>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 shrink-0 p-0 text-muted-foreground hover:text-red-600"
+                aria-label={t('permissions.actions.remove')}
+                onClick={() => handleDeleteRule(index)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
         </SettingsCard>
       </SettingsSection>
     </div>

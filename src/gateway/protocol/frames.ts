@@ -59,6 +59,8 @@ export type WsGatewayMethod =
   | "teammate_catalog"
   | "teammate_enablement_get"
   | "teammate_enablement_set"
+  | "teammate_workspace_bindings_get"
+  | "teammate_workspace_binding_set"
   | "team_state"
   | "always_on_apply"
   | "always_on_rerun_plan";

@@ -81,6 +81,9 @@ import type {
   TeammateGatewayWriteInput,
   TeammateListResult,
   TeammateReadResult,
+  TeammateWorkspaceBindingSetInput,
+  TeammateWorkspaceBindingsGetInput,
+  TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
 import { AttachmentResolver, type AttachmentRequest } from "../../context/attachments/AttachmentResolver.js";
@@ -169,6 +172,12 @@ export type InProcessGatewayOptions = {
   teammateCatalog?: (projectKey: string) => Promise<TeammateCatalog>;
   teammateEnablementGet?: (input: TeammateEnablementGetInput) => Promise<TeammateEnablementResult>;
   teammateEnablementSet?: (input: TeammateEnablementSetInput) => Promise<TeammateEnablementResult>;
+  teammateWorkspaceBindingsGet?: (
+    input: TeammateWorkspaceBindingsGetInput,
+  ) => Promise<TeammateWorkspaceBindingsResult>;
+  teammateWorkspaceBindingSet?: (
+    input: TeammateWorkspaceBindingSetInput,
+  ) => Promise<TeammateWorkspaceBindingsResult>;
   teamState?: (input: TeamStateInput) => Promise<TeamStateResult>;
   dispatchHookForSession?: (sessionKey: string, event: string, payload: Record<string, unknown>) => void;
   /** Directory to persist large tool outputs for TUI/Web viewing. */
@@ -924,6 +933,30 @@ export class InProcessGateway implements Gateway {
       );
     }
     return this.options.teammateEnablementSet(input);
+  }
+
+  async teammateWorkspaceBindingsGet(
+    input: TeammateWorkspaceBindingsGetInput,
+  ): Promise<TeammateWorkspaceBindingsResult> {
+    if (!this.options.teammateWorkspaceBindingsGet) {
+      throw new TeammateManagerError(
+        "not_configured",
+        "Teammate workspace bindings are not configured on this gateway.",
+      );
+    }
+    return this.options.teammateWorkspaceBindingsGet(input);
+  }
+
+  async teammateWorkspaceBindingSet(
+    input: TeammateWorkspaceBindingSetInput,
+  ): Promise<TeammateWorkspaceBindingsResult> {
+    if (!this.options.teammateWorkspaceBindingSet) {
+      throw new TeammateManagerError(
+        "not_configured",
+        "Teammate workspace bindings are not configured on this gateway.",
+      );
+    }
+    return this.options.teammateWorkspaceBindingSet(input);
   }
 
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {

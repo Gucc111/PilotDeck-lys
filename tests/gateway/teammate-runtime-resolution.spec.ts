@@ -105,7 +105,8 @@ mcpServers: [missing_mcp]`,
 
     const listedA = await local.registry.listEnabledTeammates(projectA);
     assert.deepEqual(listedA.teammates.map((entry) => entry.id), ["valid"]);
-    assert.deepEqual(local.registry.resolve(projectA).teammates[0]?.tools, []);
+    const initialRuntimeDefinition = local.registry.resolve(projectA).teammates[0]!;
+    assert.deepEqual(initialRuntimeDefinition.tools, []);
     assert.equal(
       listedA.diagnostics.some((entry) => entry.code === "FRONTMATTER_MISSING"),
       false,
@@ -197,6 +198,57 @@ mcpServers: [missing_mcp]`,
         filePath: getPilotTeammateEnablementFilePath(pilotHome),
       },
     );
+    assert.ok(local.gateway.teammateWorkspaceBindingsGet);
+    const bindings = await local.gateway.teammateWorkspaceBindingsGet({
+      projectKey: projectA,
+    });
+    assert.deepEqual(bindings.bindings, {
+      valid: { enabled: true, toolProfile: { mode: "inherit" } },
+    });
+    assert.match(bindings.revision, /^[a-f0-9]{64}$/);
+    assert.ok(local.gateway.teammateWorkspaceBindingSet);
+    const updatedBindings = await local.gateway.teammateWorkspaceBindingSet({
+      projectKey: projectA,
+      teammateId: "valid",
+      binding: {
+        enabled: true,
+        toolProfile: {
+          mode: "custom",
+          tools: ["read_file"],
+          constraints: { allow: [], deny: [] },
+        },
+      },
+      expectedRevision: bindings.revision,
+    });
+    assert.deepEqual(updatedBindings.bindings.valid, {
+      enabled: true,
+      toolProfile: {
+        mode: "custom",
+        tools: ["read_file"],
+        constraints: { allow: [], deny: [] },
+      },
+    });
+    await local.registry.listEnabledTeammates(projectA);
+    const rebuiltRuntimeDefinition = local.registry.resolve(projectA).teammates[0]!;
+    assert.deepEqual(rebuiltRuntimeDefinition.tools, ["read_file"]);
+    assert.notEqual(
+      rebuiltRuntimeDefinition.workspaceBindingFingerprint,
+      initialRuntimeDefinition.workspaceBindingFingerprint,
+    );
+    assert.equal(
+      rebuiltRuntimeDefinition.workspaceBindingRevision,
+      updatedBindings.revision,
+    );
+    await assert.rejects(
+      local.gateway.teammateWorkspaceBindingSet({
+        projectKey: projectA,
+        teammateId: "valid",
+        binding: { enabled: false, toolProfile: { mode: "inherit" } },
+        expectedRevision: bindings.revision,
+      }),
+      (error: unknown) =>
+        (error as { code?: string }).code === "revision_conflict",
+    );
     await assert.rejects(
       local.gateway.teammateEnablementSet({
         projectKey: projectA,
@@ -221,6 +273,117 @@ mcpServers: [missing_mcp]`,
     assert.ok(
       damaged.diagnostics.some((entry) => entry.code === "TEAMMATE_ENABLEMENT_INVALID"),
     );
+  } finally {
+    dispose?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workspace bindings resolve distinct effective tools and isolate invalid profiles", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-profiles-"));
+  const pilotHome = join(root, "pilot-home");
+  const projects = ["a", "b", "c", "d"].map((name) => join(root, `project-${name}`));
+  let dispose: (() => void) | undefined;
+  try {
+    await Promise.all([
+      mkdir(join(pilotHome, "teammates"), { recursive: true }),
+      ...projects.map((project) => mkdir(project, { recursive: true })),
+    ]);
+    await Promise.all([
+      writeFile(join(pilotHome, "pilotdeck.yaml"), CONFIG, "utf8"),
+      writeFile(
+        join(pilotHome, "teammates", "worker.md"),
+        definition("worker", "tools: [missing_default_tool]"),
+        "utf8",
+      ),
+    ]);
+    const enablement = new TeammateEnablementStore({ pilotHome });
+    for (const project of projects) {
+      await enablement.set(project, ["worker"]);
+    }
+    const setProfile = async (
+      project: string,
+      tools: string[],
+      constraints: {
+        allow: Array<Record<string, unknown>>;
+        deny: Array<Record<string, unknown>>;
+      } = { allow: [], deny: [] },
+    ) => {
+      const current = await enablement.getBindings(project);
+      await enablement.setBinding(project, "worker", {
+        enabled: true,
+        toolProfile: {
+          mode: "custom",
+          tools,
+          constraints: constraints as never,
+        },
+      }, current.revision);
+    };
+    await setProfile(projects[0]!, ["read_file"], {
+      allow: [{
+        version: 2,
+        toolName: "read_file",
+        conditions: [{
+          subject: "read_file.file_path",
+          operator: "pathWithin",
+          value: "$WORKSPACE",
+        }],
+      }],
+      deny: [],
+    });
+    await setProfile(projects[1]!, ["bash"]);
+    await setProfile(projects[2]!, ["missing_custom_tool"]);
+
+    const local = createLocalGateway({
+      projectRoot: projects[0],
+      pilotHome,
+      env: { PILOT_HOME: pilotHome },
+    });
+    dispose = local.dispose;
+
+    const listedA = await local.registry.listEnabledTeammates(projects[0]!);
+    const runtimeA = local.registry.resolve(projects[0]!).teammates[0]!;
+    assert.deepEqual(listedA.teammates.map((entry) => entry.tools), [["read_file"]]);
+    assert.deepEqual(runtimeA.tools, ["read_file"]);
+    assert.equal(runtimeA.constraints.allow.length, 1);
+    assert.equal(runtimeA.activeProjectRoot, projects[0]);
+    assert.equal(
+      runtimeA.canonicalWorkspace,
+      await canonicalizeTeammateWorkspace(projects[0]!),
+    );
+    assert.match(runtimeA.workspaceBindingRevision, /^[a-f0-9]{64}$/);
+    assert.match(runtimeA.workspaceBindingFingerprint, /^[a-f0-9]{64}$/);
+    assert.equal(
+      listedA.diagnostics.some((entry) => /missing_default_tool/.test(entry.message)),
+      false,
+    );
+
+    const listedB = await local.registry.listEnabledTeammates(projects[1]!);
+    const runtimeB = local.registry.resolve(projects[1]!).teammates[0]!;
+    assert.deepEqual(listedB.teammates.map((entry) => entry.tools), [["bash"]]);
+    assert.deepEqual(runtimeB.tools, ["bash"]);
+    assert.notEqual(
+      runtimeB.workspaceBindingFingerprint,
+      runtimeA.workspaceBindingFingerprint,
+    );
+
+    const listedC = await local.registry.listEnabledTeammates(projects[2]!);
+    assert.deepEqual(listedC.teammates, []);
+    assert.ok(listedC.diagnostics.some(
+      (entry) =>
+        entry.code === "TOOL_NOT_FOUND" &&
+        entry.id === "worker" &&
+        /missing_custom_tool/.test(entry.message),
+    ));
+
+    const listedD = await local.registry.listEnabledTeammates(projects[3]!);
+    assert.deepEqual(listedD.teammates, []);
+    assert.ok(listedD.diagnostics.some(
+      (entry) =>
+        entry.code === "TOOL_NOT_FOUND" &&
+        entry.id === "worker" &&
+        /missing_default_tool/.test(entry.message),
+    ));
   } finally {
     dispose?.();
     await rm(root, { recursive: true, force: true });
@@ -269,6 +432,13 @@ test("remote gateway forwards global teammate CRUD and workspace enablement RPCs
     projectKey: "/workspace",
     enabledTeammateIds: ["reviewer"],
   });
+  await remote.teammateWorkspaceBindingsGet({ projectKey: "/workspace" });
+  await remote.teammateWorkspaceBindingSet({
+    projectKey: "/workspace",
+    teammateId: "reviewer",
+    binding: { enabled: true, toolProfile: { mode: "inherit" } },
+    expectedRevision: "revision",
+  });
 
   assert.deepEqual(calls, [
     { method: "teammate_list", params: {} },
@@ -295,6 +465,19 @@ test("remote gateway forwards global teammate CRUD and workspace enablement RPCs
       params: {
         projectKey: "/workspace",
         enabledTeammateIds: ["reviewer"],
+      },
+    },
+    {
+      method: "teammate_workspace_bindings_get",
+      params: { projectKey: "/workspace" },
+    },
+    {
+      method: "teammate_workspace_binding_set",
+      params: {
+        projectKey: "/workspace",
+        teammateId: "reviewer",
+        binding: { enabled: true, toolProfile: { mode: "inherit" } },
+        expectedRevision: "revision",
       },
     },
   ]);

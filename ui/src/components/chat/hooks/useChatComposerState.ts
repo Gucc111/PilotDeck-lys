@@ -14,7 +14,11 @@ import { authenticatedFetch } from '../../../utils/api';
 import { isThinkingModeId, thinkingModeToConfig, type ThinkingModeId } from '../constants/thinkingModes';
 import { getEffectiveThinkingMode, type ThinkingModeAvailability } from '../constants/thinkingModeAvailability';
 import { grantPilotDeckToolPermission } from '../utils/chatPermissions';
-import { getDraftInputStorageKey, safeLocalStorage } from '../utils/chatStorage';
+import {
+  getDraftInputStorageKey,
+  getPilotDeckSettings,
+  safeLocalStorage,
+} from '../utils/chatStorage';
 import {
   createTemporarySessionId,
   getNotificationSessionSummary,
@@ -31,6 +35,7 @@ import type {
   ChatAttachment,
   ChatMessage,
   PendingPermissionRequest,
+  PilotDeckPermissionSuggestion,
   PermissionGrantResult,
   PermissionMode,
 } from '../types/types';
@@ -995,24 +1000,7 @@ export function useChatComposerState({
       // tracks tool consent + skip-permissions for every chat. The legacy
       // per-provider keys (`cursor-tools-settings`, `codex-settings`,
       // `gemini-settings`) are no longer read or written.
-      const getToolsSettings = () => {
-        try {
-          const savedSettings = safeLocalStorage.getItem('pilotdeck-settings');
-          if (savedSettings) {
-            return JSON.parse(savedSettings);
-          }
-        } catch (error) {
-          console.error('Error loading tools settings:', error);
-        }
-
-        return {
-          allowedTools: [],
-          disallowedTools: [],
-          skipPermissions: false,
-        };
-      };
-
-      const toolsSettings = getToolsSettings();
+      const toolsSettings = getPilotDeckSettings();
       const sessionSummary = getNotificationSessionSummary(submitSelectedSession, userVisibleInput);
       const effectiveThinkingMode = getEffectiveThinkingMode(thinkingMode, thinkingModeAvailability);
 
@@ -1334,7 +1322,7 @@ export function useChatComposerState({
   }, [canAbortSession, cancelBusySendQueue, currentSessionId, pendingViewSessionRef, selectedSession?.id, sendMessage, setCanAbortSession, setClaudeStatus, setIsAborting, setPilotDeckStatus]);
 
   const handleGrantToolPermission = useCallback(
-    (suggestion: { entry: string; toolName: string }) => {
+    (suggestion: PilotDeckPermissionSuggestion) => {
       if (!suggestion) {
         return { success: false };
       }
@@ -1343,13 +1331,13 @@ export function useChatComposerState({
       // every provider persist its grants to localStorage and have the
       // pilotdeck server pick them up via the gateway PermissionRuntime
       // on the next turn.
-      return grantPilotDeckToolPermission(suggestion.entry);
+      return grantPilotDeckToolPermission(suggestion.rule);
     },
     [],
   );
 
   const handleGrantSessionToolPermission = useCallback(
-    (suggestion: { entry: string; toolName: string }) => {
+    (suggestion: PilotDeckPermissionSuggestion) => {
       if (!suggestion?.entry) {
         return { success: false };
       }

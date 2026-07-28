@@ -157,11 +157,17 @@
       "count": "共 {{count}} 个队友",
       "count_plural": "共 {{count}} 个队友"
     },
+    "global": {
+      "title": "全局队友默认定义",
+      "description": "在这里编辑可复用的队友定义。其中的工具是默认值；每个工作区绑定可以继承或替换它们。"
+    },
     "workspace": {
-      "title": "为工作区启用",
-      "description": "这里选择的工作区仅用于启用状态、能力建议和运行时诊断；队友定义始终是全局的。",
-      "selector": "参考工作区",
-      "none": "选择工作区后可加载启用状态并校验能力。"
+      "title": "工作区绑定",
+      "description": "为选中的工作区配置启用状态和实际工具配置，不会修改全局队友定义。",
+      "selector": "工作区",
+      "none": "选择工作区后可加载绑定并校验能力。",
+      "canonical": "规范项目配置：{{path}}",
+      "worktreeHint": "该规范项目配置会应用于所有 Git worktree；运行时 $WORKSPACE 指向当前 checkout。"
     },
     "enablement": {
       "rowLabel": "为工作区启用",
@@ -169,6 +175,47 @@
       "loading": "正在加载工作区启用状态...",
       "saving": "正在保存工作区启用状态...",
       "summary": "此工作区已启用 {{count}} 个全局队友"
+    },
+    "bindings": {
+      "loading": "正在加载工作区绑定...",
+      "saving": "正在保存工作区绑定...",
+      "summary": "此工作区已启用 {{count}} 个队友",
+      "inherit": "继承默认配置",
+      "custom": "自定义配置",
+      "inheritedStatus": "已继承",
+      "customStatus": "自定义",
+      "effectiveTools": "{{count}} 个有效工具",
+      "copyDefaults": "复制默认工具",
+      "resetDefault": "重置为默认配置",
+      "toolsTitle": "自定义工具",
+      "toolsDescription": "可从当前工作区目录中选中或取消工具。只有已选工具才能添加范围约束。",
+      "noCatalogTools": "当前工作区目录中没有可用工具。",
+      "toolToggleLabel": "{{name}} 的自定义工具：{{tool}}"
+    },
+    "constraints": {
+      "title": "能力范围约束",
+      "description": "允许范围会限定某个工具可匹配的调用；阻止范围会始终拒绝匹配调用。这里的能力范围与权限提示规则相互独立。",
+      "allowedScope": "允许范围",
+      "blockedScope": "阻止范围",
+      "scopeType": "范围类型",
+      "tool": "自定义工具",
+      "subject": "匹配对象",
+      "operator": "匹配方式",
+      "add": "添加范围",
+      "remove": "删除范围",
+      "empty": "尚未配置能力范围约束。",
+      "selectToolFirst": "请先选择一个受支持的自定义工具，再添加范围。",
+      "pathPlaceholder": "$WORKSPACE/src 或绝对路径",
+      "argvPlaceholder": "git status --short",
+      "executablePlaceholder": "git",
+      "workspaceHint": "使用 $WORKSPACE 表示队友当前 checkout 的相对路径。",
+      "commandHint": "可执行文件需精确匹配输入；命令前缀包含可执行文件及其起始参数。带环境变量前缀或 env 包装的命令不会自动匹配。",
+      "operators": {
+        "executableEquals": "可执行文件等于",
+        "argvPrefix": "命令参数向量以此开头",
+        "pathEquals": "路径等于",
+        "pathWithin": "路径位于目录内"
+      }
     },
     "editor": {
       "select": "选择一名队友进行编辑，或新建队友。",
@@ -237,7 +284,10 @@
       "catalog": "加载能力建议失败。",
       "enablementLoad": "加载工作区队友启用状态失败。",
       "enablementSave": "保存工作区队友启用状态失败。",
-      "enablementUnknown": "启用状态未知，请刷新以确认服务器状态。"
+      "enablementUnknown": "启用状态未知，请刷新以确认服务器状态。",
+      "bindingsLoad": "加载工作区队友绑定失败。",
+      "bindingsSave": "保存工作区队友绑定失败。",
+      "revisionConflict": "此工作区绑定已在其他位置发生变化。已重新加载服务器最新状态，请检查后再应用本次修改。"
     }
   },
   "notifications": {
@@ -486,16 +536,48 @@
     "export": "导出",
     "import": "导入",
     "importExportHint": "可将权限列表导出为 JSON，便于备份或与他人共享。",
-    "exportSuccess": "已导出 {{allowed}} 个允许工具与 {{blocked}} 个禁用工具。",
+    "exportSuccess": "已导出 {{count}} 条规则。",
     "exportError": "导出权限失败。",
     "importReadError": "无法读取选中的文件。",
-    "importInvalid": "文件不是有效的权限导出（需要包含 allowedTools / disallowedTools 的 JSON）。",
+    "importInvalid": "请选择有效的 V1 或 V2 权限 JSON 文件。",
     "importConfirmBody": "将导入的 {{allowed}} 个允许工具与 {{blocked}} 个禁用工具合并到现有权限？",
-    "importSuccess": "导入完成，新增 {{addedAllowed}} 个允许工具与 {{addedBlocked}} 个禁用工具。",
+    "importSuccess": "导入完成，新增 {{added}} 条规则。",
     "skipPermissions": {
       "title": "跳过权限确认",
       "description": "工具调用不再弹出确认，等同于 bypassPermissions。仅建议在可信工作区中开启。",
       "warning": "当前已跳过权限确认。下方允许/禁用规则仍会保存，但这个全局模式会让智能体无需询问即可运行工具。"
+    },
+    "builder": {
+      "title": "添加规则",
+      "description": "创建限定范围的工具规则；将“匹配对象”设为“整个工具”可创建不限定参数的规则。",
+      "effect": "效果",
+      "tool": "工具",
+      "subject": "匹配对象",
+      "entireTool": "整个工具",
+      "operator": "匹配方式",
+      "pathPlaceholder": "$WORKSPACE/src 或绝对路径",
+      "argvPlaceholder": "git status --short",
+      "executablePlaceholder": "git",
+      "workspaceHint": "使用 $WORKSPACE 可让路径规则在不同项目之间保持可移植。",
+      "commandHint": "可执行文件匹配命令名；参数前缀用于限定命令开头的参数。",
+      "emptyTools": "没有可用的受支持工具。"
+    },
+    "effects": {
+      "allow": "允许",
+      "ask": "询问",
+      "deny": "阻止"
+    },
+    "operators": {
+      "executableEquals": "可执行文件等于",
+      "argvPrefix": "命令参数向量以此开头",
+      "pathEquals": "路径等于",
+      "pathWithin": "路径位于目录内"
+    },
+    "rules": {
+      "title": "规则",
+      "description": "结构化规则和迁移后保留的旧规则由同一权限运行时执行。",
+      "empty": "尚未配置权限规则。",
+      "legacy": "旧格式"
     },
     "allowedTools": {
       "title": "允许的工具",

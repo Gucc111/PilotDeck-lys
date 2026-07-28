@@ -292,6 +292,11 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
       prompt: "Implement carefully.",
       tools: [],
       sourcePath: join(dir, "teammates/implementer.md"),
+      constraints: { allow: [], deny: [] },
+      canonicalWorkspace: dir,
+      workspaceBindingRevision: "revision",
+      workspaceBindingFingerprint: "fingerprint",
+      activeProjectRoot: dir,
     }],
     diagnostics: () => ["Workspace enablement is invalid."],
     host: {
@@ -375,6 +380,11 @@ test("two Teammates emit one explicit report and one idle lifecycle each with co
     prompt: `${id} prompt`,
     tools: [],
     sourcePath: join(dir, `teammates/${id}.md`),
+    constraints: { allow: [], deny: [] },
+    canonicalWorkspace: dir,
+    workspaceBindingRevision: "revision",
+    workspaceBindingFingerprint: `fingerprint-${id}`,
+    activeProjectRoot: dir,
   }));
   const runtime = new TeammateSessionRuntime({
     leaderSessionId: "leader-1",

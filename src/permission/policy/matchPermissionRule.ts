@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { PermissionContext, PermissionRule } from "../protocol/types.js";
+import { matchToolCallSelector } from "./matchToolCallSelector.js";
 
 const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file"]);
 const FILE_PATH_PATTERN_TOOLS = new Set(["read_file", "send_attachment", "write_file", "edit_file"]);
@@ -10,11 +11,22 @@ export function matchPermissionRule(
   input?: unknown,
   context?: PermissionContext,
 ): boolean {
+  if (rule.legacyInert) {
+    return false;
+  }
+  if (rule.selector) {
+    return matchToolCallSelector(rule.selector, toolName, input, context, {
+      commandAggregation: rule.behavior === "allow" ? "all" : "any",
+      commandExecutableMatch: rule.behavior === "allow" ? "exact" : "basename",
+      commandParseFailureMatch: rule.behavior !== "allow",
+    }).matched;
+  }
+
   if (!matchesToolName(rule.toolName, toolName)) {
     return false;
   }
 
-  if (FILE_WRITE_TOOLS.has(toolName) && !rule.pattern) {
+  if (FILE_WRITE_TOOLS.has(toolName) && !rule.pattern && rule.behavior === "allow") {
     return isFileInputInsideWorkspace(input, context);
   }
 
@@ -35,7 +47,7 @@ function matchRulePattern(
   if (!rule.pattern) return true;
   if (toolName === "bash") return matchBashPattern(rule.pattern, input);
   if (FILE_PATH_PATTERN_TOOLS.has(toolName)) return matchFilePathPattern(rule.pattern, input, context);
-  return true;
+  return false;
 }
 
 function matchBashPattern(pattern: string, input: unknown): boolean {

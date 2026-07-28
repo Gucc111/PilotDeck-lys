@@ -11,6 +11,8 @@ const { gateway } = vi.hoisted(() => ({
     teammateCatalog: vi.fn(),
     teammateEnablementGet: vi.fn(),
     teammateEnablementSet: vi.fn(),
+    teammateWorkspaceBindingsGet: vi.fn(),
+    teammateWorkspaceBindingSet: vi.fn(),
     teamState: vi.fn(),
     reloadExtensions: vi.fn(),
   },
@@ -153,5 +155,66 @@ describe('teammate settings routes', () => {
     });
     expect(gateway.reloadExtensions).not.toHaveBeenCalled();
     expect(gateway.teammateRead).not.toHaveBeenCalled();
+  });
+
+  it('gets workspace bindings and updates one binding with a revision', async () => {
+    gateway.teammateWorkspaceBindingsGet.mockResolvedValue({
+      canonicalProjectKey: '/workspace/a',
+      bindings: {
+        reviewer: { enabled: true, toolProfile: { mode: 'inherit' } },
+      },
+      revision: 'a'.repeat(64),
+      filePath: '/pilot-home/teammates/workspace-enablement.json',
+    });
+    gateway.teammateWorkspaceBindingSet.mockResolvedValue({
+      canonicalProjectKey: '/workspace/a',
+      bindings: {
+        reviewer: { enabled: false, toolProfile: { mode: 'inherit' } },
+      },
+      revision: 'b'.repeat(64),
+      filePath: '/pilot-home/teammates/workspace-enablement.json',
+    });
+
+    const getResponse = await fetch(
+      `${baseUrl}/api/teammates/bindings?projectPath=${encodeURIComponent('/workspace/a')}`,
+    );
+    expect(getResponse.status).toBe(200);
+    expect(gateway.teammateWorkspaceBindingsGet).toHaveBeenCalledWith({
+      projectKey: '/workspace/a',
+    });
+
+    const putResponse = await fetch(`${baseUrl}/api/teammates/bindings/reviewer`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectPath: '/workspace/a',
+        binding: { enabled: false, toolProfile: { mode: 'inherit' } },
+        expectedRevision: 'a'.repeat(64),
+      }),
+    });
+    expect(putResponse.status).toBe(200);
+    expect(gateway.teammateWorkspaceBindingSet).toHaveBeenCalledWith({
+      projectKey: '/workspace/a',
+      teammateId: 'reviewer',
+      binding: { enabled: false, toolProfile: { mode: 'inherit' } },
+      expectedRevision: 'a'.repeat(64),
+    });
+  });
+
+  it('maps workspace binding revision conflicts to HTTP 409', async () => {
+    gateway.teammateWorkspaceBindingSet.mockRejectedValue(
+      Object.assign(new Error('bindings changed'), { code: 'revision_conflict' }),
+    );
+    const response = await fetch(`${baseUrl}/api/teammates/bindings/reviewer`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        projectPath: '/workspace/a',
+        binding: { enabled: true, toolProfile: { mode: 'inherit' } },
+        expectedRevision: 'a'.repeat(64),
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe('revision_conflict');
   });
 });

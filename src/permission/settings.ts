@@ -1,37 +1,28 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolvePilotHome } from "../pilot/paths.js";
-import type { PermissionRule, PermissionRuleSet } from "./protocol/types.js";
+import type { PermissionRule } from "./protocol/types.js";
+import {
+  DEFAULT_PERMISSION_SETTINGS,
+  migrateLegacyPermissionEntry,
+  normalizePermissionEntry,
+  normalizePermissionRules,
+  normalizePermissionSettings,
+  permissionEntryToRule,
+  permissionSettingsToRuleSet,
+  type PermissionSettings,
+} from "./settingsSchema.js";
 
-export type PermissionSettings = {
-  version: 1;
-  allowedTools: string[];
-  disallowedTools: string[];
-  skipPermissions: boolean;
-  lastUpdated?: string;
-};
-
-export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
-  version: 1,
-  allowedTools: [],
-  disallowedTools: [],
-  skipPermissions: true,
-};
-
-const TOOL_NAME_ALIASES = new Map<string, string>([
-  ["Read", "read_file"],
-  ["Write", "write_file"],
-  ["Edit", "edit_file"],
-  ["NotebookEdit", "edit_notebook"],
-  ["MultiEdit", "edit_file"],
-  ["Glob", "glob"],
-  ["Grep", "grep"],
-  ["Bash", "bash"],
-  ["Task", "agent"],
-  ["TodoWrite", "todo_write"],
-  ["WebFetch", "web_fetch"],
-  ["WebSearch", "web_search"],
-]);
+export {
+  DEFAULT_PERMISSION_SETTINGS,
+  migrateLegacyPermissionEntry,
+  normalizePermissionEntry,
+  normalizePermissionRules,
+  normalizePermissionSettings,
+  permissionEntryToRule,
+  permissionSettingsToRuleSet,
+  type PermissionSettings,
+} from "./settingsSchema.js";
 
 export function getPermissionSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(resolvePilotHome(env), "permissions.json");
@@ -48,12 +39,16 @@ export function readPermissionSettings(env: NodeJS.ProcessEnv = process.env): Pe
 }
 
 export function writePermissionSettings(
-  settings: Partial<PermissionSettings>,
+  updates: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): PermissionSettings {
+  const current = readPermissionSettings(env);
+  const record = isRecord(updates) ? updates : {};
+  const rules = mergeRuleUpdates(current.rules, record);
   const next = normalizePermissionSettings({
-    ...readPermissionSettings(env),
-    ...settings,
+    ...current,
+    ...record,
+    rules,
     lastUpdated: new Date().toISOString(),
   });
   const filePath = getPermissionSettingsPath(env);
@@ -62,66 +57,27 @@ export function writePermissionSettings(
   return next;
 }
 
-export function permissionSettingsToRuleSet(settings: PermissionSettings): PermissionRuleSet {
-  return {
-    allow: settings.allowedTools.map((entry) => permissionEntryToRule(entry, "allow")),
-    deny: settings.disallowedTools.map((entry) => permissionEntryToRule(entry, "deny")),
-    ask: [],
-  };
-}
-
-export function normalizePermissionEntry(entry: string): string {
-  const trimmed = entry.trim();
-  if (!trimmed) return "";
-
-  const bashMatch = /^Bash\((.*)\)$/.exec(trimmed);
-  if (bashMatch) {
-    const pattern = bashMatch[1]?.trim();
-    return pattern ? `bash:${pattern}` : "bash";
+function mergeRuleUpdates(
+  currentRules: PermissionRule[],
+  updates: Record<string, unknown>,
+): PermissionRule[] {
+  if (Array.isArray(updates.rules)) {
+    return normalizePermissionRules(updates.rules);
   }
-
-  return TOOL_NAME_ALIASES.get(trimmed) ?? trimmed;
-}
-
-export function normalizePermissionSettings(value: unknown): PermissionSettings {
-  const record = isRecord(value) ? value : {};
-  return {
-    version: 1,
-    allowedTools: normalizeStringArray(record.allowedTools),
-    disallowedTools: normalizeStringArray(record.disallowedTools),
-    skipPermissions: Boolean(record.skipPermissions),
-    lastUpdated: typeof record.lastUpdated === "string" ? record.lastUpdated : undefined,
-  };
-}
-
-export function permissionEntryToRule(
-  entry: string,
-  behavior: "allow" | "deny",
-  source: PermissionRule["source"] = "user",
-): PermissionRule {
-  const normalized = normalizePermissionEntry(entry);
-  const [toolName, ...patternParts] = normalized.split(":");
-  const pattern = patternParts.join(":").trim();
-  return {
-    source,
-    behavior,
-    toolName: toolName || normalized,
-    pattern: pattern || undefined,
-  };
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const item of value) {
-    if (typeof item !== "string") continue;
-    const normalized = normalizePermissionEntry(item);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
+  let next = [...currentRules];
+  if (Array.isArray(updates.allowedTools)) {
+    next = next.filter((rule) => rule.behavior !== "allow");
+    next.push(...updates.allowedTools
+      .map((entry) => migrateLegacyPermissionEntry(entry, "allow"))
+      .filter((rule): rule is PermissionRule => Boolean(rule)));
   }
-  return out;
+  if (Array.isArray(updates.disallowedTools)) {
+    next = next.filter((rule) => rule.behavior !== "deny");
+    next.push(...updates.disallowedTools
+      .map((entry) => migrateLegacyPermissionEntry(entry, "deny"))
+      .filter((rule): rule is PermissionRule => Boolean(rule)));
+  }
+  return normalizePermissionRules(next);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

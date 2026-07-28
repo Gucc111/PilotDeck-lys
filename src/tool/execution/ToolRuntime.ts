@@ -26,6 +26,10 @@ import type { AgentEventEmitter } from "../../agent/protocol/events.js";
 import { requiresPromptCapability } from "../userInteractionConstraints.js";
 import { buildToolErrorRecovery } from "./errorRecovery.js";
 import { repairToolName } from "./repairToolName.js";
+import {
+  getTeammateScopeViolation,
+  type TeammateScopeViolation,
+} from "../teammateCapabilityConstraints.js";
 
 export class ToolRuntime {
   constructor(
@@ -136,6 +140,24 @@ export class ToolRuntime {
       );
     }
 
+    const initialScopeViolation = getTeammateScopeViolation(
+      tool.name,
+      call.input,
+      runtimeContext.teammateCapability,
+      runtimeContext.permissionContext,
+    );
+    if (initialScopeViolation) {
+      return this.errorResult(
+        call.id,
+        tool.name,
+        "teammate_scope_violation",
+        initialScopeViolation.message,
+        startedAt,
+        runtimeContext,
+        teammateScopeViolationDetails(runtimeContext, initialScopeViolation),
+      );
+    }
+
     if (runtimeContext.permissionContext.canPrompt === false && requiresPromptCapability(tool, call.input)) {
       return this.errorResult(
         call.id,
@@ -183,6 +205,23 @@ ${formatValidationError(tool.name, updatedValidation.issues, {
           { issues: updatedValidation.issues },
         );
       }
+      const updatedScopeViolation = getTeammateScopeViolation(
+        tool.name,
+        executeInput,
+        runtimeContext.teammateCapability,
+        runtimeContext.permissionContext,
+      );
+      if (updatedScopeViolation) {
+        return this.errorResult(
+          call.id,
+          tool.name,
+          "teammate_scope_violation",
+          updatedScopeViolation.message,
+          startedAt,
+          context,
+          teammateScopeViolationDetails(runtimeContext, updatedScopeViolation),
+        );
+      }
     }
 
     const toolValidation = await tool.validateInput?.(executeInput, context);
@@ -224,11 +263,76 @@ ${formatValidationError(tool.name, updatedValidation.issues, {
       this.eventEmitter?.({ type: "permission_requested", sessionId: context.sessionId, turnId: context.turnId, toolCallId: call.id, toolName: tool.name });
       const permissionRequestResult = findEffect(permissionHookResult.effects, "permission_request_result");
       if (permissionRequestResult?.result.behavior === "allow") {
-        decision = {
-          type: "allow",
-          reason: { type: "runtime", message: `PermissionRequest hook allowed ${tool.name}.` },
-          updatedInput: permissionRequestResult.result.updatedInput,
-        };
+        const permissionUpdatedInput = permissionRequestResult.result.updatedInput;
+        if (permissionUpdatedInput !== undefined) {
+          const updatedValidation = validateToolInput(permissionUpdatedInput, tool.inputSchema);
+          if (!updatedValidation.ok) {
+            return this.errorResult(
+              call.id,
+              tool.name,
+              "invalid_tool_input",
+              `PermissionRequest hook produced invalid input for ${tool.name}.
+
+${formatValidationError(tool.name, updatedValidation.issues, {
+                maxOutputTokens: runtimeContext.maxOutputTokens,
+                outputTruncated: runtimeContext.outputTruncated,
+              })}`,
+              startedAt,
+              context,
+              { issues: updatedValidation.issues },
+            );
+          }
+
+          const updatedToolValidation = await tool.validateInput?.(permissionUpdatedInput, context);
+          if (updatedToolValidation && !updatedToolValidation.ok) {
+            return this.errorResult(
+              call.id,
+              tool.name,
+              "invalid_tool_input",
+              `PermissionRequest hook produced invalid input for ${tool.name}.
+
+${formatValidationError(tool.name, updatedToolValidation.issues, {
+                maxOutputTokens: runtimeContext.maxOutputTokens,
+                outputTruncated: runtimeContext.outputTruncated,
+              })}`,
+              startedAt,
+              context,
+              { issues: updatedToolValidation.issues },
+            );
+          }
+
+          const permissionScopeViolation = getTeammateScopeViolation(
+            tool.name,
+            permissionUpdatedInput,
+            runtimeContext.teammateCapability,
+            runtimeContext.permissionContext,
+          );
+          if (permissionScopeViolation) {
+            return this.errorResult(
+              call.id,
+              tool.name,
+              "teammate_scope_violation",
+              permissionScopeViolation.message,
+              startedAt,
+              context,
+              teammateScopeViolationDetails(runtimeContext, permissionScopeViolation),
+            );
+          }
+
+          executeInput = permissionUpdatedInput;
+          // Re-enter permission evaluation exactly once. If the changed call
+          // still asks, the normal permission_required exit below handles it;
+          // the hook is not dispatched again, preventing update loops.
+          decision = await this.permissionRuntime.decide(tool, executeInput, context, call.id);
+          if (decision.type === "allow" && decision.updatedInput !== undefined) {
+            decision = { ...decision, updatedInput: undefined };
+          }
+        } else {
+          decision = {
+            type: "allow",
+            reason: { type: "runtime", message: `PermissionRequest hook allowed ${tool.name}.` },
+          };
+        }
       } else if (permissionRequestResult?.result.behavior === "deny") {
         decision = {
           type: "deny",
@@ -278,6 +382,23 @@ ${formatValidationError(tool.name, updatedValidation.issues, {
     }
 
     executeInput = decision.updatedInput ?? executeInput;
+    const finalScopeViolation = getTeammateScopeViolation(
+      tool.name,
+      executeInput,
+      runtimeContext.teammateCapability,
+      runtimeContext.permissionContext,
+    );
+    if (finalScopeViolation) {
+      return this.errorResult(
+        call.id,
+        tool.name,
+        "teammate_scope_violation",
+        finalScopeViolation.message,
+        startedAt,
+        context,
+        teammateScopeViolationDetails(runtimeContext, finalScopeViolation),
+      );
+    }
     const baseContext: PilotDeckToolRuntimeContext = {
       ...context,
       currentToolCallId: call.id,
@@ -384,6 +505,9 @@ ${formatValidationError(tool.name, updatedValidation.issues, {
       content: [{ type: "text", text: formatToolErrorContent(recovery.message, details) }],
       metadata: {
         recovery: recovery.advice,
+        ...(details?.teammateCapability
+          ? { teammateCapability: details.teammateCapability }
+          : {}),
       },
       startedAt,
       completedAt,
@@ -406,6 +530,9 @@ ${formatValidationError(tool.name, updatedValidation.issues, {
       startedAt: result.startedAt,
       completedAt: result.completedAt,
       durationMs: new Date(result.completedAt).getTime() - startedAt.getTime(),
+      ...(result.metadata?.teammateCapability
+        ? { metadata: { teammateCapability: result.metadata.teammateCapability } }
+        : {}),
     });
   }
 
@@ -442,6 +569,25 @@ ${formatValidationError(tool.name, updatedValidation.issues, {
       nonBlockingErrors: [],
     };
   }
+}
+
+function teammateScopeViolationDetails(
+  context: PilotDeckToolRuntimeContext,
+  violation: TeammateScopeViolation,
+): Record<string, unknown> {
+  const capability = context.teammateCapability!;
+  return {
+    teammateCapability: {
+      teammateId: capability.teammateId,
+      behavior: violation.behavior,
+      selector: violation.selector,
+      matchReason: violation.match.reason,
+      activeProjectRoot: capability.activeProjectRoot,
+      canonicalWorkspace: capability.canonicalWorkspace,
+      workspaceBindingRevision: capability.workspaceBindingRevision,
+      workspaceBindingFingerprint: capability.workspaceBindingFingerprint,
+    },
+  };
 }
 
 function formatToolErrorContent(

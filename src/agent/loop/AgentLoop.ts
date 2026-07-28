@@ -1965,6 +1965,7 @@ export class AgentLoop {
       permissionMode: this.config.permissionMode,
       basePermissionMode: input.basePermissionMode ?? this.config.permissionModeBeforePlan,
       permissionContext,
+      teammateCapability: this.config.teammateCapability,
       auditRecorder: this.dependencies.auditRecorder,
       now: this.now,
       env: this.config.env,

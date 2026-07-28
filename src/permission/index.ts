@@ -12,13 +12,32 @@ export {
   type PermissionRuleBehavior,
   type PermissionRuleSet,
   type PermissionRuleSource,
+  type BashCommandSubject,
+  type CommandOperator,
+  type PathOperator,
+  type PathSubject,
+  type ToolCallCondition,
+  type ToolCallConditionMatchResult,
+  type ToolCallMatchResult,
+  type ToolCallOperator,
+  type ToolCallSelector,
+  type ToolCallSelectorMatchResult,
+  type ToolCallSubject,
+  type ToolParameterDescriptor,
 } from "./protocol/types.js";
 export { matchPermissionRule } from "./policy/matchPermissionRule.js";
+export {
+  BUILTIN_TOOL_PARAMETER_DESCRIPTORS,
+  matchToolCallSelector,
+  type ToolCallSelectorMatchOptions,
+} from "./policy/matchToolCallSelector.js";
 export { PermissionRuntime } from "./decision/PermissionRuntime.js";
 export {
   DEFAULT_PERMISSION_SETTINGS,
   getPermissionSettingsPath,
+  migrateLegacyPermissionEntry,
   normalizePermissionEntry,
+  normalizePermissionRules,
   normalizePermissionSettings,
   permissionEntryToRule,
   permissionSettingsToRuleSet,

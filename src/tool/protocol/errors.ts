@@ -15,7 +15,8 @@ export type PilotDeckToolErrorCode =
   | "setup_required"
   | "plan_mode_violation"
   | "ask_mode_violation"
-  | "team_mode_violation";
+  | "team_mode_violation"
+  | "teammate_scope_violation";
 
 export type PilotDeckToolError = {
   code: PilotDeckToolErrorCode;

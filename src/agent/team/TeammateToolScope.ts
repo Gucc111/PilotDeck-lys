@@ -1,12 +1,7 @@
 import { buildMcpToolWireName, parseMcpToolWireName } from "../../mcp/runtime/wireName.js";
 import type { ToolRegistry } from "../../tool/registry/ToolRegistry.js";
+import { TEAMMATE_INFRASTRUCTURE_TOOLS } from "../../tool/teammateCapabilityConstraints.js";
 import type { RuntimeTeammateDefinition } from "./types.js";
-
-const TEAMMATE_INFRASTRUCTURE_TOOLS = new Set([
-  "send_team_message",
-  "enter_plan_mode",
-  "exit_plan_mode",
-]);
 
 const TEAMMATE_FORBIDDEN_TOOLS = new Set([
   "agent",

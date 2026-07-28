@@ -1,5 +1,6 @@
 import type { CanonicalThinkingConfig, CanonicalToolChoice, MultimodalConstraints } from "../../model/index.js";
 import type { PermissionContext, PermissionMode } from "../../permission/index.js";
+import type { PilotDeckTeammateCapability } from "../../tool/protocol/types.js";
 import type { AgentRunMode } from "../protocol/input.js";
 
 export type AgentRuntimeConfig = {
@@ -26,6 +27,8 @@ export type AgentRuntimeConfig = {
   /** Saved mode before entering plan mode, restored on exit. */
   permissionModeBeforePlan?: PermissionMode;
   permissionContext: PermissionContext;
+  /** Hard tool-call capability boundary for a Teammate session. */
+  teammateCapability?: PilotDeckTeammateCapability;
   env?: NodeJS.ProcessEnv;
   maxResultBytes?: number;
   metadata?: Record<string, unknown>;

@@ -1,5 +1,6 @@
 import type { PilotDeckSettings } from '../types/types';
 import { authenticatedFetch } from '../../../utils/api.js';
+import { normalizePermissionSettings } from '../../../../../src/permission/settingsSchema';
 
 export const PILOTDECK_SETTINGS_KEY = 'pilotdeck-settings';
 
@@ -59,29 +60,19 @@ export function getPilotDeckSettings(): PilotDeckSettings {
   const raw = safeLocalStorage.getItem(PILOTDECK_SETTINGS_KEY);
   if (!raw) {
     return {
-      allowedTools: [],
-      disallowedTools: [],
+      version: 2,
+      rules: [],
       skipPermissions: false,
       projectSortOrder: 'name',
     };
   }
 
   try {
-    const parsed = JSON.parse(raw);
-    return {
-      ...parsed,
-      allowedTools: Array.isArray(parsed.allowedTools) ? parsed.allowedTools : [],
-      disallowedTools: Array.isArray(parsed.disallowedTools) ? parsed.disallowedTools : [],
-      skipPermissions:
-        typeof parsed.skipPermissions === 'boolean'
-          ? parsed.skipPermissions
-          : false,
-      projectSortOrder: parsed.projectSortOrder || 'name',
-    };
+    return normalizePilotDeckSettings(JSON.parse(raw), false);
   } catch {
     return {
-      allowedTools: [],
-      disallowedTools: [],
+      version: 2,
+      rules: [],
       skipPermissions: false,
       projectSortOrder: 'name',
     };
@@ -117,23 +108,39 @@ export async function savePilotDeckPermissionSettings(
   return next;
 }
 
-function unionStringArrays(a: string[], b: string[]): string[] {
-  const set = new Set(a);
-  for (const item of b) set.add(item);
-  return [...set];
-}
-
 function mergePermissionSettings(value: unknown): PilotDeckSettings {
   const current = getPilotDeckSettings();
-  const parsed = value && typeof value === 'object' ? value as Partial<PilotDeckSettings> : {};
-  const backendAllowed = Array.isArray(parsed.allowedTools) ? parsed.allowedTools : [];
-  const backendDisallowed = Array.isArray(parsed.disallowedTools) ? parsed.disallowedTools : [];
+  const permissions = normalizePilotDeckSettings(value, current.skipPermissions);
+  const mergedRules = permissions.rules.length > 0
+    ? permissions.rules
+    : current.rules;
   return {
     ...current,
-    ...parsed,
-    allowedTools: unionStringArrays(current.allowedTools, backendAllowed),
-    disallowedTools: unionStringArrays(current.disallowedTools, backendDisallowed),
-    skipPermissions: typeof parsed.skipPermissions === 'boolean' ? parsed.skipPermissions : current.skipPermissions,
+    ...permissions,
+    rules: mergedRules,
     projectSortOrder: current.projectSortOrder || 'name',
+  };
+}
+
+export function normalizePilotDeckSettings(
+  value: unknown,
+  defaultSkipPermissions = false,
+): PilotDeckSettings {
+  const record = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const { allowedTools: _allowedTools, disallowedTools: _disallowedTools, ...rest } = record;
+  const permissions = normalizePermissionSettings({
+    ...record,
+    skipPermissions: typeof record.skipPermissions === 'boolean'
+      ? record.skipPermissions
+      : defaultSkipPermissions,
+  });
+  return {
+    ...rest,
+    ...permissions,
+    projectSortOrder: typeof record.projectSortOrder === 'string' && record.projectSortOrder
+      ? record.projectSortOrder
+      : 'name',
   };
 }

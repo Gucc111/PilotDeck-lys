@@ -274,6 +274,11 @@ test("TeammateSessionRuntime enforces message direction and reports idle lifecyc
       prompt: "Implement carefully.",
       tools: [],
       sourcePath: join(dir, "teammates/implementer.md"),
+      constraints: { allow: [], deny: [] },
+      canonicalWorkspace: dir,
+      workspaceBindingRevision: "revision",
+      workspaceBindingFingerprint: "fingerprint",
+      activeProjectRoot: dir,
     }],
     host: {
       run: async (input) => ({

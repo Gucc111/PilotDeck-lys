@@ -2,7 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { readFile } from "node:fs/promises";
 import type { Gateway, GatewayMode, GatewaySessionInfo } from "../../../../gateway/index.js";
-import { readPermissionSettings, writePermissionSettings } from "../../../../permission/settings.js";
+import type { PermissionRule } from "../../../../permission/protocol/types.js";
+import {
+  migrateLegacyPermissionEntry,
+  readPermissionSettings,
+  writePermissionSettings,
+} from "../../../../permission/settings.js";
+import { permissionRuleKey } from "../../../../permission/settingsSchema.js";
 import { defaultTuiSessionKey } from "../TuiChannel.js";
 import { ActivityLine } from "./ActivityLine.js";
 import { Header } from "./Header.js";
@@ -27,6 +33,19 @@ export type TuiAppProps = {
   /** Called when user requests to view a persisted tool output file. */
   onViewOutput?: (path: string) => Promise<void>;
 };
+
+function formatPermissionRules(rules: PermissionRule[]): string {
+  if (rules.length === 0) return "(none)";
+  return rules.map((rule) => {
+    if (rule.pattern) return `${rule.toolName}:${rule.pattern}`;
+    const conditions = rule.selector?.conditions ?? [];
+    return conditions.length > 0
+      ? `${rule.toolName}:${conditions.map((condition) =>
+          `${condition.operator}=${Array.isArray(condition.value) ? condition.value.join(" ") : condition.value}`
+        ).join("+")}`
+      : rule.toolName;
+  }).join(", ");
+}
 
 export function TuiApp(props: TuiAppProps): React.ReactNode {
   const { exit } = useApp();
@@ -319,8 +338,9 @@ export function TuiApp(props: TuiAppProps): React.ReactNode {
         });
         const entry = buildPermissionEntry(toolName, payload);
         const current = readPermissionSettings();
-        if (!current.allowedTools.includes(entry)) {
-          writePermissionSettings({ allowedTools: [...current.allowedTools, entry] });
+        const rule = migrateLegacyPermissionEntry(entry, "allow");
+        if (rule && !current.rules.some((candidate) => permissionRuleKey(candidate) === permissionRuleKey(rule))) {
+          writePermissionSettings({ rules: [...current.rules, rule] });
         }
         setState(dequeue);
         return;
@@ -709,8 +729,9 @@ async function handleCommand(
       if (!sub) {
         const lines = [
           `skipPermissions: ${current.skipPermissions}`,
-          `allow: ${current.allowedTools.length === 0 ? "(none)" : current.allowedTools.join(", ")}`,
-          `deny: ${current.disallowedTools.length === 0 ? "(none)" : current.disallowedTools.join(", ")}`,
+          `allow: ${formatPermissionRules(current.rules.filter((rule) => rule.behavior === "allow"))}`,
+          `ask: ${formatPermissionRules(current.rules.filter((rule) => rule.behavior === "ask"))}`,
+          `deny: ${formatPermissionRules(current.rules.filter((rule) => rule.behavior === "deny"))}`,
         ];
         setState((c) => ({ ...c, messages: [...c.messages, { role: "system", text: lines.join("\n") }] }));
         return true;
@@ -730,20 +751,23 @@ async function handleCommand(
         return true;
       }
       if (sub === "allow" && entry) {
-        writePermissionSettings({ allowedTools: [...current.allowedTools, entry] });
+        const rule = migrateLegacyPermissionEntry(entry, "allow");
+        if (rule) writePermissionSettings({ rules: [...current.rules, rule] });
         setState((c) => ({ ...c, messages: [...c.messages, { role: "system", text: `Added allow: ${entry}` }] }));
         return true;
       }
       if (sub === "deny" && entry) {
-        writePermissionSettings({ disallowedTools: [...current.disallowedTools, entry] });
+        const rule = migrateLegacyPermissionEntry(entry, "deny");
+        if (rule) writePermissionSettings({ rules: [...current.rules, rule] });
         setState((c) => ({ ...c, messages: [...c.messages, { role: "system", text: `Added deny: ${entry}` }] }));
         return true;
       }
       if (sub === "clear" && entry) {
-        writePermissionSettings({
-          allowedTools: current.allowedTools.filter((e) => e !== entry),
-          disallowedTools: current.disallowedTools.filter((e) => e !== entry),
-        });
+        const keys = new Set(["allow", "ask", "deny"].flatMap((behavior) => {
+          const rule = migrateLegacyPermissionEntry(entry, behavior === "deny" ? "deny" : "allow");
+          return rule ? [permissionRuleKey({ ...rule, behavior: behavior as "allow" | "ask" | "deny" })] : [];
+        }));
+        writePermissionSettings({ rules: current.rules.filter((rule) => !keys.has(permissionRuleKey(rule))) });
         setState((c) => ({ ...c, messages: [...c.messages, { role: "system", text: `Cleared: ${entry}` }] }));
         return true;
       }

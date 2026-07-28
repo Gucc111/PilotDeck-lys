@@ -1,4 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
+import type { ToolCallSelector } from '../../../../../src/permission/protocol/types';
 
 // Settings was trimmed down from the original multi-tab layout. The
 // 'permissions' tab was re-added because the chat surface emits
@@ -56,6 +57,29 @@ export type TeammateCatalog = {
 export type TeammateEnablement = {
   canonicalProjectKey: string;
   enabledTeammateIds: string[];
+};
+
+export type TeammateToolProfile =
+  | { mode: 'inherit' }
+  | {
+      mode: 'custom';
+      tools: string[];
+      constraints: {
+        allow: ToolCallSelector[];
+        deny: ToolCallSelector[];
+      };
+    };
+
+export type TeammateWorkspaceBinding = {
+  enabled: boolean;
+  toolProfile: TeammateToolProfile;
+};
+
+export type TeammateWorkspaceBindings = {
+  canonicalProjectKey: string;
+  bindings: Record<string, TeammateWorkspaceBinding>;
+  revision: string;
+  filePath: string;
 };
 
 export type CodeEditorSettingsState = {

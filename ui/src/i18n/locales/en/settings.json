@@ -157,11 +157,17 @@
       "count": "{{count}} teammate",
       "count_plural": "{{count}} teammates"
     },
+    "global": {
+      "title": "Global teammate defaults",
+      "description": "Edit reusable teammate definitions here. Their tools are defaults; each workspace binding can inherit or replace them."
+    },
     "workspace": {
-      "title": "Enabled for workspace",
-      "description": "This workspace selection only controls enablement, capability suggestions, and runtime diagnostics. Teammate definitions are global.",
-      "selector": "Reference workspace",
-      "none": "Select a workspace to load enablement and validate capabilities."
+      "title": "Workspace bindings",
+      "description": "Configure enablement and the effective tool profile for the selected workspace without changing the global teammate definition.",
+      "selector": "Workspace",
+      "none": "Select a workspace to load bindings and validate capabilities.",
+      "canonical": "Canonical project configuration: {{path}}",
+      "worktreeHint": "This canonical project configuration applies to every Git worktree. At runtime, $WORKSPACE points to the current checkout."
     },
     "enablement": {
       "rowLabel": "Enabled for workspace",
@@ -169,6 +175,47 @@
       "loading": "Loading workspace enablement...",
       "saving": "Saving workspace enablement...",
       "summary": "{{count}} global teammate(s) enabled for this workspace"
+    },
+    "bindings": {
+      "loading": "Loading workspace bindings...",
+      "saving": "Saving workspace binding...",
+      "summary": "{{count}} teammate(s) enabled for this workspace",
+      "inherit": "Inherit default",
+      "custom": "Custom profile",
+      "inheritedStatus": "Inherited",
+      "customStatus": "Custom",
+      "effectiveTools": "{{count}} effective tool(s)",
+      "copyDefaults": "Copy default tools",
+      "resetDefault": "Reset to default",
+      "toolsTitle": "Custom tools",
+      "toolsDescription": "Select or clear tools from the current workspace catalog. Only selected tools can receive scope constraints.",
+      "noCatalogTools": "No tools are available in the current workspace catalog.",
+      "toolToggleLabel": "{{name}} custom tool: {{tool}}"
+    },
+    "constraints": {
+      "title": "Capability constraints",
+      "description": "Allowed scope restricts matching calls for one tool; Blocked scope always rejects matching calls. These capability scopes are separate from permission prompt rules.",
+      "allowedScope": "Allowed scope",
+      "blockedScope": "Blocked scope",
+      "scopeType": "Scope type",
+      "tool": "Custom tool",
+      "subject": "Subject",
+      "operator": "Operator",
+      "add": "Add scope",
+      "remove": "Remove scope",
+      "empty": "No capability constraints.",
+      "selectToolFirst": "Select a supported custom tool before adding a scope.",
+      "pathPlaceholder": "$WORKSPACE/src or /absolute/path",
+      "argvPlaceholder": "git status --short",
+      "executablePlaceholder": "git",
+      "workspaceHint": "Use $WORKSPACE for paths relative to the teammate's current checkout.",
+      "commandHint": "Executable matches the input exactly; command prefix includes the executable and its leading arguments. Environment prefixes and env wrappers never auto-match.",
+      "operators": {
+        "executableEquals": "Executable equals",
+        "argvPrefix": "Command argv starts with",
+        "pathEquals": "Path equals",
+        "pathWithin": "Path is within"
+      }
     },
     "editor": {
       "select": "Select a teammate to edit, or create a new one.",
@@ -237,7 +284,10 @@
       "catalog": "Failed to load capability suggestions.",
       "enablementLoad": "Failed to load workspace teammate enablement.",
       "enablementSave": "Failed to save workspace teammate enablement.",
-      "enablementUnknown": "The enablement status is unknown. Refresh to check the server state."
+      "enablementUnknown": "The enablement status is unknown. Refresh to check the server state.",
+      "bindingsLoad": "Failed to load workspace teammate bindings.",
+      "bindingsSave": "Failed to save the workspace teammate binding.",
+      "revisionConflict": "This workspace binding changed elsewhere. The latest server state has been reloaded; review it before applying your change again."
     }
   },
   "notifications": {
@@ -486,16 +536,48 @@
     "export": "Export",
     "import": "Import",
     "importExportHint": "Share or back up your tool permissions as JSON.",
-    "exportSuccess": "Exported {{allowed}} allowed and {{blocked}} blocked tools.",
+    "exportSuccess": "Exported {{count}} rules.",
     "exportError": "Failed to export permissions.",
     "importReadError": "Could not read the selected file.",
-    "importInvalid": "Not a valid permissions export. Expected JSON with allowedTools / disallowedTools.",
+    "importInvalid": "Choose a valid V1 or V2 permissions JSON file.",
     "importConfirmBody": "Merge {{allowed}} allowed and {{blocked}} blocked tools into your existing permissions?",
-    "importSuccess": "Imported. Added {{addedAllowed}} allowed and {{addedBlocked}} blocked tools.",
+    "importSuccess": "Imported {{added}} new rules.",
     "skipPermissions": {
       "title": "Skip permission prompts",
       "description": "Run tool calls without asking for confirmation. This maps to bypassPermissions and should only be used in trusted workspaces.",
       "warning": "Permission prompts are currently bypassed. Allowed and blocked rules below are still saved, but this global mode lets the agent run without asking."
+    },
+    "builder": {
+      "title": "Add rule",
+      "description": "Build a scoped tool rule. Leave Subject as Entire tool for an unscoped rule.",
+      "effect": "Effect",
+      "tool": "Tool",
+      "subject": "Subject",
+      "entireTool": "Entire tool",
+      "operator": "Operator",
+      "pathPlaceholder": "$WORKSPACE/src or /absolute/path",
+      "argvPlaceholder": "git status --short",
+      "executablePlaceholder": "git",
+      "workspaceHint": "Use $WORKSPACE to keep path rules portable between projects.",
+      "commandHint": "Executable matches the command name; argv prefix scopes its leading arguments.",
+      "emptyTools": "No supported tools are available."
+    },
+    "effects": {
+      "allow": "Allow",
+      "ask": "Ask",
+      "deny": "Block"
+    },
+    "operators": {
+      "executableEquals": "Executable equals",
+      "argvPrefix": "Command argv starts with",
+      "pathEquals": "Path equals",
+      "pathWithin": "Path is within"
+    },
+    "rules": {
+      "title": "Rules",
+      "description": "Structured and migrated legacy rules are evaluated by the same runtime.",
+      "empty": "No permission rules configured.",
+      "legacy": "Legacy"
     },
     "allowedTools": {
       "title": "Allowed Tools",

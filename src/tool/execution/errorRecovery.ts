@@ -124,6 +124,9 @@ function summarizeError(
   if (code === "ask_mode_violation") {
     return `The ${toolName} call is not allowed while the agent is in ask mode.`;
   }
+  if (code === "teammate_scope_violation") {
+    return `The ${toolName} call exceeds this Teammate's configured capability scope.`;
+  }
   if (evidence.length > 0) {
     return trimSentence(evidence[0]);
   }
@@ -143,7 +146,12 @@ function classifyError(
     }
   }
 
-  if (code === "invalid_tool_input" || code === "file_not_found" || code === "file_conflict") {
+  if (
+    code === "invalid_tool_input" ||
+    code === "file_not_found" ||
+    code === "file_conflict" ||
+    code === "teammate_scope_violation"
+  ) {
     return "fix_input";
   }
   if (code === "result_too_large") {
@@ -250,6 +258,11 @@ function baseNextActions(
       return [
         "Do not retry this write/action tool while in ask mode.",
         "Use read-only tools or ask the user to change mode if they want execution.",
+      ];
+    case "teammate_scope_violation":
+      return [
+        "Choose parameters that match the Teammate workspace capability selectors.",
+        "Do not request or add a permission rule; permissions cannot widen this capability boundary.",
       ];
     case "permission_required":
       return ["Pause tool execution and ask the user for approval with a concise reason."];
@@ -421,6 +434,8 @@ function defaultAvoidRetryReason(code: PilotDeckToolErrorCode): string | undefin
       return "Plan mode blocks this class of tool until execution mode is restored.";
     case "ask_mode_violation":
       return "Ask mode blocks this class of tool until execution mode is restored.";
+    case "teammate_scope_violation":
+      return "The Teammate workspace binding is a hard capability boundary that permission grants cannot override.";
     default:
       return undefined;
   }

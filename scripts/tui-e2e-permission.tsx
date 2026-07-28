@@ -231,10 +231,12 @@ async function testAllowRemember(): Promise<void> {
     await waitForNoPattern(instance, /Permission required/, 3_000);
 
     const updated = readPermissionSettings();
-    if (updated.allowedTools.includes("dangerous_action")) {
+    const remembered = updated.rules.some((rule) =>
+      rule.behavior === "allow" && rule.toolName === "dangerous_action");
+    if (remembered) {
       pass(`${name}: rule persisted to permissions.json`);
     } else {
-      fail(`${name}: rule persisted`, `allowedTools: ${JSON.stringify(updated.allowedTools)}`);
+      fail(`${name}: rule persisted`, `rules: ${JSON.stringify(updated.rules)}`);
     }
   } finally {
     instance.unmount();

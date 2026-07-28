@@ -16,7 +16,7 @@ function sendError(res, error) {
   const code = error?.code || error?.details?.code;
   const status = error?.statusCode
     || (code === 'not_found' ? 404
-      : code === 'conflict' || code === 'duplicate_id' ? 409
+      : code === 'conflict' || code === 'duplicate_id' || code === 'revision_conflict' ? 409
         : code === 'validation_failed' || code === 'invalid_input' || code === 'invalid_id' ? 400
           : 500);
   res.status(status).json({
@@ -73,6 +73,39 @@ router.put('/enablement', async (req, res) => {
       enabledTeammateIds,
     });
     res.json(result);
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.get('/bindings', async (req, res) => {
+  try {
+    const projectKey = requireProjectPath(req.query.projectPath);
+    const gateway = await getPilotDeckGateway();
+    res.json(await gateway.teammateWorkspaceBindingsGet({ projectKey }));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.put('/bindings/:id', async (req, res) => {
+  try {
+    const projectKey = requireProjectPath(req.body?.projectPath);
+    const teammateId = String(req.params.id || '').trim();
+    const expectedRevision = req.body?.expectedRevision;
+    if (typeof expectedRevision !== 'string' || !expectedRevision.trim()) {
+      return res.status(400).json({ error: 'expectedRevision is required.' });
+    }
+    if (!req.body?.binding || typeof req.body.binding !== 'object' || Array.isArray(req.body.binding)) {
+      return res.status(400).json({ error: 'binding must be an object.' });
+    }
+    const gateway = await getPilotDeckGateway();
+    res.json(await gateway.teammateWorkspaceBindingSet({
+      projectKey,
+      teammateId,
+      binding: req.body.binding,
+      expectedRevision,
+    }));
   } catch (error) {
     sendError(res, error);
   }

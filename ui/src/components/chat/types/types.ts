@@ -3,6 +3,7 @@ import type {
   ProjectSession,
   SessionProvider,
 } from '../../../types/app';
+import type { PermissionRule } from '../../../../../src/permission/protocol/types';
 
 export type Provider = SessionProvider;
 
@@ -162,8 +163,8 @@ export interface PilotDeckWorkStatus {
 }
 
 export interface PilotDeckSettings {
-  allowedTools: string[];
-  disallowedTools: string[];
+  version: 2;
+  rules: PermissionRule[];
   skipPermissions: boolean;
   projectSortOrder: string;
   lastUpdated?: string;
@@ -172,7 +173,9 @@ export interface PilotDeckSettings {
 
 export interface PilotDeckPermissionSuggestion {
   toolName: string;
+  rule: PermissionRule;
   entry: string;
+  summary: string;
   isAllowed: boolean;
 }
 

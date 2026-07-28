@@ -28,19 +28,26 @@ export class PermissionRuntime {
 
     const denyRule = findMatchingRule(permissionContext.rules.deny, tool.name, input, permissionContext);
     if (denyRule) {
-      if (sessionAllowRule && denyRule.source === "user") {
-        return this.allowSessionRule(tool, input, context, toolCallId, sessionAllowRule);
-      }
       return denyFromRule(denyRule);
     }
 
-    const askRule = findMatchingRule(permissionContext.rules.ask, tool.name, input, permissionContext);
+    const askRules = findMatchingRules(
+      permissionContext.rules.ask,
+      tool.name,
+      input,
+      permissionContext,
+    );
+    const protectedAskRule = askRules.find((rule) => !isSessionOverrideableAskRule(rule));
+    const askRule = protectedAskRule ?? askRules[0];
+    if (sessionAllowRule && askRules.every(isSessionOverrideableAskRule)) {
+      // Session grants are compatibility approvals for ordinary ask/default
+      // decisions. Explicit deny rules above and tool-level hard safety below
+      // remain non-overridable; future capability boundaries belong before
+      // this compatibility grant for the same reason.
+      return this.allowSessionRule(tool, input, context, toolCallId, sessionAllowRule);
+    }
     if (askRule) {
       return finalizeAsk(askFromRule(tool, input, toolCallId, askRule), permissionContext);
-    }
-
-    if (sessionAllowRule) {
-      return this.allowSessionRule(tool, input, context, toolCallId, sessionAllowRule);
     }
 
     // Check user-configured allow rules BEFORE consulting the tool's own
@@ -228,6 +235,19 @@ function findMatchingRule(
   context: PermissionContext,
 ): PermissionRule | undefined {
   return rules.find((rule) => matchPermissionRule(rule, toolName, input, context));
+}
+
+function findMatchingRules(
+  rules: PermissionRule[],
+  toolName: string,
+  input: unknown,
+  context: PermissionContext,
+): PermissionRule[] {
+  return rules.filter((rule) => matchPermissionRule(rule, toolName, input, context));
+}
+
+function isSessionOverrideableAskRule(rule: PermissionRule): boolean {
+  return rule.source === "user" || rule.source === "project" || rule.source === "session";
 }
 
 function allow(reason: PermissionDecisionReason): PermissionDecision {

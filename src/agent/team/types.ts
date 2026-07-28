@@ -1,3 +1,10 @@
+import type { ToolCallSelector } from "../../permission/index.js";
+
+export type CompiledTeammateToolConstraints = {
+  allow: readonly ToolCallSelector[];
+  deny: readonly ToolCallSelector[];
+};
+
 export type RuntimeTeammateDefinition = {
   id: string;
   name: string;
@@ -9,6 +16,11 @@ export type RuntimeTeammateDefinition = {
   skills?: string[];
   mcpServers?: string[];
   sourcePath: string;
+  constraints: CompiledTeammateToolConstraints;
+  canonicalWorkspace: string;
+  workspaceBindingRevision: string;
+  workspaceBindingFingerprint: string;
+  activeProjectRoot: string;
 };
 
 export type TeammateSessionBinding = {
@@ -16,6 +28,10 @@ export type TeammateSessionBinding = {
   projectRoot: string;
   definition: RuntimeTeammateDefinition;
   systemPrompt: string;
+  constraints: CompiledTeammateToolConstraints;
+  canonicalWorkspace: string;
+  workspaceBindingRevision: string;
+  workspaceBindingFingerprint: string;
 };
 
 export function teammateSessionKey(leaderSessionId: string, teammateId: string): string {

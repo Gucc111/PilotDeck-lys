@@ -53,7 +53,7 @@ test("TeammateEnablementStore defaults to disabled and isolates workspaces", asy
     const store = new TeammateEnablementStore({ pilotHome });
 
     assert.deepEqual(await store.get(workspaceA), []);
-    assert.deepEqual(await store.list(), { schemaVersion: 1, workspaces: {} });
+    assert.deepEqual(await store.list(), { schemaVersion: 2, workspaces: {} });
 
     assert.deepEqual(
       await store.set(workspaceA, ["reviewer", "implementer", "reviewer"]),
@@ -66,6 +66,188 @@ test("TeammateEnablementStore defaults to disabled and isolates workspaces", asy
     assert.equal(Object.keys((await store.list()).workspaces).length, 2);
     await assert.rejects(
       () => store.set(workspaceA, ["../invalid"]),
+      (error: unknown) =>
+        error instanceof TeammateEnablementStoreError &&
+        error.code === "invalid_input",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TeammateEnablementStore migrates V1 bindings and writes only V2", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-v1-"));
+  try {
+    const pilotHome = join(root, "pilot-home");
+    const workspace = join(root, "workspace");
+    const filePath = getPilotTeammateEnablementFilePath(pilotHome);
+    await Promise.all([
+      mkdir(join(pilotHome, "teammates"), { recursive: true }),
+      mkdir(workspace, { recursive: true }),
+    ]);
+    const canonicalWorkspace = await canonicalizeTeammateWorkspace(workspace);
+    await writeFile(
+      filePath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        workspaces: { [canonicalWorkspace]: ["reviewer", "implementer"] },
+      })}\n`,
+      "utf8",
+    );
+    const store = new TeammateEnablementStore({ pilotHome });
+
+    const migrated = await store.getBindings(workspace);
+    assert.deepEqual(migrated.bindings, {
+      implementer: { enabled: true, toolProfile: { mode: "inherit" } },
+      reviewer: { enabled: true, toolProfile: { mode: "inherit" } },
+    });
+
+    await store.set(workspace, ["reviewer"]);
+    const written = JSON.parse(await readFile(filePath, "utf8"));
+    assert.equal(written.schemaVersion, 2);
+    assert.deepEqual(written.workspaces[canonicalWorkspace], {
+      reviewer: { enabled: true, toolProfile: { mode: "inherit" } },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy enabled-ID updates preserve retained custom profiles", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-custom-"));
+  try {
+    const pilotHome = join(root, "pilot-home");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const store = new TeammateEnablementStore({ pilotHome });
+    const initial = await store.getBindings(workspace);
+    const custom = {
+      enabled: true,
+      toolProfile: {
+        mode: "custom" as const,
+        tools: ["read_file", "bash"],
+        constraints: {
+          allow: [{
+            version: 2 as const,
+            toolName: "bash",
+            conditions: [{
+              subject: "bash.command" as const,
+              operator: "executableEquals" as const,
+              value: "git",
+            }],
+          }],
+          deny: [],
+        },
+      },
+    };
+    await store.setBinding(workspace, "reviewer", custom, initial.revision);
+
+    await store.set(workspace, ["reviewer", "implementer"]);
+
+    assert.deepEqual((await store.getBinding(workspace, "reviewer")).binding, {
+      ...custom,
+      toolProfile: {
+        ...custom.toolProfile,
+        tools: ["bash", "read_file"],
+      },
+    });
+    assert.deepEqual(await store.get(workspace), ["implementer", "reviewer"]);
+
+    await store.set(workspace, ["implementer"]);
+
+    assert.deepEqual((await store.getBinding(workspace, "reviewer")).binding, {
+      ...custom,
+      enabled: false,
+      toolProfile: {
+        ...custom.toolProfile,
+        tools: ["bash", "read_file"],
+      },
+    });
+    assert.deepEqual(await store.get(workspace), ["implementer"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("binding writes reject stale revisions without overwriting concurrent changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-revision-"));
+  try {
+    const pilotHome = join(root, "pilot-home");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const first = new TeammateEnablementStore({ pilotHome });
+    const second = new TeammateEnablementStore({ pilotHome });
+    const snapshot = await first.getBindings(workspace);
+
+    await first.setBinding(
+      workspace,
+      "reviewer",
+      { enabled: true, toolProfile: { mode: "inherit" } },
+      snapshot.revision,
+    );
+    await assert.rejects(
+      () =>
+        second.setBinding(
+          workspace,
+          "implementer",
+          { enabled: true, toolProfile: { mode: "inherit" } },
+          snapshot.revision,
+        ),
+      (error: unknown) =>
+        error instanceof TeammateEnablementStoreError &&
+        error.code === "revision_conflict",
+    );
+    assert.deepEqual(await first.get(workspace), ["reviewer"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("custom binding normalization rejects incomplete and unknown selector fields", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-strict-"));
+  try {
+    const pilotHome = join(root, "pilot-home");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const store = new TeammateEnablementStore({ pilotHome });
+    const { revision } = await store.getBindings(workspace);
+
+    await assert.rejects(
+      () =>
+        store.setBinding(
+          workspace,
+          "reviewer",
+          {
+            enabled: true,
+            toolProfile: {
+              mode: "custom",
+              tools: ["bash"],
+            },
+          } as never,
+          revision,
+        ),
+      (error: unknown) =>
+        error instanceof TeammateEnablementStoreError &&
+        error.code === "invalid_input",
+    );
+    await assert.rejects(
+      () =>
+        store.setBinding(
+          workspace,
+          "reviewer",
+          {
+            enabled: true,
+            toolProfile: {
+              mode: "custom",
+              tools: ["bash"],
+              constraints: {
+                allow: [{ version: 2, toolName: "bash", unknown: true }],
+                deny: [],
+              },
+            },
+          } as never,
+          revision,
+        ),
       (error: unknown) =>
         error instanceof TeammateEnablementStoreError &&
         error.code === "invalid_input",
@@ -106,9 +288,26 @@ test("TeammateEnablementStore shares enablement across git worktrees", async () 
     ]);
 
     const store = new TeammateEnablementStore({ pilotHome });
-    await store.set(worktree, ["implementer"]);
+    const initial = await store.getBindings(worktree);
+    await store.setBinding(
+      worktree,
+      "implementer",
+      {
+        enabled: true,
+        toolProfile: {
+          mode: "custom",
+          tools: ["read_file"],
+          constraints: { allow: [], deny: [] },
+        },
+      },
+      initial.revision,
+    );
 
     assert.deepEqual(await store.get(main), ["implementer"]);
+    assert.equal(
+      (await store.getBinding(main, "implementer")).binding?.toolProfile.mode,
+      "custom",
+    );
     assert.deepEqual(Object.keys((await store.list()).workspaces), [
       await canonicalizeTeammateWorkspace(main),
     ]);
@@ -164,7 +363,12 @@ test("TeammateEnablementStore preserves concurrent updates across instances", as
     for (let index = 0; index < workspaces.length; index += 1) {
       assert.deepEqual(
         document.workspaces[await canonicalizeTeammateWorkspace(workspaces[index]!)],
-        [`teammate-${index}`],
+        {
+          [`teammate-${index}`]: {
+            enabled: true,
+            toolProfile: { mode: "inherit" },
+          },
+        },
       );
     }
   } finally {
@@ -271,12 +475,29 @@ test("deleting a global teammate prunes every workspace enablement", async () =>
       },
     });
     await manager.enablementStore.set(workspaceA, ["implementer", "reviewer"]);
-    await manager.enablementStore.set(workspaceB, ["reviewer"]);
+    const workspaceBRevision = (await manager.enablementStore.getBindings(workspaceB)).revision;
+    await manager.enablementStore.setBinding(
+      workspaceB,
+      "reviewer",
+      {
+        enabled: false,
+        toolProfile: {
+          mode: "custom",
+          tools: [],
+          constraints: { allow: [], deny: [] },
+        },
+      },
+      workspaceBRevision,
+    );
 
     await manager.delete("reviewer");
 
     assert.deepEqual(await manager.enablementStore.get(workspaceA), ["implementer"]);
     assert.deepEqual(await manager.enablementStore.get(workspaceB), []);
+    assert.equal(
+      (await manager.enablementStore.getBinding(workspaceB, "reviewer")).binding,
+      undefined,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

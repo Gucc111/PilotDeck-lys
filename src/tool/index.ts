@@ -44,6 +44,7 @@ export type {
   PilotDeckToolModelClient,
   PilotDeckToolProgressEvent,
   PilotDeckToolProgressSink,
+  PilotDeckTeammateCapability,
   PilotDeckTodoItem,
   PilotDeckReadFileStateEntry,
   PilotDeckReadFileStateMap,
@@ -65,6 +66,11 @@ export type {
   PilotDeckWriteSnapshotEntry,
   PilotDeckWriteSnapshotMap,
 } from "./protocol/types.js";
+export {
+  getTeammateScopeViolation,
+  TEAMMATE_INFRASTRUCTURE_TOOLS,
+  type TeammateScopeViolation,
+} from "./teammateCapabilityConstraints.js";
 export { ToolRegistry } from "./registry/ToolRegistry.js";
 export { createBuiltinRegistry, type CreateBuiltinRegistryOptions } from "./registry/createBuiltinRegistry.js";
 export {

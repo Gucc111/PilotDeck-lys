@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   lstat,
@@ -32,7 +32,12 @@ import {
   type TeammateEnablementDocument,
   type TeammateEnablementStoreErrorCode,
   type TeammateEnablementStoreOptions,
+  type TeammateWorkspaceBinding,
 } from "./types.js";
+import type {
+  ToolCallCondition,
+  ToolCallSelector,
+} from "../../permission/index.js";
 
 /**
  * Stores the complete enabled teammate ID set for each canonical workspace.
@@ -61,9 +66,33 @@ export class TeammateEnablementStore {
   }
 
   async get(workspace: string): Promise<string[]> {
-    const key = await canonicalizeTeammateWorkspace(workspace);
+    const { bindings } = await this.getBindings(workspace);
+    return Object.entries(bindings)
+      .filter(([, binding]) => binding.enabled)
+      .map(([id]) => id);
+  }
+
+  async getBindings(workspace: string): Promise<TeammateWorkspaceBindingsSnapshot> {
+    const canonicalWorkspace = await canonicalizeTeammateWorkspace(workspace);
     const document = await this.readDocument();
-    return [...(document.workspaces[key] ?? [])];
+    return {
+      canonicalWorkspace,
+      bindings: cloneBindings(document.workspaces[canonicalWorkspace] ?? {}),
+      revision: documentRevision(document),
+    };
+  }
+
+  async getBinding(
+    workspace: string,
+    teammateId: string,
+  ): Promise<TeammateWorkspaceBindingSnapshot> {
+    assertValidTeammateId(teammateId);
+    const snapshot = await this.getBindings(workspace);
+    return {
+      canonicalWorkspace: snapshot.canonicalWorkspace,
+      binding: snapshot.bindings[teammateId],
+      revision: snapshot.revision,
+    };
   }
 
   async list(): Promise<TeammateEnablementDocument> {
@@ -73,6 +102,24 @@ export class TeammateEnablementStore {
   async set(workspace: string, enabledIds: string[]): Promise<string[]> {
     const normalizedIds = normalizeEnabledIds(enabledIds, "enabledIds");
     return this.runMutation((mutation) => mutation.set(workspace, normalizedIds));
+  }
+
+  async setBinding(
+    workspace: string,
+    teammateId: string,
+    binding: TeammateWorkspaceBinding,
+    expectedRevision: string,
+  ): Promise<TeammateWorkspaceBindingsSnapshot> {
+    assertValidTeammateId(teammateId);
+    const normalizedBinding = normalizeBinding(binding, "binding");
+    assertExpectedRevision(expectedRevision);
+    return this.runMutation((mutation) =>
+      mutation.setBinding(
+        workspace,
+        teammateId,
+        normalizedBinding,
+        expectedRevision,
+      ));
   }
 
   /**
@@ -97,6 +144,13 @@ export class TeammateEnablementStore {
         operation({
           set: (workspace, enabledIds) =>
             this.setWithinMutation(workspace, enabledIds),
+          setBinding: (workspace, teammateId, binding, expectedRevision) =>
+            this.setBindingWithinMutation(
+              workspace,
+              teammateId,
+              binding,
+              expectedRevision,
+            ),
           prune: (teammateId) => this.pruneWithinMutation(teammateId),
         })),
     );
@@ -109,18 +163,63 @@ export class TeammateEnablementStore {
     const normalizedIds = normalizeEnabledIds(enabledIds, "enabledIds");
     const key = await canonicalizeTeammateWorkspace(workspace);
     const document = await this.readDocument();
-    document.workspaces[key] = normalizedIds;
+    const current = document.workspaces[key] ?? {};
+    const enabledSet = new Set(normalizedIds);
+    const next = Object.fromEntries(
+      Object.entries(current)
+        .filter(([id, binding]) =>
+          enabledSet.has(id) || binding.toolProfile.mode === "custom")
+        .map(([id, binding]) => [
+          id,
+          { ...binding, enabled: enabledSet.has(id) },
+        ]),
+    );
+    for (const id of normalizedIds) {
+      if (!next[id]) next[id] = inheritBinding(true);
+    }
+    document.workspaces[key] = next;
     await atomicWriteDocument(this.filePath, document);
     return [...normalizedIds];
+  }
+
+  private async setBindingWithinMutation(
+    workspace: string,
+    teammateId: string,
+    binding: TeammateWorkspaceBinding,
+    expectedRevision: string,
+  ): Promise<TeammateWorkspaceBindingsSnapshot> {
+    assertValidTeammateId(teammateId);
+    const normalizedBinding = normalizeBinding(binding, "binding");
+    assertExpectedRevision(expectedRevision);
+    const canonicalWorkspace = await canonicalizeTeammateWorkspace(workspace);
+    const document = await this.readDocument();
+    const actualRevision = documentRevision(document);
+    if (actualRevision !== expectedRevision) {
+      throw new TeammateEnablementStoreError(
+        "revision_conflict",
+        `Teammate workspace bindings changed (expected revision ${expectedRevision}, current revision ${actualRevision}).`,
+      );
+    }
+    document.workspaces[canonicalWorkspace] = {
+      ...(document.workspaces[canonicalWorkspace] ?? {}),
+      [teammateId]: normalizedBinding,
+    };
+    await atomicWriteDocument(this.filePath, document);
+    return {
+      canonicalWorkspace,
+      bindings: cloneBindings(document.workspaces[canonicalWorkspace]),
+      revision: documentRevision(document),
+    };
   }
 
   private async pruneWithinMutation(teammateId: string): Promise<boolean> {
     assertValidTeammateId(teammateId);
     const document = await this.readDocument();
     let changed = false;
-    for (const [workspace, enabledIds] of Object.entries(document.workspaces)) {
-      const next = enabledIds.filter((id) => id !== teammateId);
-      if (next.length !== enabledIds.length) {
+    for (const [workspace, bindings] of Object.entries(document.workspaces)) {
+      if (Object.hasOwn(bindings, teammateId)) {
+        const next = { ...bindings };
+        delete next[teammateId];
         document.workspaces[workspace] = next;
         changed = true;
       }
@@ -165,7 +264,25 @@ export class TeammateEnablementStore {
 
 export type TeammateEnablementMutation = {
   set(workspace: string, enabledIds: string[]): Promise<string[]>;
+  setBinding(
+    workspace: string,
+    teammateId: string,
+    binding: TeammateWorkspaceBinding,
+    expectedRevision: string,
+  ): Promise<TeammateWorkspaceBindingsSnapshot>;
   prune(teammateId: string): Promise<boolean>;
+};
+
+export type TeammateWorkspaceBindingsSnapshot = {
+  canonicalWorkspace: string;
+  bindings: Record<string, TeammateWorkspaceBinding>;
+  revision: string;
+};
+
+export type TeammateWorkspaceBindingSnapshot = {
+  canonicalWorkspace: string;
+  binding: TeammateWorkspaceBinding | undefined;
+  revision: string;
 };
 
 export class TeammateEnablementStoreError extends Error {
@@ -229,18 +346,18 @@ function normalizeDocument(
       "root must contain only schemaVersion and workspaces",
     );
   }
-  if (value.schemaVersion !== TEAMMATE_ENABLEMENT_SCHEMA_VERSION) {
+  if (value.schemaVersion !== 1 && value.schemaVersion !== TEAMMATE_ENABLEMENT_SCHEMA_VERSION) {
     throw invalidSchema(
       filePath,
-      `schemaVersion must be ${TEAMMATE_ENABLEMENT_SCHEMA_VERSION}`,
+      `schemaVersion must be 1 or ${TEAMMATE_ENABLEMENT_SCHEMA_VERSION}`,
     );
   }
   if (!isRecord(value.workspaces)) {
     throw invalidSchema(filePath, "workspaces must be an object");
   }
 
-  const workspaces: Record<string, string[]> = {};
-  for (const [workspace, enabledIds] of Object.entries(value.workspaces)) {
+  const workspaces: Record<string, Record<string, TeammateWorkspaceBinding>> = {};
+  for (const [workspace, rawBindings] of Object.entries(value.workspaces)) {
     if (!workspace.trim() || !isAbsolute(workspace)) {
       throw invalidSchema(
         filePath,
@@ -248,20 +365,189 @@ function normalizeDocument(
       );
     }
     const key = normalizeTeammateWorkspaceKey(workspace);
-    const normalizedIds = normalizeEnabledIds(
-      enabledIds,
-      `workspaces[${JSON.stringify(workspace)}]`,
-      filePath,
-    );
-    workspaces[key] = normalizeEnabledIds([
-      ...(workspaces[key] ?? []),
-      ...normalizedIds,
-    ], `workspaces[${JSON.stringify(workspace)}]`, filePath);
+    const field = `workspaces[${JSON.stringify(workspace)}]`;
+    const normalizedBindings =
+      value.schemaVersion === 1
+        ? Object.fromEntries(
+            normalizeEnabledIds(rawBindings, field, filePath).map((id) => [
+              id,
+              inheritBinding(true),
+            ]),
+          )
+        : normalizeBindings(rawBindings, field, filePath);
+    workspaces[key] = mergeBindings(workspaces[key] ?? {}, normalizedBindings);
   }
   return {
     schemaVersion: TEAMMATE_ENABLEMENT_SCHEMA_VERSION,
-    workspaces,
+    workspaces: Object.fromEntries(
+      Object.entries(workspaces).sort(([left], [right]) => left.localeCompare(right)),
+    ),
   };
+}
+
+function normalizeBindings(
+  value: unknown,
+  field: string,
+  filePath?: string,
+): Record<string, TeammateWorkspaceBinding> {
+  if (!isRecord(value)) {
+    throw schemaOrInputError(filePath, `${field} must be an object of teammate bindings`);
+  }
+  const bindings: Record<string, TeammateWorkspaceBinding> = {};
+  for (const [teammateId, binding] of Object.entries(value)) {
+    if (!isValidTeammateId(teammateId)) {
+      throw schemaOrInputError(filePath, `${field} contains an invalid teammate ID`);
+    }
+    bindings[teammateId] = normalizeBinding(
+      binding,
+      `${field}[${JSON.stringify(teammateId)}]`,
+      filePath,
+    );
+  }
+  return sortBindings(bindings);
+}
+
+function normalizeBinding(
+  value: unknown,
+  field: string,
+  filePath?: string,
+): TeammateWorkspaceBinding {
+  assertExactFields(value, ["enabled", "toolProfile"], field, filePath);
+  if (typeof value.enabled !== "boolean") {
+    throw schemaOrInputError(filePath, `${field}.enabled must be a boolean`);
+  }
+  return {
+    enabled: value.enabled,
+    toolProfile: normalizeToolProfile(value.toolProfile, `${field}.toolProfile`, filePath),
+  };
+}
+
+function normalizeToolProfile(
+  value: unknown,
+  field: string,
+  filePath?: string,
+): TeammateWorkspaceBinding["toolProfile"] {
+  if (!isRecord(value) || (value.mode !== "inherit" && value.mode !== "custom")) {
+    throw schemaOrInputError(filePath, `${field}.mode must be inherit or custom`);
+  }
+  if (value.mode === "inherit") {
+    assertExactFields(value, ["mode"], field, filePath);
+    return { mode: "inherit" };
+  }
+  assertExactFields(value, ["mode", "tools", "constraints"], field, filePath);
+  if (
+    !Array.isArray(value.tools) ||
+    !value.tools.every((tool) => typeof tool === "string" && tool.trim())
+  ) {
+    throw schemaOrInputError(filePath, `${field}.tools must be an array of non-empty strings`);
+  }
+  assertExactFields(value.constraints, ["allow", "deny"], `${field}.constraints`, filePath);
+  if (!Array.isArray(value.constraints.allow) || !Array.isArray(value.constraints.deny)) {
+    throw schemaOrInputError(
+      filePath,
+      `${field}.constraints allow and deny must be arrays`,
+    );
+  }
+  return {
+    mode: "custom",
+    tools: [...new Set(value.tools.map((tool) => tool.trim()))].sort(),
+    constraints: {
+      allow: value.constraints.allow.map((selector, index) =>
+        normalizeSelector(selector, `${field}.constraints.allow[${index}]`, filePath)),
+      deny: value.constraints.deny.map((selector, index) =>
+        normalizeSelector(selector, `${field}.constraints.deny[${index}]`, filePath)),
+    },
+  };
+}
+
+function normalizeSelector(
+  value: unknown,
+  field: string,
+  filePath?: string,
+): ToolCallSelector {
+  if (!isRecord(value)) {
+    throw schemaOrInputError(filePath, `${field} must be a tool-call selector`);
+  }
+  const allowedFields = value.conditions === undefined
+    ? ["version", "toolName"]
+    : ["version", "toolName", "conditions"];
+  assertExactFields(value, allowedFields, field, filePath);
+  if (
+    value.version !== 2 ||
+    typeof value.toolName !== "string" ||
+    !value.toolName.trim()
+  ) {
+    throw schemaOrInputError(
+      filePath,
+      `${field} must contain version 2 and a non-empty toolName`,
+    );
+  }
+  if (value.conditions === undefined) {
+    return { version: 2, toolName: value.toolName.trim() };
+  }
+  if (!Array.isArray(value.conditions)) {
+    throw schemaOrInputError(filePath, `${field}.conditions must be an array`);
+  }
+  const toolName = value.toolName.trim();
+  const conditions = value.conditions.map((condition, index) =>
+    normalizeCondition(condition, `${field}.conditions[${index}]`, filePath));
+  if (conditions.some((condition) => !condition.subject.startsWith(`${toolName}.`))) {
+    throw schemaOrInputError(
+      filePath,
+      `${field}.conditions contain a subject that does not belong to ${toolName}`,
+    );
+  }
+  return {
+    version: 2,
+    toolName,
+    conditions,
+  };
+}
+
+function normalizeCondition(
+  value: unknown,
+  field: string,
+  filePath?: string,
+): ToolCallCondition {
+  assertExactFields(value, ["subject", "operator", "value"], field, filePath);
+  if (
+    value.subject === "bash.command" &&
+    value.operator === "executableEquals" &&
+    typeof value.value === "string" &&
+    value.value.trim()
+  ) {
+    return {
+      subject: value.subject,
+      operator: value.operator,
+      value: value.value.trim(),
+    };
+  }
+  if (
+    value.subject === "bash.command" &&
+    value.operator === "argvPrefix" &&
+    Array.isArray(value.value) &&
+    value.value.length > 0 &&
+    value.value.every((item) => typeof item === "string" && item.length > 0)
+  ) {
+    return {
+      subject: value.subject,
+      operator: value.operator,
+      value: [...value.value],
+    };
+  }
+  if (
+    isPathSubject(value.subject) &&
+    (value.operator === "pathEquals" || value.operator === "pathWithin") &&
+    typeof value.value === "string" &&
+    value.value.trim()
+  ) {
+    return {
+      subject: value.subject,
+      operator: value.operator,
+      value: value.value.trim(),
+    };
+  }
+  throw schemaOrInputError(filePath, `${field} is not a supported selector condition`);
 }
 
 function normalizeEnabledIds(
@@ -290,6 +576,104 @@ function normalizeEnabledIds(
   return [...new Set(value)].sort((left, right) =>
     left.localeCompare(right),
   );
+}
+
+function inheritBinding(enabled: boolean): TeammateWorkspaceBinding {
+  return { enabled, toolProfile: { mode: "inherit" } };
+}
+
+function mergeBindings(
+  left: Record<string, TeammateWorkspaceBinding>,
+  right: Record<string, TeammateWorkspaceBinding>,
+): Record<string, TeammateWorkspaceBinding> {
+  return sortBindings({ ...left, ...right });
+}
+
+function sortBindings(
+  bindings: Record<string, TeammateWorkspaceBinding>,
+): Record<string, TeammateWorkspaceBinding> {
+  return Object.fromEntries(
+    Object.entries(bindings).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function cloneBindings(
+  bindings: Record<string, TeammateWorkspaceBinding>,
+): Record<string, TeammateWorkspaceBinding> {
+  return structuredClone(sortBindings(bindings));
+}
+
+function documentRevision(document: TeammateEnablementDocument): string {
+  const canonical = {
+    schemaVersion: document.schemaVersion,
+    workspaces: Object.fromEntries(
+      Object.entries(document.workspaces)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([workspace, bindings]) => [workspace, sortBindings(bindings)]),
+    ),
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function assertExpectedRevision(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new TeammateEnablementStoreError(
+      "invalid_input",
+      "expectedRevision must be a SHA-256 revision returned by getBindings.",
+    );
+  }
+}
+
+function assertExactFields(
+  value: unknown,
+  allowedFields: readonly string[],
+  field: string,
+  filePath?: string,
+): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw schemaOrInputError(filePath, `${field} must be an object`);
+  }
+  const actualFields = Object.keys(value).sort();
+  const expectedFields = [...allowedFields].sort();
+  if (
+    actualFields.length !== expectedFields.length ||
+    actualFields.some((item, index) => item !== expectedFields[index])
+  ) {
+    throw schemaOrInputError(
+      filePath,
+      `${field} must contain only ${expectedFields.join(", ")}`,
+    );
+  }
+}
+
+function schemaOrInputError(
+  filePath: string | undefined,
+  reason: string,
+): TeammateEnablementStoreError {
+  return filePath
+    ? invalidSchema(filePath, reason)
+    : new TeammateEnablementStoreError("invalid_input", `${reason}.`);
+}
+
+function isPathSubject(value: unknown): value is Extract<
+  ToolCallCondition,
+  { operator: "pathEquals" | "pathWithin" }
+>["subject"] {
+  return typeof value === "string" && [
+    "read_file.file_path",
+    "read_file.target_path",
+    "send_attachment.file_path",
+    "send_attachment.target_path",
+    "write_file.file_path",
+    "write_file.target_path",
+    "edit_file.file_path",
+    "edit_file.target_path",
+    "edit_notebook.notebook_path",
+    "edit_notebook.target_path",
+    "glob.search_root",
+    "grep.path",
+    "grep.search_root",
+  ].includes(value);
 }
 
 function assertValidTeammateId(id: unknown): asserts id is string {

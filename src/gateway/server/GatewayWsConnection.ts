@@ -296,6 +296,10 @@ export class GatewayWsConnection {
         return requireTeammateMethod(this.options.gateway.teammateEnablementGet, this.options.gateway)(frame.params as never);
       case "teammate_enablement_set":
         return requireTeammateMethod(this.options.gateway.teammateEnablementSet, this.options.gateway)(frame.params as never);
+      case "teammate_workspace_bindings_get":
+        return requireTeammateMethod(this.options.gateway.teammateWorkspaceBindingsGet, this.options.gateway)(frame.params as never);
+      case "teammate_workspace_binding_set":
+        return requireTeammateMethod(this.options.gateway.teammateWorkspaceBindingSet, this.options.gateway)(frame.params as never);
       case "team_state":
         return requireTeammateMethod(this.options.gateway.teamState, this.options.gateway)(frame.params as never);
       case "always_on_apply":

@@ -1,5 +1,11 @@
 import { safeJsonParse } from '../../../lib/utils.js';
 import type { ChatMessage, PilotDeckPermissionSuggestion, PermissionGrantResult } from '../types/types.js';
+import type { PermissionRule, ToolCallCondition } from '../../../../../src/permission/protocol/types';
+import {
+  normalizeToolName,
+  permissionRuleKey,
+  serializePermissionRule,
+} from '../../../../../src/permission/settingsSchema';
 import {
   PILOTDECK_SETTINGS_KEY,
   getPilotDeckSettings,
@@ -7,23 +13,46 @@ import {
   savePilotDeckPermissionSettings,
 } from './chatStorage';
 
-export function buildPilotDeckToolPermissionEntry(toolName?: string, toolInput?: unknown) {
+export function buildPilotDeckToolPermissionRule(
+  toolName?: string,
+  toolInput?: unknown,
+): PermissionRule | null {
   if (!toolName) return null;
   const fileWriteToolName = normalizeFileWriteToolName(toolName);
-  if (fileWriteToolName) return buildFileWritePermissionEntry(fileWriteToolName, toolInput);
-  if (toolName !== 'Bash' && toolName !== 'bash') return toolName;
+  if (fileWriteToolName) return buildFileWritePermissionRule(fileWriteToolName, toolInput);
+  const canonicalToolName = normalizeToolName(toolName);
+  if (canonicalToolName !== 'bash') {
+    return {
+      source: 'user',
+      behavior: 'allow',
+      toolName: canonicalToolName,
+      selector: { version: 2, toolName: canonicalToolName },
+    };
+  }
 
   const parsed = parseToolInputRecord(toolInput);
   const command = typeof parsed?.command === 'string' ? parsed.command.trim() : '';
-  if (!command) return 'bash';
-
+  if (!command || /[;&|`$(){}[\]<>\\'"\n]/.test(command)) return null;
   const tokens = command.split(/\s+/);
-  if (tokens.length === 0) return toolName;
-
-  if (tokens[0] === 'git' && tokens[1]) {
-    return `bash:${tokens[0]} ${tokens[1]}:*`;
+  if (!tokens.every((token) => /^[A-Za-z0-9_./@+=,%~-]+$/.test(token))) return null;
+  const conditions: ToolCallCondition[] = [{
+    subject: 'bash.command',
+    operator: 'executableEquals',
+    value: tokens[0],
+  }];
+  if (tokens[1]) {
+    conditions.push({
+      subject: 'bash.command',
+      operator: 'argvPrefix',
+      value: [tokens[0], tokens[1]],
+    });
   }
-  return `bash:${tokens[0]}:*`;
+  return {
+    source: 'user',
+    behavior: 'allow',
+    toolName: 'bash',
+    selector: { version: 2, toolName: 'bash', conditions },
+  };
 }
 
 function normalizeFileWriteToolName(toolName: string) {
@@ -32,13 +61,42 @@ function normalizeFileWriteToolName(toolName: string) {
   return null;
 }
 
-function buildFileWritePermissionEntry(toolName: 'write_file' | 'edit_file', toolInput: unknown) {
+function buildFileWritePermissionRule(
+  toolName: 'write_file' | 'edit_file',
+  toolInput: unknown,
+): PermissionRule | null {
   const parsed = parseToolInputRecord(toolInput);
   const filePath = typeof parsed?.file_path === 'string' ? parsed.file_path.trim() : '';
   if (!isAbsoluteFilePath(filePath)) return null;
   const parent = dirnameForPermission(filePath);
   if (!parent) return null;
-  return `${toolName}:${parent.endsWith('/') || parent.endsWith('\\') ? `${parent}*` : `${parent}/*`}`;
+  return {
+    source: 'user',
+    behavior: 'allow',
+    toolName,
+    selector: {
+      version: 2,
+      toolName,
+      conditions: [{
+        subject: `${toolName}.file_path`,
+        operator: 'pathWithin',
+        value: parent,
+      }],
+    },
+  };
+}
+
+export function formatPermissionRuleSummary(rule: PermissionRule): string {
+  const condition = rule.selector?.conditions?.[0];
+  if (!condition) return rule.pattern ? `${rule.toolName}: ${rule.pattern}` : rule.toolName;
+  if (condition.subject === 'bash.command') {
+    const executable = rule.selector?.conditions?.find((item) => item.operator === 'executableEquals');
+    const argv = rule.selector?.conditions?.find((item) => item.operator === 'argvPrefix');
+    const executableValue = typeof executable?.value === 'string' ? executable.value : rule.toolName;
+    const invocation = Array.isArray(argv?.value) ? argv.value.join(' ') : executableValue;
+    return `${rule.toolName}: ${invocation}`;
+  }
+  return `${rule.toolName}: ${String(condition.value)}`;
 }
 
 function parseToolInputRecord(toolInput: unknown): Record<string, unknown> | null {
@@ -129,32 +187,44 @@ export function getPilotDeckPermissionSuggestion(
   if (errorCode && !PERMISSION_ERROR_CODES.has(errorCode)) return null;
 
   const toolName = message?.toolName;
-  const entry = buildPilotDeckToolPermissionEntry(toolName, message.toolInput);
-  if (!entry) return null;
+  const rule = buildPilotDeckToolPermissionRule(toolName, message.toolInput);
+  if (!rule) return null;
+  const entry = serializePermissionRule(rule);
 
   const settings = getPilotDeckSettings();
-  const isAllowed = settings.allowedTools.includes(entry);
-  return { toolName: toolName || 'UnknownTool', entry, isAllowed };
+  const isAllowed = settings.rules.some((candidate) =>
+    candidate.behavior === 'allow' && permissionRuleKey(candidate) === permissionRuleKey(rule));
+  return {
+    toolName: toolName || 'UnknownTool',
+    rule,
+    entry,
+    summary: formatPermissionRuleSummary(rule),
+    isAllowed,
+  };
 }
 
-export function grantPilotDeckToolPermission(entry: string | null): PermissionGrantResult {
-  if (!entry) return { success: false };
+export function grantPilotDeckToolPermission(rule: PermissionRule | null): PermissionGrantResult {
+  if (!rule) return { success: false };
 
   const settings = getPilotDeckSettings();
-  const alreadyAllowed = settings.allowedTools.includes(entry);
-  const nextAllowed = alreadyAllowed ? settings.allowedTools : [...settings.allowedTools, entry];
-  const nextDisallowed = settings.disallowedTools.filter((tool) => tool !== entry);
+  const allowKey = permissionRuleKey({ ...rule, behavior: 'allow' });
+  const alreadyAllowed = settings.rules.some((candidate) =>
+    candidate.behavior === 'allow' && permissionRuleKey(candidate) === allowKey);
+  const nextRules = settings.rules.filter((candidate) =>
+    candidate.behavior !== 'deny'
+    || permissionRuleKey({ ...candidate, behavior: 'allow' }) !== allowKey);
+  if (!alreadyAllowed) {
+    nextRules.push({ ...rule, source: 'user', behavior: 'allow' });
+  }
   const updatedSettings = {
     ...settings,
-    allowedTools: nextAllowed,
-    disallowedTools: nextDisallowed,
+    rules: nextRules,
     lastUpdated: new Date().toISOString(),
   };
 
   safeLocalStorage.setItem(PILOTDECK_SETTINGS_KEY, JSON.stringify(updatedSettings));
   savePilotDeckPermissionSettings({
-    allowedTools: nextAllowed,
-    disallowedTools: nextDisallowed,
+    rules: nextRules,
   }).catch((error) => {
     console.error('Failed to persist granted permission to backend:', error);
   });

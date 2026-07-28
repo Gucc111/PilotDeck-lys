@@ -171,6 +171,42 @@ export function isReadOnlyShellCommand(command: string): boolean {
   return normalizedCommandName === "sh" && args.length === 2 && args[0] === "-c" && /^exit\s+\d+$/.test(args[1]);
 }
 
+export type ParsedShellCommandSegment = {
+  /** Executable token exactly as provided by the shell input. */
+  rawExecutable: string;
+  /** Basename-normalized executable retained for existing classifiers. */
+  executable: string;
+  argv: string[];
+  /** Environment assignments or an `env` wrapper preceded the executable. */
+  environmentWrapped: boolean;
+};
+
+/**
+ * Parse a command into directly executed shell segments. The parser is
+ * intentionally conservative: substitutions, redirects, background jobs and
+ * malformed quoting fail closed instead of producing an approximate argv.
+ */
+export function parseShellCommandSegments(command: string): ParsedShellCommandSegment[] | undefined {
+  const segmentTexts = splitSimpleShellSegments(command);
+  if (!segmentTexts || segmentTexts.length === 0) {
+    return undefined;
+  }
+
+  const parsed: ParsedShellCommandSegment[] = [];
+  for (const segmentText of segmentTexts) {
+    const tokens = tokenizeSimpleShell(segmentText);
+    if (!tokens || tokens.length === 0) {
+      return undefined;
+    }
+    const invocation = extractDirectInvocation(tokens);
+    if (!invocation) {
+      return undefined;
+    }
+    parsed.push(invocation);
+  }
+  return parsed;
+}
+
 const GIT_GLOBAL_OPTIONS_WITH_VALUE = new Set([
   "--namespace",
   "--super-prefix",
@@ -283,7 +319,7 @@ function isReadOnlyFindTokens(args: string[]): boolean {
   return !args.some((token) => FIND_MUTATING_OR_EXEC_ACTIONS.has(token));
 }
 
-function tokenizeSimpleShell(command: string): string[] | undefined {
+export function tokenizeSimpleShell(command: string): string[] | undefined {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | '"' | undefined;
@@ -349,4 +385,171 @@ function tokenizeSimpleShell(command: string): string[] | undefined {
   }
   pushCurrent();
   return tokens;
+}
+
+function splitSimpleShellSegments(command: string): string[] | undefined {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let requiresFollowingSegment = false;
+
+  const pushCurrent = (): boolean => {
+    const trimmed = current.trim();
+    current = "";
+    if (!trimmed) {
+      return false;
+    }
+    segments.push(trimmed);
+    return true;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    const next = command[index + 1];
+
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (quote) {
+      current += char;
+      if (char === quote) {
+        quote = undefined;
+        continue;
+      }
+      if (quote === '"' && (char === "`" || (char === "$" && next === "("))) {
+        return undefined;
+      }
+      if (char === "\\" && quote === '"') {
+        escaped = true;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      current += char;
+      continue;
+    }
+    if (char === "`" || char === "<" || char === ">" || (char === "$" && next === "(")) {
+      return undefined;
+    }
+    if (char === "&") {
+      if (next !== "&" || !pushCurrent()) return undefined;
+      requiresFollowingSegment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      if (next === "|") index += 1;
+      if (!pushCurrent()) return undefined;
+      requiresFollowingSegment = true;
+      continue;
+    }
+    if (char === ";" || char === "\n") {
+      if (!pushCurrent()) return undefined;
+      requiresFollowingSegment = false;
+      continue;
+    }
+    current += char;
+    if (!/\s/.test(char)) {
+      requiresFollowingSegment = false;
+    }
+  }
+
+  if (escaped || quote || requiresFollowingSegment) {
+    return undefined;
+  }
+  if (current.trim() && !pushCurrent()) {
+    return undefined;
+  }
+  return segments.length > 0 ? segments : undefined;
+}
+
+function extractDirectInvocation(tokens: string[]): ParsedShellCommandSegment | undefined {
+  let index = 0;
+  let environmentWrapped = false;
+  while (index < tokens.length && isEnvironmentAssignment(tokens[index]!)) {
+    environmentWrapped = true;
+    index += 1;
+  }
+  if (index >= tokens.length) {
+    return undefined;
+  }
+
+  if (normalizeExecutableName(pathBasename(tokens[index]!)) === "env") {
+    environmentWrapped = true;
+    index += 1;
+    while (index < tokens.length) {
+      const token = tokens[index]!;
+      if (token === "--") {
+        index += 1;
+        break;
+      }
+      if (token === "-u" || token === "--unset") {
+        if (index + 1 >= tokens.length) return undefined;
+        index += 2;
+        continue;
+      }
+      if (token === "-C" || token === "--chdir") {
+        if (index + 1 >= tokens.length) return undefined;
+        index += 2;
+        continue;
+      }
+      if (
+        token === "-S"
+        || token === "--split-string"
+        || token.startsWith("--split-string=")
+      ) {
+        // env applies its own tokenization and expansion to split strings.
+        // Treat it as ambiguous instead of approximating a child command.
+        return undefined;
+      }
+      if (
+        token === "-"
+        || token === "-i"
+        || token === "--ignore-environment"
+        || token === "-0"
+        || token === "--null"
+        || token === "-v"
+        || token === "--debug"
+        || token.startsWith("--unset=")
+        || token.startsWith("--chdir=")
+        || isEnvironmentAssignment(token)
+      ) {
+        index += 1;
+        continue;
+      }
+      if (token.startsWith("-")) return undefined;
+      break;
+    }
+  }
+  if (index >= tokens.length) {
+    return undefined;
+  }
+
+  const rawExecutable = tokens[index]!;
+  return {
+    rawExecutable,
+    executable: normalizeExecutableName(pathBasename(rawExecutable)),
+    argv: tokens.slice(index + 1),
+    environmentWrapped,
+  };
+}
+
+function isEnvironmentAssignment(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token);
+}
+
+function pathBasename(value: string): string {
+  const parts = value.replace(/\\/g, "/").split("/");
+  return parts.at(-1) ?? value;
 }

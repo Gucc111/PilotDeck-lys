@@ -24,6 +24,7 @@ export type PilotDeckToolAuditRecord = {
   startedAt: string;
   completedAt: string;
   durationMs: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type PilotDeckToolAuditRecorder = {

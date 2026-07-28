@@ -622,7 +622,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
                                     )}
                                   </div>
                                   <div className="mt-2 text-xs text-red-700/90 dark:text-red-200/80">
-                                    {t('permissions.addTo', { entry: permissionSuggestion.entry })}
+                                    {t('permissions.addTo', { entry: permissionSuggestion.summary })}
                                   </div>
                                   {permissionGrantState === 'error' && (
                                     <div className="mt-2 text-xs text-red-700 dark:text-red-200">

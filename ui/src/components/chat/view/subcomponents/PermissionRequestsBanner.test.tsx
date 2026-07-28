@@ -28,7 +28,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../../utils/chatStorage', () => ({
-  getPilotDeckSettings: () => ({ allowedTools: [] }),
+  getPilotDeckSettings: () => ({ version: 2, rules: [] }),
 }));
 
 afterEach(() => {

@@ -27,6 +27,8 @@ import {
   type TeammateReadResult,
   type TeammateRecord,
   type TeammateValidationResult,
+  type TeammateWorkspaceBinding,
+  type TeammateWorkspaceBindingsResult,
   type TeammateWriteInput,
 } from "./types.js";
 
@@ -279,6 +281,50 @@ export class TeammateManager {
         );
       }
       return mutation.set(workspace, normalizedIds);
+    });
+  }
+
+  async getWorkspaceBindings(
+    workspace: string,
+  ): Promise<Omit<TeammateWorkspaceBindingsResult, "canonicalProjectKey" | "filePath"> & {
+    canonicalWorkspace: string;
+  }> {
+    return this.enablementStore.getBindings(workspace);
+  }
+
+  async setWorkspaceBinding(
+    workspace: string,
+    teammateId: string,
+    binding: TeammateWorkspaceBinding,
+    expectedRevision: string,
+  ): Promise<Omit<TeammateWorkspaceBindingsResult, "canonicalProjectKey" | "filePath"> & {
+    canonicalWorkspace: string;
+  }> {
+    assertValidId(teammateId);
+    return this.enablementStore.runMutation(async (mutation) => {
+      const listed = await this.list();
+      const invalidDefinitionIds = new Set(
+        listed.diagnostics
+          .filter((item) => item.severity === "error" && item.id)
+          .map((item) => item.id as string),
+      );
+      const valid = listed.teammates.some(
+        (teammate) =>
+          teammate.id === teammateId &&
+          !invalidDefinitionIds.has(teammate.id),
+      );
+      if (!valid) {
+        throw new TeammateManagerError(
+          "invalid_input",
+          `Unknown or invalid teammate ID: ${teammateId}.`,
+        );
+      }
+      return mutation.setBinding(
+        workspace,
+        teammateId,
+        binding,
+        expectedRevision,
+      );
     });
   }
 
