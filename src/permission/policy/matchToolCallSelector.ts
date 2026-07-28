@@ -15,6 +15,8 @@ export type ToolCallSelectorMatchOptions = {
   commandAggregation?: "all" | "any";
   commandExecutableMatch?: "exact" | "basename";
   commandParseFailureMatch?: boolean;
+  /** When true, unresolvable paths (dangling symlinks, null bytes) match the selector. */
+  pathResolveFailureMatch?: boolean;
 };
 
 const COMMAND_OPERATORS = ["executableEquals", "argvPrefix"] as const;
@@ -69,7 +71,14 @@ export function matchToolCallSelector(
     );
   }
 
-  return matchPathConditions(selector, toolName, conditions, input, context);
+  return matchPathConditions(
+    selector,
+    toolName,
+    conditions,
+    input,
+    context,
+    options.pathResolveFailureMatch ?? false,
+  );
 }
 
 function matchCommandConditions(
@@ -158,22 +167,27 @@ function matchPathConditions(
   conditions: readonly ToolCallCondition[],
   input: unknown,
   context: PermissionContext | undefined,
+  resolveFailureMatch: boolean,
 ): ToolCallSelectorMatchResult {
   if (!context) {
-    return result(selector, false, "invalid_input", conditions.map((condition) => ({
+    return result(selector, resolveFailureMatch, "invalid_input", conditions.map((condition) => ({
       condition,
-      matched: false,
-      reason: "Path matching requires a permission context.",
+      matched: resolveFailureMatch,
+      reason: resolveFailureMatch
+        ? "Path matching requires a permission context; restrictive matching is fail-closed."
+        : "Path matching requires a permission context.",
     })));
   }
 
   const inputPath = extractPathParameter(toolName, input);
   const candidate = inputPath ? canonicalizePath(inputPath, context.cwd) : undefined;
   if (!candidate) {
-    return result(selector, false, "invalid_input", conditions.map((condition) => ({
+    return result(selector, resolveFailureMatch, "invalid_input", conditions.map((condition) => ({
       condition,
-      matched: false,
-      reason: "The tool input did not contain a valid path parameter.",
+      matched: resolveFailureMatch,
+      reason: resolveFailureMatch
+        ? "The path could not be resolved (dangling symlink or invalid input); restrictive matching is fail-closed."
+        : "The tool input did not contain a valid path parameter.",
     })));
   }
 
@@ -242,9 +256,14 @@ function canonicalizePath(value: string, cwd: string): string | undefined {
     existing = parent;
   }
   try {
-    return path.resolve(realpathSync(existing), ...suffix);
+    const real = realpathSync(existing);
+    return path.resolve(real, ...suffix);
   } catch {
-    return absolute;
+    // realpathSync fails for dangling symlinks (lstat succeeds but target
+    // is missing). Return undefined so the caller treats it as unresolvable:
+    // allow selectors won't match (fail-closed) and deny selectors can use
+    // conservative matching via parseFailureMatch-style handling.
+    return undefined;
   }
 }
 

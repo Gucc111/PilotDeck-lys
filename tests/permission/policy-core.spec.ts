@@ -338,9 +338,11 @@ test("PermissionRequest update that still asks exits without another update loop
 
 class UpdatingPermissionLifecycle extends LifecycleRuntime {
   permissionRequestCount = 0;
+  readonly updatedInput: Record<string, unknown>;
 
-  constructor(private readonly updatedInput: Record<string, unknown>) {
+  constructor(updatedInput: Record<string, unknown>) {
     super();
+    this.updatedInput = updatedInput;
   }
 
   override async dispatch(input: Parameters<LifecycleRuntime["dispatch"]>[0]) {

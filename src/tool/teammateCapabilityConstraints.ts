@@ -43,6 +43,7 @@ export function getTeammateScopeViolation(
         commandAggregation: "any",
         commandExecutableMatch: "basename",
         commandParseFailureMatch: true,
+        pathResolveFailureMatch: true,
       },
     );
     if (match.matched) {

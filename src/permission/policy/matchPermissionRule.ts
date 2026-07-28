@@ -19,6 +19,7 @@ export function matchPermissionRule(
       commandAggregation: rule.behavior === "allow" ? "all" : "any",
       commandExecutableMatch: rule.behavior === "allow" ? "exact" : "basename",
       commandParseFailureMatch: rule.behavior !== "allow",
+      pathResolveFailureMatch: rule.behavior !== "allow",
     }).matched;
   }
 
