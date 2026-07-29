@@ -155,7 +155,9 @@
     "list": {
       "title": "Global teammates",
       "count": "{{count}} teammate",
-      "count_plural": "{{count}} teammates"
+      "count_plural": "{{count}} teammates",
+      "toolCount": "{{count}} tool(s)",
+      "workspaceCount": "{{count}} workspace(s)"
     },
     "global": {
       "title": "Global teammate defaults",
@@ -216,6 +218,15 @@
         "pathEquals": "Path equals",
         "pathWithin": "Path is within"
       }
+    },
+    "detail": {
+      "backToList": "Back to list",
+      "definitionTab": "Definition",
+      "workspacesTab": "Workspaces"
+    },
+    "workspacePanel": {
+      "on": "On",
+      "off": "Off"
     },
     "editor": {
       "select": "Select a teammate to edit, or create a new one.",

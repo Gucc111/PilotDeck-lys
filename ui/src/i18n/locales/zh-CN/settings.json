@@ -155,7 +155,9 @@
     "list": {
       "title": "全局队友",
       "count": "共 {{count}} 个队友",
-      "count_plural": "共 {{count}} 个队友"
+      "count_plural": "共 {{count}} 个队友",
+      "toolCount": "{{count}} 个工具",
+      "workspaceCount": "{{count}} 个工作区"
     },
     "global": {
       "title": "全局队友默认定义",
@@ -216,6 +218,15 @@
         "pathEquals": "路径等于",
         "pathWithin": "路径位于目录内"
       }
+    },
+    "detail": {
+      "backToList": "返回列表",
+      "definitionTab": "定义",
+      "workspacesTab": "工作区"
+    },
+    "workspacePanel": {
+      "on": "已启用",
+      "off": "未启用"
     },
     "editor": {
       "select": "选择一名队友进行编辑，或新建队友。",

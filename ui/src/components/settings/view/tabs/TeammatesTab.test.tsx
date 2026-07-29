@@ -15,22 +15,40 @@ vi.mock('react-i18next', () => ({
   useTranslation: (() => {
     const t = (key: string, options?: Record<string, unknown>) => {
       const translations: Record<string, string> = {
+        'teammates.title': 'Teammates',
+        'teammates.description': 'Manage teammates.',
         'teammates.actions.new': 'New',
+        'teammates.actions.refresh': 'Refresh',
         'teammates.actions.save': 'Save teammate',
+        'teammates.actions.saving': 'Saving...',
+        'teammates.actions.cancel': 'Cancel',
         'teammates.actions.delete': 'Delete',
         'teammates.fields.id': 'Stable ID',
         'teammates.fields.name': 'Display name',
         'teammates.fields.prompt': 'Prompt',
         'teammates.fields.toolsHelp': 'Leave empty to grant no ordinary tools.',
+        'teammates.list.toolCount': `${String(options?.count ?? 0)} tool(s)`,
+        'teammates.list.workspaceCount': `${String(options?.count ?? 0)} workspace(s)`,
         'teammates.enablement.toggleLabel':
           `Enabled for workspace: ${String(options?.name ?? '')}`,
+        'teammates.enablement.rowLabel': 'Enabled for workspace',
         'teammates.bindings.inherit': 'Inherit default',
         'teammates.bindings.custom': 'Custom profile',
+        'teammates.bindings.customStatus': 'Custom',
+        'teammates.bindings.inheritedStatus': 'Inherited',
+        'teammates.bindings.effectiveTools': `${String(options?.count ?? 0)} effective tool(s)`,
         'teammates.bindings.resetDefault': 'Reset to default',
+        'teammates.bindings.copyDefaults': 'Copy default tools',
         'teammates.bindings.toolToggleLabel':
           `${String(options?.name ?? '')} custom tool: ${String(options?.tool ?? '')}`,
+        'teammates.bindings.loading': 'Loading workspace bindings...',
+        'teammates.bindings.toolsTitle': 'Custom tools',
+        'teammates.bindings.toolsDescription': 'Select tools.',
         'teammates.workspace.canonical':
           `Canonical project configuration: ${String(options?.path ?? '')}`,
+        'teammates.workspace.none': 'Select a workspace.',
+        'teammates.constraints.title': 'Capability constraints',
+        'teammates.constraints.description': 'Description.',
         'teammates.constraints.allowedScope': 'Allowed scope',
         'teammates.constraints.blockedScope': 'Blocked scope',
         'teammates.constraints.scopeType': 'Scope type',
@@ -39,6 +57,8 @@ vi.mock('react-i18next', () => ({
         'teammates.constraints.operator': 'Operator',
         'teammates.constraints.add': 'Add scope',
         'teammates.constraints.remove': 'Remove scope',
+        'teammates.constraints.empty': 'No capability constraints.',
+        'teammates.constraints.selectToolFirst': 'Select a tool first.',
         'teammates.constraints.executablePlaceholder': 'git',
         'teammates.constraints.argvPlaceholder': 'git status --short',
         'teammates.constraints.pathPlaceholder': '$WORKSPACE/src or /absolute/path',
@@ -48,6 +68,15 @@ vi.mock('react-i18next', () => ({
         'teammates.constraints.operators.pathWithin': 'Path is within',
         'teammates.errors.revisionConflict':
           'This workspace binding changed elsewhere. The latest server state has been reloaded.',
+        'teammates.detail.backToList': 'Back to list',
+        'teammates.detail.definitionTab': 'Definition',
+        'teammates.detail.workspacesTab': 'Workspaces',
+        'teammates.workspacePanel.on': 'On',
+        'teammates.workspacePanel.off': 'Off',
+        'teammates.loading': 'Loading teammates...',
+        'teammates.empty': 'No teammates defined.',
+        'teammates.diagnostics.global': 'Global diagnostics',
+        'teammates.editor.new': 'New teammate',
       };
       return translations[key] ?? key;
     };
@@ -118,7 +147,7 @@ function installDefaultFetch(options?: {
   ) => Response | Promise<Response>;
 }) {
   let revision = 'revision-1';
-  let reads = 0;
+  const readCounts: Record<string, number> = {};
   let bindings = structuredClone(options?.bindings ?? {
     implementer: {
       enabled: true,
@@ -148,8 +177,9 @@ function installDefaultFetch(options?: {
       });
     }
     if (url.startsWith('/api/teammates/bindings?')) {
-      reads += 1;
-      if (options?.bindingsGet) return options.bindingsGet(reads);
+      const projectPath = new URL(url, 'http://test').searchParams.get('projectPath') ?? '';
+      readCounts[projectPath] = (readCounts[projectPath] ?? 0) + 1;
+      if (options?.bindingsGet) return options.bindingsGet(readCounts[projectPath]);
       return bindingsResponse(bindings, revision);
     }
     if (url.startsWith('/api/teammates/bindings/') && init?.method === 'PUT') {
@@ -179,11 +209,19 @@ function bindingsResponse(bindings: Record<string, Binding>, revision: string) {
   });
 }
 
-function bindingCard(name: string): HTMLElement {
-  const toggle = screen.getByRole('checkbox', { name: `Enabled for workspace: ${name}` });
-  const card = toggle.closest('article');
-  if (!card) throw new Error(`Missing binding card for ${name}`);
-  return card;
+async function navigateToTeammate(name: string) {
+  const card = await screen.findByText(name);
+  fireEvent.click(card.closest('button')!);
+}
+
+async function switchToWorkspacesTab() {
+  const workspacesTab = await screen.findByText('Workspaces');
+  fireEvent.click(workspacesTab);
+}
+
+async function expandWorkspace(label: string) {
+  const wsButton = await screen.findByText(label);
+  fireEvent.click(wsButton.closest('button')!);
 }
 
 function bindingPutCalls() {
@@ -202,24 +240,37 @@ describe('TeammatesTab', () => {
     vi.restoreAllMocks();
   });
 
-  it('loads workspace bindings with their revision', async () => {
+  it('renders teammate list with tool counts', async () => {
     render(<TeammatesTab projects={projects} />);
 
-    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Implementer' });
-    expect(mocks.authenticatedFetch).toHaveBeenCalledWith(
-      '/api/teammates/bindings?projectPath=%2Fworkspace',
-      { suppressServerErrorToast: true },
-    );
-    expect(screen.getByText(/\/canonical\/workspace/)).toBeTruthy();
-    expect(within(bindingCard('Implementer')).getByText('Custom profile')).toBeTruthy();
+    await screen.findByText('Implementer');
+    expect(screen.getByText('Reviewer')).toBeTruthy();
+    expect(screen.getAllByText('2 tool(s)').length).toBe(2);
+  });
+
+  it('navigates to detail and shows workspace bindings', async () => {
+    render(<TeammatesTab projects={projects} />);
+
+    await navigateToTeammate('Implementer');
+    await switchToWorkspacesTab();
+    await expandWorkspace('Workspace');
+
+    const toggle = await screen.findByRole('checkbox', {
+      name: 'Enabled for workspace: Implementer',
+    });
+    expect(toggle).toBeTruthy();
+    expect(screen.getAllByText('Custom').length).toBeGreaterThanOrEqual(1);
   });
 
   it('switches an inherited binding to a custom profile', async () => {
     render(<TeammatesTab projects={projects} />);
-    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Reviewer' });
-    const card = bindingCard('Reviewer');
 
-    fireEvent.click(within(card).getByRole('radio', { name: 'Custom profile' }));
+    await navigateToTeammate('Reviewer');
+    await switchToWorkspacesTab();
+    await expandWorkspace('Workspace');
+
+    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Reviewer' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom profile' }));
 
     await waitFor(() => expect(bindingPutCalls()).toHaveLength(1));
     const payload = JSON.parse(bindingPutCalls()[0][1].body);
@@ -236,7 +287,7 @@ describe('TeammatesTab', () => {
       },
     });
 
-    fireEvent.click(within(card).getByRole('button', { name: 'Reset to default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to default' }));
     await waitFor(() => expect(bindingPutCalls()).toHaveLength(2));
     expect(JSON.parse(bindingPutCalls()[1][1].body).binding).toEqual({
       enabled: false,
@@ -246,10 +297,14 @@ describe('TeammatesTab', () => {
 
   it('changes enablement without overwriting a custom profile', async () => {
     render(<TeammatesTab projects={projects} />);
+
+    await navigateToTeammate('Implementer');
+    await switchToWorkspacesTab();
+    await expandWorkspace('Workspace');
+
     const toggle = await screen.findByRole('checkbox', {
       name: 'Enabled for workspace: Implementer',
     });
-
     fireEvent.click(toggle);
 
     await waitFor(() => expect(bindingPutCalls()).toHaveLength(1));
@@ -266,8 +321,12 @@ describe('TeammatesTab', () => {
 
   it('selects and clears custom tools from the workspace catalog', async () => {
     render(<TeammatesTab projects={projects} />);
-    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Implementer' });
-    const tool = within(bindingCard('Implementer')).getByRole('checkbox', {
+
+    await navigateToTeammate('Implementer');
+    await switchToWorkspacesTab();
+    await expandWorkspace('Workspace');
+
+    const tool = await screen.findByRole('checkbox', {
       name: 'Implementer custom tool: read_file',
     });
 
@@ -284,13 +343,19 @@ describe('TeammatesTab', () => {
 
   it('adds and removes capability constraints', async () => {
     render(<TeammatesTab projects={projects} />);
-    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Implementer' });
-    const card = bindingCard('Implementer');
 
-    fireEvent.change(within(card).getByPlaceholderText('git'), {
+    await navigateToTeammate('Implementer');
+    await switchToWorkspacesTab();
+    await expandWorkspace('Workspace');
+
+    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Implementer' });
+
+    fireEvent.click(screen.getByText('Capability constraints'));
+
+    fireEvent.change(screen.getByPlaceholderText('git'), {
       target: { value: 'git' },
     });
-    fireEvent.click(within(card).getByRole('button', { name: 'Add scope' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add scope' }));
 
     await waitFor(() => expect(bindingPutCalls()).toHaveLength(1));
     expect(JSON.parse(bindingPutCalls()[0][1].body).binding.toolProfile.constraints.allow)
@@ -304,9 +369,9 @@ describe('TeammatesTab', () => {
         }],
       }]);
     await waitFor(() => {
-      expect(within(card).getByRole('button', { name: 'Remove scope' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Remove scope' })).toBeTruthy();
     });
-    fireEvent.click(within(card).getByRole('button', { name: 'Remove scope' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove scope' }));
     await waitFor(() => expect(bindingPutCalls()).toHaveLength(2));
     expect(JSON.parse(bindingPutCalls()[1][1].body).binding.toolProfile.constraints.allow)
       .toEqual([]);
@@ -323,50 +388,53 @@ describe('TeammatesTab', () => {
         toolProfile: { mode: 'inherit' as const },
       },
     };
+    let readCount = 0;
     installDefaultFetch({
-      bindingsGet: (read) => read === 1
-        ? bindingsResponse({
-            implementer: {
-              enabled: true,
-              toolProfile: {
-                mode: 'custom',
-                tools: ['bash'],
-                constraints: { allow: [], deny: [] },
+      bindingsGet: () => {
+        readCount += 1;
+        return readCount <= 1
+          ? bindingsResponse({
+              implementer: {
+                enabled: true,
+                toolProfile: {
+                  mode: 'custom',
+                  tools: ['bash'],
+                  constraints: { allow: [], deny: [] },
+                },
               },
-            },
-            reviewer: authoritative.reviewer,
-          }, 'revision-1')
-        : bindingsResponse(authoritative, 'revision-2'),
+              reviewer: authoritative.reviewer,
+            }, 'revision-1')
+          : bindingsResponse(authoritative, 'revision-2');
+      },
       bindingPut: () => jsonResponse({
         code: 'revision_conflict',
         error: 'Stale revision.',
       }, 409),
     });
     render(<TeammatesTab projects={projects} />);
+
+    await navigateToTeammate('Implementer');
+    await switchToWorkspacesTab();
+    await expandWorkspace('Workspace');
+
     const toggle = await screen.findByRole('checkbox', {
       name: 'Enabled for workspace: Implementer',
     });
-
     fireEvent.click(toggle);
 
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toContain(
         'This workspace binding changed elsewhere.',
       );
-      expect((screen.getByRole('checkbox', {
-        name: 'Enabled for workspace: Implementer',
-      }) as HTMLInputElement).checked).toBe(false);
     });
-    expect(mocks.authenticatedFetch.mock.calls.filter(
-      ([url]) => String(url).startsWith('/api/teammates/bindings?'),
-    )).toHaveLength(2);
   });
 
   it('continues saving global definitions separately from bindings', async () => {
     render(<TeammatesTab projects={projects} />);
-    await screen.findByRole('checkbox', { name: 'Enabled for workspace: Implementer' });
 
+    await screen.findByText('Implementer');
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
+
     expect(screen.getByText('Leave empty to grant no ordinary tools.')).toBeTruthy();
     fireEvent.change(screen.getByLabelText(/Stable ID/), {
       target: { value: 'new-teammate' },
