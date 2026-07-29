@@ -360,6 +360,100 @@ test("TeammateSessionRuntime keeps identity and updates task progress", async ()
   );
 });
 
+test("TeammateSessionRuntime can dispatch fresh sessions while sharing leader progress", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-fresh-runtime-"));
+  const progressPath = join(dir, "progress.json");
+  const permission = {
+    permissionMode: "bypassPermissions" as const,
+    basePermissionMode: "bypassPermissions" as const,
+    canPrompt: true,
+    rules: { allow: [], deny: [], ask: [] },
+  };
+  let sessionCounter = 0;
+  const seenSessions: string[] = [];
+  const messages = new TeamMessageCoordinator({
+    path: join(dir, "messages.json"),
+    leaderSessionId: "leader-1",
+  });
+  const runtime = new TeammateSessionRuntime({
+    leaderSessionId: "leader-1",
+    projectRoot: dir,
+    progressPath,
+    control: new TeamControlCoordinator({
+      path: join(dir, "control.json"),
+      leaderSessionId: "leader-1",
+    }),
+    messages,
+    resolveTeammateSessionId: ({ definition }) =>
+      `leader-1::teammate::${definition.id}::delegation::${++sessionCounter}`,
+    definitions: () => [{
+      id: "implementer",
+      name: "Implementer",
+      description: "Implements scoped changes",
+      prompt: "Implement carefully.",
+      contextPolicy: "fresh_per_delegation",
+      tools: [],
+      sourcePath: join(dir, "teammates/implementer.md"),
+      constraints: { allow: [], deny: [] },
+      canonicalWorkspace: dir,
+      workspaceBindingRevision: "revision",
+      workspaceBindingFingerprint: "fingerprint",
+      activeProjectRoot: dir,
+    }],
+    host: {
+      run: async (input) => {
+        seenSessions.push(input.teammateSessionId);
+        return {
+          teammateId: input.definition.id,
+          teammateSessionId: input.teammateSessionId,
+          action: input.action,
+          taskId: input.taskId,
+          status: "completed",
+          summary: "done",
+          durationMs: 1,
+        };
+      },
+      shutdown: async () => {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const first = await runtime.delegate({
+    teammateId: "implementer",
+    action: "run",
+    prompt: "Implement feature A.",
+    taskId: "task-a",
+    parentTurnId: "turn-1",
+    permission,
+  });
+  await waitFor(async () => (await runtime.readProgress()).items.some((item) =>
+    item.id === "task-a" && item.status === "completed"));
+  const second = await runtime.delegate({
+    teammateId: "implementer",
+    action: "run",
+    prompt: "Implement feature B.",
+    taskId: "task-b",
+    parentTurnId: "turn-2",
+    permission,
+  });
+  await waitFor(async () => (await runtime.readProgress()).items.some((item) =>
+    item.id === "task-b" && item.status === "completed"));
+
+  assert.notEqual(first.teammateSessionId, second.teammateSessionId);
+  assert.deepEqual(seenSessions, [first.teammateSessionId, second.teammateSessionId]);
+  const progress = await new TeamProgressStore({ path: progressPath }).list();
+  assert.equal(progress.items.length, 2);
+  assert.equal(progress.counts.completed, 2);
+  const idleSessions = (await messages.listPending({
+    role: "leader",
+    id: "leader",
+    sessionId: "leader-1",
+  })).map((message) => message.from.sessionId);
+  assert.ok(idleSessions.includes(first.teammateSessionId));
+  assert.ok(idleSessions.includes(second.teammateSessionId));
+});
+
 test("two Teammates emit one explicit report and one idle lifecycle each with compact progress", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-two-teammates-"));
   const permission = {

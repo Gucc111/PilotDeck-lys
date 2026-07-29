@@ -73,6 +73,7 @@ export type PilotDeckSubagentForkApi = {
 export type PilotDeckTeamDefinitionSummary = {
   id: string;
   description: string;
+  contextPolicy?: "persistent" | "fresh_per_delegation";
   model?: string;
 };
 

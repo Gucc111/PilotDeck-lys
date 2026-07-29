@@ -14,6 +14,7 @@ import { toolCallSelectorSummary } from '../toolCallSelectorMetadata';
 const INHERIT_BINDING: TeammateWorkspaceBinding = {
   enabled: false,
   toolProfile: { mode: 'inherit' },
+  contextPolicy: 'persistent',
 };
 
 export default function WorkspaceBindingEditor({
@@ -45,6 +46,7 @@ export default function WorkspaceBindingEditor({
   const save = (nextBinding: TeammateWorkspaceBinding) => onChange(nextBinding);
   const makeCustom = (tools = teammate.tools.filter((tool) => catalogToolSet.has(tool))) => ({
     enabled: binding.enabled,
+    contextPolicy: binding.contextPolicy,
     toolProfile: {
       mode: 'custom' as const,
       tools,
@@ -95,6 +97,7 @@ export default function WorkspaceBindingEditor({
             checked={!custom}
             onChange={() => save({
               enabled: binding.enabled,
+              contextPolicy: binding.contextPolicy,
               toolProfile: { mode: 'inherit' },
             })}
             disabled={disabled}
@@ -130,12 +133,46 @@ export default function WorkspaceBindingEditor({
           disabled={disabled || !custom}
           onClick={() => save({
             enabled: binding.enabled,
+            contextPolicy: binding.contextPolicy,
             toolProfile: { mode: 'inherit' },
           })}
         >
           <RotateCcw className="h-3.5 w-3.5" />
           {t('teammates.bindings.resetDefault')}
         </Button>
+      </div>
+
+      <div className="space-y-2 border-t border-border pt-4">
+        <div>
+          <div className="text-xs font-semibold text-foreground">
+            {t('teammates.bindings.contextTitle')}
+          </div>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            {t('teammates.bindings.contextDescription')}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs">
+            <input
+              type="radio"
+              name={`context-${teammate.id}`}
+              checked={binding.contextPolicy === 'persistent'}
+              onChange={() => save({ ...binding, contextPolicy: 'persistent' })}
+              disabled={disabled}
+            />
+            {t('teammates.bindings.contextPersistent')}
+          </label>
+          <label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs">
+            <input
+              type="radio"
+              name={`context-${teammate.id}`}
+              checked={binding.contextPolicy === 'fresh_per_delegation'}
+              onChange={() => save({ ...binding, contextPolicy: 'fresh_per_delegation' })}
+              disabled={disabled}
+            />
+            {t('teammates.bindings.contextFreshPerDelegation')}
+          </label>
+        </div>
       </div>
 
       {custom && (

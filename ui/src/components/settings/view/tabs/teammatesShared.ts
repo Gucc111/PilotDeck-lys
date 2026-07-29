@@ -179,12 +179,14 @@ export function normalizeWorkspaceBindings(
         bindings[id] = {
           enabled: candidate.enabled,
           toolProfile: { mode: 'inherit' },
+          contextPolicy: normalizeContextPolicy(candidate.contextPolicy),
         };
         continue;
       }
       if (profile.mode !== 'custom' || !isRecord(profile.constraints)) continue;
       bindings[id] = {
         enabled: candidate.enabled,
+        contextPolicy: normalizeContextPolicy(candidate.contextPolicy),
         toolProfile: {
           mode: 'custom',
           tools: normalizeStringArray(profile.tools),
@@ -203,6 +205,10 @@ export function normalizeWorkspaceBindings(
     revision: typeof value.revision === 'string' ? value.revision : '',
     filePath: typeof value.filePath === 'string' ? value.filePath : '',
   };
+}
+
+function normalizeContextPolicy(value: unknown): TeammateWorkspaceBinding['contextPolicy'] {
+  return value === 'fresh_per_delegation' ? 'fresh_per_delegation' : 'persistent';
 }
 
 function normalizeSelectors(value: unknown): ToolCallSelector[] {

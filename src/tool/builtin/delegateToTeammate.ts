@@ -39,8 +39,8 @@ export function createDelegateToTeammateTool(): PilotDeckToolDefinition<
     name: "delegate_to_teammate",
     title: "Delegate to Teammate",
     description: [
-      "Dispatch a complete task or follow-up to a globally defined, long-lived Teammate enabled and valid for the current workspace.",
-      "The teammate keeps its own context between calls.",
+      "Dispatch a complete task or follow-up to a globally defined Teammate enabled and valid for the current workspace.",
+      "The teammate's workspace context policy controls whether it keeps one persistent session or starts a fresh session for each delegated task.",
       "run and follow_up dispatch in the background and return immediately.",
       "Use list_requests/read_request to inspect teammate permission or plan requests; resolve them with allow_once, deny, approve_plan, or request_revision.",
       "Use escalate_to_user when the Leader cannot safely decide; the host may surface it to the user.",

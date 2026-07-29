@@ -14,6 +14,7 @@ import { toolCallSelectorSummary } from '../toolCallSelectorMetadata';
 const INHERIT_BINDING: TeammateWorkspaceBinding = {
   enabled: false,
   toolProfile: { mode: 'inherit' },
+  contextPolicy: 'persistent',
 };
 
 export default function WorkspaceTeammateBindings({
@@ -67,6 +68,7 @@ export default function WorkspaceTeammateBindings({
           onChange(teammate.id, nextBinding);
         const makeCustom = (tools = teammate.tools.filter((tool) => catalogToolSet.has(tool))) => ({
           enabled: binding.enabled,
+          contextPolicy: binding.contextPolicy,
           toolProfile: {
             mode: 'custom' as const,
             tools,
@@ -122,6 +124,7 @@ export default function WorkspaceTeammateBindings({
                   checked={!custom}
                   onChange={() => save({
                     enabled: binding.enabled,
+                    contextPolicy: binding.contextPolicy,
                     toolProfile: { mode: 'inherit' },
                   })}
                   disabled={disabled}
@@ -157,6 +160,7 @@ export default function WorkspaceTeammateBindings({
                 disabled={disabled || !custom}
                 onClick={() => save({
                   enabled: binding.enabled,
+                  contextPolicy: binding.contextPolicy,
                   toolProfile: { mode: 'inherit' },
                 })}
               >

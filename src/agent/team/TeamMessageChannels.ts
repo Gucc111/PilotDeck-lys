@@ -6,6 +6,7 @@ import type {
   PilotDeckTeamMessage,
   PilotDeckTeamMessageActor,
 } from "../../tool/protocol/types.js";
+import type { TeammateContextPolicy } from "../../extension/teammates/types.js";
 import type { TeamMessageCoordinator } from "./TeamMessageCoordinator.js";
 
 const MESSAGE_BUSY_BACKOFF_MS = [25, 50, 100, 250, 500, 1_000] as const;
@@ -198,9 +199,15 @@ export function buildLeaderMessageTurnInput(input: {
   };
 }
 
-export function formatMessagesForTeammate(messages: PilotDeckTeamMessage[]): string {
+export function formatMessagesForTeammate(
+  messages: PilotDeckTeamMessage[],
+  contextPolicy: TeammateContextPolicy = "persistent",
+): string {
+  const deliveryContext = contextPolicy === "fresh_per_delegation"
+    ? "Messages from the Team Leader were delivered to your current task-scoped Teammate session."
+    : "Messages from the Team Leader were delivered to your existing Teammate session.";
   return [
-    "Messages from the Team Leader were delivered to your existing Teammate session.",
+    deliveryContext,
     "They are follow-up context, not new team tasks unless explicitly stated.",
     "",
     ...messages.map((message) => [

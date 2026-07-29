@@ -98,15 +98,15 @@ test("TeammateEnablementStore migrates V1 bindings and writes only V2", async ()
 
     const migrated = await store.getBindings(workspace);
     assert.deepEqual(migrated.bindings, {
-      implementer: { enabled: true, toolProfile: { mode: "inherit" } },
-      reviewer: { enabled: true, toolProfile: { mode: "inherit" } },
+      implementer: { enabled: true, toolProfile: { mode: "inherit" }, contextPolicy: "persistent" },
+      reviewer: { enabled: true, toolProfile: { mode: "inherit" }, contextPolicy: "persistent" },
     });
 
     await store.set(workspace, ["reviewer"]);
     const written = JSON.parse(await readFile(filePath, "utf8"));
     assert.equal(written.schemaVersion, 2);
     assert.deepEqual(written.workspaces[canonicalWorkspace], {
-      reviewer: { enabled: true, toolProfile: { mode: "inherit" } },
+      reviewer: { enabled: true, toolProfile: { mode: "inherit" }, contextPolicy: "persistent" },
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -123,6 +123,7 @@ test("legacy enabled-ID updates preserve retained custom profiles", async () => 
     const initial = await store.getBindings(workspace);
     const custom = {
       enabled: true,
+      contextPolicy: "persistent" as const,
       toolProfile: {
         mode: "custom" as const,
         tools: ["read_file", "bash"],
@@ -164,6 +165,36 @@ test("legacy enabled-ID updates preserve retained custom profiles", async () => 
       },
     });
     assert.deepEqual(await store.get(workspace), ["implementer"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workspace bindings persist teammate context policy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-context-policy-"));
+  try {
+    const pilotHome = join(root, "pilot-home");
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const store = new TeammateEnablementStore({ pilotHome });
+    const initial = await store.getBindings(workspace);
+
+    await store.setBinding(
+      workspace,
+      "reviewer",
+      {
+        enabled: true,
+        contextPolicy: "fresh_per_delegation",
+        toolProfile: { mode: "inherit" },
+      },
+      initial.revision,
+    );
+
+    assert.deepEqual((await store.getBinding(workspace, "reviewer")).binding, {
+      enabled: true,
+      contextPolicy: "fresh_per_delegation",
+      toolProfile: { mode: "inherit" },
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -366,6 +397,7 @@ test("TeammateEnablementStore preserves concurrent updates across instances", as
         {
           [`teammate-${index}`]: {
             enabled: true,
+            contextPolicy: "persistent",
             toolProfile: { mode: "inherit" },
           },
         },

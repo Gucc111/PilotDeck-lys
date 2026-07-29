@@ -128,6 +128,7 @@ import {
 import { TeammateExtensionResolver } from "../agent/team/TeammateExtensionResolver.js";
 import { scopeTeammateTools } from "../agent/team/TeammateToolScope.js";
 import {
+  teammateSessionInstanceKey,
   teammateSessionKey,
   type CompiledTeammateToolConstraints,
   type RuntimeTeammateDefinition,
@@ -389,7 +390,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       return {
         progress: progressList,
         teammates: listed.teammates.map((teammate) => {
-          const sessionId = teammateSessionKey(leaderSessionId, teammate.id);
+          const sessionId = registry.getCurrentTeammateSessionId(projectKey, leaderSessionId, teammate.id);
           const snapshot = router?.snapshotSession(sessionId);
           const currentTask = progress.items.find(
             (item) => item.teammateId === teammate.id && item.status === "in_progress",
@@ -618,6 +619,8 @@ class ProjectRuntimeRegistry {
   private gateway?: InProcessGateway;
   private sessionRouter?: SessionRouter;
   private readonly teammateBindings = new Map<string, TeammateSessionBinding>();
+  private readonly teammateCurrentSessions = new Map<string, string>();
+  private readonly teammateInFlightTurns = new Set<string>();
   private readonly teammateActiveTasks = new Map<string, string>();
   private readonly teamControlCoordinators = new Map<string, TeamControlCoordinator>();
   private readonly teamMessageCoordinators = new Map<string, TeamMessageCoordinator>();
@@ -689,8 +692,73 @@ class ProjectRuntimeRegistry {
     this.notificationBroadcaster = broadcaster;
   }
 
+  getCurrentTeammateSessionId(
+    projectRoot: string,
+    leaderSessionId: string,
+    teammateId: string,
+  ): string {
+    return this.teammateCurrentSessions.get(
+      this.teammateRuntimeKey(projectRoot, leaderSessionId, teammateId),
+    ) ?? teammateSessionKey(leaderSessionId, teammateId);
+  }
+
   reconcileTeamMessages(projectRoot: string, leaderSessionId: string): void {
     this.getTeamMessageCoordinator(projectRoot, leaderSessionId);
+  }
+
+  private teammateRuntimeKey(
+    projectRoot: string,
+    leaderSessionId: string,
+    teammateId: string,
+  ): string {
+    return `${resolve(projectRoot)}::${leaderSessionId}::${teammateId}`;
+  }
+
+  private resolveTeammateSessionKey(input: {
+    projectRoot: string;
+    leaderSessionId: string;
+    definition: RuntimeTeammateDefinition;
+    action: "run" | "follow_up" | "message" | "shutdown";
+  }): string {
+    const currentKey = this.teammateRuntimeKey(
+      input.projectRoot,
+      input.leaderSessionId,
+      input.definition.id,
+    );
+    if ((input.definition.contextPolicy ?? "persistent") === "persistent") {
+      const sessionKey = teammateSessionKey(input.leaderSessionId, input.definition.id);
+      this.teammateCurrentSessions.set(currentKey, sessionKey);
+      return sessionKey;
+    }
+
+    const current = this.teammateCurrentSessions.get(currentKey);
+    if (input.action !== "run" && current) return current;
+
+    if (current) this.teammateBindings.delete(current);
+    const sessionKey = teammateSessionInstanceKey(
+      input.leaderSessionId,
+      input.definition.id,
+      randomUUID(),
+    );
+    this.teammateCurrentSessions.set(currentKey, sessionKey);
+    return sessionKey;
+  }
+
+  private forgetTeammateSession(input: {
+    projectRoot: string;
+    leaderSessionId: string;
+    teammateId: string;
+    sessionKey: string;
+  }): void {
+    this.teammateBindings.delete(input.sessionKey);
+    const currentKey = this.teammateRuntimeKey(
+      input.projectRoot,
+      input.leaderSessionId,
+      input.teammateId,
+    );
+    if (this.teammateCurrentSessions.get(currentKey) === input.sessionKey) {
+      this.teammateCurrentSessions.delete(currentKey);
+    }
   }
 
   private getTeamControlCoordinator(
@@ -874,9 +942,15 @@ class ProjectRuntimeRegistry {
     const override = this._sessionOverrides?.get(leaderSessionId);
     const permissionMode = override?.permissionMode ?? this.options.permissionMode;
     const rules = this.getLiveRuleSet(leaderSessionId);
+    const sessionKey = messages[0]?.to.sessionId ?? this.resolveTeammateSessionKey({
+      projectRoot,
+      leaderSessionId,
+      definition,
+      action: "message",
+    });
     if (await this.transcriptContainsTeamMessageBatch(
       projectRoot,
-      teammateSessionKey(leaderSessionId, teammateId),
+      sessionKey,
       messages,
     )) {
       return true;
@@ -899,8 +973,9 @@ class ProjectRuntimeRegistry {
         leaderSessionId,
         projectRoot,
         definition,
+        teammateSessionId: sessionKey,
         action: "follow_up",
-        prompt: formatMessagesForTeammate(messages),
+        prompt: formatMessagesForTeammate(messages, definition.contextPolicy),
         parentTurnId: `team-message-${messages[0]?.id ?? randomUUID()}`,
         permission: deliveryPermission,
       });
@@ -1352,6 +1427,7 @@ class ProjectRuntimeRegistry {
     leaderSessionId: string,
     projectRoot: string,
     definition: RuntimeTeammateDefinition,
+    sessionKey: string,
   ): Promise<{ sessionKey: string; binding: TeammateSessionBinding }> {
     const runtime = this.resolve(projectRoot);
     const skillSections: string[] = [];
@@ -1361,8 +1437,11 @@ class ProjectRuntimeRegistry {
         skillSections.push(`<preloaded-skill name="${skill}">\n${content}\n</preloaded-skill>`);
       }
     }
+    const contextInstruction = (definition.contextPolicy ?? "persistent") === "fresh_per_delegation"
+      ? "You are a task-scoped PilotDeck Teammate. Each delegated task may start in a fresh session, so rely on the current assignment and delivered Team messages rather than prior Teammate history."
+      : "You are a long-lived PilotDeck Teammate. Execute assignments from the Team Leader in your own context.";
     const systemPrompt = [
-      "You are a long-lived PilotDeck Teammate. Execute assignments from the Team Leader in your own context.",
+      contextInstruction,
       "Stay within your configured capabilities. Do not create or delegate to another team.",
       'Your plain final response is not delivered to the Leader. Before your turn ends, use send_team_message with to="leader" for every result, finding, question, blocker, or decision the Leader needs.',
       "The runtime reports only that you became idle. Do not send structured completion or idle status messages yourself.",
@@ -1370,13 +1449,14 @@ class ProjectRuntimeRegistry {
       definition.prompt,
       ...skillSections,
     ].join("\n\n");
-    const sessionKey = teammateSessionKey(leaderSessionId, definition.id);
     const binding: TeammateSessionBinding = {
       leaderSessionId,
       projectRoot,
       definition,
+      sessionKey,
       systemPrompt,
       constraints: definition.constraints,
+      contextPolicy: definition.contextPolicy,
       canonicalWorkspace: definition.canonicalWorkspace,
       workspaceBindingRevision: definition.workspaceBindingRevision,
       workspaceBindingFingerprint: definition.workspaceBindingFingerprint,
@@ -1389,6 +1469,7 @@ class ProjectRuntimeRegistry {
     leaderSessionId: string;
     projectRoot: string;
     definition: RuntimeTeammateDefinition;
+    teammateSessionId?: string;
     action: "run" | "follow_up";
     prompt: string;
     taskId?: string;
@@ -1400,18 +1481,36 @@ class ProjectRuntimeRegistry {
     const startedAt = Date.now();
     const router = this.sessionRouter;
     if (!router) throw new Error("Team runtime is not connected to the session router.");
-    const { sessionKey } = await this.compileTeammateBinding(
-      input.leaderSessionId,
+    const sessionKey = input.teammateSessionId ?? this.resolveTeammateSessionKey({
+      leaderSessionId: input.leaderSessionId,
+      projectRoot: input.projectRoot,
+      definition: input.definition,
+      action: input.action,
+    });
+    const teammateTurnKey = this.teammateRuntimeKey(
       input.projectRoot,
-      input.definition,
+      input.leaderSessionId,
+      input.definition.id,
     );
-    const runId = `team-${randomUUID()}`;
-    if (!router.beginTurn(sessionKey, runId)) {
+    if (this.teammateInFlightTurns.has(teammateTurnKey)) {
       throw new Error(`Teammate "${input.definition.id}" is already running a turn.`);
     }
-    if (input.taskId) this.teammateActiveTasks.set(sessionKey, input.taskId);
+    this.teammateInFlightTurns.add(teammateTurnKey);
+    const runId = `team-${randomUUID()}`;
     let session: AgentSession;
+    let turnStarted = false;
     try {
+      await this.compileTeammateBinding(
+        input.leaderSessionId,
+        input.projectRoot,
+        input.definition,
+        sessionKey,
+      );
+      if (!router.beginTurn(sessionKey, runId)) {
+        throw new Error(`Teammate "${input.definition.id}" is already running a turn.`);
+      }
+      turnStarted = true;
+      if (input.taskId) this.teammateActiveTasks.set(sessionKey, input.taskId);
       session = await router.getOrCreate({
         sessionKey,
         projectKey: input.projectRoot,
@@ -1419,7 +1518,8 @@ class ProjectRuntimeRegistry {
       });
     } catch (error) {
       this.teammateActiveTasks.delete(sessionKey);
-      router.endTurn(sessionKey, runId);
+      if (turnStarted) router.endTurn(sessionKey, runId);
+      this.teammateInFlightTurns.delete(teammateTurnKey);
       throw error;
     }
     const abort = () => session.abort("Leader turn aborted.");
@@ -1492,6 +1592,7 @@ class ProjectRuntimeRegistry {
       input.abortSignal?.removeEventListener("abort", abort);
       this.teammateActiveTasks.delete(sessionKey);
       router.endTurn(sessionKey, runId);
+      this.teammateInFlightTurns.delete(teammateTurnKey);
     }
   }
 
@@ -1500,9 +1601,20 @@ class ProjectRuntimeRegistry {
     projectRoot: string;
     definition: RuntimeTeammateDefinition;
   }): Promise<PilotDeckTeamDelegateResult> {
-    const sessionKey = teammateSessionKey(input.leaderSessionId, input.definition.id);
+    const sessionKey = this.resolveTeammateSessionKey({
+      leaderSessionId: input.leaderSessionId,
+      projectRoot: input.projectRoot,
+      definition: input.definition,
+      action: "shutdown",
+    });
     await this.sessionRouter?.abort(sessionKey, "Teammate shutdown requested.");
     await this.sessionRouter?.close(sessionKey);
+    this.forgetTeammateSession({
+      projectRoot: input.projectRoot,
+      leaderSessionId: input.leaderSessionId,
+      teammateId: input.definition.id,
+      sessionKey,
+    });
     this.gateway?.emitForSession(input.leaderSessionId, {
       type: "agent_status",
       event: "teammate_shutdown",
@@ -1951,8 +2063,18 @@ class ProjectRuntimeRegistry {
         control,
         messages: this.getTeamMessageCoordinator(projectRoot, leaderSessionId),
         ...(teammateBinding
-          ? { actorTeammateId: teammateBinding.definition.id }
+          ? {
+              actorTeammateId: teammateBinding.definition.id,
+              actorSessionId: context.sessionKey,
+            }
           : {}),
+        resolveTeammateSessionId: ({ definition, action }) =>
+          this.resolveTeammateSessionKey({
+            leaderSessionId,
+            projectRoot,
+            definition,
+            action,
+          }),
         definitions: () => runtime.teammates,
         diagnostics: () => runtime.teammateDiagnostics.map((diagnostic) => diagnostic.message),
         host: {
@@ -2424,6 +2546,7 @@ function toRuntimeTeammateDefinition(
     name: teammate.name,
     description: teammate.description?.trim() || teammate.name,
     prompt: teammate.prompt,
+    contextPolicy: workspace.binding.contextPolicy ?? "persistent",
     ...(teammate.model ? { model: teammate.model } : {}),
     tools: [...teammate.tools],
     plugins: [...teammate.plugins],

@@ -2425,7 +2425,8 @@ function buildTeamLeaderPrompt(
   diagnostics: string[],
 ): string {
   const catalog = teammates.length > 0
-    ? teammates.map((teammate) => `- ${teammate.id}: ${teammate.description}`).join("\n")
+    ? teammates.map((teammate) =>
+      `- ${teammate.id} (${teammate.contextPolicy ?? "persistent"}): ${teammate.description}`).join("\n")
     : "- No globally defined Teammates are enabled and valid for this workspace.";
   const configurationDiagnostics = diagnostics.length > 0
     ? ["", "Configuration diagnostics:", ...diagnostics.map((message) => `- ${message}`)]

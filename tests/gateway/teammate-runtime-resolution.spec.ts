@@ -203,7 +203,7 @@ mcpServers: [missing_mcp]`,
       projectKey: projectA,
     });
     assert.deepEqual(bindings.bindings, {
-      valid: { enabled: true, toolProfile: { mode: "inherit" } },
+      valid: { enabled: true, toolProfile: { mode: "inherit" }, contextPolicy: "persistent" },
     });
     assert.match(bindings.revision, /^[a-f0-9]{64}$/);
     assert.ok(local.gateway.teammateWorkspaceBindingSet);
@@ -222,6 +222,7 @@ mcpServers: [missing_mcp]`,
     });
     assert.deepEqual(updatedBindings.bindings.valid, {
       enabled: true,
+      contextPolicy: "persistent",
       toolProfile: {
         mode: "custom",
         tools: ["read_file"],

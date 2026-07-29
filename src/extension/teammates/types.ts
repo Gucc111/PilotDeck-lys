@@ -57,9 +57,12 @@ export type TeammateToolProfile =
       constraints: TeammateToolConstraints;
     };
 
+export type TeammateContextPolicy = "persistent" | "fresh_per_delegation";
+
 export type TeammateWorkspaceBinding = {
   enabled: boolean;
   toolProfile: TeammateToolProfile;
+  contextPolicy?: TeammateContextPolicy;
 };
 
 export interface TeammateEnablementDocument {

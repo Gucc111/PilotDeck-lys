@@ -22,7 +22,7 @@ export function createSendTeamMessageTool(): PilotDeckToolDefinition<
       "Send a plain-text message without creating or updating a Team task.",
       "The Team Leader addresses an enabled teammate by stable teammate id.",
       'A Teammate may only address "leader".',
-      "Messages are queued while the recipient is busy and delivered in the recipient's existing session.",
+      "Messages are queued while the recipient is busy and delivered to that teammate's current Team session.",
       "Use delegate_to_teammate instead when assigning or advancing a bounded task.",
     ].join(" "),
     kind: "agent",

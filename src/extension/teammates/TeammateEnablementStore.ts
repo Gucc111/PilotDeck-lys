@@ -29,6 +29,7 @@ import {
 import { isValidTeammateId } from "./teammateId.js";
 import {
   TEAMMATE_ENABLEMENT_SCHEMA_VERSION,
+  type TeammateContextPolicy,
   type TeammateEnablementDocument,
   type TeammateEnablementStoreErrorCode,
   type TeammateEnablementStoreOptions,
@@ -412,14 +413,32 @@ function normalizeBinding(
   field: string,
   filePath?: string,
 ): TeammateWorkspaceBinding {
-  assertExactFields(value, ["enabled", "toolProfile"], field, filePath);
+  assertAllowedFields(value, ["enabled", "toolProfile", "contextPolicy"], field, filePath);
   if (typeof value.enabled !== "boolean") {
     throw schemaOrInputError(filePath, `${field}.enabled must be a boolean`);
   }
   return {
     enabled: value.enabled,
     toolProfile: normalizeToolProfile(value.toolProfile, `${field}.toolProfile`, filePath),
+    contextPolicy: normalizeContextPolicy(
+      value.contextPolicy,
+      `${field}.contextPolicy`,
+      filePath,
+    ),
   };
+}
+
+function normalizeContextPolicy(
+  value: unknown,
+  field: string,
+  filePath?: string,
+): TeammateContextPolicy {
+  if (value === undefined || value === "persistent") return "persistent";
+  if (value === "fresh_per_delegation") return "fresh_per_delegation";
+  throw schemaOrInputError(
+    filePath,
+    `${field} must be persistent or fresh_per_delegation`,
+  );
 }
 
 function normalizeToolProfile(
@@ -579,7 +598,7 @@ function normalizeEnabledIds(
 }
 
 function inheritBinding(enabled: boolean): TeammateWorkspaceBinding {
-  return { enabled, toolProfile: { mode: "inherit" } };
+  return { enabled, toolProfile: { mode: "inherit" }, contextPolicy: "persistent" };
 }
 
 function mergeBindings(
@@ -642,6 +661,25 @@ function assertExactFields(
     throw schemaOrInputError(
       filePath,
       `${field} must contain only ${expectedFields.join(", ")}`,
+    );
+  }
+}
+
+function assertAllowedFields(
+  value: unknown,
+  allowedFields: readonly string[],
+  field: string,
+  filePath?: string,
+): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw schemaOrInputError(filePath, `${field} must be an object`);
+  }
+  const allowed = new Set(allowedFields);
+  const unknown = Object.keys(value).filter((entry) => !allowed.has(entry));
+  if (unknown.length > 0) {
+    throw schemaOrInputError(
+      filePath,
+      `${field} must contain only ${[...allowed].sort().join(", ")}`,
     );
   }
 }

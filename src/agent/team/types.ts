@@ -1,4 +1,5 @@
 import type { ToolCallSelector } from "../../permission/index.js";
+import type { TeammateContextPolicy } from "../../extension/teammates/types.js";
 
 export type CompiledTeammateToolConstraints = {
   allow: readonly ToolCallSelector[];
@@ -10,6 +11,7 @@ export type RuntimeTeammateDefinition = {
   name: string;
   description: string;
   prompt: string;
+  contextPolicy?: TeammateContextPolicy;
   model?: string;
   tools: string[];
   plugins?: string[];
@@ -27,8 +29,10 @@ export type TeammateSessionBinding = {
   leaderSessionId: string;
   projectRoot: string;
   definition: RuntimeTeammateDefinition;
+  sessionKey: string;
   systemPrompt: string;
   constraints: CompiledTeammateToolConstraints;
+  contextPolicy?: TeammateContextPolicy;
   canonicalWorkspace: string;
   workspaceBindingRevision: string;
   workspaceBindingFingerprint: string;
@@ -36,4 +40,12 @@ export type TeammateSessionBinding = {
 
 export function teammateSessionKey(leaderSessionId: string, teammateId: string): string {
   return `${leaderSessionId}::teammate::${teammateId}`;
+}
+
+export function teammateSessionInstanceKey(
+  leaderSessionId: string,
+  teammateId: string,
+  instanceId: string,
+): string {
+  return `${teammateSessionKey(leaderSessionId, teammateId)}::delegation::${instanceId}`;
 }

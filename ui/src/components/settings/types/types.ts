@@ -73,6 +73,7 @@ export type TeammateToolProfile =
 export type TeammateWorkspaceBinding = {
   enabled: boolean;
   toolProfile: TeammateToolProfile;
+  contextPolicy: 'persistent' | 'fresh_per_delegation';
 };
 
 export type TeammateWorkspaceBindings = {

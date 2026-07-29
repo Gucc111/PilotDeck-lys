@@ -15,6 +15,7 @@ export type TeammateTurnHost = {
     leaderSessionId: string;
     projectRoot: string;
     definition: RuntimeTeammateDefinition;
+    teammateSessionId: string;
     action: "run" | "follow_up";
     prompt: string;
     taskId?: string;
@@ -37,6 +38,11 @@ export type TeammateSessionRuntimeOptions = {
   control: TeamControlCoordinator;
   messages: TeamMessageCoordinator;
   actorTeammateId?: string;
+  actorSessionId?: string;
+  resolveTeammateSessionId?: (input: {
+    definition: RuntimeTeammateDefinition;
+    action: "run" | "follow_up" | "message";
+  }) => string;
   definitions: () => RuntimeTeammateDefinition[];
   diagnostics?: () => string[];
   host: TeammateTurnHost;
@@ -58,6 +64,7 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     return this.options.definitions().map((definition) => ({
       id: definition.id,
       description: definition.description,
+      contextPolicy: definition.contextPolicy,
       ...(definition.model ? { model: definition.model } : {}),
     }));
   }
@@ -115,7 +122,8 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       const from = {
         role: "teammate" as const,
         id: actorTeammateId,
-        sessionId: teammateSessionKey(this.options.leaderSessionId, actorTeammateId),
+        sessionId: this.options.actorSessionId
+          ?? teammateSessionKey(this.options.leaderSessionId, actorTeammateId),
       };
       const message = await this.options.messages.enqueue({
         from,
@@ -136,7 +144,7 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     const to = {
       role: "teammate" as const,
       id: definition.id,
-      sessionId: teammateSessionKey(this.options.leaderSessionId, definition.id),
+      sessionId: this.resolveTeammateSessionId(definition, "message"),
     };
     const message = await this.options.messages.enqueue({
       from,
@@ -171,6 +179,7 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     if (this.inFlight.has(definition.id)) {
       throw new Error(`Teammate "${definition.id}" is already running a turn.`);
     }
+    const teammateSessionId = this.resolveTeammateSessionId(definition, input.action);
     if (input.taskId) {
       const existing = (await this.progress.read()).items.find(
         (item) => item.id === input.taskId,
@@ -191,10 +200,10 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       });
     }
     this.inFlight.add(definition.id);
-    void this.runInBackground(definition, input, input.action, prompt);
+    void this.runInBackground(definition, input, input.action, prompt, teammateSessionId);
     return {
       teammateId: definition.id,
-      teammateSessionId: teammateSessionKey(this.options.leaderSessionId, definition.id),
+      teammateSessionId,
       action: input.action,
       ...(input.taskId ? { taskId: input.taskId } : {}),
       status: "dispatched",
@@ -208,12 +217,14 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     input: Parameters<PilotDeckTeamRuntimeApi["delegate"]>[0],
     action: "run" | "follow_up",
     prompt: string,
+    teammateSessionId: string,
   ): Promise<void> {
     try {
       const result = await this.options.host.run({
         leaderSessionId: this.options.leaderSessionId,
         projectRoot: this.options.projectRoot,
         definition,
+        teammateSessionId,
         action,
         prompt,
         taskId: input.taskId,
@@ -242,6 +253,7 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
         result.status,
         result.summary,
         input.taskId,
+        result.teammateSessionId,
         lifecycleIdFor(input, definition.id, this.options.leaderSessionId),
       );
     } catch (error) {
@@ -262,6 +274,7 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
         input.abortSignal?.aborted ? "cancelled" : "failed",
         summary,
         input.taskId,
+        teammateSessionId,
         lifecycleIdFor(input, definition.id, this.options.leaderSessionId),
       );
     } finally {
@@ -274,10 +287,11 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     status: PilotDeckTeamDelegateResult["status"],
     summary: string,
     taskId?: string,
+    teammateSessionId?: string,
     lifecycleId?: string,
   ): Promise<void> {
     try {
-      await this.reportIdle(definition, status, summary, taskId, lifecycleId);
+      await this.reportIdle(definition, status, summary, taskId, teammateSessionId, lifecycleId);
     } catch {
       // Lifecycle persistence must not rewrite an otherwise valid task result.
     }
@@ -288,6 +302,7 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
     status: PilotDeckTeamDelegateResult["status"],
     summary: string,
     taskId?: string,
+    teammateSessionId?: string,
     lifecycleId?: string,
   ): Promise<void> {
     if (status === "dispatched" || status === "shutdown") return;
@@ -303,7 +318,8 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       from: {
         role: "teammate",
         id: definition.id,
-        sessionId: teammateSessionKey(this.options.leaderSessionId, definition.id),
+        sessionId: teammateSessionId
+          ?? teammateSessionKey(this.options.leaderSessionId, definition.id),
       },
       to: {
         role: "leader",
@@ -316,6 +332,14 @@ export class TeammateSessionRuntime implements PilotDeckTeamRuntimeApi {
       ...(lifecycleId ? { lifecycleId } : {}),
       lifecycleStatus,
     });
+  }
+
+  private resolveTeammateSessionId(
+    definition: RuntimeTeammateDefinition,
+    action: "run" | "follow_up" | "message",
+  ): string {
+    return this.options.resolveTeammateSessionId?.({ definition, action })
+      ?? teammateSessionKey(this.options.leaderSessionId, definition.id);
   }
 }
 
