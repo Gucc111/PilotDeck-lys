@@ -117,9 +117,41 @@ async function ensureParent(filePath) {
   await fs.mkdir(path.dirname(path.resolve(filePath)), { recursive: true });
 }
 
+function pilotDeckWorkDir() {
+  const configured = String(process.env.PILOTDECK_WORK_DIR ?? "").trim();
+  return configured ? path.resolve(configured) : null;
+}
+
+function isInsidePath(candidate, parent) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertInternalArtifactPath(filePath, purpose) {
+  const resolved = path.resolve(filePath);
+  const workDir = pilotDeckWorkDir();
+  if (workDir && !isInsidePath(resolved, workDir)) {
+    throw new Error(
+      `${purpose} is an intermediate task artifact and must be under `
+      + `PILOTDECK_WORK_DIR (${workDir}). Only deliver may write the final workbook outside it.`,
+    );
+  }
+  return resolved;
+}
+
+function assertDeliveryOutputPath(filePath) {
+  const resolved = path.resolve(filePath);
+  const workDir = pilotDeckWorkDir();
+  if (workDir && isInsidePath(resolved, workDir)) {
+    throw new Error("The final spreadsheet deliverable must be outside PILOTDECK_WORK_DIR");
+  }
+  return resolved;
+}
+
 async function writeJson(filePath, value) {
-  await ensureParent(filePath);
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const target = assertInternalArtifactPath(filePath, "Spreadsheet JSON report");
+  await ensureParent(target);
+  await fs.writeFile(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 async function emitReport(report, outPath) {
@@ -1675,9 +1707,11 @@ async function buildFromBuilder(builderPath, inputPath) {
 }
 
 async function commandScaffold(options) {
-  const outputPath = requireOption(options, "out");
+  const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet builder");
   const starter = path.join(skillRoot, "assets", "starter-workbook.mjs");
-  const requirementsOutput = options["requirements-out"] ? String(options["requirements-out"]) : null;
+  const requirementsOutput = options["requirements-out"]
+    ? assertInternalArtifactPath(String(options["requirements-out"]), "Spreadsheet requirements")
+    : null;
   if (await pathExists(outputPath)) throw new Error(`Refusing to overwrite existing builder: ${outputPath}`);
   if (requirementsOutput && await pathExists(requirementsOutput)) throw new Error(`Refusing to overwrite existing requirements: ${requirementsOutput}`);
   await ensureParent(outputPath);
@@ -1726,7 +1760,7 @@ async function replaceFileAtomically(sourcePath, outputPath) {
 
 async function commandBuild(options) {
   const builderPath = requireOption(options, "builder");
-  const outputPath = requireOption(options, "out");
+  const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet candidate");
   const inputPath = options.input ? String(options.input) : null;
   const outputExtension = assertSupportedOutput(outputPath);
 
@@ -1848,14 +1882,14 @@ async function commandAudit(options) {
 
 async function commandConvertLegacy(options) {
   const inputPath = requireOption(options, "input");
-  const outputPath = requireOption(options, "out");
+  const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Converted spreadsheet candidate");
   const report = await convertLegacyXls(inputPath, outputPath);
   await emitReport(report, options.report && String(options.report));
 }
 
 async function commandRecalculate(options) {
   const inputPath = requireOption(options, "input");
-  const outputPath = requireOption(options, "out");
+  const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Recalculated spreadsheet candidate");
   if (workbookExtension(inputPath) !== ".xlsx" || workbookExtension(outputPath) !== ".xlsx") {
     throw new Error("recalculate accepts .xlsx input and output only");
   }
@@ -2056,7 +2090,9 @@ async function renderWorkbook(inputPath, outputDir, { pdfPath, montagePath, perS
 
 async function commandRender(options) {
   const inputPath = requireOption(options, "input");
-  const outputDir = requireOption(options, "out-dir");
+  const outputDir = assertInternalArtifactPath(requireOption(options, "out-dir"), "Spreadsheet render directory");
+  if (options.pdf) assertInternalArtifactPath(String(options.pdf), "Spreadsheet render PDF");
+  if (options.montage) assertInternalArtifactPath(String(options.montage), "Spreadsheet render montage");
   assertSupportedInput(inputPath, { legacy: true });
   const rendered = await renderWorkbook(inputPath, outputDir, {
     pdfPath: options.pdf ? String(options.pdf) : undefined,
@@ -2087,8 +2123,9 @@ function evaluateRenderRequirements(rendered, requirements) {
 
 async function commandDeliver(options) {
   const inputPath = requireOption(options, "input");
-  const outputPath = requireOption(options, "out");
-  const qaDir = requireOption(options, "qa-dir");
+  assertInternalArtifactPath(inputPath, "Spreadsheet candidate");
+  const outputPath = assertDeliveryOutputPath(requireOption(options, "out"));
+  const qaDir = assertInternalArtifactPath(requireOption(options, "qa-dir"), "Spreadsheet QA directory");
   const requirementsPath = requireOption(options, "requirements");
   if (workbookExtension(inputPath) !== ".xlsx" || workbookExtension(outputPath) !== ".xlsx") {
     throw new Error("deliver currently seals .xlsx candidates only");
@@ -2666,6 +2703,26 @@ async function commandSelfTest(options) {
   await fs.copyFile(finalPath, sealedPath);
   if (await fileSha256(finalPath) !== await fileSha256(sealedPath)) throw new Error("Seal hash verification regression");
   steps.push({ name: "seal-hash", status: "ok", sha256: await fileSha256(sealedPath) });
+
+  const previousWorkDir = process.env.PILOTDECK_WORK_DIR;
+  const boundaryRoot = path.join(outputDir, "work-boundary");
+  await fs.mkdir(boundaryRoot, { recursive: true });
+  process.env.PILOTDECK_WORK_DIR = boundaryRoot;
+  let boundaryRejected = false;
+  try {
+    assertInternalArtifactPath(
+      path.join(outputDir, "leaked-inspection.json"),
+      "Spreadsheet JSON report",
+    );
+  } catch (error) {
+    boundaryRejected = error instanceof Error
+      && error.message.includes("PILOTDECK_WORK_DIR");
+  } finally {
+    if (previousWorkDir === undefined) delete process.env.PILOTDECK_WORK_DIR;
+    else process.env.PILOTDECK_WORK_DIR = previousWorkDir;
+  }
+  if (!boundaryRejected) throw new Error("Work-directory boundary did not reject a leaked spreadsheet artifact");
+  steps.push({ name: "work-directory-boundary", status: "ok" });
 
   const report = {
     status: "ok",

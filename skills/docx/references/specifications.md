@@ -1,6 +1,8 @@
 # DOCX CLI Specifications
 
-Read this file before writing JSON for `create`, `edit`, or `review`. Use only documented fields and write specifications into the user's workspace.
+Read this file before writing JSON for `create`, `edit`, or `review`. Use only
+documented fields and write specifications below the turn-scoped
+`PILOTDECK_WORK_DIR`, never beside user files.
 
 Query the live schema first:
 
@@ -10,8 +12,10 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" schema --command create
 
 The parser is strict. Unknown fields, blocks, and actions fail instead of being ignored.
 Document-writing commands refuse to replace an existing output by default. Pass
-`--overwrite` only when the user explicitly authorizes replacement; input and
-output paths must still differ.
+`--overwrite` only when the user explicitly authorizes replacement of a
+distinct output or internal candidate; input and output paths must still
+differ. Final source replacement is a separate delivery mode and requires the
+current request to authorize `--replace-source`.
 
 ## Contents
 
@@ -58,7 +62,7 @@ Supported presets: `business-report`, `formal-memo`, `proposal`, `sop`, and `sim
 
 Supported page values: `a4` and `letter`. Supported orientations: `portrait` and `landscape`.
 
-`fonts` is optional. When `east_asia` is omitted, the creator chooses an installed CJK-capable default for the current platform. Header and footer values may be strings or objects with `text` and `alignment` (`left`, `center`, or `right`). `{PAGE}` and `{NUMPAGES}` create real fields.
+`fonts` is optional. When `east_asia` is omitted, the creator chooses an installed CJK-capable default for the current platform. Use the actual content locale such as `zh-CN` or `en-US`; locale-aware defaults include Chinese TOC and callout labels. Header and footer values may be strings or objects with `text` and `alignment` (`left`, `center`, or `right`). `{PAGE}` and `{NUMPAGES}` create real fields.
 
 ## 2. Content blocks
 
@@ -184,7 +188,7 @@ Resolve relative paths from the JSON file's directory. Remote URLs are rejected.
 }
 ```
 
-Supported field prefixes are `TOC`, `PAGE`, `NUMPAGES`, `DATE`, and `TIME`. Verify displayed field results in the rendered output.
+Supported field prefixes are `TOC`, `PAGE`, `NUMPAGES`, `DATE`, and `TIME`. Verify displayed field results in the rendered output. For a TOC block, run `refresh-toc` after headings are stable. Creation alone inserts the live field and an explicit placeholder; preflight rejects a required TOC until visible cached entries and page numbers are populated.
 
 ### Page break and spacer
 
@@ -240,6 +244,10 @@ Rules:
 - The creator writes explicit table, grid, and cell widths in DXA.
 - Rows auto-expand; do not simulate fixed height with blank lines.
 - Set `repeat_header` to `true` for multi-page data tables.
+- Supported table styles are `Table Grid`, `Light Shading Accent 1`,
+  `Light Grid Accent 1`, and `Medium Shading 1 Accent 1`. Any other value is a
+  specification error rather than a silent fallback.
+- A caption is placed before the table and kept with it across pagination.
 
 ## 5. Edit patch
 

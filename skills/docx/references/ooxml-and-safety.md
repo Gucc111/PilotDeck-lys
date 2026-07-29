@@ -50,7 +50,7 @@ Finalization processes simple insertions and deletions in the main body, headers
 
 Inspection reports field instructions and external relationships. Treat field display text as potentially stale because headless tools may not recalculate Word fields.
 
-Do not silently rewrite field instructions, bookmarks, hyperlinks, or relationship targets during unrelated edits. The creator supports TOC, PAGE, NUMPAGES, DATE, and TIME fields. Verify their displayed results in rendering; a valid field instruction does not prove its cached display is current.
+Do not silently rewrite field instructions, bookmarks, hyperlinks, or relationship targets during unrelated edits. The creator supports TOC, PAGE, NUMPAGES, DATE, and TIME fields. Verify their displayed results in rendering; a valid field instruction does not prove its cached display is current. For a created TOC, use `refresh-toc` to retain the live field while generating visible cached entries and page numbers, then require `toc.populated` in acceptance.
 
 Treat unexpected external relationships as a security and privacy signal. Do not follow remote targets automatically.
 
@@ -93,13 +93,18 @@ This skill rejects macro-enabled formats. Preserve the source and avoid reconstr
 
 Documents declaring `w:documentProtection` or `w:writeProtection` are read-only. The skill inventories those settings but does not bypass passwords, enforcement, rights management, or policy controls. Standard mutation commands and targeted fallback patching return `blocked`.
 
-Before writing custom code, query `capabilities` and the relevant `schema`. If a fallback is allowed, follow [capabilities-and-fallbacks.md](capabilities-and-fallbacks.md). A fallback manifest and post-mutation preflight are mandatory; direct custom mutation is not an accepted delivery path.
+Before writing custom code, query `capabilities` and the relevant `schema`. If a fallback is allowed, follow [capabilities-and-fallbacks.md](capabilities-and-fallbacks.md). A fallback manifest and post-mutation preflight are mandatory; direct custom mutation is not an accepted delivery path. Keep the fallback output internal and use `deliver` only after its exact SHA-256-bound candidate passes acceptance and per-page visual review.
 
 ## 7. Safe handling rules
 
 - Work only with `.docx` files.
 - Validate before extraction or mutation.
-- Never overwrite the source by default.
+- Never overwrite the source by default. A current, explicit request to replace
+  that exact source requires `deliver --replace-source`; `--overwrite` is not
+  equivalent. The delivery command must retain its hidden recovery copy.
+- Continue modifying from the latest session-tracked delivery. Use an older or
+  original version as the base only when the current user explicitly asks for
+  it.
 - Never extract unsafe archive paths.
 - Never fetch remote images or relationships automatically.
 - Never place credentials, internal tokens, hidden reasoning, or private system paths into document content.

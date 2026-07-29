@@ -13,6 +13,7 @@ from typing import Any
 from .common import (
     DocxSkillError,
     active_content_parts,
+    assert_internal_candidate_path,
     assert_safe_mutation,
     assert_valid_docx,
     digital_signature_parts,
@@ -274,7 +275,9 @@ def fallback_create(
     reason: str,
     timeout_seconds: int = 120,
 ) -> dict[str, Any]:
-    output = require_docx_path(output_path, must_exist=False)
+    output = assert_internal_candidate_path(
+        require_docx_path(output_path, must_exist=False)
+    )
     script = Path(script_path).expanduser().resolve()
     manifest_output = prepare_json_artifact_path(
         manifest_path,

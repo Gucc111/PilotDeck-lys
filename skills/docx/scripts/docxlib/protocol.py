@@ -7,14 +7,20 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
-from .common import DocxSkillError
+from .common import DocxSkillError, assert_internal_control_path
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 3
 RESULT_STATUSES = ("ok", "partial", "unsupported", "blocked", "error")
 RICH_RUN_FIELDS = {"text", "bold", "italic", "underline", "color", "size_pt"}
 ALIGNMENTS = ("left", "center", "right")
 SUPPORTED_FIELD_KEYWORDS = ("TOC", "PAGE", "NUMPAGES", "DATE", "TIME")
+SUPPORTED_TABLE_STYLES = (
+    "Table Grid",
+    "Light Shading Accent 1",
+    "Light Grid Accent 1",
+    "Medium Shading 1 Accent 1",
+)
 HEX_COLOR_PATTERN = r"^#?[0-9A-Fa-f]{6}$"
 JSON_SCALAR_SCHEMA: dict[str, Any] = {
     "type": ["string", "number", "boolean", "null"]
@@ -161,7 +167,7 @@ CREATE_BLOCK_PROPERTY_SCHEMAS: dict[str, dict[str, Any]] = {
             "items": {"enum": list(ALIGNMENTS)},
         },
         "repeat_header": {"type": "boolean"},
-        "style": {"type": "string"},
+        "style": {"enum": list(SUPPORTED_TABLE_STYLES)},
         "caption": {"type": "string"},
     },
     "image": {
@@ -526,8 +532,20 @@ def capabilities() -> dict[str, Any]:
         ],
         "output_policy": {
             "mutations_require_distinct_input_and_output": True,
+            "mutation_outputs_are_internal_candidates": True,
+            "control_artifacts_are_internal": True,
+            "final_output_requires_command": "deliver",
+            "delivery_requires_matching_preflight_sha256": True,
+            "visual_review_requires_page_image_sha256": True,
+            "automated_blank_page_gate": True,
             "existing_outputs_blocked_by_default": True,
             "explicit_overwrite_flag": "--overwrite",
+            "source_replacement_requires_flag": "--replace-source",
+            "source_replacement_requires_current_user_authorization": True,
+            "source_replacement_creates_hidden_backup": True,
+            "new_document_must_use_new_path": True,
+            "session_lineage_resolves_latest_version": True,
+            "exact_older_input_requires_flag": "--use-exact-input",
             "fallback_create_can_overwrite": False,
             "atomic_validation_before_replace": True,
         },
@@ -577,7 +595,7 @@ def capabilities() -> dict[str, Any]:
         },
         "runtime_dependencies": {
             "libreoffice": {
-                "required_for": ["render", "preflight"],
+                "required_for": ["render", "refresh-toc", "preflight"],
                 "probe_command": "check",
                 "installation": "external",
                 "missing_result": "unsupported",
@@ -611,7 +629,15 @@ def capabilities() -> dict[str, Any]:
                 "command": "create",
                 "features": {
                     "structured_prose_lists_tables_images": _capability("supported"),
-                    "toc_page_and_numpages_fields": _capability("supported"),
+                    "page_and_numpages_fields": _capability("supported"),
+                    "toc_field": _capability(
+                        "partial",
+                        command="refresh-toc",
+                        reason=(
+                            "Create inserts a live TOC field; refresh-toc must populate "
+                            "its visible cached entries and page numbers before delivery."
+                        ),
+                    ),
                     "headers_footers_and_cjk_fonts": _capability("supported"),
                     "chart_as_image": _capability(
                         "fallback", fallback="Generate a local image asset, then use an image block."
@@ -693,6 +719,8 @@ def capabilities() -> dict[str, Any]:
                 "features": {
                     "package_validation": _capability("supported"),
                     "warning_dispositions": _capability("supported"),
+                    "acceptance_manifest": _capability("supported"),
+                    "per_page_visual_review_evidence": _capability("supported"),
                     "libreoffice_render": _capability(
                         "supported",
                         reason=(
@@ -704,6 +732,19 @@ def capabilities() -> dict[str, Any]:
                         "partial",
                         reason="The command checks text coverage; a model or human must inspect page images.",
                     ),
+                },
+            },
+            "deliver": {
+                "command": "deliver",
+                "features": {
+                    "single_final_artifact": _capability("supported"),
+                    "preflight_digest_binding": _capability("supported"),
+                    "atomic_promotion": _capability("supported"),
+                    "default_new_version": _capability("supported"),
+                    "explicit_source_replacement_with_backup": _capability(
+                        "supported"
+                    ),
+                    "session_version_lineage": _capability("supported"),
                 },
             },
             "controlled_fallback": {
@@ -1082,6 +1123,17 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
             for field in ("style", "caption"):
                 if field in block:
                     _require_string(block[field], f"table.{field}")
+            if (
+                "style" in block
+                and block["style"] not in SUPPORTED_TABLE_STYLES
+            ):
+                raise DocxSkillError(
+                    f"Unsupported table style: {block['style']!r}",
+                    code="invalid-spec",
+                    details={
+                        "supported_table_styles": list(SUPPORTED_TABLE_STYLES),
+                    },
+                )
         if block_type == "image" and not str(block.get("path", "")).strip():
             raise DocxSkillError("image.path is required", code="invalid-spec")
         if block_type == "image":
@@ -1333,7 +1385,10 @@ def validate_review_spec(spec: dict[str, Any]) -> None:
 def load_dispositions(path: str | Path | None) -> dict[str, str]:
     if not path:
         return {}
-    source = Path(path).expanduser().resolve()
+    source = assert_internal_control_path(
+        path,
+        purpose="Warning dispositions",
+    )
     try:
         value = json.loads(source.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:

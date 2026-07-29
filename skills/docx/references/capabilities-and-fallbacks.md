@@ -21,13 +21,20 @@ When an operation is declared `supported`, use it. When it is `partial`, `unsupp
 
 Use the lowest sufficient level:
 
-1. **Standard command** — deterministic `create`, `edit`, `review`, or another bundled operation.
+1. **Standard command** — deterministic `create`, `edit`, `review`, or another bundled operation, writing an internal candidate.
 2. **Auxiliary asset** — generate a chart, diagram, or other local image, then use a standard image block.
 3. **Targeted OOXML patch** — modify an existing DOCX through `fallback-patch` with a narrow package-part allowlist.
 4. **Full custom creation** — create a new DOCX through `fallback-create`; never use this to mutate a valuable existing package.
 5. **Report unsupported or blocked** — required for signatures, document/write protection, rights management, unsafe packages, or fidelity that cannot be verified.
 
 Do not jump from level 1 to an untracked Python builder. The inability to express one feature does not authorize reconstruction of an existing document.
+
+Every successful fallback still produces only an internal candidate. It does
+not authorize direct project-root output. Run acceptance, per-page visual QA,
+preflight, and `deliver` exactly as for a standard command.
+For `fallback-patch`, the input path is resolved through the session version
+chain before the controlled script runs. Use `--use-exact-input` only when the
+current user explicitly requests an older/original editing base.
 
 ## 3. Targeted OOXML patch
 

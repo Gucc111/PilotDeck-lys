@@ -117,7 +117,7 @@ case "${1:-}" in
     if [[ -n "$py" ]]; then
       exec "$py" "$SCRIPT_DIR/docx_cli.py" --help
     fi
-    printf 'Usage: docx.sh <check|fix|capabilities|schema|inspect|create|edit|review|finalize|compare|sanitize|render|validate|audit|fallback-patch|fallback-create|preflight|self-test> [options]\n'
+    printf 'Usage: docx.sh <check|fix|capabilities|schema|inspect|create|edit|review|finalize|compare|sanitize|render|refresh-toc|validate|audit|fallback-patch|fallback-create|preflight|deliver|resolve-latest|self-test> [options]\n'
     ;;
   *)
     py=""

@@ -29,6 +29,13 @@ WORKSPACE="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}/docx"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/qa"
 ```
 
+The CLI enforces this boundary whenever `PILOTDECK_WORK_DIR` is set. Create,
+edit, and review specifications; fallback scripts and manifests; inspections,
+audits, acceptance, dispositions, renders, visual reviews, preflight reports,
+and DOCX candidates are internal. Only `deliver --out` may create the one
+project-visible final DOCX. Never put helper code in the PilotDeck source tree
+or another workspace.
+
 Keep JSON specifications, inspections, comparisons, rendered pages, optional QA PDFs, and temporary candidates in `WORKSPACE`. Keep source documents in place and put only requested final DOCX deliverables in the project or user-selected output directory. Never create inspection JSON, render directories, or other intermediates beside the user's files. Do not write task artifacts into the skill directory.
 
 ## Route the request
@@ -46,7 +53,10 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 | Check package integrity | `validate` | This file |
 | Audit styles, hierarchy, tables, accessibility, or finalization | `audit` | [design-and-layout.md](references/design-and-layout.md) |
 | Convert every page to PNG for visual QA | `render` | [workflows.md](references/workflows.md) |
+| Populate a live TOC with visible entries and page numbers | `refresh-toc` | [workflows.md](references/workflows.md) |
 | Run the final delivery gate | `preflight` | [workflows.md](references/workflows.md) |
+| Promote exactly one passed candidate to the requested final path | `deliver` | [workflows.md](references/workflows.md) |
+| Resolve an original or prior path to the latest delivered session version | `resolve-latest` | [workflows.md](references/workflows.md) |
 | Perform an operation outside the standard schema | `fallback-patch` or `fallback-create` | [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md), then [ooxml-and-safety.md](references/ooxml-and-safety.md) |
 
 ## Non-negotiable operating contract
@@ -57,9 +67,12 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 4. If the operation is declared supported, use the bundled command first. Do not replace it with `python-docx`, direct ZIP/XML mutation, or another library.
 5. If the standard operation returns `partial`, `unsupported`, or `blocked`, stop and follow the decision ladder in [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md). Never turn those statuses into success.
 6. Every fallback must be explicit: state the unmet capability and reason, keep its program under `WORKSPACE/tmp`, execute `fallback-patch` or `fallback-create`, and retain the generated manifest in `WORKSPACE/qa`.
-7. Apply the smallest change that satisfies an edit request. Preserve the original and write every mutation to a new `.docx` path. Existing outputs are blocked by default; pass `--overwrite` only when the user explicitly requests replacement. `fallback-create` never overwrites.
-8. Use `preflight` as the delivery gate. Every warning must be fixed or assigned a concrete disposition. Inspect every generated PNG, then rerun preflight with `--visual-review-status passed` or `--visual-review-status failed`. A failed visual review is blocking and cannot be dispositioned.
-9. Return only requested deliverables. Keep specifications, manifests, audits, PNG pages, optional PDFs, and other intermediates internal unless requested.
+7. Before modifying an existing document, run `resolve-latest --input <user-referenced-path>` and use its `resolved` path as the editing base. The standard mutation commands also resolve tracked inputs defensively. Use `--use-exact-input` only when the current user request explicitly asks to restart from an older/original version.
+8. Apply the smallest change that satisfies an edit request. Preserve the original and write every mutation to a new internal candidate below `PILOTDECK_WORK_DIR`. Never write numbered drafts, sanitized copies, fallback candidates, or other DOCX intermediates into the project root. Existing candidate paths are blocked by default; `fallback-create` never overwrites.
+9. Use an acceptance manifest and per-page visual-review report with `preflight`. Every warning must be fixed or assigned a concrete disposition. A failed or undocumented visual review is blocking and cannot be dispositioned.
+10. Use `deliver` once, after preflight passes, to promote the exact SHA-256-bound candidate to the requested final path. Declare `--new-document` for creation or `--source` for a derived version. A new document must use a nonexistent final path; `--new-document --overwrite` is blocked. Existing-document work defaults to a new final filename. `--overwrite` alone never permits source replacement.
+11. Replace the source only when the current user request explicitly says to overwrite that exact file. In that case, and only then, pass `--source <path> --out <same-path> --replace-source`; the command retains a hidden recovery copy and updates the version chain. Past consent or a generic preference is insufficient.
+12. Return only requested deliverables. Keep specifications, candidates, manifests, audits, PNG pages, optional PDFs, hidden recovery copies, and other intermediates internal unless requested. Mention the final filename naturally; PilotDeck renders the file card. Do not add a Markdown download/view link unless the user explicitly asks for one.
 
 ## Capability and result protocol
 
@@ -133,27 +146,44 @@ Before writing the JSON specification:
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" create \
-  --spec "$WORKSPACE/tmp/document.json" --out "$FINAL_DOCX"
+  --spec "$WORKSPACE/tmp/document.json" \
+  --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
 Do not rely on Word defaults for page geometry, heading hierarchy, list semantics, table widths, or cell padding. Prefer reusable Word styles and real list definitions over manually formatted lookalikes. A chart may be generated as a local image and referenced by an image block without entering full-create fallback.
 
-If the chosen output path already exists, choose a new versioned path. Use `--overwrite` only after explicit user authorization.
+If a candidate path already exists, use another path below `WORKSPACE/tmp` or intentionally replace that internal candidate. Do not create versioned candidates in the project root.
 
 ## Edit existing documents surgically
+
+Resolve the editing base first, even when the user or conversation still names
+the initially uploaded path:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" resolve-latest \
+  --input "$REQUESTED_INPUT_DOCX"
+
+# Set INPUT_DOCX to the returned `resolved` path.
+```
 
 Use `edit` for supported local changes:
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" edit \
-  --input "$INPUT_DOCX" --patch "$WORKSPACE/tmp/edits.json" --out "$FINAL_DOCX"
+  --input "$INPUT_DOCX" \
+  --patch "$WORKSPACE/tmp/edits.json" \
+  --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
 Preserve structure and formatting unless the user requests redesign. Prefer inline replacement over paragraph replacement, and paragraph replacement over full-document reconstruction. Ambiguous targets require `occurrence` or `location`. A missing target returns `partial`; it is not a successful no-op.
 
 The standard editor blocks a `python-docx` round trip when package-sensitive features could be lost. Prefer `fallback-patch` with a narrow OOXML part allowlist. Use `--allow-lossy` only when the user explicitly accepts the listed fidelity risk; record that decision.
 
-`--overwrite` authorizes replacing an existing output file; it never authorizes using the input path as the output path.
+`--overwrite` authorizes replacing an existing internal candidate or a distinct
+derived output file. It never authorizes replacing a source. Do not pass
+`--use-exact-input` merely because the user supplied the original filename;
+the version chain intentionally resolves that name to the latest delivered
+revision.
 
 Use comments or tracked replacements when the user requests reviewable changes. Do not silently turn a review task into a clean rewrite.
 
@@ -163,14 +193,18 @@ Add comments and tracked replacements:
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" review \
-  --input "$INPUT_DOCX" --spec "$WORKSPACE/tmp/review.json" --out "$FINAL_DOCX"
+  --input "$INPUT_DOCX" \
+  --spec "$WORKSPACE/tmp/review.json" \
+  --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
 Finalize a reviewed document:
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" finalize \
-  --input "$INPUT_DOCX" --accept-changes --remove-comments --out "$FINAL_DOCX"
+  --input "$INPUT_DOCX" \
+  --accept-changes --remove-comments \
+  --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
 Use `--reject-changes` instead of `--accept-changes` when requested. Never pass both. Inspect after review and after finalization because page rendering does not reliably expose comment anchors.
@@ -180,20 +214,24 @@ Use `--reject-changes` instead of `--accept-changes` when requested. Never pass 
 Validate the ZIP package, required OOXML parts, XML well-formedness, archive safety, and macro absence:
 
 ```bash
-bash "$DOCX_SKILL_ROOT/scripts/docx.sh" validate --input "$FINAL_DOCX"
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" validate \
+  --input "$WORKSPACE/tmp/candidate.docx"
 ```
 
 Audit semantic and layout risks:
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" audit \
-  --input "$FINAL_DOCX" --profile draft --out "$WORKSPACE/qa/draft-audit.json"
+  --input "$WORKSPACE/tmp/candidate.docx" \
+  --profile draft --out "$WORKSPACE/qa/draft-audit.json"
 
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" audit \
-  --input "$FINAL_DOCX" --profile final --out "$WORKSPACE/qa/final-audit.json"
+  --input "$WORKSPACE/tmp/candidate.docx" \
+  --profile final --out "$WORKSPACE/qa/final-audit.json"
 
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" audit \
-  --input "$FINAL_DOCX" --profile accessible --out "$WORKSPACE/qa/a11y-audit.json"
+  --input "$WORKSPACE/tmp/candidate.docx" \
+  --profile accessible --out "$WORKSPACE/qa/a11y-audit.json"
 ```
 
 Interpret profiles as follows:
@@ -212,7 +250,8 @@ specific rationale.
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" render \
-  --input "$FINAL_DOCX" --out-dir "$WORKSPACE/qa/rendered" --emit-pdf
+  --input "$WORKSPACE/tmp/candidate.docx" \
+  --out-dir "$WORKSPACE/qa/rendered" --emit-pdf
 ```
 
 Inspect every PNG for:
@@ -229,37 +268,154 @@ Inspect every PNG for:
 
 Rendering verifies visible layout but not all document semantics. Verify comments, revisions, relationships, fields, and metadata structurally with `inspect`, `audit`, or OOXML-aware commands.
 
-## Run the final preflight
+## Refresh fields, prove acceptance, and deliver once
 
-First run preflight without claiming visual review:
+`create` inserts a live TOC field but does not invent visible page numbers. When
+the specification contains a TOC, refresh its cached result after content is
+stable:
 
 ```bash
-bash "$DOCX_SKILL_ROOT/scripts/docx.sh" preflight \
-  --input "$FINAL_DOCX" \
-  --out-dir "$WORKSPACE/qa/rendered" \
-  --report "$WORKSPACE/qa/preflight.json" \
-  --profile final \
-  --require-text "critical phrase"
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" refresh-toc \
+  --input "$WORKSPACE/tmp/candidate.docx" \
+  --out "$WORKSPACE/tmp/candidate-with-toc.docx" \
+  --render-dir "$WORKSPACE/qa/toc-render"
+
+CANDIDATE_DOCX="$WORKSPACE/tmp/candidate-with-toc.docx"
 ```
 
-Resolve every error. Fix warnings or create a disposition file such as:
+`refresh-toc` renders the document, locates semantic Heading paragraphs on
+their rendered pages, and retains the live field while writing visible cached
+entries, dot leaders, and page numbers. Do not substitute a manually typed
+contents page. If there is no TOC, set `CANDIDATE_DOCX` to the current internal
+candidate.
+
+Write acceptance before the first document mutation. Keep the same file for
+the complete task. Do not relax page limits, required headings, TOC state, or
+protected-source hashes after seeing a failed candidate; fix the candidate
+instead:
 
 ```json
 {
-  "personal-metadata": "The user explicitly requested the named author in document properties."
+  "required_text": ["Executive Summary", "Q2 Priorities"],
+  "required_headings": [
+    {"text": "Executive Summary", "level": 1},
+    {"text": "Q2 Priorities", "level": 1}
+  ],
+  "page_count": {"min": 8, "max": 12},
+  "toc": {"required": true, "populated": true},
+  "protected_sources": [
+    {
+      "path": "/absolute/path/to/source.xlsx",
+      "sha256": "64-lowercase-hex-characters"
+    }
+  ]
 }
 ```
 
-Inspect every latest PNG. Then rerun with the same requirements plus either `--visual-review-status passed` or `--visual-review-status failed` and, when used, `--dispositions`. Delivery passes only when the result is `status: ok`, `passed: true`, `visual_review.status: passed`, and `coverage.status: passed`. Never mark a visually incomplete page as passed merely because its PDF text layer contains the expected text.
+Hash protected user inputs before the first mutation and copy those exact
+hashes into `protected_sources`. Omit constraints the user did not request;
+never invent a page count merely to make a gate pass.
+
+Run preflight once to render the current candidate and expose automated issues:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" preflight \
+  --input "$CANDIDATE_DOCX" \
+  --out-dir "$WORKSPACE/qa/rendered" \
+  --report "$WORKSPACE/qa/preflight-initial.json" \
+  --profile final \
+  --acceptance "$WORKSPACE/qa/acceptance.json"
+```
+
+Resolve every error. Fix warnings or add a specific inline disposition such as
+`--disposition "personal-metadata=The user explicitly requested this author."`.
+Never use a generic “acceptable” rationale.
+
+Inspect every latest PNG and record the actual page result:
+
+```json
+{
+  "artifact_sha256": "sha256-from-the-initial-preflight-report",
+  "status": "passed",
+  "pages": [
+    {
+      "page": 1,
+      "image_sha256": "sha256-of-current-page-1.png",
+      "status": "passed",
+      "notes": "Cover is complete and unclipped."
+    },
+    {
+      "page": 2,
+      "image_sha256": "sha256-of-current-page-2.png",
+      "status": "passed",
+      "notes": "TOC entries and page numbers are visible."
+    }
+  ]
+}
+```
+
+Copy `artifact.sha256` from the initial preflight report exactly. This prevents
+review notes from being reused after the candidate changes. Copy each
+`image_sha256` from the matching current page image; stale page captures are
+rejected. The array must cover every current rendered page exactly once, and
+each note must describe that page rather than repeat a generic sentence.
+Automated blank/sparse-page checks run in addition to this human/vision review.
+Then rerun
+preflight with the same acceptance manifest, warning dispositions, and
+`--visual-review "$WORKSPACE/qa/visual-review.json"`. A bare
+`--visual-review-status passed` is deliberately rejected because it provides
+no page evidence.
+
+Delivery requires a non-empty acceptance manifest and passes only when
+preflight reports `status: ok`, `passed: true`,
+`coverage.status: passed`, and `visual_review.status: passed`. Promote that
+exact candidate once:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" deliver \
+  --input "$CANDIDATE_DOCX" \
+  --preflight-report "$WORKSPACE/qa/preflight-final.json" \
+  --out "$FINAL_DOCX" \
+  --new-document
+```
+
+`deliver` verifies the candidate SHA-256 against the successful report and
+atomically writes the only project-visible DOCX. Any post-preflight mutation
+invalidates delivery and requires a fresh preflight.
+
+For an edited/reviewed/finalized/sanitized document, replace
+`--new-document` with `--source "$REQUESTED_INPUT_DOCX"`. The command records
+the delivered result as the latest session version, so a later turn that names
+the original or any prior revision continues from this result.
+
+By default, `FINAL_DOCX` must be a new path distinct from both the requested
+source and the resolved latest version. Only an explicit current request such
+as “直接覆盖原文件” permits:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" deliver \
+  --input "$CANDIDATE_DOCX" \
+  --preflight-report "$WORKSPACE/qa/preflight-final.json" \
+  --source "$REQUESTED_INPUT_DOCX" \
+  --out "$REQUESTED_INPUT_DOCX" \
+  --replace-source
+```
+
+This exceptional mode saves a hidden digest-verified recovery copy before the
+atomic replacement. Never infer it from `--overwrite`, from an earlier turn,
+or from the desire to avoid choosing a new filename.
 
 ## Compare and sanitize
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" compare \
-  --before "$INPUT_DOCX" --after "$FINAL_DOCX" --out "$WORKSPACE/qa/comparison.json"
+  --before "$INPUT_DOCX" --after "$WORKSPACE/tmp/candidate.docx" \
+  --out "$WORKSPACE/qa/comparison.json"
 
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" sanitize \
-  --input "$INPUT_DOCX" --out "$FINAL_DOCX" --remove-comments
+  --input "$INPUT_DOCX" \
+  --out "$WORKSPACE/tmp/sanitized-candidate.docx" \
+  --remove-comments
 ```
 
 `compare` reports paragraph-level textual differences and document counts; it is not a pixel diff and does not prove formatting equivalence. `sanitize` removes core personal metadata, custom properties, revision identifiers, and optionally comments; it does not redact sensitive words from visible document content.
@@ -269,7 +425,8 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" sanitize \
 - Accept `.docx` only. Reject `.doc`, `.docm`, `.dotm`, and unrelated ZIP archives.
 - Reject unsafe archive paths, malformed XML, macro payloads, and suspiciously expanded packages.
 - Never fetch remote images. Use local workspace files only.
-- Preserve the source and avoid destructive overwrite by default.
+- Preserve the source and deliver a new version by default. Source replacement
+  requires the current user's explicit instruction and `--replace-source`.
 - Do not claim that comments were visually verified from rendered pages.
 - Do not bypass document or write protection. Do not claim full fidelity for digital signatures, embedded objects, notes, Office Math, SmartArt/diagrams, complex content controls, or custom XML without explicit inspection. Read [ooxml-and-safety.md](references/ooxml-and-safety.md) before touching package-sensitive documents.
 - Never run a custom DOCX builder directly as the delivery path. Standard operations must be tried or declared insufficient first; custom code must run through the controlled fallback command and manifest.
@@ -281,13 +438,18 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" sanitize \
 Before returning a DOCX, confirm all of the following:
 
 - the requested content and edits are complete;
-- the output is a new, valid `.docx` file;
-- preflight reports `status: ok`, `passed: true`, and `coverage.status: passed`, or the response explicitly states why full preflight was impossible;
+- only one project-visible final DOCX exists; all candidates and QA files remain below the turn work directory;
+- the output is a new, valid `.docx` produced by `deliver`, unless the current
+  user request explicitly authorized `--replace-source`;
+- an existing-document workflow used the latest tracked revision as its base;
+- preflight reports `status: ok`, `passed: true`, `coverage.status: passed`, and `visual_review.status: passed`;
 - every warning is fixed or has a specific recorded disposition;
-- every rendered page from the latest document was inspected;
+- every rendered page from the latest candidate has a non-empty review note;
+- required headings, page constraints, TOC state, and protected source hashes satisfy the acceptance manifest;
 - comments and revisions match the requested delivery state;
 - metadata and privacy state match the request;
-- only the final requested artifact is linked in the response.
+- the delivered SHA-256 matches the passed preflight report;
+- the response mentions the final filename without an unsolicited Markdown download/view link.
 
 Run the bundled end-to-end regression when changing this skill itself:
 

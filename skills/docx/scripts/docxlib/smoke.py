@@ -15,7 +15,9 @@ from .audit import audit_docx
 from .common import (
     DocxSkillError,
     assert_valid_docx,
+    file_sha256,
     pack_docx,
+    prepare_json_artifact_path,
     unpacked_copy,
 )
 from .core import (
@@ -26,11 +28,14 @@ from .core import (
     inspect_docx,
     sanitize_docx,
 )
+from .delivery import deliver_docx
 from .fallback import _fallback_environment, fallback_create, fallback_patch
+from .lineage import latest_input_path, resolve_latest_input
 from .preflight import preflight_docx
 from .protocol import capabilities, schema_for
-from .render import find_soffice
+from .render import find_soffice, render_docx
 from .review import finalize_docx, review_docx
+from .toc import refresh_toc, toc_status
 
 
 def _dump(path: Path, value: Any) -> None:
@@ -71,13 +76,29 @@ def run_smoke_test() -> dict[str, Any]:
         root = Path(temp_dir)
 
         capability_result = capabilities()
-        assert capability_result["protocol_version"] == 1
+        assert capability_result["protocol_version"] == 3
         assert len(capability_result["capability_states"]) == len(
             set(capability_result["capability_states"])
         )
         assert capability_result["output_policy"][
             "atomic_validation_before_replace"
         ]
+        assert capability_result["output_policy"][
+            "mutation_outputs_are_internal_candidates"
+        ]
+        assert capability_result["output_policy"][
+            "control_artifacts_are_internal"
+        ]
+        assert capability_result["output_policy"][
+            "visual_review_requires_page_image_sha256"
+        ]
+        assert capability_result["output_policy"][
+            "automated_blank_page_gate"
+        ]
+        assert (
+            capability_result["output_policy"]["final_output_requires_command"]
+            == "deliver"
+        )
         os.environ["PILOTDECK_DOCX_TEST_SECRET"] = "must-not-leak"
         try:
             fallback_environment = _fallback_environment("test")
@@ -93,6 +114,7 @@ def run_smoke_test() -> dict[str, Any]:
             create_schema["$defs"]["block_image"]["properties"]["path"]["type"]
             == "string"
         )
+        assert "enum" in create_schema["$defs"]["block_table"]["properties"]["style"]
         assert (
             edit_schema["properties"]["operations"]["items"]["oneOf"][0][
                 "additionalProperties"
@@ -112,6 +134,29 @@ def run_smoke_test() -> dict[str, Any]:
             root / "invalid.docx",
         )
         negative_checks.append("unknown-create-field")
+
+        invalid_table_style_spec = root / "invalid-table-style.json"
+        _dump(
+            invalid_table_style_spec,
+            {
+                "content": [
+                    {
+                        "type": "table",
+                        "headers": ["A"],
+                        "rows": [["B"]],
+                        "style": "shaded",
+                    }
+                ]
+            },
+        )
+        _expect_error(
+            create_docx,
+            "error",
+            "invalid-spec",
+            invalid_table_style_spec,
+            root / "invalid-table-style.docx",
+        )
+        negative_checks.append("invalid-table-style")
 
         create_spec = root / "create.json"
         _dump(
@@ -1097,19 +1142,153 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
         rendered_pages = 0
         preflight_status = "not-run"
         if find_soffice():
+            toc_candidate = root / "toc-refreshed.docx"
+            toc_refresh = refresh_toc(
+                created,
+                toc_candidate,
+                root / "toc-render",
+            )
+            assert toc_refresh["toc"]["populated"]
+            assert toc_refresh["iterations"] >= 2
+            assert toc_status(toc_candidate)["entries"] >= 1
+            steps.append("refresh-visible-toc")
+
+            long_toc_spec = root / "long-toc.json"
+            long_toc_content: list[dict[str, Any]] = [
+                {
+                    "type": "toc",
+                    "title": "目录",
+                    "levels": [1],
+                    "page_break_after": True,
+                }
+            ]
+            for section_number in range(1, 71):
+                long_toc_content.extend(
+                    [
+                        {
+                            "type": "heading",
+                            "level": 1,
+                            "text": f"第 {section_number} 节验收主题",
+                        },
+                        {
+                            "type": "paragraph",
+                            "text": (
+                                "本节用于验证长目录写入后造成的分页变化能够收敛，"
+                                "且最终目录页码与稳定版正文保持一致。"
+                            ),
+                        },
+                    ]
+                )
+            _dump(
+                long_toc_spec,
+                {
+                    "preset": "business-report",
+                    "locale": "zh-CN",
+                    "page": "a4",
+                    "content": long_toc_content,
+                },
+            )
+            long_toc_source = root / "long-toc-source.docx"
+            long_toc_candidate = root / "long-toc-refreshed.docx"
+            create_docx(long_toc_spec, long_toc_source)
+            long_toc_refresh = refresh_toc(
+                long_toc_source,
+                long_toc_candidate,
+                root / "long-toc-render",
+            )
+            assert long_toc_refresh["toc"]["entries"] == 70
+            assert long_toc_refresh["iterations"] >= 3
+            assert long_toc_refresh["rendered_pages"] >= 3
+            steps.append("refresh-multipage-toc-convergence")
+
+            blank_page_spec = root / "blank-page-spec.json"
+            _dump(
+                blank_page_spec,
+                {
+                    "preset": "business-report",
+                    "content": [
+                        {"type": "title", "text": "Blank-page regression"},
+                        {"type": "page_break"},
+                        {"type": "page_break"},
+                        {"type": "heading", "level": 1, "text": "Final section"},
+                    ],
+                },
+            )
+            blank_page_candidate = root / "blank-page.docx"
+            create_docx(blank_page_spec, blank_page_candidate)
+            blank_page_render = render_docx(
+                blank_page_candidate,
+                root / "blank-page-render",
+                include_text=True,
+            )
+            assert any(
+                item["blank_body"]
+                for item in blank_page_render["layout_metrics"]
+            ), blank_page_render["layout_metrics"]
+            negative_checks.append("blank-body-page-detection")
+
+            acceptance_path = root / "acceptance.json"
+            _dump(
+                acceptance_path,
+                {
+                    "required_text": ["项目概览"],
+                    "required_headings": [
+                        {"text": "项目概览", "level": 1},
+                    ],
+                    "page_count": {"min": 1},
+                    "toc": {"required": True, "populated": True},
+                },
+            )
+            initial_preflight = preflight_docx(
+                toc_candidate,
+                root / "rendered-initial",
+                profile="final",
+                dispositions={
+                    "personal-metadata": "The smoke test intentionally sets an author."
+                },
+                acceptance_path=acceptance_path,
+            )
+            assert initial_preflight["status"] == "partial"
+            assert not initial_preflight["passed"]
+            assert initial_preflight["visual_review"]["status"] == "not-reviewed"
+            rendered_pages = initial_preflight["render"]["pages"]
+            rendered_image_hashes = {
+                item["page"]: item["image_sha256"]
+                for item in initial_preflight["render"]["page_evidence"]
+            }
+            visual_review_path = root / "visual-review.json"
+            _dump(
+                visual_review_path,
+                {
+                    "artifact_sha256": file_sha256(toc_candidate),
+                    "status": "passed",
+                    "pages": [
+                        {
+                            "page": page,
+                            "image_sha256": rendered_image_hashes[page],
+                            "status": "passed",
+                            "notes": f"Smoke-test page {page} checked for clipping and layout.",
+                        }
+                        for page in range(1, rendered_pages + 1)
+                    ],
+                },
+            )
             preflight = preflight_docx(
-                clean,
+                toc_candidate,
                 root / "rendered",
                 report_path=root / "preflight.json",
                 profile="final",
-                required_text=["受控降级说明", "项目概览"],
-                min_pages=1,
-                visual_review_status="passed",
+                dispositions={
+                    "personal-metadata": "The smoke test intentionally sets an author."
+                },
+                acceptance_path=acceptance_path,
+                visual_review_path=visual_review_path,
             )
-            rendered_pages = preflight["render"]["pages"]
             preflight_status = preflight["status"]
             assert preflight["coverage"]["status"] == "passed"
-            assert preflight["passed"]
+            assert preflight["passed"], preflight
+            assert preflight["toc"]["populated"]
+            assert preflight["artifact"]["sha256"]
             assert all(
                 "text" not in item for item in preflight["render"]["page_text"]
             )
@@ -1122,21 +1301,292 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             steps.append("preflight-render-coverage")
 
             failed_visual = preflight_docx(
-                clean,
+                toc_candidate,
                 root / "rendered-failed",
                 profile="final",
-                required_text=["受控降级说明"],
-                min_pages=1,
-                visual_review_status="failed",
+                dispositions={
+                    "personal-metadata": "The smoke test intentionally sets an author."
+                },
+                acceptance_path=acceptance_path,
+                visual_review_status="passed",
             )
             assert failed_visual["status"] == "partial"
             assert not failed_visual["passed"]
             assert any(
-                item["code"] == "visual-review-failed"
+                item["code"] == "visual-review-evidence-missing"
                 for item in failed_visual["unresolved"]["errors"]
             )
             assert failed_visual["unresolved"]["warnings"]["total"] == 0
-            negative_checks.append("visual-review-failure")
+            negative_checks.append("visual-review-evidence-required")
+
+            stale_visual_review_path = root / "stale-visual-review.json"
+            _dump(
+                stale_visual_review_path,
+                {
+                    "artifact_sha256": "0" * 64,
+                    "status": "passed",
+                    "pages": [
+                        {
+                            "page": page,
+                            "image_sha256": rendered_image_hashes[page],
+                            "status": "passed",
+                            "notes": f"Stale page {page} review.",
+                        }
+                        for page in range(1, rendered_pages + 1)
+                    ],
+                },
+            )
+            stale_visual = preflight_docx(
+                toc_candidate,
+                root / "rendered-stale-visual",
+                profile="final",
+                dispositions={
+                    "personal-metadata": "The smoke test intentionally sets an author."
+                },
+                acceptance_path=acceptance_path,
+                visual_review_path=stale_visual_review_path,
+            )
+            assert not stale_visual["passed"]
+            assert any(
+                item["code"] == "visual-review-artifact-mismatch"
+                for item in stale_visual["unresolved"]["errors"]
+            )
+            negative_checks.append("visual-review-digest-binding")
+
+            generic_visual_review_path = root / "generic-visual-review.json"
+            _dump(
+                generic_visual_review_path,
+                {
+                    "artifact_sha256": file_sha256(toc_candidate),
+                    "status": "passed",
+                    "pages": [
+                        {
+                            "page": page,
+                            "image_sha256": rendered_image_hashes[page],
+                            "status": "passed",
+                            "notes": "Checked and passed.",
+                        }
+                        for page in range(1, rendered_pages + 1)
+                    ],
+                },
+            )
+            generic_visual = preflight_docx(
+                toc_candidate,
+                root / "rendered-generic-visual",
+                profile="final",
+                dispositions={
+                    "personal-metadata": "The smoke test intentionally sets an author."
+                },
+                acceptance_path=acceptance_path,
+                visual_review_path=generic_visual_review_path,
+            )
+            assert not generic_visual["passed"]
+            assert any(
+                item["code"] == "visual-review-generic-duplication"
+                for item in generic_visual["unresolved"]["errors"]
+            )
+            negative_checks.append("visual-review-page-specific-notes")
+
+            previous_work_dir = os.environ.get("PILOTDECK_WORK_DIR")
+            delivery_session = root / "delivery-session"
+            delivery_work = delivery_session / "turn-1"
+            delivery_work.mkdir(parents=True)
+            internal_candidate = delivery_work / "candidate.docx"
+            internal_report = delivery_work / "preflight.json"
+            internal_render = delivery_work / "rendered"
+            internal_visual = delivery_work / "visual-review.json"
+            internal_acceptance = delivery_work / "acceptance.json"
+            internal_create_spec = delivery_work / "create.json"
+            internal_candidate.write_bytes(toc_candidate.read_bytes())
+            internal_visual.write_bytes(visual_review_path.read_bytes())
+            internal_acceptance.write_bytes(acceptance_path.read_bytes())
+            internal_create_spec.write_bytes(create_spec.read_bytes())
+            os.environ["PILOTDECK_WORK_DIR"] = str(delivery_work)
+            try:
+                _expect_error(
+                    create_docx,
+                    "blocked",
+                    "candidate-output-outside-work-dir",
+                    internal_create_spec,
+                    root / "leaked-candidate.docx",
+                )
+                negative_checks.append("candidate-output-is-internal")
+                _expect_error(
+                    prepare_json_artifact_path,
+                    "blocked",
+                    "control-artifact-outside-work-dir",
+                    root / "leaked-inspection.json",
+                    purpose="Inspection output",
+                )
+                negative_checks.append("control-artifacts-are-internal")
+                delivery_preflight = preflight_docx(
+                    internal_candidate,
+                    internal_render,
+                    report_path=internal_report,
+                    profile="final",
+                    dispositions={
+                        "personal-metadata": "The smoke test intentionally sets an author."
+                    },
+                    acceptance_path=internal_acceptance,
+                    visual_review_path=internal_visual,
+                )
+                assert delivery_preflight["passed"]
+                no_acceptance_report = delivery_work / "preflight-no-acceptance.json"
+                no_acceptance_preflight = preflight_docx(
+                    internal_candidate,
+                    delivery_work / "rendered-no-acceptance",
+                    report_path=no_acceptance_report,
+                    profile="final",
+                    dispositions={
+                        "personal-metadata": "The smoke test intentionally sets an author."
+                    },
+                    visual_review_path=internal_visual,
+                )
+                assert no_acceptance_preflight["passed"]
+                _expect_error(
+                    deliver_docx,
+                    "blocked",
+                    "preflight-not-passed",
+                    internal_candidate,
+                    no_acceptance_report,
+                    root / "missing-acceptance-delivery.docx",
+                    new_document=True,
+                )
+                negative_checks.append("delivery-requires-acceptance")
+                final_delivery = root / "delivered.docx"
+                delivered = deliver_docx(
+                    internal_candidate,
+                    internal_report,
+                    final_delivery,
+                    new_document=True,
+                )
+                assert delivered["status"] == "ok"
+                assert final_delivery.is_file()
+                assert delivered["lineage"]["revision"] == 1
+
+                source_original = root / "source-original.docx"
+                source_original.write_bytes(created.read_bytes())
+                original_sha256 = file_sha256(source_original)
+                _expect_error(
+                    deliver_docx,
+                    "blocked",
+                    "new-document-output-exists",
+                    internal_candidate,
+                    internal_report,
+                    source_original,
+                    new_document=True,
+                    overwrite=True,
+                )
+                assert file_sha256(source_original) == original_sha256
+                negative_checks.append(
+                    "new-document-cannot-replace-existing-file"
+                )
+                _expect_error(
+                    deliver_docx,
+                    "blocked",
+                    "source-overwrite-requires-explicit-mode",
+                    internal_candidate,
+                    internal_report,
+                    source_original,
+                    source_path=source_original,
+                    overwrite=True,
+                )
+                assert file_sha256(source_original) == original_sha256
+                negative_checks.append(
+                    "generic-overwrite-cannot-replace-source"
+                )
+
+                revised_delivery = root / "source-revised.docx"
+                revised = deliver_docx(
+                    internal_candidate,
+                    internal_report,
+                    revised_delivery,
+                    source_path=source_original,
+                )
+                assert revised_delivery.is_file()
+                assert file_sha256(source_original) == original_sha256
+                assert revised["lineage"]["revision"] == 1
+                turn_two_work = delivery_session / "turn-2"
+                turn_two_work.mkdir()
+                os.environ["PILOTDECK_WORK_DIR"] = str(turn_two_work)
+                latest = resolve_latest_input(source_original)
+                assert latest["resolved"] == str(revised_delivery.resolve())
+                assert latest["tracked"]
+                assert latest_input_path(source_original) == revised_delivery.resolve()
+                exact = resolve_latest_input(
+                    source_original, use_exact_input=True
+                )
+                assert exact["resolved"] == str(source_original.resolve())
+                steps.append("session-latest-version-resolution")
+                follow_up_candidate = turn_two_work / "follow-up.docx"
+                follow_up_process = subprocess.run(
+                    [
+                        sys.executable,
+                        str(cli),
+                        "sanitize",
+                        "--input",
+                        str(source_original),
+                        "--out",
+                        str(follow_up_candidate),
+                        "--remove-comments",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=30,
+                    check=False,
+                )
+                assert follow_up_process.returncode == 0, (
+                    follow_up_process.stdout,
+                    follow_up_process.stderr,
+                )
+                follow_up_result = json.loads(follow_up_process.stdout)
+                assert follow_up_result["input"] == str(
+                    revised_delivery.resolve()
+                )
+                assert follow_up_candidate.is_file()
+                steps.append("mutation-uses-latest-version")
+
+                os.environ["PILOTDECK_WORK_DIR"] = str(delivery_work)
+                replaced = deliver_docx(
+                    internal_candidate,
+                    internal_report,
+                    source_original,
+                    source_path=source_original,
+                    replace_source=True,
+                )
+                assert replaced["source_replaced"]
+                assert replaced["source_backup"]
+                assert Path(replaced["source_backup"]["path"]).is_file()
+                assert (
+                    replaced["source_backup"]["sha256"] == original_sha256
+                )
+                assert file_sha256(source_original) == file_sha256(
+                    internal_candidate
+                )
+                assert (
+                    resolve_latest_input(source_original)["resolved"]
+                    == str(source_original.resolve())
+                )
+                steps.append("explicit-source-replacement-with-backup")
+
+                internal_candidate.write_bytes(created.read_bytes())
+                _expect_error(
+                    deliver_docx,
+                    "blocked",
+                    "preflight-artifact-changed",
+                    internal_candidate,
+                    internal_report,
+                    root / "changed-delivery.docx",
+                    new_document=True,
+                )
+                negative_checks.append("delivery-digest-binding")
+                steps.append("single-final-delivery")
+            finally:
+                if previous_work_dir is None:
+                    os.environ.pop("PILOTDECK_WORK_DIR", None)
+                else:
+                    os.environ["PILOTDECK_WORK_DIR"] = previous_work_dir
 
     return {
         "status": "ok",

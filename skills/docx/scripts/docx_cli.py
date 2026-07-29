@@ -21,11 +21,14 @@ from docxlib.core import (
     inspect_docx,
     sanitize_docx,
 )
+from docxlib.delivery import deliver_docx
 from docxlib.fallback import fallback_create, fallback_patch
+from docxlib.lineage import latest_input_path, resolve_latest_input
 from docxlib.preflight import preflight_docx
 from docxlib.protocol import capabilities, schema_for
 from docxlib.render import render_docx
 from docxlib.review import finalize_docx, review_docx
+from docxlib.toc import refresh_toc
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -64,6 +67,14 @@ def _parser() -> argparse.ArgumentParser:
     edit_parser.add_argument("--out", required=True)
     edit_parser.add_argument("--overwrite", action="store_true")
     edit_parser.add_argument(
+        "--use-exact-input",
+        action="store_true",
+        help=(
+            "Bypass the tracked latest version only when the user explicitly "
+            "requests an older/original base"
+        ),
+    )
+    edit_parser.add_argument(
         "--allow-lossy",
         action="store_true",
         help="Explicitly allow a python-docx round trip on a package-sensitive document",
@@ -74,11 +85,13 @@ def _parser() -> argparse.ArgumentParser:
     review_parser.add_argument("--spec", required=True)
     review_parser.add_argument("--out", required=True)
     review_parser.add_argument("--overwrite", action="store_true")
+    review_parser.add_argument("--use-exact-input", action="store_true")
 
     finalize_parser = sub.add_parser("finalize", help="Accept/reject changes and remove comments")
     finalize_parser.add_argument("--input", required=True)
     finalize_parser.add_argument("--out", required=True)
     finalize_parser.add_argument("--overwrite", action="store_true")
+    finalize_parser.add_argument("--use-exact-input", action="store_true")
     changes = finalize_parser.add_mutually_exclusive_group()
     changes.add_argument("--accept-changes", action="store_true")
     changes.add_argument("--reject-changes", action="store_true")
@@ -93,7 +106,18 @@ def _parser() -> argparse.ArgumentParser:
     sanitize_parser.add_argument("--input", required=True)
     sanitize_parser.add_argument("--out", required=True)
     sanitize_parser.add_argument("--overwrite", action="store_true")
+    sanitize_parser.add_argument("--use-exact-input", action="store_true")
     sanitize_parser.add_argument("--remove-comments", action="store_true")
+
+    refresh_toc_parser = sub.add_parser(
+        "refresh-toc",
+        help="Populate the cached TOC entries and page numbers from a rendered candidate",
+    )
+    refresh_toc_parser.add_argument("--input", required=True)
+    refresh_toc_parser.add_argument("--out", required=True)
+    refresh_toc_parser.add_argument("--render-dir", required=True)
+    refresh_toc_parser.add_argument("--timeout", type=int, default=120)
+    refresh_toc_parser.add_argument("--overwrite", action="store_true")
 
     render_parser = sub.add_parser("render", help="Render DOCX pages to PNG through LibreOffice")
     render_parser.add_argument("--input", required=True)
@@ -126,6 +150,7 @@ def _parser() -> argparse.ArgumentParser:
     fallback_patch_parser.add_argument("--reason", required=True)
     fallback_patch_parser.add_argument("--timeout", type=int, default=120)
     fallback_patch_parser.add_argument("--overwrite", action="store_true")
+    fallback_patch_parser.add_argument("--use-exact-input", action="store_true")
 
     fallback_create_parser = sub.add_parser(
         "fallback-create",
@@ -148,6 +173,19 @@ def _parser() -> argparse.ArgumentParser:
         "--profile", choices=("draft", "final", "accessible"), default="final"
     )
     preflight_parser.add_argument("--dispositions")
+    preflight_parser.add_argument(
+        "--disposition",
+        action="append",
+        help="Inline warning disposition in code=rationale form; may be repeated",
+    )
+    preflight_parser.add_argument(
+        "--acceptance",
+        help="JSON acceptance manifest with content, page, TOC, and source-integrity requirements",
+    )
+    preflight_parser.add_argument(
+        "--visual-review",
+        help="Candidate-SHA-bound JSON report with a passed/failed record and notes for every rendered page",
+    )
     preflight_parser.add_argument("--require-text", action="append")
     preflight_parser.add_argument("--min-pages", type=int)
     preflight_parser.add_argument("--max-pages", type=int)
@@ -163,6 +201,51 @@ def _parser() -> argparse.ArgumentParser:
         help="Deprecated alias for --visual-review-status passed",
     )
     preflight_parser.add_argument("--timeout", type=int, default=120)
+
+    deliver_parser = sub.add_parser(
+        "deliver",
+        help="Atomically promote a fully preflighted internal candidate to the requested output",
+    )
+    deliver_parser.add_argument("--input", required=True)
+    deliver_parser.add_argument("--preflight-report", required=True)
+    deliver_parser.add_argument("--out", required=True)
+    delivery_origin = deliver_parser.add_mutually_exclusive_group(required=True)
+    delivery_origin.add_argument(
+        "--source",
+        help="The existing user document from which this result descends",
+    )
+    delivery_origin.add_argument(
+        "--new-document",
+        action="store_true",
+        help="Declare that this result is a newly created document",
+    )
+    deliver_parser.add_argument(
+        "--replace-source",
+        action="store_true",
+        help=(
+            "Replace --source only when the current user request explicitly "
+            "asks for in-place overwrite"
+        ),
+    )
+    deliver_parser.add_argument(
+        "--use-exact-source",
+        action="store_true",
+        help=(
+            "Bypass the tracked latest source only when the user explicitly "
+            "requests an older/original base"
+        ),
+    )
+    deliver_parser.add_argument("--overwrite", action="store_true")
+
+    resolve_latest_parser = sub.add_parser(
+        "resolve-latest",
+        help=(
+            "Resolve an original or prior DOCX path to the latest delivered "
+            "version in this session"
+        ),
+    )
+    resolve_latest_parser.add_argument("--input", required=True)
+    resolve_latest_parser.add_argument("--use-exact-input", action="store_true")
 
     sub.add_parser("self-test", help="Run the bundled end-to-end smoke test")
     return parser
@@ -195,7 +278,9 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
         return create_docx(args.spec, args.out, overwrite=args.overwrite)
     if args.command == "edit":
         return edit_docx(
-            args.input,
+            latest_input_path(
+                args.input, use_exact_input=args.use_exact_input
+            ),
             args.patch,
             args.out,
             allow_lossy=args.allow_lossy,
@@ -203,11 +288,18 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
         )
     if args.command == "review":
         return review_docx(
-            args.input, args.spec, args.out, overwrite=args.overwrite
+            latest_input_path(
+                args.input, use_exact_input=args.use_exact_input
+            ),
+            args.spec,
+            args.out,
+            overwrite=args.overwrite,
         )
     if args.command == "finalize":
         return finalize_docx(
-            args.input,
+            latest_input_path(
+                args.input, use_exact_input=args.use_exact_input
+            ),
             args.out,
             accept_changes=args.accept_changes,
             reject_changes=args.reject_changes,
@@ -218,10 +310,20 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
         return compare_docx(args.before, args.after, args.out)
     if args.command == "sanitize":
         return sanitize_docx(
-            args.input,
+            latest_input_path(
+                args.input, use_exact_input=args.use_exact_input
+            ),
             args.out,
             remove_comments=args.remove_comments,
             overwrite=args.overwrite,
+        )
+    if args.command == "refresh-toc":
+        return refresh_toc(
+            args.input,
+            args.out,
+            args.render_dir,
+            overwrite=args.overwrite,
+            timeout_seconds=args.timeout,
         )
     if args.command == "render":
         return render_docx(
@@ -237,7 +339,9 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
         return audit_docx(args.input, args.out, profile=args.profile)
     if args.command == "fallback-patch":
         return fallback_patch(
-            args.input,
+            latest_input_path(
+                args.input, use_exact_input=args.use_exact_input
+            ),
             args.script,
             args.out,
             args.manifest,
@@ -255,6 +359,20 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             timeout_seconds=args.timeout,
         )
     if args.command == "preflight":
+        inline_dispositions: dict[str, str] = {}
+        for item in args.disposition or []:
+            if "=" not in item:
+                raise DocxSkillError(
+                    "--disposition must use code=rationale syntax",
+                    code="invalid-warning-disposition",
+                )
+            code, rationale = item.split("=", 1)
+            if not code.strip() or not rationale.strip():
+                raise DocxSkillError(
+                    "--disposition requires a non-empty code and rationale",
+                    code="invalid-warning-disposition",
+                )
+            inline_dispositions[code.strip()] = rationale.strip()
         visual_review_status = (
             "passed"
             if args.visual_reviewed
@@ -266,11 +384,30 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             report_path=args.report,
             profile=args.profile,
             dispositions_path=args.dispositions,
+            dispositions=inline_dispositions,
+            acceptance_path=args.acceptance,
+            visual_review_path=args.visual_review,
             required_text=args.require_text,
             min_pages=args.min_pages,
             max_pages=args.max_pages,
             visual_review_status=visual_review_status,
             timeout_seconds=args.timeout,
+        )
+    if args.command == "deliver":
+        return deliver_docx(
+            args.input,
+            args.preflight_report,
+            args.out,
+            source_path=args.source,
+            new_document=args.new_document,
+            replace_source=args.replace_source,
+            use_exact_source=args.use_exact_source,
+            overwrite=args.overwrite,
+        )
+    if args.command == "resolve-latest":
+        return resolve_latest_input(
+            args.input,
+            use_exact_input=args.use_exact_input,
         )
     if args.command == "self-test":
         from docxlib.smoke import run_smoke_test

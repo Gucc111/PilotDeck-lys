@@ -94,6 +94,18 @@ def audit_docx(
         if text:
             body_paragraphs += 1
         style_name = paragraph.style.name if paragraph.style else ""
+        if (
+            text
+            and style_name.casefold() == "caption"
+            and not paragraph.paragraph_format.keep_with_next
+        ):
+            _issue(
+                issues,
+                "warning",
+                "caption-not-kept-with-object",
+                "Keep a caption with the following table or image to avoid an orphaned caption.",
+                location,
+            )
         heading_match = HEADING.match(style_name)
         if heading_match and text:
             heading_levels.append((int(heading_match.group(1)), text[:80]))

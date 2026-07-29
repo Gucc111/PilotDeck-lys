@@ -2,7 +2,14 @@
 
 Use this guide to choose the correct lifecycle for reading, creating, editing, reviewing, comparing, sanitizing, and delivering Word documents.
 
-Begin every modifying workflow with `capabilities` and the relevant `schema`. The standard command owns common operations; [capabilities-and-fallbacks.md](capabilities-and-fallbacks.md) owns every exception.
+Begin every modifying workflow with `capabilities` and the relevant `schema`.
+The standard command owns common operations;
+[capabilities-and-fallbacks.md](capabilities-and-fallbacks.md) owns every
+exception. Every mutation produces an internal candidate below
+`PILOTDECK_WORK_DIR`; only `deliver` may create the project-visible final DOCX.
+The Skill keeps a session-scoped version chain outside the project-visible
+files. An original or prior path therefore resolves to the latest delivered
+revision during later modifying turns.
 
 ## Contents
 
@@ -28,24 +35,36 @@ Do not change or re-export the source for a read-only question. State when a req
 1. Clarify the requested outcome from available context without inventing facts.
 2. Select an archetype and one design preset.
 3. Read `design-and-layout.md` and map content to appropriate forms.
-4. Query `schema --command create` and write a strict JSON specification in the task workspace.
-5. Run `create` to a new DOCX path.
+4. Freeze the acceptance manifest from the current user request, then query
+   `schema --command create` and write a strict JSON specification in the task
+   workspace. Do not loosen acceptance after a candidate fails.
+5. Run `create` to a new internal candidate path.
 6. If the required feature is outside the schema, choose an auxiliary asset or declared fallback; never run an ad hoc builder directly.
 7. Inspect the candidate and run `audit --profile draft`.
 8. Correct content or design defects and repeat.
-9. Run `preflight`, inspect all current page images, then rerun with `--visual-review-status passed` or `--visual-review-status failed`. Visual failure blocks delivery.
+9. If a TOC is required, run `refresh-toc` after content and headings are stable.
+10. Run preflight with the frozen acceptance manifest and inspect all current page images.
+11. Bind the visual-review JSON to the initial report's candidate SHA-256 and
+    each current page-image SHA-256, record a page-specific passed/failed note
+    for every rendered page, then rerun preflight.
+12. Run `deliver --new-document` once with the exact candidate and successful preflight report.
 
 Use placeholders or clearly marked assumptions when required information is missing. Do not silently fabricate names, dates, financial values, citations, legal terms, or technical results.
 
 ## 3. Targeted editing
 
-1. Preserve the original.
-2. Run `inspect` and identify exact text, style, and location targets.
-3. Use the smallest supported edit operation.
-4. Write to a new output path.
-5. Verify each operation's `affected` count. Missing or ambiguous targets return `partial`; refine them rather than guessing.
-6. Re-inspect the changed area and compare the output with the input when useful.
-7. Validate, audit, render, and inspect every page affected by pagination changes. For safety, inspect all pages before final delivery.
+1. Preserve the original by default.
+2. Run `resolve-latest` on the path named by the user. Inspect and modify the
+   returned `resolved` document, not a stale original or prior revision.
+3. Run `inspect` and identify exact text, style, and location targets.
+4. Use the smallest supported edit operation.
+5. Write to a new internal candidate path.
+6. Verify each operation's `affected` count. Missing or ambiguous targets return `partial`; refine them rather than guessing.
+7. Re-inspect the changed area and compare the output with the resolved input when useful.
+8. Validate, audit, render, and inspect every page affected by pagination changes. For safety, inspect all pages before final delivery.
+9. Pass acceptance and per-page visual-review gates, then promote the exact
+   candidate with `deliver --source <user-referenced-path>` to a new final
+   filename. The delivery becomes the latest version for the next turn.
 
 Prefer this order of intervention:
 
@@ -58,6 +77,13 @@ Prefer this order of intervention:
 
 Do not convert a local correction into a broad rewrite. Preserve citations, fields, bookmarks, links, and review history unless the user asks to change them.
 
+Use `--use-exact-input` only when the current user explicitly requests an
+older/original revision as the new editing base. If the current request
+explicitly says to overwrite the exact source, `deliver` may use
+`--source <source> --out <source> --replace-source`. That mode creates a
+hidden recovery copy. A generic `--overwrite` flag, an earlier request, or the
+absence of a preferred filename does not authorize source replacement.
+
 ## 4. Major rewrite or redesign
 
 Treat a major rewrite as a new design task with a fidelity constraint.
@@ -68,6 +94,7 @@ Treat a major rewrite as a new design task with a fidelity constraint.
 - Choose whether to edit a copy or recreate from a specification.
 - Record intentional omissions or structural changes.
 - Compare old and new text, then render both when visual comparison matters.
+- Keep all redesign iterations internal and deliver only the accepted candidate.
 
 Use recreation only when its benefits outweigh the risk of losing unsupported OOXML features.
 
@@ -133,7 +160,17 @@ For each page:
 5. regenerate the DOCX and rerun validation and audit;
 6. render again and discard stale QA images.
 
-Treat page PNGs and optional PDFs as internal QA unless the user explicitly requests them. Rendering alone is not acceptance: run `preflight` with critical phrases and page-count requirements, resolve or disposition warnings, inspect every PNG, and rerun with an explicit `--visual-review-status`. A searchable PDF text layer does not compensate for text that is missing from the rendered page.
+Treat page PNGs and optional PDFs as internal QA unless the user explicitly
+requests them. Rendering alone is not acceptance: write an acceptance manifest,
+resolve or disposition warnings, inspect every PNG, and submit a visual-review
+JSON with each page-image SHA-256 plus a page-specific result and note for
+every current page. Repeated generic notes and stale page images are rejected.
+Automated body-ink checks also block unintended blank pages and surface
+suspiciously sparse pages. A searchable PDF text layer
+does not compensate for text that is missing from the rendered page. A TOC
+field is not accepted until `refresh-toc` produces visible cached entries and
+page numbers. `deliver` also requires the acceptance manifest and rejects
+visual evidence or preflight reports bound to another candidate digest.
 
 ## 10. Failure handling
 
@@ -150,3 +187,7 @@ Treat page PNGs and optional PDFs as internal QA unless the user explicitly requ
   understanding.
 - If the document depends on signatures, embedded objects, custom XML mappings, or complex content controls, preserve the source. Use a narrow fallback only when the capability table permits it.
 - If a fallback is appropriate, run it through `fallback-patch` or `fallback-create` and retain its manifest. Scope violations are blocked, not retried outside the wrapper.
+- If preflight passed but the candidate changed, delivery is blocked by the
+  SHA-256 mismatch. Rerun the complete gate; never copy or rename around it.
+- If full preflight is impossible, report the limitation and keep the candidate
+  internal. Do not expose it as a completed deliverable.

@@ -12,6 +12,7 @@ import fitz
 
 from .common import (
     DocxSkillError,
+    assert_internal_control_path,
     assert_valid_docx,
     require_docx_path,
     temporary_sibling,
@@ -81,6 +82,47 @@ def _page_cjk_glyph_coverage(
         "characters": total,
         "visible_characters": visible,
         "ratio": round(visible / total, 4) if total else None,
+    }
+
+
+def _page_layout_metrics(pixmap: fitz.Pixmap) -> dict[str, Any]:
+    """Estimate whether the printable body is blank or suspiciously sparse."""
+    channels = pixmap.n
+    samples = memoryview(pixmap.samples)
+    top = max(0, int(pixmap.height * 0.12))
+    bottom = min(pixmap.height, int(pixmap.height * 0.88))
+    step = 4
+    sampled = 0
+    ink = 0
+    min_x = pixmap.width
+    min_y = pixmap.height
+    max_x = -1
+    max_y = -1
+    for y in range(top, bottom, step):
+        row_start = y * pixmap.stride
+        for x in range(0, pixmap.width, step):
+            offset = row_start + x * channels
+            pixel = samples[offset : offset + min(channels, 3)]
+            sampled += 1
+            if pixel and any(channel < 235 for channel in pixel):
+                ink += 1
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+    ink_ratio = ink / sampled if sampled else 0.0
+    if ink:
+        bbox_ratio = (
+            ((max_x - min_x + step) * (max_y - min_y + step))
+            / max(1, pixmap.width * (bottom - top))
+        )
+    else:
+        bbox_ratio = 0.0
+    return {
+        "body_ink_ratio": round(ink_ratio, 6),
+        "body_bbox_ratio": round(bbox_ratio, 6),
+        "blank_body": ink_ratio < 0.00045,
+        "sparse_body": ink_ratio < 0.002,
     }
 
 
@@ -167,7 +209,10 @@ def render_docx(
     if dpi < 72 or dpi > 300:
         raise DocxSkillError("DPI must be between 72 and 300")
 
-    out_dir = Path(output_dir).expanduser().resolve()
+    out_dir = assert_internal_control_path(
+        output_dir,
+        purpose="DOCX render directory",
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     for stale in out_dir.glob("page-*.png"):
         stale.unlink()
@@ -245,6 +290,7 @@ def render_docx(
             page_paths: list[str] = []
             page_text: list[dict[str, Any]] = []
             cjk_glyph_coverage: list[dict[str, Any]] = []
+            layout_metrics: list[dict[str, Any]] = []
             with fitz.open(pdf_path) as pdf:
                 if pdf.page_count < 1:
                     raise DocxSkillError("Rendered PDF has no pages")
@@ -261,6 +307,10 @@ def render_docx(
                     coverage = _page_cjk_glyph_coverage(page, pixmap, scale)
                     coverage["page"] = page_number
                     cjk_glyph_coverage.append(coverage)
+                    metrics = _page_layout_metrics(pixmap)
+                    metrics["page"] = page_number
+                    metrics["text_characters"] = len(text_value)
+                    layout_metrics.append(metrics)
                     page_path = out_dir / f"page-{page_number}.png"
                     pixmap.save(str(page_path))
                     page_paths.append(str(page_path))
@@ -299,6 +349,7 @@ def render_docx(
         "images": page_paths,
         "page_text": page_text,
         "cjk_glyph_coverage": cjk_glyph_coverage,
+        "layout_metrics": layout_metrics,
         "text_characters": sum(item["characters"] for item in page_text),
         "pdf": str(emitted_pdf) if emitted_pdf else None,
         "dpi": dpi,

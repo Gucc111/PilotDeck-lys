@@ -10,6 +10,7 @@ from lxml import etree
 from .common import (
     DocxSkillError,
     assert_control_path_is_distinct,
+    assert_internal_control_path,
     assert_safe_mutation,
     assert_valid_docx,
     blocked,
@@ -338,13 +339,17 @@ def review_docx(
     source, output = require_distinct_paths(
         input_path, output_path, overwrite=overwrite
     )
-    assert_control_path_is_distinct(
+    spec_file = assert_internal_control_path(
         spec_path,
+        purpose="Review specification",
+    )
+    assert_control_path_is_distinct(
+        spec_file,
         output,
         purpose="Review specification",
     )
     assert_safe_mutation(source, operation="review")
-    spec = load_json(spec_path)
+    spec = load_json(spec_file)
     if not isinstance(spec, dict):
         raise DocxSkillError("Review specification must be an object")
     validate_review_spec(spec)

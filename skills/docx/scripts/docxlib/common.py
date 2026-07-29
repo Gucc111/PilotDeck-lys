@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -84,7 +85,7 @@ def prepare_json_artifact_path(
     protected_paths: Iterable[str | Path] = (),
     purpose: str = "JSON artifact",
 ) -> Path:
-    target = Path(path).expanduser().resolve()
+    target = assert_internal_control_path(path, purpose=purpose)
     if target.suffix.lower() != ".json":
         raise DocxSkillError(
             f"{purpose} must use a .json path: {target}",
@@ -134,10 +135,77 @@ def require_docx_path(path: str | Path, *, must_exist: bool = True) -> Path:
     return resolved
 
 
+def file_sha256(path: str | Path) -> str:
+    source = Path(path).expanduser().resolve()
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def pilotdeck_work_dir() -> Path | None:
+    configured = os.environ.get("PILOTDECK_WORK_DIR", "").strip()
+    return Path(configured).expanduser().resolve() if configured else None
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def assert_internal_control_path(
+    path: str | Path,
+    *,
+    purpose: str = "DOCX control artifact",
+) -> Path:
+    """Keep non-deliverable task artifacts inside the turn work directory."""
+    target = Path(path).expanduser().resolve()
+    work_dir = pilotdeck_work_dir()
+    if work_dir is not None and not _is_relative_to(target, work_dir):
+        raise blocked(
+            f"{purpose} is an internal task artifact and must be written under "
+            "PILOTDECK_WORK_DIR",
+            code="control-artifact-outside-work-dir",
+            details={
+                "artifact": str(target),
+                "work_dir": str(work_dir),
+                "next": (
+                    "Move reports, manifests, specifications, helper scripts, "
+                    "renders, and QA output under PILOTDECK_WORK_DIR."
+                ),
+            },
+        )
+    return target
+
+
+def assert_internal_candidate_path(path: str | Path) -> Path:
+    target = Path(path).expanduser().resolve()
+    work_dir = pilotdeck_work_dir()
+    if work_dir is not None and not _is_relative_to(target, work_dir):
+        raise blocked(
+            "DOCX mutation outputs are internal candidates until delivery; "
+            "write them under PILOTDECK_WORK_DIR and use the deliver command "
+            "for the requested project output",
+            code="candidate-output-outside-work-dir",
+            details={
+                "out": str(target),
+                "work_dir": str(work_dir),
+                "next": "Run preflight on an internal candidate, then deliver it.",
+            },
+        )
+    return target
+
+
 def prepare_output_docx_path(
     path: str | Path, *, overwrite: bool = False
 ) -> Path:
-    target = require_docx_path(path, must_exist=False)
+    target = assert_internal_candidate_path(
+        require_docx_path(path, must_exist=False)
+    )
     if target.exists() and not target.is_file():
         raise blocked(
             "Output DOCX path exists but is not a regular file",
@@ -147,6 +215,33 @@ def prepare_output_docx_path(
     if target.exists() and not overwrite:
         raise blocked(
             "Output DOCX already exists; choose a new path or pass --overwrite explicitly",
+            code="output-exists",
+            details={"out": str(target)},
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def prepare_delivery_docx_path(
+    path: str | Path, *, overwrite: bool = False
+) -> Path:
+    target = require_docx_path(path, must_exist=False)
+    work_dir = pilotdeck_work_dir()
+    if work_dir is not None and _is_relative_to(target, work_dir):
+        raise blocked(
+            "The delivered DOCX must be outside PILOTDECK_WORK_DIR",
+            code="delivery-output-is-internal",
+            details={"out": str(target), "work_dir": str(work_dir)},
+        )
+    if target.exists() and not target.is_file():
+        raise blocked(
+            "Delivery DOCX path exists but is not a regular file",
+            code="output-path-invalid",
+            details={"out": str(target)},
+        )
+    if target.exists() and not overwrite:
+        raise blocked(
+            "Delivery DOCX already exists; choose a new path or pass --overwrite explicitly",
             code="output-exists",
             details={"out": str(target)},
         )

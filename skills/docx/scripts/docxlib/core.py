@@ -26,6 +26,7 @@ from .common import (
     DocxSkillError,
     active_content_parts,
     assert_control_path_is_distinct,
+    assert_internal_control_path,
     assert_safe_mutation,
     assert_valid_docx,
     blocked,
@@ -281,12 +282,20 @@ def iter_document_paragraphs(doc: DocumentObject) -> Iterator[tuple[str, Paragra
 
 
 def _paragraph_record(index: int, location: str, paragraph: Paragraph) -> dict[str, Any]:
+    try:
+        alignment = (
+            str(paragraph.alignment)
+            if paragraph.alignment is not None
+            else None
+        )
+    except ValueError:
+        alignment = paragraph._p.pPr.jc.val if paragraph._p.pPr is not None and paragraph._p.pPr.jc is not None else None
     return {
         "index": index,
         "location": location,
         "text": paragraph.text,
         "style": paragraph.style.name if paragraph.style else None,
-        "alignment": str(paragraph.alignment) if paragraph.alignment is not None else None,
+        "alignment": alignment,
         "runs": [
             {
                 "text": run.text,
@@ -701,6 +710,8 @@ def _configure_document(doc: DocumentObject, spec: dict[str, Any], preset: dict[
         style.font.color.rgb = RGBColor.from_string(preset["heading_color"])
         style.paragraph_format.space_before = Pt(12 if level == 1 else 8)
         style.paragraph_format.space_after = Pt(5)
+        style.paragraph_format.keep_with_next = True
+        style.paragraph_format.keep_together = True
 
 
 def _shade_cell(cell: _Cell, fill: str) -> None:
@@ -854,6 +865,15 @@ def _repeat_table_header(row: Any) -> None:
     header.set(qn("w:val"), "true")
 
 
+def _keep_table_row_together(row: Any) -> None:
+    properties = row._tr.get_or_add_trPr()
+    keep = properties.find(qn("w:cantSplit"))
+    if keep is None:
+        keep = OxmlElement("w:cantSplit")
+        properties.append(keep)
+    keep.set(qn("w:val"), "true")
+
+
 def _column_alignment(value: str) -> Any:
     normalized = value.lower()
     if normalized == "center":
@@ -989,7 +1009,9 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         paragraph.paragraph_format.right_indent = Inches(0.08)
         paragraph.paragraph_format.space_before = Pt(5)
         paragraph.paragraph_format.space_after = Pt(8)
-        label = str(block.get("label", "Note")).strip()
+        locale = str(preset.get("locale", "")).lower()
+        default_label = "提示" if locale.startswith("zh") else "Note"
+        label = str(block.get("label", default_label)).strip()
         if label:
             label_run = paragraph.add_run(f"{label}: ")
             label_run.bold = True
@@ -1054,6 +1076,13 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         if not isinstance(alignments, list) or len(alignments) != column_count:
             raise DocxSkillError("alignments must contain one value per table column")
         paragraph_alignments = [_column_alignment(str(value)) for value in alignments]
+        caption_text = str(block.get("caption", "")).strip()
+        if caption_text:
+            caption = doc.add_paragraph(style="Caption")
+            caption.paragraph_format.keep_with_next = True
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            caption.add_run(caption_text)
+            _format_paragraph_runs(caption, preset)
         table = doc.add_table(rows=1 if headers else 0, cols=column_count)
         table.style = str(block.get("style", "Table Grid"))
         table.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -1081,12 +1110,10 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
             block, headers, rows, column_count, _table_available_twips(doc)
         )
         _set_table_geometry(table, widths, sum(widths))
+        for row in table.rows:
+            _keep_table_row_together(row)
         if headers and bool(block.get("repeat_header", True)):
             _repeat_table_header(table.rows[0])
-        if block.get("caption"):
-            caption = doc.add_paragraph(str(block["caption"]))
-            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _format_paragraph_runs(caption, preset)
         doc.add_paragraph()
     elif block_type == "image":
         raw_path = Path(str(block.get("path", ""))).expanduser()
@@ -1113,7 +1140,10 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
             cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _format_paragraph_runs(cap, preset)
     elif block_type == "toc":
-        title = str(block.get("title", "Contents")).strip()
+        locale = str(preset.get("locale", "")).lower()
+        title = str(
+            block.get("title", "目录" if locale.startswith("zh") else "Contents")
+        ).strip()
         if title:
             doc.add_heading(title, level=1)
         levels = block.get("levels", [1, 2, 3])
@@ -1134,7 +1164,11 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         _append_field(
             paragraph,
             f'TOC \\o "{first}-{last}" \\h \\z \\u',
-            "Update this field to populate the table of contents.",
+            (
+                "目录将在最终校验时生成。"
+                if locale.startswith("zh")
+                else "The table of contents will be generated during final validation."
+            ),
         )
         if bool(block.get("page_break_after", True)):
             doc.add_page_break()
@@ -1161,7 +1195,10 @@ def create_docx(
     *,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    spec_file = Path(spec_path).expanduser().resolve()
+    spec_file = assert_internal_control_path(
+        spec_path,
+        purpose="Create specification",
+    )
     assert_control_path_is_distinct(
         spec_file,
         output_path,
@@ -1177,6 +1214,7 @@ def create_docx(
     if preset_name not in PRESETS:
         raise DocxSkillError(f"Unknown preset: {preset_name}")
     preset = dict(PRESETS[preset_name])
+    preset["locale"] = str(spec.get("locale", "en-US"))
     resolved_fonts = resolve_fonts(spec, preset)
     preset["body_font"] = resolved_fonts["latin"]
     preset["east_asia_font"] = resolved_fonts["east_asia"]
@@ -1186,6 +1224,9 @@ def create_docx(
     _configure_document(doc, spec, preset)
     _enable_field_updates(doc)
     props = doc.core_properties
+    props.author = ""
+    props.last_modified_by = ""
+    props.comments = ""
     metadata = spec.get("metadata", {})
     if isinstance(metadata, dict):
         for field in ("title", "subject", "author", "keywords", "category", "comments"):
@@ -1400,13 +1441,17 @@ def edit_docx(
     source, output = require_distinct_paths(
         input_path, output_path, overwrite=overwrite
     )
-    assert_control_path_is_distinct(
+    patch_file = assert_internal_control_path(
         patch_path,
+        purpose="Edit patch",
+    )
+    assert_control_path_is_distinct(
+        patch_file,
         output,
         purpose="Edit patch",
     )
     assert_safe_mutation(source, operation="edit")
-    patch = load_json(patch_path)
+    patch = load_json(patch_file)
     if not isinstance(patch, dict) or not isinstance(patch.get("operations"), list):
         raise DocxSkillError("Patch must contain an operations array")
     validate_edit_patch(patch)
@@ -1531,7 +1576,9 @@ def edit_docx(
                 raise DocxSkillError(
                     "append_table_row.values must contain one value per table column"
                 )
-            cells = table.add_row().cells
+            new_row = table.add_row()
+            _keep_table_row_together(new_row)
+            cells = new_row.cells
             for index, value in enumerate(values):
                 cells[index].text = str(value)
             affected = 1
