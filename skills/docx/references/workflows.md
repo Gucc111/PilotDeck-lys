@@ -2,6 +2,8 @@
 
 Use this guide to choose the correct lifecycle for reading, creating, editing, reviewing, comparing, sanitizing, and delivering Word documents.
 
+Begin every modifying workflow with `capabilities` and the relevant `schema`. The standard command owns common operations; [capabilities-and-fallbacks.md](capabilities-and-fallbacks.md) owns every exception.
+
 ## Contents
 
 1. Read-only analysis
@@ -26,12 +28,12 @@ Do not change or re-export the source for a read-only question. State when a req
 1. Clarify the requested outcome from available context without inventing facts.
 2. Select an archetype and one design preset.
 3. Read `design-and-layout.md` and map content to appropriate forms.
-4. Write a JSON specification in the task workspace.
+4. Query `schema --command create` and write a strict JSON specification in the task workspace.
 5. Run `create` to a new DOCX path.
-6. Run `validate` and `audit --profile draft`.
-7. Render and inspect all pages.
+6. If the required feature is outside the schema, choose an auxiliary asset or declared fallback; never run an ad hoc builder directly.
+7. Inspect the candidate and run `audit --profile draft`.
 8. Correct content or design defects and repeat.
-9. Run `audit --profile final` on the delivery candidate.
+9. Run `preflight`, inspect all current page images, then rerun with `--visual-review-status passed` or `--visual-review-status failed`. Visual failure blocks delivery.
 
 Use placeholders or clearly marked assumptions when required information is missing. Do not silently fabricate names, dates, financial values, citations, legal terms, or technical results.
 
@@ -41,7 +43,7 @@ Use placeholders or clearly marked assumptions when required information is miss
 2. Run `inspect` and identify exact text, style, and location targets.
 3. Use the smallest supported edit operation.
 4. Write to a new output path.
-5. Verify each operation's `affected` count.
+5. Verify each operation's `affected` count. Missing or ambiguous targets return `partial`; refine them rather than guessing.
 6. Re-inspect the changed area and compare the output with the input when useful.
 7. Validate, audit, render, and inspect every page affected by pagination changes. For safety, inspect all pages before final delivery.
 
@@ -51,7 +53,8 @@ Prefer this order of intervention:
 2. insert or remove one paragraph;
 3. change one paragraph style;
 4. append a clearly requested section;
-5. rebuild only when the user asks for substantial redesign or the source cannot support the request.
+5. use a narrow `fallback-patch` when preservation requires an OOXML operation outside the edit schema;
+6. rebuild only for a requested substantial redesign, and only through declared `fallback-create`.
 
 Do not convert a local correction into a broad rewrite. Preserve citations, fields, bookmarks, links, and review history unless the user asks to change them.
 
@@ -79,7 +82,7 @@ Use `review` when changes must remain visible or feedback must be anchored near 
 - Use a short unique match whenever possible.
 - Inspect the result to verify comment count, author, text, and tracked insertion/deletion counts.
 
-The bundled tracked-replacement operation requires the matched text to reside in one Word run. If it spans multiple differently formatted runs, use a smaller unique match or apply a normal edit after the user approves the wording.
+The bundled tracked-replacement operation requires the matched text to reside in one Word run. If it spans multiple runs, the command returns `unsupported`. Use a smaller exact match, obtain approval for a clean edit, or use a controlled OOXML patch; never silently downgrade a requested redline.
 
 ## 6. Finalization
 
@@ -95,7 +98,9 @@ Never accept or reject changes by assumption. After finalization, inspect the ou
 
 ## 7. Comparison
 
-Use `compare` to produce a paragraph-level unified text diff and document counts. Read the diff rather than reporting only that files differ.
+Use `compare` to produce a paragraph-level unified text diff plus metadata, section, field, image, package-feature, and inspection-coverage differences. Read the result rather than reporting only that files differ.
+
+If either document has partial inspection coverage, comparison top-level `status` is `partial`. Do not report a complete comparison when unsupported structures could contain changes outside the modeled surface.
 
 This comparison does not establish:
 
@@ -128,13 +133,20 @@ For each page:
 5. regenerate the DOCX and rerun validation and audit;
 6. render again and discard stale QA images.
 
-Treat page PNGs and optional PDFs as internal QA unless the user explicitly requests them.
+Treat page PNGs and optional PDFs as internal QA unless the user explicitly requests them. Rendering alone is not acceptance: run `preflight` with critical phrases and page-count requirements, resolve or disposition warnings, inspect every PNG, and rerun with an explicit `--visual-review-status`. A searchable PDF text layer does not compensate for text that is missing from the rendered page.
 
 ## 10. Failure handling
 
 - If dependencies are missing, run `fix` only when installation is allowed.
-- If LibreOffice is absent, finish structural QA and disclose that visual QA was not completed.
+- If LibreOffice is absent, `preflight` cannot pass. Finish structural QA and disclose that visual QA was not completed.
 - If LibreOffice exists but conversion fails, inspect the command output, writable HOME/profile, input validity, and output directory before retrying.
 - If an edit target is missing or ambiguous, do not guess. Refine the match from inspection data or report the unresolved target.
 - If a package contains macros, reject it; this skill intentionally supports `.docx` only.
-- If the document depends on signatures, embedded objects, custom XML, or complex content controls, preserve the source and explain the fidelity risk before reconstruction.
+- If a standard operation returns `partial`, `unsupported`, or `blocked`, preserve that result. Do not use `|| true` or continue from a file merely because it exists.
+- An `inspect` result with `inspection_coverage.status: partial` also has top-level
+  `status: partial`. You may continue with a narrowly supported operation only
+  when its target is inside the inspected scope and the unmodeled package
+  features are preserved and disclosed; do not claim complete document
+  understanding.
+- If the document depends on signatures, embedded objects, custom XML mappings, or complex content controls, preserve the source. Use a narrow fallback only when the capability table permits it.
+- If a fallback is appropriate, run it through `fallback-patch` or `fallback-create` and retain its manifest. Scope violations are blocked, not retried outside the wrapper.

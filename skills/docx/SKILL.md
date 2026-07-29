@@ -1,11 +1,11 @@
 ---
 name: docx
-description: Create, inspect, edit, restyle, review, compare, sanitize, render, audit, and finalize professional Microsoft Word .docx documents. Use this skill whenever PilotDeck must produce or modify a Word document, preserve an existing document while making targeted changes, add comments or tracked replacements, analyze document structure or metadata, verify accessibility and layout quality, compare revisions, remove review data, or deliver a visually checked DOCX. Use only for .docx files, not legacy .doc, macro-enabled .docm, or Google Docs operations.
+description: Create, inspect, edit, review, compare, sanitize, render, audit, preflight, and finalize professional Microsoft Word .docx documents through an explicit capability, execution, controlled-fallback, and acceptance protocol. Use whenever PilotDeck must produce or modify a Word document, preserve an existing document while making targeted changes, add comments or tracked replacements, analyze structure or metadata, verify accessibility and layout quality, compare revisions, remove review data, or deliver a visually checked DOCX. Use only for .docx files, not legacy .doc, macro-enabled .docm, or Google Docs operations.
 ---
 
 # Professional Word DOCX
 
-Treat a Word document as both structured content and a paginated visual artifact. Use the bundled CLI for deterministic package operations, follow the task-specific guidance below, and do not deliver a mutated DOCX until the latest structural and visual checks pass.
+Treat a Word document as both structured content and a paginated visual artifact. The bundled CLI is the authority for what the skill can do. Never infer missing capability from examples, silently ignore unsupported fields, or bypass the CLI with an ad hoc Python program. Use the controlled fallback protocol when the declared operation is insufficient. Do not deliver a mutated DOCX until structural, rendered-text, warning-disposition, and visual-review gates pass.
 
 ## Resolve and invoke the skill
 
@@ -35,6 +35,7 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 
 | User intent | Primary command | Read first |
 |---|---|---|
+| Discover exact support or JSON fields | `capabilities`, `schema` | [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md) |
 | Read, summarize, or inspect a DOCX | `inspect` | [workflows.md](references/workflows.md) |
 | Create a new document or substantially redesign one | `create` | [design-and-layout.md](references/design-and-layout.md), then [specifications.md](references/specifications.md) |
 | Make targeted edits while preserving the source | `edit` | [workflows.md](references/workflows.md), then [specifications.md](references/specifications.md) |
@@ -45,17 +46,37 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 | Check package integrity | `validate` | This file |
 | Audit styles, hierarchy, tables, accessibility, or finalization | `audit` | [design-and-layout.md](references/design-and-layout.md) |
 | Convert every page to PNG for visual QA | `render` | [workflows.md](references/workflows.md) |
+| Run the final delivery gate | `preflight` | [workflows.md](references/workflows.md) |
+| Perform an operation outside the standard schema | `fallback-patch` or `fallback-create` | [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md), then [ooxml-and-safety.md](references/ooxml-and-safety.md) |
 
 ## Non-negotiable operating contract
 
-1. Run `check` before the first DOCX task in a session. Run `fix` only if dependencies are missing and installing them is allowed.
-2. Validate and inspect every existing input before changing it. Read the relevant inspection fields, not only extracted paragraph text.
-3. Plan the document form before creation or major restructuring. Select one design preset and one coherent hierarchy.
-4. Apply the smallest change that satisfies an edit request. Preserve the original file and write every mutation to a new `.docx` path unless overwrite is explicitly requested.
-5. Run `validate` after every mutation. Run `audit --profile draft` during iteration and `audit --profile final` before delivery. Use `accessible` when accessibility matters.
-6. Render after every meaningful layout-affecting change. Inspect every generated `page-<N>.png` at full-page scale and zoom into dense areas such as tables, forms, headers, and footers.
-7. Fix defects, then repeat validation, audit, rendering, and inspection. Deliver only the latest document that passed the checks.
-8. Return only requested deliverables. Keep inspection JSON, diff JSON, PNG pages, and optional PDFs as internal QA artifacts unless the user requests them.
+1. Run `check`, then `capabilities`, before the first DOCX operation in a session. Run `fix` only if dependencies are missing and installation is allowed.
+2. Run `schema --command <create|edit|review>` before writing a JSON specification. Unknown fields and operations are errors; never assume they were applied.
+3. Validate and inspect every existing input before changing it. Read package features and inspection coverage, not only extracted paragraph text. Never bypass declared document/write protection.
+4. If the operation is declared supported, use the bundled command first. Do not replace it with `python-docx`, direct ZIP/XML mutation, or another library.
+5. If the standard operation returns `partial`, `unsupported`, or `blocked`, stop and follow the decision ladder in [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md). Never turn those statuses into success.
+6. Every fallback must be explicit: state the unmet capability and reason, keep its program under `WORKSPACE/tmp`, execute `fallback-patch` or `fallback-create`, and retain the generated manifest in `WORKSPACE/qa`.
+7. Apply the smallest change that satisfies an edit request. Preserve the original and write every mutation to a new `.docx` path. Existing outputs are blocked by default; pass `--overwrite` only when the user explicitly requests replacement. `fallback-create` never overwrites.
+8. Use `preflight` as the delivery gate. Every warning must be fixed or assigned a concrete disposition. Inspect every generated PNG, then rerun preflight with `--visual-review-status passed` or `--visual-review-status failed`. A failed visual review is blocking and cannot be dispositioned.
+9. Return only requested deliverables. Keep specifications, manifests, audits, PNG pages, optional PDFs, and other intermediates internal unless requested.
+
+## Capability and result protocol
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" capabilities
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" schema --command create
+```
+
+All operation results use one of:
+
+- `ok`: the requested operation completed within its declared fidelity.
+- `partial`: output or inspection exists, but an unresolved target, warning, coverage gap, or review remains.
+- `unsupported`: the requested capability is outside the standard operation; choose an approved fallback or report it.
+- `blocked`: continuing would risk fidelity, signatures, protection, package scope, or safety.
+- `error`: invalid input, invalid specification, execution failure, or invalid output.
+
+Only `ok` is success. Do not use `|| true`, discard stderr, parse a failed result as a deliverable, or claim completion from the existence of a file.
 
 ## Prepare the environment
 
@@ -66,13 +87,17 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" fix
 
 `fix` creates an isolated Python environment in the user's cache directory and never installs packages globally. LibreOffice is detected but not installed automatically.
 
-If LibreOffice is unavailable, complete structural validation and auditing, disclose that page-image QA could not be performed, and avoid claiming that layout was visually verified. If rendering fails for another reason, diagnose and correct the render environment before delivery.
+If LibreOffice is unavailable, `render` and `preflight` report `unsupported`; complete structural validation and auditing, disclose that visual QA was not completed, and do not claim delivery passed the full gate. If rendering fails for another reason, diagnose the environment before delivery.
 
 ## Inspect before reasoning or editing
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" inspect \
-  --input "$INPUT_DOCX" --out "$WORKSPACE/tmp/inspection.json"
+  --input "$INPUT_DOCX" --summary --out "$WORKSPACE/tmp/inspection-summary.json"
+
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" inspect \
+  --input "$INPUT_DOCX" --search "target phrase" --max-items 50 \
+  --out "$WORKSPACE/tmp/inspection-target.json"
 ```
 
 Review at least:
@@ -86,6 +111,13 @@ Review at least:
 - comments and tracked-change counts;
 - fields, images, external relationships, and validation warnings.
 
+`inspect` returns `partial` when it can inventory a package feature but cannot
+interpret its complete reading order or behavior, such as text boxes, notes,
+Office Math, SmartArt/diagrams, chart semantics, content controls, embedded
+objects, protected-document behavior, or nonstandard custom XML.
+Continue only within the explicitly covered scope; never describe a partial
+inspection as a complete reading of the document.
+
 For read-only questions, do not edit or re-export the source. Preserve qualifiers from headings, table labels, notes, and nearby context when answering.
 
 ## Create new documents deliberately
@@ -95,15 +127,18 @@ Before writing the JSON specification:
 1. Identify the document archetype: brief, memo, report, proposal, SOP, reference guide, form, or simple document.
 2. Choose one supported preset and define page geometry, hierarchy, content forms, tables, images, headers, and footers.
 3. Read [design-and-layout.md](references/design-and-layout.md). Map each major information unit to prose, a list, steps, a checklist, a callout, a definition list, a real data table, an image, or sources.
-4. Read [specifications.md](references/specifications.md) and create a specification using only supported blocks.
-5. Generate, validate, audit, render, inspect, and iterate.
+4. Query `schema --command create`, read [specifications.md](references/specifications.md), and create a specification using only supported blocks.
+5. Run standard `create`. If the schema cannot express a required feature, follow the controlled fallback decision before writing custom code.
+6. Generate, inspect, compare when relevant, and run preflight.
 
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" create \
   --spec "$WORKSPACE/tmp/document.json" --out "$FINAL_DOCX"
 ```
 
-Do not rely on Word defaults for page geometry, heading hierarchy, list semantics, table widths, or cell padding. Prefer reusable Word styles and real list definitions over manually formatted lookalikes.
+Do not rely on Word defaults for page geometry, heading hierarchy, list semantics, table widths, or cell padding. Prefer reusable Word styles and real list definitions over manually formatted lookalikes. A chart may be generated as a local image and referenced by an image block without entering full-create fallback.
+
+If the chosen output path already exists, choose a new versioned path. Use `--overwrite` only after explicit user authorization.
 
 ## Edit existing documents surgically
 
@@ -114,7 +149,11 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" edit \
   --input "$INPUT_DOCX" --patch "$WORKSPACE/tmp/edits.json" --out "$FINAL_DOCX"
 ```
 
-Preserve structure and formatting unless the user requests redesign. Prefer inline replacement over paragraph replacement, and paragraph replacement over full-document reconstruction. Confirm that every requested operation reports a nonzero `affected` count; treat an unexpected zero as a failed edit.
+Preserve structure and formatting unless the user requests redesign. Prefer inline replacement over paragraph replacement, and paragraph replacement over full-document reconstruction. Ambiguous targets require `occurrence` or `location`. A missing target returns `partial`; it is not a successful no-op.
+
+The standard editor blocks a `python-docx` round trip when package-sensitive features could be lost. Prefer `fallback-patch` with a narrow OOXML part allowlist. Use `--allow-lossy` only when the user explicitly accepts the listed fidelity risk; record that decision.
+
+`--overwrite` authorizes replacing an existing output file; it never authorizes using the input path as the output path.
 
 Use comments or tracked replacements when the user requests reviewable changes. Do not silently turn a review task into a clean rewrite.
 
@@ -163,7 +202,11 @@ Interpret profiles as follows:
 - `final`: include draft checks and fail the audit when comments or tracked changes remain; warn about personal metadata.
 - `accessible`: include final checks and flag missing image alternative text or unmarked repeating table headers.
 
-An audit can contain warnings even when `passed` is true. Evaluate each warning in context and resolve every material issue before delivery.
+An audit can contain warnings even when `passed` is true. An audit with errors
+or partial inspection coverage returns top-level `status: partial`; it must not
+be treated as a successful audit. Final delivery is stricter: every warning
+must be fixed or included in a disposition JSON mapping its issue code to a
+specific rationale.
 
 ## Render and inspect every page
 
@@ -186,6 +229,29 @@ Inspect every PNG for:
 
 Rendering verifies visible layout but not all document semantics. Verify comments, revisions, relationships, fields, and metadata structurally with `inspect`, `audit`, or OOXML-aware commands.
 
+## Run the final preflight
+
+First run preflight without claiming visual review:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" preflight \
+  --input "$FINAL_DOCX" \
+  --out-dir "$WORKSPACE/qa/rendered" \
+  --report "$WORKSPACE/qa/preflight.json" \
+  --profile final \
+  --require-text "critical phrase"
+```
+
+Resolve every error. Fix warnings or create a disposition file such as:
+
+```json
+{
+  "personal-metadata": "The user explicitly requested the named author in document properties."
+}
+```
+
+Inspect every latest PNG. Then rerun with the same requirements plus either `--visual-review-status passed` or `--visual-review-status failed` and, when used, `--dispositions`. Delivery passes only when the result is `status: ok`, `passed: true`, `visual_review.status: passed`, and `coverage.status: passed`. Never mark a visually incomplete page as passed merely because its PDF text layer contains the expected text.
+
 ## Compare and sanitize
 
 ```bash
@@ -205,7 +271,8 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" sanitize \
 - Never fetch remote images. Use local workspace files only.
 - Preserve the source and avoid destructive overwrite by default.
 - Do not claim that comments were visually verified from rendered pages.
-- Do not claim full fidelity for digital signatures, embedded objects, complex content controls, or custom XML without explicit inspection. Read [ooxml-and-safety.md](references/ooxml-and-safety.md) before touching package-sensitive documents.
+- Do not bypass document or write protection. Do not claim full fidelity for digital signatures, embedded objects, notes, Office Math, SmartArt/diagrams, complex content controls, or custom XML without explicit inspection. Read [ooxml-and-safety.md](references/ooxml-and-safety.md) before touching package-sensitive documents.
+- Never run a custom DOCX builder directly as the delivery path. Standard operations must be tried or declared insufficient first; custom code must run through the controlled fallback command and manifest.
 - Keep citations and sources as ordinary human-readable document text. Never expose internal tool tokens, private paths, credentials, or hidden reasoning in the document.
 - Do not present generated facts as sourced. Preserve existing citations and clearly distinguish supplied facts from drafted language.
 
@@ -215,8 +282,9 @@ Before returning a DOCX, confirm all of the following:
 
 - the requested content and edits are complete;
 - the output is a new, valid `.docx` file;
-- the final audit has no unresolved errors;
-- every rendered page from the latest document was inspected, or missing LibreOffice was disclosed;
+- preflight reports `status: ok`, `passed: true`, and `coverage.status: passed`, or the response explicitly states why full preflight was impossible;
+- every warning is fixed or has a specific recorded disposition;
+- every rendered page from the latest document was inspected;
 - comments and revisions match the requested delivery state;
 - metadata and privacy state match the request;
 - only the final requested artifact is linked in the response.

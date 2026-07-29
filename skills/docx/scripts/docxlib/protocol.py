@@ -1,0 +1,1350 @@
+from __future__ import annotations
+
+import json
+import math
+import re
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, Iterable
+
+from .common import DocxSkillError
+
+
+PROTOCOL_VERSION = 1
+RESULT_STATUSES = ("ok", "partial", "unsupported", "blocked", "error")
+RICH_RUN_FIELDS = {"text", "bold", "italic", "underline", "color", "size_pt"}
+ALIGNMENTS = ("left", "center", "right")
+SUPPORTED_FIELD_KEYWORDS = ("TOC", "PAGE", "NUMPAGES", "DATE", "TIME")
+HEX_COLOR_PATTERN = r"^#?[0-9A-Fa-f]{6}$"
+JSON_SCALAR_SCHEMA: dict[str, Any] = {
+    "type": ["string", "number", "boolean", "null"]
+}
+RICH_RUN_PROPERTY_SCHEMAS: dict[str, Any] = {
+    "text": {"type": "string"},
+    "bold": {"type": "boolean"},
+    "italic": {"type": "boolean"},
+    "underline": {"type": "boolean"},
+    "color": {"type": "string", "pattern": HEX_COLOR_PATTERN},
+    "size_pt": {"type": "number", "exclusiveMinimum": 0},
+}
+
+
+CREATE_BLOCK_SCHEMAS: dict[str, set[str]] = {
+    "title": {"type", "text", "runs"},
+    "subtitle": {"type", "text", "runs"},
+    "heading": {"type", "level", "text", "runs"},
+    "paragraph": {"type", "text", "runs", "style", "bold"},
+    "body": {"type", "text", "runs", "style", "bold"},
+    "bullet": {"type", "text", "runs"},
+    "numbered": {"type", "text", "runs"},
+    "quote": {"type", "text", "runs"},
+    "callout": {"type", "label", "text", "runs", "fill", "accent"},
+    "checklist": {"type", "items", "checked"},
+    "definition_list": {"type", "items"},
+    "source_list": {"type", "items"},
+    "table": {
+        "type",
+        "headers",
+        "rows",
+        "column_widths",
+        "alignments",
+        "repeat_header",
+        "style",
+        "caption",
+    },
+    "image": {"type", "path", "width_inches", "caption", "alt_text"},
+    "toc": {"type", "title", "levels", "page_break_after"},
+    "field": {"type", "instruction", "placeholder", "alignment"},
+    "page_break": {"type"},
+    "spacer": {"type", "points"},
+}
+
+
+def _rich_text_properties(block_type: str) -> dict[str, Any]:
+    return {
+        "type": {"const": block_type},
+        "text": {"type": "string"},
+        "runs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": deepcopy(RICH_RUN_PROPERTY_SCHEMAS),
+                "required": ["text"],
+            },
+        },
+    }
+
+
+CREATE_BLOCK_PROPERTY_SCHEMAS: dict[str, dict[str, Any]] = {
+    "title": _rich_text_properties("title"),
+    "subtitle": _rich_text_properties("subtitle"),
+    "heading": {
+        **_rich_text_properties("heading"),
+        "level": {"type": "integer", "minimum": 1, "maximum": 3},
+    },
+    "paragraph": {
+        **_rich_text_properties("paragraph"),
+        "style": {"type": "string"},
+        "bold": {"type": "boolean"},
+    },
+    "body": {
+        **_rich_text_properties("body"),
+        "style": {"type": "string"},
+        "bold": {"type": "boolean"},
+    },
+    "bullet": _rich_text_properties("bullet"),
+    "numbered": _rich_text_properties("numbered"),
+    "quote": _rich_text_properties("quote"),
+    "callout": {
+        **_rich_text_properties("callout"),
+        "label": {"type": "string"},
+        "fill": {"type": "string", "pattern": HEX_COLOR_PATTERN},
+        "accent": {"type": "string", "pattern": HEX_COLOR_PATTERN},
+    },
+    "checklist": {
+        "type": {"const": "checklist"},
+        "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": deepcopy(JSON_SCALAR_SCHEMA),
+        },
+        "checked": {
+            "type": "array",
+            "items": {"type": "boolean"},
+        },
+    },
+    "definition_list": {
+        "type": {"const": "definition_list"},
+        "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "term": deepcopy(JSON_SCALAR_SCHEMA),
+                    "definition": deepcopy(JSON_SCALAR_SCHEMA),
+                },
+                "required": ["term", "definition"],
+            },
+        },
+    },
+    "source_list": {
+        "type": {"const": "source_list"},
+        "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": deepcopy(JSON_SCALAR_SCHEMA),
+        },
+    },
+    "table": {
+        "type": {"const": "table"},
+        "headers": {
+            "type": "array",
+            "items": deepcopy(JSON_SCALAR_SCHEMA),
+        },
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": deepcopy(JSON_SCALAR_SCHEMA),
+            },
+        },
+        "column_widths": {
+            "type": "array",
+            "items": {"type": "number", "exclusiveMinimum": 0},
+        },
+        "alignments": {
+            "type": "array",
+            "items": {"enum": list(ALIGNMENTS)},
+        },
+        "repeat_header": {"type": "boolean"},
+        "style": {"type": "string"},
+        "caption": {"type": "string"},
+    },
+    "image": {
+        "type": {"const": "image"},
+        "path": {"type": "string", "minLength": 1},
+        "width_inches": {"type": "number", "exclusiveMinimum": 0},
+        "caption": {"type": "string"},
+        "alt_text": {"type": "string"},
+    },
+    "toc": {
+        "type": {"const": "toc"},
+        "title": {"type": "string"},
+        "levels": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "integer", "minimum": 1, "maximum": 9},
+        },
+        "page_break_after": {"type": "boolean"},
+    },
+    "field": {
+        "type": {"const": "field"},
+        "instruction": {"type": "string", "minLength": 1},
+        "placeholder": {"type": "string"},
+        "alignment": {"enum": list(ALIGNMENTS)},
+    },
+    "page_break": {"type": {"const": "page_break"}},
+    "spacer": {
+        "type": {"const": "spacer"},
+        "points": {"type": "number", "minimum": 0},
+    },
+}
+
+
+def _required_for_create_block(name: str) -> list[str]:
+    return {
+        "heading": ["type", "level"],
+        "checklist": ["type", "items"],
+        "definition_list": ["type", "items"],
+        "source_list": ["type", "items"],
+        "image": ["type", "path"],
+        "field": ["type", "instruction"],
+        "spacer": ["type", "points"],
+    }.get(name, ["type"])
+
+
+def _create_block_schema(name: str) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": deepcopy(CREATE_BLOCK_PROPERTY_SCHEMAS[name]),
+        "required": _required_for_create_block(name),
+    }
+    if name in {
+        "title",
+        "subtitle",
+        "heading",
+        "paragraph",
+        "body",
+        "bullet",
+        "numbered",
+        "quote",
+        "callout",
+    }:
+        schema["anyOf"] = [{"required": ["text"]}, {"required": ["runs"]}]
+    if name == "table":
+        schema["anyOf"] = [{"required": ["headers"]}, {"required": ["rows"]}]
+    return schema
+
+
+CREATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "preset": {"enum": ["business-report", "formal-memo", "proposal", "sop", "simple-document"]},
+        "locale": {"type": "string", "minLength": 1},
+        "page": {"enum": ["a4", "letter"]},
+        "orientation": {"enum": ["portrait", "landscape"]},
+        "margins_inches": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "top": {"type": "number", "exclusiveMinimum": 0},
+                "right": {"type": "number", "exclusiveMinimum": 0},
+                "bottom": {"type": "number", "exclusiveMinimum": 0},
+                "left": {"type": "number", "exclusiveMinimum": 0},
+            },
+        },
+        "fonts": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "latin": {"type": "string", "minLength": 1},
+                "east_asia": {"type": "string", "minLength": 1},
+            },
+        },
+        "metadata": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                name: {"type": "string"}
+                for name in ("title", "subject", "author", "keywords", "category", "comments")
+            },
+        },
+        "header": {"oneOf": [{"type": "string"}, {"$ref": "#/$defs/story"}]},
+        "footer": {"oneOf": [{"type": "string"}, {"$ref": "#/$defs/story"}]},
+        "content": {
+            "type": "array",
+            "items": {
+                "oneOf": [
+                    {"$ref": f"#/$defs/block_{name}"}
+                    for name in CREATE_BLOCK_SCHEMAS
+                ]
+            },
+        },
+    },
+    "$defs": {
+        "story": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "text": {"type": "string"},
+                "alignment": {"enum": ["left", "center", "right"]},
+            },
+            "required": ["text"],
+        },
+        **{
+            f"block_{name}": _create_block_schema(name)
+            for name in CREATE_BLOCK_SCHEMAS
+        },
+    },
+}
+
+EDIT_ACTION_SCHEMAS: dict[str, set[str]] = {
+    "replace_text": {
+        "action",
+        "match",
+        "replacement",
+        "occurrence",
+        "location",
+        "allow_missing",
+    },
+    "insert_after": {"action", "match", "text", "style", "occurrence", "location", "allow_missing"},
+    "delete_paragraph": {"action", "match", "occurrence", "location", "allow_missing"},
+    "set_style": {"action", "match", "style", "occurrence", "location", "allow_missing"},
+    "append_paragraph": {"action", "text", "style"},
+    "add_page_break": {"action"},
+    "set_metadata": {
+        "action",
+        "title",
+        "subject",
+        "author",
+        "keywords",
+        "category",
+        "comments",
+    },
+    "set_header": {"action", "text", "alignment"},
+    "set_footer": {"action", "text", "alignment"},
+    "set_table_cell": {"action", "table", "row", "column", "text"},
+    "append_table_row": {"action", "table", "values"},
+}
+
+
+OCCURRENCE_SCHEMA: dict[str, Any] = {
+    "oneOf": [
+        {"enum": ["all", "first"]},
+        {"type": "integer", "minimum": 1},
+    ]
+}
+EDIT_COMMON_TARGET_PROPERTIES: dict[str, Any] = {
+    "match": {"type": "string", "minLength": 1},
+    "occurrence": deepcopy(OCCURRENCE_SCHEMA),
+    "location": {"type": "string"},
+    "allow_missing": {"type": "boolean"},
+}
+EDIT_ACTION_PROPERTY_SCHEMAS: dict[str, dict[str, Any]] = {
+    "replace_text": {
+        "action": {"const": "replace_text"},
+        **deepcopy(EDIT_COMMON_TARGET_PROPERTIES),
+        "replacement": {"type": "string"},
+    },
+    "insert_after": {
+        "action": {"const": "insert_after"},
+        **deepcopy(EDIT_COMMON_TARGET_PROPERTIES),
+        "text": {"type": "string"},
+        "style": {"type": "string"},
+    },
+    "delete_paragraph": {
+        "action": {"const": "delete_paragraph"},
+        **deepcopy(EDIT_COMMON_TARGET_PROPERTIES),
+    },
+    "set_style": {
+        "action": {"const": "set_style"},
+        **deepcopy(EDIT_COMMON_TARGET_PROPERTIES),
+        "style": {"type": "string", "minLength": 1},
+    },
+    "append_paragraph": {
+        "action": {"const": "append_paragraph"},
+        "text": {"type": "string"},
+        "style": {"type": "string"},
+    },
+    "add_page_break": {"action": {"const": "add_page_break"}},
+    "set_metadata": {
+        "action": {"const": "set_metadata"},
+        **{
+            name: {"type": "string"}
+            for name in ("title", "subject", "author", "keywords", "category", "comments")
+        },
+    },
+    "set_header": {
+        "action": {"const": "set_header"},
+        "text": {"type": "string"},
+        "alignment": {"enum": list(ALIGNMENTS)},
+    },
+    "set_footer": {
+        "action": {"const": "set_footer"},
+        "text": {"type": "string"},
+        "alignment": {"enum": list(ALIGNMENTS)},
+    },
+    "set_table_cell": {
+        "action": {"const": "set_table_cell"},
+        "table": {"type": "integer", "minimum": 1},
+        "row": {"type": "integer", "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "text": {"type": "string"},
+    },
+    "append_table_row": {
+        "action": {"const": "append_table_row"},
+        "table": {"type": "integer", "minimum": 1},
+        "values": {
+            "type": "array",
+            "items": deepcopy(JSON_SCALAR_SCHEMA),
+        },
+    },
+}
+EDIT_ACTION_REQUIRED_FIELDS: dict[str, list[str]] = {
+    "replace_text": ["action", "match", "replacement"],
+    "insert_after": ["action", "match", "text"],
+    "delete_paragraph": ["action", "match"],
+    "set_style": ["action", "match", "style"],
+    "append_paragraph": ["action", "text"],
+    "add_page_break": ["action"],
+    "set_metadata": ["action"],
+    "set_header": ["action", "text"],
+    "set_footer": ["action", "text"],
+    "set_table_cell": ["action", "table", "row", "column", "text"],
+    "append_table_row": ["action", "table", "values"],
+}
+
+
+def _edit_action_schema(action: str) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": deepcopy(EDIT_ACTION_PROPERTY_SCHEMAS[action]),
+        "required": EDIT_ACTION_REQUIRED_FIELDS[action],
+    }
+    if action == "set_metadata":
+        schema["anyOf"] = [
+            {"required": [field]}
+            for field in ("title", "subject", "author", "keywords", "category", "comments")
+        ]
+    return schema
+
+
+EDIT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["operations"],
+    "properties": {
+        "operations": {
+            "type": "array",
+            "items": {
+                "oneOf": [
+                    _edit_action_schema(action)
+                    for action in EDIT_ACTION_SCHEMAS
+                ]
+            },
+            "minItems": 1,
+        }
+    },
+}
+
+COMMENT_FIELDS = {
+    "match", "text", "author", "date", "occurrence", "location"
+}
+TRACKED_REPLACEMENT_FIELDS = {
+    "match", "replacement", "author", "date", "occurrence", "location"
+}
+REVIEW_COMMON_PROPERTY_SCHEMAS: dict[str, Any] = {
+    "match": {"type": "string", "minLength": 1},
+    "author": {"type": "string"},
+    "date": {"type": "string"},
+    "occurrence": {"type": "integer", "minimum": 1},
+    "location": {"type": "string"},
+}
+REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "anyOf": [
+        {"required": ["comments"]},
+        {"required": ["tracked_replacements"]},
+    ],
+    "properties": {
+        "comments": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    **deepcopy(REVIEW_COMMON_PROPERTY_SCHEMAS),
+                    "text": {"type": "string", "minLength": 1},
+                },
+                "required": ["match", "text"],
+            },
+        },
+        "tracked_replacements": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    **deepcopy(REVIEW_COMMON_PROPERTY_SCHEMAS),
+                    "replacement": {"type": "string"},
+                },
+                "required": ["match", "replacement"],
+            },
+        },
+    },
+}
+
+
+def _capability(
+    status: str,
+    *,
+    command: str | None = None,
+    fallback: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {"status": status}
+    if command:
+        item["command"] = command
+    if fallback:
+        item["fallback"] = fallback
+    if reason:
+        item["reason"] = reason
+    return item
+
+
+def capabilities() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "protocol_version": PROTOCOL_VERSION,
+        "result_statuses": list(RESULT_STATUSES),
+        "capability_states": [
+            "supported",
+            "partial",
+            "fallback",
+            "unsupported",
+            "blocked",
+        ],
+        "output_policy": {
+            "mutations_require_distinct_input_and_output": True,
+            "existing_outputs_blocked_by_default": True,
+            "explicit_overwrite_flag": "--overwrite",
+            "fallback_create_can_overwrite": False,
+            "atomic_validation_before_replace": True,
+        },
+        "mutation_blockers": {
+            "digital_signatures": {
+                "status": "blocked",
+                "applies_to": [
+                    "edit",
+                    "review",
+                    "finalize",
+                    "sanitize",
+                    "fallback-patch",
+                ],
+                "reason": (
+                    "Any content or package mutation invalidates the signature; "
+                    "the source must remain unchanged."
+                ),
+            },
+            "macros_and_activex": {
+                "status": "blocked",
+                "applies_to": [
+                    "edit",
+                    "review",
+                    "finalize",
+                    "sanitize",
+                    "fallback-patch",
+                    "fallback-create",
+                ],
+                "reason": (
+                    "Macro payloads are rejected and ActiveX content is never "
+                    "executed, interpreted, or preserved through mutation."
+                ),
+            },
+            "document_protection": {
+                "status": "blocked",
+                "applies_to": [
+                    "edit",
+                    "review",
+                    "finalize",
+                    "sanitize",
+                    "fallback-patch",
+                ],
+                "reason": (
+                    "The skill will not bypass declared document or write protection."
+                ),
+            },
+        },
+        "runtime_dependencies": {
+            "libreoffice": {
+                "required_for": ["render", "preflight"],
+                "probe_command": "check",
+                "installation": "external",
+                "missing_result": "unsupported",
+            }
+        },
+        "operations": {
+            "inspect": {
+                "command": "inspect",
+                "features": {
+                    "paragraphs_tables_headers_footers": _capability("supported"),
+                    "fields_and_relationship_inventory": _capability("supported"),
+                    "known_package_feature_inventory": _capability("supported"),
+                    "summary_search_and_location_filters": _capability("supported"),
+                    "digital_signature_cryptographic_verification": _capability(
+                        "unsupported",
+                        reason=(
+                            "Signature parts are inventoried, but cryptographic validity "
+                            "and signer identity are not verified."
+                        ),
+                    ),
+                    "text_boxes_notes_math_smartart_chart_semantics": _capability(
+                        "partial",
+                        reason=(
+                            "Package parts are inventoried but not fully converted "
+                            "to reading-order text or semantic objects."
+                        ),
+                    ),
+                },
+            },
+            "create": {
+                "command": "create",
+                "features": {
+                    "structured_prose_lists_tables_images": _capability("supported"),
+                    "toc_page_and_numpages_fields": _capability("supported"),
+                    "headers_footers_and_cjk_fonts": _capability("supported"),
+                    "chart_as_image": _capability(
+                        "fallback", fallback="Generate a local image asset, then use an image block."
+                    ),
+                    "native_word_charts": _capability(
+                        "fallback", fallback="Use chart-as-image or declare full-create fallback."
+                    ),
+                    "content_controls": _capability(
+                        "fallback",
+                        fallback=(
+                            "Use fallback-create only when native controls are a "
+                            "material requirement, then inspect and preflight the result."
+                        ),
+                    ),
+                    "signatures_macros_activex": _capability(
+                        "blocked",
+                        reason=(
+                            "The creator cannot establish signature validity and "
+                            "will not synthesize macro or ActiveX content."
+                        ),
+                    ),
+                },
+            },
+            "edit": {
+                "command": "edit",
+                "features": {
+                    "text_paragraph_metadata": _capability("supported"),
+                    "header_footer_and_table_cells": _capability("supported"),
+                    "images_fields_sections_and_complex_styles": _capability(
+                        "fallback", fallback="Use fallback-patch with an explicit OOXML part allowlist."
+                    ),
+                    "signed_or_protected_documents": _capability(
+                        "blocked", reason="Editing would invalidate protection or signatures."
+                    ),
+                },
+            },
+            "review": {
+                "command": "review",
+                "features": {
+                    "paragraph_comments": _capability("supported"),
+                    "single_run_tracked_replacement": _capability("supported"),
+                    "cross_run_or_structural_redline": _capability(
+                        "fallback", fallback="Use fallback-patch or report unsupported fidelity."
+                    ),
+                },
+            },
+            "finalize": {
+                "command": "finalize",
+                "features": {
+                    "insertions_deletions_all_story_parts": _capability("supported"),
+                    "moves_property_changes_complex_nesting": _capability(
+                        "blocked", reason="Full Microsoft Word revision semantics are not implemented."
+                    ),
+                },
+            },
+            "compare": {
+                "command": "compare",
+                "features": {
+                    "paragraph_and_structure_diff": _capability("supported"),
+                    "pixel_or_legal_redline": _capability(
+                        "unsupported",
+                        reason="Render both documents or use Microsoft Word Compare when legally required.",
+                    ),
+                },
+            },
+            "sanitize": {
+                "command": "sanitize",
+                "features": {
+                    "core_metadata_custom_properties_revision_ids": _capability("supported"),
+                    "comments": _capability("supported"),
+                    "visible_redaction_image_metadata_embedded_files": _capability(
+                        "unsupported",
+                        reason="Use a separate, explicitly verified redaction workflow.",
+                    ),
+                },
+            },
+            "validate_audit_render": {
+                "command": "preflight",
+                "features": {
+                    "package_validation": _capability("supported"),
+                    "warning_dispositions": _capability("supported"),
+                    "libreoffice_render": _capability(
+                        "supported",
+                        reason=(
+                            "Requires a LibreOffice executable detected by the check "
+                            "command; a missing runtime returns unsupported."
+                        ),
+                    ),
+                    "automatic_visual_judgment": _capability(
+                        "partial",
+                        reason="The command checks text coverage; a model or human must inspect page images.",
+                    ),
+                },
+            },
+            "controlled_fallback": {
+                "features": {
+                    "targeted_ooxml_patch": _capability("supported", command="fallback-patch"),
+                    "full_custom_new_document": _capability("supported", command="fallback-create"),
+                    "silent_direct_python_mutation": _capability(
+                        "blocked", reason="Use the controlled fallback commands and emit a manifest."
+                    ),
+                    "unverifiable_digital_signature_output": _capability(
+                        "blocked",
+                        reason=(
+                            "Fallback output containing signature parts is rejected "
+                            "because signature validity cannot be established."
+                        ),
+                    ),
+                    "unverifiable_protected_output": _capability(
+                        "blocked",
+                        reason=(
+                            "Fallback output containing document protection is rejected "
+                            "because credentials and enforcement cannot be verified."
+                        ),
+                    ),
+                    "active_content_output": _capability(
+                        "blocked",
+                        reason=(
+                            "Fallback output containing macros or ActiveX is rejected "
+                            "and active content is never executed."
+                        ),
+                    ),
+                    "host_process_isolation": _capability(
+                        "partial",
+                        reason=(
+                            "The wrapper fixes cwd, passes a safe environment allowlist, "
+                            "enforces the PilotDeck work directory when available, and "
+                            "verifies DOCX output scope. Operating-system sandboxing still "
+                            "depends on the host tool permission model."
+                        ),
+                    ),
+                }
+            },
+        },
+    }
+
+
+def schema_for(command: str) -> dict[str, Any]:
+    normalized = command.strip().lower()
+    schemas = {
+        "create": CREATE_SCHEMA,
+        "edit": EDIT_SCHEMA,
+        "review": REVIEW_SCHEMA,
+    }
+    if normalized not in schemas:
+        raise DocxSkillError(
+            f"No declarative schema is available for command: {command}",
+            status="unsupported",
+            code="schema-unavailable",
+            details={"available": sorted(schemas)},
+        )
+    return {
+        "status": "ok",
+        "protocol_version": PROTOCOL_VERSION,
+        "command": normalized,
+        "schema": deepcopy(schemas[normalized]),
+    }
+
+
+def _reject_unknown(mapping: dict[str, Any], allowed: Iterable[str], context: str) -> None:
+    unknown = sorted(set(mapping) - set(allowed))
+    if unknown:
+        raise DocxSkillError(
+            f"Unknown {context} field(s): {', '.join(unknown)}",
+            code="unknown-spec-fields",
+            details={"context": context, "unknown": unknown},
+        )
+
+
+def _is_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
+
+
+def _is_json_scalar(value: Any) -> bool:
+    return (
+        value is None
+        or isinstance(value, (str, bool))
+        or _is_number(value)
+    )
+
+
+def _require_string(value: Any, context: str, *, allow_empty: bool = True) -> None:
+    if not isinstance(value, str) or (not allow_empty and not value.strip()):
+        suffix = "a string" if allow_empty else "a non-empty string"
+        raise DocxSkillError(f"{context} must be {suffix}", code="invalid-spec")
+
+
+def _require_hex_color(value: Any, context: str) -> None:
+    _require_string(value, context, allow_empty=False)
+    if not re.fullmatch(HEX_COLOR_PATTERN, value):
+        raise DocxSkillError(
+            f"{context} must be a six-digit RGB hex color",
+            code="invalid-spec",
+        )
+
+
+def validate_create_spec(spec: dict[str, Any]) -> None:
+    _reject_unknown(spec, CREATE_SCHEMA["properties"], "create specification")
+    if "preset" in spec and (
+        not isinstance(spec["preset"], str)
+        or spec["preset"]
+        not in {
+            "business-report",
+            "formal-memo",
+            "proposal",
+            "sop",
+            "simple-document",
+        }
+    ):
+        raise DocxSkillError(
+            f"Unknown preset: {spec['preset']!r}", code="invalid-spec"
+        )
+    if "page" in spec and (
+        not isinstance(spec["page"], str) or spec["page"] not in {"a4", "letter"}
+    ):
+        raise DocxSkillError("page must be 'a4' or 'letter'", code="invalid-spec")
+    if "orientation" in spec and (
+        not isinstance(spec["orientation"], str)
+        or spec["orientation"] not in {"portrait", "landscape"}
+    ):
+        raise DocxSkillError(
+            "orientation must be 'portrait' or 'landscape'", code="invalid-spec"
+        )
+    if "locale" in spec:
+        _require_string(spec["locale"], "locale", allow_empty=False)
+    margins = spec.get("margins_inches")
+    if margins is not None:
+        if not isinstance(margins, dict):
+            raise DocxSkillError("margins_inches must be an object", code="invalid-spec")
+        _reject_unknown(margins, {"top", "right", "bottom", "left"}, "margins_inches")
+        for name, value in margins.items():
+            if not _is_number(value) or value <= 0:
+                raise DocxSkillError(
+                    f"margins_inches.{name} must be a positive number",
+                    code="invalid-spec",
+                )
+    fonts = spec.get("fonts")
+    if fonts is not None:
+        if not isinstance(fonts, dict):
+            raise DocxSkillError("fonts must be an object", code="invalid-spec")
+        _reject_unknown(fonts, {"latin", "east_asia"}, "fonts")
+        for name, value in fonts.items():
+            _require_string(value, f"fonts.{name}", allow_empty=False)
+    metadata = spec.get("metadata")
+    if metadata is not None:
+        if not isinstance(metadata, dict):
+            raise DocxSkillError("metadata must be an object", code="invalid-spec")
+        _reject_unknown(
+            metadata,
+            {"title", "subject", "author", "keywords", "category", "comments"},
+            "metadata",
+        )
+        for name, value in metadata.items():
+            _require_string(value, f"metadata.{name}")
+    for story_name in ("header", "footer"):
+        story = spec.get(story_name)
+        if story is not None and not isinstance(story, (str, dict)):
+            raise DocxSkillError(f"{story_name} must be a string or object", code="invalid-spec")
+        if isinstance(story, dict):
+            _reject_unknown(story, {"text", "alignment"}, story_name)
+            if "text" not in story:
+                raise DocxSkillError(f"{story_name}.text is required", code="invalid-spec")
+            _require_string(story["text"], f"{story_name}.text")
+            if story.get("alignment", "left") not in ALIGNMENTS:
+                raise DocxSkillError(
+                    f"{story_name}.alignment must be left, center, or right",
+                    code="invalid-spec",
+                )
+    content = spec.get("content", [])
+    if not isinstance(content, list):
+        raise DocxSkillError("content must be an array", code="invalid-spec")
+    for index, block in enumerate(content):
+        if not isinstance(block, dict):
+            raise DocxSkillError("Every content block must be an object", code="invalid-spec")
+        block_type = str(block.get("type", ""))
+        if block_type not in CREATE_BLOCK_SCHEMAS:
+            raise DocxSkillError(
+                f"Unsupported content block type: {block_type or '<missing>'}",
+                status="unsupported",
+                code="unsupported-create-block",
+                details={
+                    "index": index,
+                    "supported": sorted(CREATE_BLOCK_SCHEMAS),
+                    "fallback": "Use a supported block, generate an image asset, or declare a controlled fallback.",
+                },
+            )
+        _reject_unknown(block, CREATE_BLOCK_SCHEMAS[block_type], f"{block_type} block")
+        rich_text_block = block_type in {
+            "title",
+            "subtitle",
+            "heading",
+            "paragraph",
+            "body",
+            "bullet",
+            "numbered",
+            "quote",
+            "callout",
+        }
+        if rich_text_block and "text" not in block and "runs" not in block:
+            raise DocxSkillError(
+                f"{block_type} requires text or runs", code="invalid-spec"
+            )
+        if "text" in block:
+            _require_string(block["text"], f"{block_type}.text")
+        if "runs" in block:
+            runs = block["runs"]
+            if not isinstance(runs, list) or not runs:
+                raise DocxSkillError(
+                    f"{block_type}.runs must be a non-empty array",
+                    code="invalid-spec",
+                )
+            for run in runs:
+                if not isinstance(run, dict):
+                    raise DocxSkillError(
+                        f"Every {block_type}.runs item must be an object", code="invalid-spec"
+                    )
+                _reject_unknown(run, RICH_RUN_FIELDS, f"{block_type}.runs item")
+                if "text" not in run:
+                    raise DocxSkillError(
+                        f"Every {block_type}.runs item requires text", code="invalid-spec"
+                    )
+                _require_string(run["text"], f"{block_type}.runs.text")
+                for name in ("bold", "italic", "underline"):
+                    if name in run and not isinstance(run[name], bool):
+                        raise DocxSkillError(
+                            f"{block_type}.runs.{name} must be boolean",
+                            code="invalid-spec",
+                        )
+                if "color" in run:
+                    _require_hex_color(
+                        run["color"], f"{block_type}.runs.color"
+                    )
+                if (
+                    "size_pt" in run
+                    and (not _is_number(run["size_pt"]) or run["size_pt"] <= 0)
+                ):
+                    raise DocxSkillError(
+                        f"{block_type}.runs.size_pt must be a positive number",
+                        code="invalid-spec",
+                    )
+        if block_type == "heading":
+            level = block.get("level")
+            if (
+                not isinstance(level, int)
+                or isinstance(level, bool)
+                or level < 1
+                or level > 3
+            ):
+                raise DocxSkillError("heading.level must be an integer from 1 to 3")
+        if block_type in {"paragraph", "body"}:
+            if "style" in block:
+                _require_string(
+                    block["style"], f"{block_type}.style", allow_empty=False
+                )
+            if "bold" in block and not isinstance(block["bold"], bool):
+                raise DocxSkillError(
+                    f"{block_type}.bold must be boolean", code="invalid-spec"
+                )
+        if block_type == "callout":
+            for field in ("label", "fill", "accent"):
+                if field in block:
+                    if field == "label":
+                        _require_string(block[field], "callout.label")
+                    else:
+                        _require_hex_color(block[field], f"callout.{field}")
+        if block_type in {"checklist", "source_list"}:
+            items = block.get("items")
+            if not isinstance(items, list) or not items:
+                raise DocxSkillError(
+                    f"{block_type}.items must be a non-empty array",
+                    code="invalid-spec",
+                )
+            if any(not _is_json_scalar(item) for item in items):
+                raise DocxSkillError(
+                    f"{block_type}.items must contain scalar values",
+                    code="invalid-spec",
+                )
+        if block_type == "checklist" and "checked" in block:
+            checked = block["checked"]
+            if not isinstance(checked, list) or any(
+                not isinstance(value, bool) for value in checked
+            ):
+                raise DocxSkillError(
+                    "checklist.checked must be an array of booleans",
+                    code="invalid-spec",
+                )
+        if block_type == "definition_list":
+            items = block.get("items")
+            if not isinstance(items, list) or not items:
+                raise DocxSkillError(
+                    "definition_list.items must be a non-empty array",
+                    code="invalid-spec",
+                )
+            for item in items:
+                if not isinstance(item, dict):
+                    raise DocxSkillError(
+                        "Every definition_list item must be an object",
+                        code="invalid-spec",
+                    )
+                _reject_unknown(
+                    item, {"term", "definition"}, "definition_list item"
+                )
+                if not {"term", "definition"} <= set(item):
+                    raise DocxSkillError(
+                        "Every definition_list item requires term and definition",
+                        code="invalid-spec",
+                    )
+                if any(not _is_json_scalar(value) for value in item.values()):
+                    raise DocxSkillError(
+                        "definition_list values must be scalar",
+                        code="invalid-spec",
+                    )
+        if block_type == "table":
+            headers = block.get("headers", [])
+            rows = block.get("rows", [])
+            if not isinstance(headers, list) or not isinstance(rows, list):
+                raise DocxSkillError("table headers and rows must be arrays", code="invalid-spec")
+            column_count = len(headers) or (len(rows[0]) if rows and isinstance(rows[0], list) else 0)
+            if column_count < 1:
+                raise DocxSkillError("table requires at least one column", code="invalid-spec")
+            for row in rows:
+                if not isinstance(row, list) or len(row) != column_count:
+                    raise DocxSkillError(
+                        "Every table row must match the column count", code="invalid-spec"
+                    )
+            if any(not _is_json_scalar(value) for value in headers):
+                raise DocxSkillError(
+                    "table.headers must contain scalar values", code="invalid-spec"
+                )
+            if any(
+                not _is_json_scalar(value)
+                for row in rows
+                for value in row
+            ):
+                raise DocxSkillError(
+                    "table.rows must contain scalar values", code="invalid-spec"
+                )
+            widths = block.get("column_widths")
+            if widths is not None and (
+                not isinstance(widths, list)
+                or len(widths) != column_count
+                or any(not _is_number(value) or value <= 0 for value in widths)
+            ):
+                raise DocxSkillError(
+                    "table.column_widths must contain one positive number per column",
+                    code="invalid-spec",
+                )
+            alignments = block.get("alignments")
+            if alignments is not None and (
+                not isinstance(alignments, list)
+                or len(alignments) != column_count
+                or any(value not in ALIGNMENTS for value in alignments)
+            ):
+                raise DocxSkillError(
+                    "table.alignments must contain left, center, or right for every column",
+                    code="invalid-spec",
+                )
+            if "repeat_header" in block and not isinstance(
+                block["repeat_header"], bool
+            ):
+                raise DocxSkillError(
+                    "table.repeat_header must be boolean", code="invalid-spec"
+                )
+            for field in ("style", "caption"):
+                if field in block:
+                    _require_string(block[field], f"table.{field}")
+        if block_type == "image" and not str(block.get("path", "")).strip():
+            raise DocxSkillError("image.path is required", code="invalid-spec")
+        if block_type == "image":
+            _require_string(block["path"], "image.path", allow_empty=False)
+            if (
+                "width_inches" in block
+                and (
+                    not _is_number(block["width_inches"])
+                    or block["width_inches"] <= 0
+                )
+            ):
+                raise DocxSkillError(
+                    "image.width_inches must be a positive number",
+                    code="invalid-spec",
+                )
+            for field in ("caption", "alt_text"):
+                if field in block:
+                    _require_string(block[field], f"image.{field}")
+        if block_type == "toc" and "levels" in block:
+            levels = block["levels"]
+            if (
+                not isinstance(levels, list)
+                or not levels
+                or any(
+                    not isinstance(level, int)
+                    or isinstance(level, bool)
+                    or level < 1
+                    or level > 9
+                    for level in levels
+                )
+            ):
+                raise DocxSkillError("toc.levels must contain integers from 1 to 9")
+        if block_type == "toc":
+            if "title" in block:
+                _require_string(block["title"], "toc.title")
+            if "page_break_after" in block and not isinstance(
+                block["page_break_after"], bool
+            ):
+                raise DocxSkillError(
+                    "toc.page_break_after must be boolean", code="invalid-spec"
+                )
+        if block_type == "field" and not str(block.get("instruction", "")).strip():
+            raise DocxSkillError("field.instruction is required", code="invalid-spec")
+        if block_type == "field":
+            _require_string(
+                block["instruction"], "field.instruction", allow_empty=False
+            )
+            keyword = block["instruction"].split(maxsplit=1)[0].upper()
+            if keyword not in SUPPORTED_FIELD_KEYWORDS:
+                raise DocxSkillError(
+                    f"Unsupported field instruction: {block['instruction']}",
+                    status="unsupported",
+                    code="unsupported-field",
+                    details={"supported": list(SUPPORTED_FIELD_KEYWORDS)},
+                )
+            if "placeholder" in block:
+                _require_string(block["placeholder"], "field.placeholder")
+            if block.get("alignment", "left") not in ALIGNMENTS:
+                raise DocxSkillError(
+                    "field.alignment must be left, center, or right",
+                    code="invalid-spec",
+                )
+        if block_type == "spacer":
+            if not _is_number(block.get("points")) or block["points"] < 0:
+                raise DocxSkillError(
+                    "spacer.points must be a non-negative number",
+                    code="invalid-spec",
+                )
+
+
+def validate_edit_patch(patch: dict[str, Any]) -> None:
+    _reject_unknown(patch, {"operations"}, "edit patch")
+    operations = patch.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise DocxSkillError("Patch must contain a non-empty operations array", code="invalid-patch")
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict):
+            raise DocxSkillError("Every edit operation must be an object", code="invalid-patch")
+        action = str(operation.get("action", ""))
+        if action not in EDIT_ACTION_SCHEMAS:
+            raise DocxSkillError(
+                f"Unsupported edit action: {action or '<missing>'}",
+                status="unsupported",
+                code="unsupported-edit-action",
+                details={
+                    "index": index,
+                    "supported": sorted(EDIT_ACTION_SCHEMAS),
+                    "fallback": "Use fallback-patch with an explicit OOXML part allowlist.",
+                },
+            )
+        _reject_unknown(operation, EDIT_ACTION_SCHEMAS[action], f"{action} operation")
+        if action in {"replace_text", "insert_after", "delete_paragraph", "set_style"}:
+            if not isinstance(operation.get("match"), str) or not operation["match"]:
+                raise DocxSkillError(f"{action} requires a non-empty match", code="invalid-patch")
+        if "location" in operation and not isinstance(operation["location"], str):
+            raise DocxSkillError(
+                f"{action}.location must be a string", code="invalid-patch"
+            )
+        if "allow_missing" in operation and not isinstance(
+            operation["allow_missing"], bool
+        ):
+            raise DocxSkillError(
+                f"{action}.allow_missing must be boolean", code="invalid-patch"
+            )
+        occurrence = operation.get("occurrence")
+        if occurrence is not None and occurrence not in {"all", "first"}:
+            if not isinstance(occurrence, int) or isinstance(occurrence, bool):
+                raise DocxSkillError(
+                    f"{action}.occurrence must be all, first, or a positive integer"
+                )
+            if occurrence < 1:
+                raise DocxSkillError(f"{action}.occurrence must be positive")
+        if action == "replace_text" and not isinstance(
+            operation.get("replacement"), str
+        ):
+            raise DocxSkillError(
+                "replace_text.replacement is required and must be a string",
+                code="invalid-patch",
+            )
+        if action in {"insert_after", "append_paragraph"} and not isinstance(
+            operation.get("text"), str
+        ):
+            raise DocxSkillError(
+                f"{action}.text is required and must be a string",
+                code="invalid-patch",
+            )
+        if action in {"insert_after", "append_paragraph"} and "style" in operation:
+            if not isinstance(operation["style"], str):
+                raise DocxSkillError(
+                    f"{action}.style must be a string", code="invalid-patch"
+                )
+        if action == "set_style" and not str(operation.get("style", "")).strip():
+            raise DocxSkillError("set_style.style is required", code="invalid-patch")
+        if action == "set_metadata":
+            metadata_fields = {
+                "title", "subject", "author", "keywords", "category", "comments"
+            }
+            supplied = metadata_fields & set(operation)
+            if not supplied:
+                raise DocxSkillError(
+                    "set_metadata requires at least one metadata field",
+                    code="invalid-patch",
+                )
+            for field in supplied:
+                if not isinstance(operation[field], str):
+                    raise DocxSkillError(
+                        f"set_metadata.{field} must be a string",
+                        code="invalid-patch",
+                    )
+        if action in {"set_header", "set_footer"}:
+            if not isinstance(operation.get("text"), str):
+                raise DocxSkillError(
+                    f"{action}.text is required and must be a string",
+                    code="invalid-patch",
+                )
+            if operation.get("alignment", "center") not in ALIGNMENTS:
+                raise DocxSkillError(f"{action}.alignment is invalid", code="invalid-patch")
+        if action == "set_table_cell":
+            for field in ("table", "row", "column"):
+                value = operation.get(field)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise DocxSkillError(
+                        f"set_table_cell.{field} must be an integer"
+                    )
+                if value < 1:
+                    raise DocxSkillError(f"set_table_cell.{field} must be positive")
+            if not isinstance(operation.get("text"), str):
+                raise DocxSkillError(
+                    "set_table_cell.text is required and must be a string",
+                    code="invalid-patch",
+                )
+        if action == "append_table_row":
+            table_index = operation.get("table")
+            if not isinstance(table_index, int) or isinstance(table_index, bool):
+                raise DocxSkillError(
+                    "append_table_row.table must be an integer",
+                    code="invalid-patch",
+                )
+            values = operation.get("values")
+            if (
+                table_index < 1
+                or not isinstance(values, list)
+                or any(not _is_json_scalar(value) for value in values)
+            ):
+                raise DocxSkillError(
+                    "append_table_row requires a positive table and scalar values array"
+                )
+
+
+def validate_review_spec(spec: dict[str, Any]) -> None:
+    _reject_unknown(spec, {"comments", "tracked_replacements"}, "review specification")
+    if not any(spec.get(collection) for collection in ("comments", "tracked_replacements")):
+        raise DocxSkillError(
+            "Review specification requires at least one comment or tracked replacement",
+            code="invalid-review-spec",
+        )
+    for collection in ("comments", "tracked_replacements"):
+        items = spec.get(collection, [])
+        if not isinstance(items, list):
+            raise DocxSkillError(f"{collection} must be an array", code="invalid-review-spec")
+        for item in items:
+            if not isinstance(item, dict):
+                raise DocxSkillError(
+                    f"Every {collection} item must be an object", code="invalid-review-spec"
+                )
+            allowed = (
+                COMMENT_FIELDS
+                if collection == "comments"
+                else TRACKED_REPLACEMENT_FIELDS
+            )
+            _reject_unknown(item, allowed, f"{collection} item")
+            if not isinstance(item.get("match"), str) or not item["match"]:
+                raise DocxSkillError(
+                    f"Every {collection} item requires a non-empty match",
+                    code="invalid-review-spec",
+                )
+            occurrence = item.get("occurrence")
+            if occurrence is not None:
+                if not isinstance(occurrence, int) or isinstance(occurrence, bool):
+                    raise DocxSkillError(
+                        f"{collection}.occurrence must be a positive integer"
+                    )
+                if occurrence < 1:
+                    raise DocxSkillError(
+                        f"{collection}.occurrence must be positive"
+                    )
+            for field in ("author", "date", "location"):
+                if field in item and not isinstance(item[field], str):
+                    raise DocxSkillError(
+                        f"{collection}.{field} must be a string",
+                        code="invalid-review-spec",
+                    )
+            if collection == "comments" and (
+                not isinstance(item.get("text"), str) or not item["text"].strip()
+            ):
+                raise DocxSkillError(
+                    "Every comment requires non-empty text",
+                    code="invalid-review-spec",
+                )
+            if collection == "tracked_replacements" and not isinstance(
+                item.get("replacement"), str
+            ):
+                raise DocxSkillError(
+                    "Every tracked replacement requires a string replacement",
+                    code="invalid-review-spec",
+                )
+
+
+def load_dispositions(path: str | Path | None) -> dict[str, str]:
+    if not path:
+        return {}
+    source = Path(path).expanduser().resolve()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise DocxSkillError(f"Disposition file not found: {source}") from exc
+    except json.JSONDecodeError as exc:
+        raise DocxSkillError(f"Invalid disposition JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise DocxSkillError("Warning dispositions must be a JSON object")
+    result: dict[str, str] = {}
+    for code, rationale in value.items():
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise DocxSkillError(f"Disposition for {code} must be a non-empty string")
+        result[str(code)] = rationale.strip()
+    return result

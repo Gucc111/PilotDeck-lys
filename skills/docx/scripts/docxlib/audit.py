@@ -9,8 +9,14 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
-from .common import assert_valid_docx, require_docx_path, write_json
-from .core import inspect_docx, iter_document_paragraphs
+from .common import (
+    DocxSkillError,
+    assert_valid_docx,
+    prepare_json_artifact_path,
+    require_docx_path,
+    write_json,
+)
+from .core import inspect_docx, iter_document_paragraphs, iter_document_tables
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -59,9 +65,21 @@ def audit_docx(
     profile: str = "draft",
 ) -> dict[str, Any]:
     if profile not in {"draft", "final", "accessible"}:
-        raise ValueError("Audit profile must be draft, final, or accessible")
+        raise DocxSkillError(
+            "Audit profile must be draft, final, or accessible",
+            code="invalid-audit-profile",
+        )
 
     path = require_docx_path(input_path)
+    json_output = (
+        prepare_json_artifact_path(
+            output_json,
+            protected_paths=(path,),
+            purpose="Audit output",
+        )
+        if output_json
+        else None
+    )
     validation = assert_valid_docx(path)
     info = inspect_docx(path)
     doc = Document(str(path))
@@ -180,8 +198,11 @@ def audit_docx(
                     f"section {index}",
                 )
 
-    for table_index, table in enumerate(doc.tables, start=1):
-        location = f"table {table_index}"
+    for table_index, (table_location, table) in enumerate(
+        iter_document_tables(doc),
+        start=1,
+    ):
+        location = f"{table_location} (table {table_index})"
         grid = table._tbl.tblGrid
         grid_columns = list(grid) if grid is not None else []
         if len(grid_columns) != len(table.columns):
@@ -271,12 +292,22 @@ def audit_docx(
                 f"The document still contains {len(info['comments'])} comment(s).",
             )
         tracked = info["tracked_changes"]
-        if tracked["insertions"] or tracked["deletions"]:
+        tracked_total = sum(
+            int(tracked.get(key, 0))
+            for key in (
+                "insertions",
+                "deletions",
+                "moves_from",
+                "moves_to",
+                "property_changes",
+            )
+        )
+        if tracked_total:
             _issue(
                 issues,
                 "error",
                 "tracked-changes-remain",
-                "The document still contains unfinalized tracked changes.",
+                f"The document still contains {tracked_total} unfinalized revision element(s).",
             )
         metadata = info["metadata"]
         if metadata.get("author") or metadata.get("last_modified_by"):
@@ -286,27 +317,69 @@ def audit_docx(
                 "personal-metadata",
                 "Author or last-modified-by metadata remains in the package.",
             )
+        package_features = info.get("package_features", {})
+        if package_features.get("digital_signatures"):
+            _issue(
+                issues,
+                "error",
+                "digital-signature-present",
+                "A digital signature remains; editing or sanitizing would invalidate it.",
+            )
+        if package_features.get("document_protection"):
+            _issue(
+                issues,
+                "error",
+                "document-protection-present",
+                "Document protection remains; bundled mutation operations will not bypass it.",
+            )
+        if package_features.get("active_content"):
+            _issue(
+                issues,
+                "error",
+                "active-content-present",
+                "ActiveX or macro content is present and is outside the safe mutation contract.",
+            )
+        if package_features.get("embeddings"):
+            _issue(
+                issues,
+                "warning",
+                "embedded-objects-present",
+                "Embedded objects were not recursively inspected.",
+            )
+        if info.get("external_relationships"):
+            _issue(
+                issues,
+                "warning",
+                "external-relationships-present",
+                "External relationships remain; confirm every target is intentional.",
+            )
 
     counts = {
         severity: sum(1 for item in issues if item["severity"] == severity)
         for severity in ("error", "warning", "info")
     }
+    coverage_complete = (
+        info.get("inspection_coverage", {}).get("status") == "complete"
+    )
+    passed = counts["error"] == 0 and coverage_complete
     result: dict[str, Any] = {
-        "status": "ok",
+        "status": "ok" if passed else "partial",
         "input": str(path),
         "profile": profile,
-        "passed": counts["error"] == 0,
+        "passed": passed,
         "summary": {
             **counts,
             "paragraphs": info["paragraph_count"],
             "headings": len(info["headings"]),
             "tables": info["table_count"],
             "images": len(image_alt_texts),
+            "fields": len(info.get("fields", [])),
+            "inspection_coverage": info.get("inspection_coverage", {}).get("status"),
         },
         "issues": issues,
         "validation": validation,
     }
-    if output_json:
-        write_json(output_json, result)
-        result["out"] = str(Path(output_json).expanduser().resolve())
+    if json_output:
+        write_json(json_output, result)
+        result["out"] = str(json_output)
     return result

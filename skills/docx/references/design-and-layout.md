@@ -140,7 +140,7 @@ Use local image paths only. Choose a width that remains inside the text area and
 
 - Place the caption immediately after the image.
 - Keep the image and caption together when possible.
-- Provide meaningful alternative text when accessibility is required. The current creation schema does not set image alt text, so treat an accessible audit warning as unresolved unless another trusted method supplies it.
+- Provide meaningful alternative text when accessibility is required. Set `alt_text` on every meaningful image block; decorative images may use an empty description only when that choice is intentional and verified in the accessible audit.
 - Do not use images as a substitute for editable text when the user needs to revise the content.
 - Inspect image sharpness, scaling, wrapping, and page position after rendering.
 

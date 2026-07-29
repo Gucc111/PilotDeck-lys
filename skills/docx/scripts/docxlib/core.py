@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import difflib
-import os
+import platform
+import re
+import shutil
+import subprocess
 import zipfile
 from copy import deepcopy
 from pathlib import Path
@@ -21,13 +24,27 @@ from lxml import etree
 
 from .common import (
     DocxSkillError,
+    active_content_parts,
+    assert_control_path_is_distinct,
+    assert_safe_mutation,
     assert_valid_docx,
+    blocked,
+    document_protection_details,
+    effective_document_protection_details,
     load_json,
+    prepare_output_docx_path,
+    prepare_json_artifact_path,
     pack_docx,
     require_distinct_paths,
     require_docx_path,
+    temporary_sibling,
     unpacked_copy,
     write_json,
+)
+from .protocol import (
+    SUPPORTED_FIELD_KEYWORDS,
+    validate_create_spec,
+    validate_edit_patch,
 )
 
 
@@ -84,6 +101,81 @@ PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+def _note_entry_count(
+    archive: zipfile.ZipFile,
+    part_name: str,
+    element_name: str,
+    parser: etree.XMLParser,
+) -> int:
+    if part_name not in archive.namelist():
+        return 0
+    root = etree.fromstring(archive.read(part_name), parser)
+    count = 0
+    for note in root.findall(f"w:{element_name}", NS):
+        note_type = (note.get(qn("w:type")) or "").strip()
+        if note_type in {
+            "separator",
+            "continuationSeparator",
+            "continuationNotice",
+        }:
+            continue
+        note_id = (note.get(qn("w:id")) or "").strip()
+        try:
+            if note_id and int(note_id) < 0:
+                continue
+        except ValueError:
+            pass
+        count += 1
+    return count
+
+
+CJK_FONT_CANDIDATES: dict[str, list[str]] = {
+    "Darwin": ["PingFang SC", "Songti SC", "Heiti SC", "Arial Unicode MS"],
+    "Windows": ["Microsoft YaHei", "DengXian", "SimSun", "Arial Unicode MS"],
+    "Linux": ["Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei", "DejaVu Sans"],
+}
+
+
+def _fontconfig_match(font_name: str) -> str | None:
+    executable = shutil.which("fc-match")
+    if not executable:
+        return None
+    try:
+        process = subprocess.run(
+            [executable, "-f", "%{family}", font_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = (process.stdout or "").split(",", 1)[0].strip()
+    return value or None
+
+
+def resolve_fonts(spec: dict[str, Any], preset: dict[str, Any]) -> dict[str, str]:
+    requested = spec.get("fonts") if isinstance(spec.get("fonts"), dict) else {}
+    latin = str(requested.get("latin") or preset["body_font"])
+    if requested.get("east_asia"):
+        east_asia = str(requested["east_asia"])
+    else:
+        system = platform.system()
+        candidates = CJK_FONT_CANDIDATES.get(system, CJK_FONT_CANDIDATES["Linux"])
+        preset_candidate = str(preset["east_asia_font"])
+        ordered = list(candidates)
+        if preset_candidate not in ordered:
+            ordered.append(preset_candidate)
+        east_asia = ordered[0]
+        if system == "Linux":
+            for candidate in ordered:
+                matched = _fontconfig_match(candidate)
+                if matched and matched.casefold() == candidate.casefold():
+                    east_asia = candidate
+                    break
+    return {"latin": latin, "east_asia": east_asia}
+
+
 def _set_run_fonts(run: Any, ascii_font: str, east_asia_font: str) -> None:
     run.font.name = ascii_font
     r_pr = run._element.get_or_add_rPr()
@@ -122,6 +214,49 @@ def _iter_table_paragraphs(table: Table, prefix: str) -> Iterator[tuple[str, Par
                 yield location, paragraph
             for nested_index, nested in enumerate(cell.tables):
                 yield from _iter_table_paragraphs(nested, f"{location}.table{nested_index + 1}")
+
+
+def _iter_table_tree(
+    table: Table,
+    location: str,
+    seen: set[int],
+) -> Iterator[tuple[str, Table]]:
+    identity = id(table._tbl)
+    if identity in seen:
+        return
+    seen.add(identity)
+    yield location, table
+    for row_index, row in enumerate(table.rows, start=1):
+        for column_index, cell in enumerate(row.cells, start=1):
+            for nested_index, nested in enumerate(cell.tables, start=1):
+                yield from _iter_table_tree(
+                    nested,
+                    (
+                        f"{location}.r{row_index}.c{column_index}"
+                        f".table{nested_index}"
+                    ),
+                    seen,
+                )
+
+
+def iter_document_tables(doc: DocumentObject) -> Iterator[tuple[str, Table]]:
+    seen: set[int] = set()
+    for table_index, table in enumerate(doc.tables, start=1):
+        yield from _iter_table_tree(table, f"table{table_index}", seen)
+
+    seen_parts: set[str] = set()
+    for section_index, section in enumerate(doc.sections, start=1):
+        for label, part in (("header", section.header), ("footer", section.footer)):
+            part_name = str(part.part.partname)
+            if part_name in seen_parts:
+                continue
+            seen_parts.add(part_name)
+            for table_index, table in enumerate(part.tables, start=1):
+                yield from _iter_table_tree(
+                    table,
+                    f"section{section_index}.{label}.table{table_index}",
+                    seen,
+                )
 
 
 def iter_document_paragraphs(doc: DocumentObject) -> Iterator[tuple[str, Paragraph]]:
@@ -170,25 +305,69 @@ def _paragraph_record(index: int, location: str, paragraph: Paragraph) -> dict[s
 def _ooxml_summary(docx_path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "comments": [],
-        "tracked_changes": {"insertions": 0, "deletions": 0},
+        "tracked_changes": {
+            "insertions": 0,
+            "deletions": 0,
+            "moves_from": 0,
+            "moves_to": 0,
+            "property_changes": 0,
+            "by_part": {},
+        },
         "fields": [],
         "image_parts": 0,
         "external_relationships": [],
+        "package_features": {},
+        "inspection_coverage": {
+            "status": "complete",
+            "limitations": [],
+        },
     }
     parser = etree.XMLParser(resolve_entities=False, no_network=True, recover=False)
     with zipfile.ZipFile(docx_path) as archive:
         names = set(archive.namelist())
-        document_root = etree.fromstring(archive.read("word/document.xml"), parser)
-        result["tracked_changes"] = {
-            "insertions": len(document_root.findall(".//w:ins", NS)),
-            "deletions": len(document_root.findall(".//w:del", NS)),
+        fields: list[dict[str, str]] = []
+        revision_totals = {
+            "insertions": 0,
+            "deletions": 0,
+            "moves_from": 0,
+            "moves_to": 0,
+            "property_changes": 0,
         }
-        fields: list[str] = []
-        for node in document_root.findall(".//w:instrText", NS):
-            value = " ".join((node.text or "").split())
-            if value:
-                fields.append(value)
+        revision_parts: dict[str, dict[str, int]] = {}
+        property_change_xpath = (
+            ".//w:pPrChange | .//w:rPrChange | .//w:tblPrChange | "
+            ".//w:trPrChange | .//w:tcPrChange | .//w:sectPrChange"
+        )
+        for part_name in sorted(
+            name
+            for name in names
+            if name.startswith("word/") and name.lower().endswith(".xml")
+        ):
+            root = etree.fromstring(archive.read(part_name), parser)
+            counts = {
+                "insertions": len(root.findall(".//w:ins", NS)),
+                "deletions": len(root.findall(".//w:del", NS)),
+                "moves_from": len(root.findall(".//w:moveFrom", NS)),
+                "moves_to": len(root.findall(".//w:moveTo", NS)),
+                "property_changes": len(root.xpath(property_change_xpath, namespaces=NS)),
+            }
+            if any(counts.values()):
+                revision_parts[part_name] = counts
+                for key, count in counts.items():
+                    revision_totals[key] += count
+            for node in root.findall(".//w:instrText", NS):
+                value = " ".join((node.text or "").split())
+                if value:
+                    fields.append({"part": part_name, "instruction": value, "form": "complex"})
+            for node in root.findall(".//w:fldSimple", NS):
+                value = " ".join((node.get(qn("w:instr")) or "").split())
+                if value:
+                    fields.append({"part": part_name, "instruction": value, "form": "simple"})
         result["fields"] = fields
+        result["tracked_changes"] = {
+            **revision_totals,
+            "by_part": revision_parts,
+        }
         result["image_parts"] = len(
             [name for name in names if name.startswith("word/media/") and not name.endswith("/")]
         )
@@ -206,20 +385,163 @@ def _ooxml_summary(docx_path: Path) -> dict[str, Any]:
                     }
                 )
 
-        rel_name = "word/_rels/document.xml.rels"
-        if rel_name in names:
+        for rel_name in sorted(name for name in names if name.endswith(".rels")):
             rel_root = etree.fromstring(archive.read(rel_name), parser)
             rel_ns = {"pr": "http://schemas.openxmlformats.org/package/2006/relationships"}
             for rel in rel_root.findall("pr:Relationship", rel_ns):
                 if rel.get("TargetMode") == "External":
                     result["external_relationships"].append(
-                        {"type": rel.get("Type"), "target": rel.get("Target")}
+                        {
+                            "part": rel_name,
+                            "type": rel.get("Type"),
+                            "target": rel.get("Target"),
+                        }
                     )
+        package_features = {
+            "macros": any(name.lower().endswith("vbaproject.bin") for name in names),
+            "active_content": active_content_parts(docx_path),
+            "digital_signatures": any(
+                name.startswith("_xmlsignatures/")
+                or name in {
+                    "word/signatures.xml",
+                    "word/signatureLine.xml",
+                }
+                for name in names
+            ),
+            "embeddings": sorted(
+                name for name in names if name.startswith("word/embeddings/") and not name.endswith("/")
+            ),
+            "charts": sorted(
+                name for name in names if name.startswith("word/charts/") and name.endswith(".xml")
+            ),
+            "diagrams": sorted(
+                name for name in names if name.startswith("word/diagrams/") and not name.endswith("/")
+            ),
+            "custom_xml": sorted(
+                name for name in names if name.startswith("customXml/") and not name.endswith("/")
+            ),
+            "custom_xml_schemas": [],
+            "content_controls": 0,
+            "text_boxes": 0,
+            "footnotes": _note_entry_count(
+                archive, "word/footnotes.xml", "footnote", parser
+            ),
+            "endnotes": _note_entry_count(
+                archive, "word/endnotes.xml", "endnote", parser
+            ),
+            "alt_chunks": 0,
+            "office_math": 0,
+            "document_protection_settings": document_protection_details(docx_path),
+            "document_protection": effective_document_protection_details(docx_path),
+        }
+        custom_xml_schemas: set[str] = set()
+        for part_name in sorted(
+            name
+            for name in names
+            if name.startswith("customXml/itemProps") and name.endswith(".xml")
+        ):
+            root = etree.fromstring(archive.read(part_name), parser)
+            for node in root.xpath(".//*[local-name()='schemaRef']"):
+                uri = next(
+                    (
+                        value
+                        for attr, value in node.attrib.items()
+                        if etree.QName(attr).localname == "uri"
+                    ),
+                    "",
+                )
+                if uri:
+                    custom_xml_schemas.add(uri)
+        package_features["custom_xml_schemas"] = sorted(custom_xml_schemas)
+        for part_name in sorted(
+            name for name in names if name.startswith("word/") and name.endswith(".xml")
+        ):
+            root = etree.fromstring(archive.read(part_name), parser)
+            package_features["content_controls"] += len(root.findall(".//w:sdt", NS))
+            package_features["text_boxes"] += len(root.findall(".//w:txbxContent", NS))
+            package_features["alt_chunks"] += len(root.findall(".//w:altChunk", NS))
+            package_features["office_math"] += len(
+                root.xpath(".//*[local-name()='oMath']")
+            )
+        result["package_features"] = package_features
+        limitations: list[str] = []
+        if package_features["text_boxes"]:
+            limitations.append("Text boxes are inventoried but not included in normal reading order.")
+        if package_features["charts"]:
+            limitations.append("Chart parts are inventoried but chart semantics are not extracted.")
+        if package_features["diagrams"]:
+            limitations.append(
+                "Diagram and SmartArt parts are inventoried but their visual semantics are not extracted."
+            )
+        if package_features["content_controls"]:
+            limitations.append("Content controls are inventoried but their behavior is not modeled.")
+        if package_features["footnotes"]:
+            limitations.append(
+                "Footnote content is inventoried but not included in normal reading order."
+            )
+        if package_features["endnotes"]:
+            limitations.append(
+                "Endnote content is inventoried but not included in normal reading order."
+            )
+        if package_features["alt_chunks"]:
+            limitations.append(
+                "Alternative-format imported content is inventoried but not interpreted."
+            )
+        if package_features["office_math"]:
+            limitations.append(
+                "Office Math objects are inventoried but mathematical semantics are not extracted."
+            )
+        nonstandard_custom_xml = sorted(
+            uri
+            for uri in custom_xml_schemas
+            if uri
+            != "http://schemas.openxmlformats.org/officeDocument/2006/bibliography"
+        )
+        package_features["custom_xml_nonstandard"] = nonstandard_custom_xml
+        if nonstandard_custom_xml:
+            limitations.append(
+                "Nonstandard custom XML is inventoried but its application behavior is not modeled."
+            )
+        if package_features["embeddings"]:
+            limitations.append("Embedded object contents are not inspected.")
+        if package_features["active_content"]:
+            limitations.append(
+                "ActiveX or macro content is inventoried but never executed or interpreted."
+            )
+        if package_features["digital_signatures"]:
+            limitations.append(
+                "Digital signature validity and signer identity are not verified."
+            )
+        if package_features["document_protection"]:
+            limitations.append(
+                "Document protection settings are inventoried but credentials and enforcement are not verified."
+            )
+        if result["comments"]:
+            limitations.append(
+                "Comment text is inventoried but comment anchor ranges are not mapped to reading-order text."
+            )
+        if any(revision_totals.values()):
+            limitations.append(
+                "Tracked revisions are inventoried but accepted/rejected reading states are not reconstructed."
+            )
+        result["inspection_coverage"] = {
+            "status": "partial" if limitations else "complete",
+            "limitations": limitations,
+        }
     return result
 
 
 def inspect_docx(input_path: str | Path, output_json: str | Path | None = None) -> dict[str, Any]:
     path = require_docx_path(input_path)
+    json_output = (
+        prepare_json_artifact_path(
+            output_json,
+            protected_paths=(path,),
+            purpose="Inspection output",
+        )
+        if output_json
+        else None
+    )
     validation = assert_valid_docx(path)
     doc = Document(str(path))
 
@@ -234,10 +556,14 @@ def inspect_docx(input_path: str | Path, output_json: str | Path | None = None) 
             headings.append(record)
 
     tables: list[dict[str, Any]] = []
-    for table_index, table in enumerate(doc.tables, start=1):
+    for table_index, (location, table) in enumerate(
+        iter_document_tables(doc),
+        start=1,
+    ):
         tables.append(
             {
                 "index": table_index,
+                "location": location,
                 "rows": len(table.rows),
                 "columns": len(table.columns),
                 "style": table.style.name if table.style else None,
@@ -284,10 +610,60 @@ def inspect_docx(input_path: str | Path, output_json: str | Path | None = None) 
         "validation": validation,
         **_ooxml_summary(path),
     }
-    if output_json:
-        write_json(output_json, result)
-        result["out"] = str(Path(output_json).resolve())
+    if result.get("inspection_coverage", {}).get("status") != "complete":
+        result["status"] = "partial"
+    if json_output:
+        write_json(json_output, result)
+        result["out"] = str(json_output)
     return result
+
+
+def filter_inspection(
+    result: dict[str, Any],
+    *,
+    summary: bool = False,
+    search: str | None = None,
+    location: str | None = None,
+    max_items: int = 200,
+) -> dict[str, Any]:
+    if max_items < 1:
+        raise DocxSkillError("max_items must be positive", code="invalid-inspection-filter")
+    filtered = dict(result)
+    paragraphs = list(result.get("paragraphs", []))
+    if search:
+        needle = search.casefold()
+        paragraphs = [
+            item
+            for item in paragraphs
+            if needle in str(item.get("text", "")).casefold()
+        ]
+    if location:
+        paragraphs = [
+            item
+            for item in paragraphs
+            if str(item.get("location", "")).startswith(location)
+        ]
+    total_matches = len(paragraphs)
+    paragraphs = paragraphs[:max_items]
+    filtered["query"] = {
+        "search": search,
+        "location": location,
+        "total_matches": total_matches,
+        "returned": len(paragraphs),
+        "truncated": total_matches > len(paragraphs),
+    }
+    if summary:
+        for key in ("paragraphs", "tables"):
+            filtered.pop(key, None)
+    else:
+        filtered["paragraphs"] = paragraphs
+        heading_indexes = {item.get("index") for item in paragraphs}
+        filtered["headings"] = [
+            item for item in result.get("headings", []) if item.get("index") in heading_indexes
+        ]
+        if search or location:
+            filtered.pop("tables", None)
+    return filtered
 
 
 def _configure_document(doc: DocumentObject, spec: dict[str, Any], preset: dict[str, Any]) -> None:
@@ -489,6 +865,83 @@ def _column_alignment(value: str) -> Any:
     return WD_ALIGN_PARAGRAPH.LEFT
 
 
+def _paragraph_alignment(value: str) -> Any:
+    normalized = value.lower()
+    if normalized == "center":
+        return WD_ALIGN_PARAGRAPH.CENTER
+    if normalized == "right":
+        return WD_ALIGN_PARAGRAPH.RIGHT
+    if normalized != "left":
+        raise DocxSkillError(f"Unsupported paragraph alignment: {value}")
+    return WD_ALIGN_PARAGRAPH.LEFT
+
+
+def _append_field(paragraph: Paragraph, instruction: str, placeholder: str = "") -> None:
+    normalized = " ".join(instruction.split())
+    keyword = normalized.split(maxsplit=1)[0].upper() if normalized else ""
+    if keyword not in SUPPORTED_FIELD_KEYWORDS:
+        raise DocxSkillError(
+            f"Unsupported field instruction: {instruction}",
+            status="unsupported",
+            code="unsupported-field",
+            details={"supported": list(SUPPORTED_FIELD_KEYWORDS)},
+        )
+    begin_run = paragraph.add_run()
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    begin_run._r.append(begin)
+    instruction_run = paragraph.add_run()
+    instruction_node = OxmlElement("w:instrText")
+    instruction_node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instruction_node.text = f" {normalized} "
+    instruction_run._r.append(instruction_node)
+    separate_run = paragraph.add_run()
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    separate_run._r.append(separate)
+    if placeholder:
+        paragraph.add_run(placeholder)
+    end_run = paragraph.add_run()
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    end_run._r.append(end)
+
+
+def _populate_field_template(paragraph: Paragraph, text: str, preset: dict[str, Any]) -> None:
+    cursor = 0
+    pattern = re.compile(r"\{(PAGE|NUMPAGES)\}")
+    for match in pattern.finditer(text):
+        if match.start() > cursor:
+            run = paragraph.add_run(text[cursor : match.start()])
+            _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+        _append_field(paragraph, match.group(1), "1")
+        cursor = match.end()
+    if cursor < len(text):
+        run = paragraph.add_run(text[cursor:])
+        _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+
+
+def _set_story(paragraph: Paragraph, value: str | dict[str, Any], preset: dict[str, Any]) -> None:
+    if isinstance(value, dict):
+        text = str(value.get("text", ""))
+        alignment = str(value.get("alignment", "center"))
+    else:
+        text = str(value)
+        alignment = "center"
+    paragraph.clear()
+    paragraph.alignment = _paragraph_alignment(alignment)
+    _populate_field_template(paragraph, text, preset)
+
+
+def _enable_field_updates(doc: DocumentObject) -> None:
+    settings = doc.settings.element
+    update = settings.find(qn("w:updateFields"))
+    if update is None:
+        update = OxmlElement("w:updateFields")
+        settings.append(update)
+    update.set(qn("w:val"), "true")
+
+
 def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[str, Any], base_dir: Path) -> None:
     block_type = str(block.get("type", "paragraph"))
     text = str(block.get("text", ""))
@@ -647,11 +1100,52 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = paragraph.add_run()
         run.add_picture(str(image_path), width=Inches(float(block.get("width_inches", 5.5))))
+        alt_text = str(block.get("alt_text", "")).strip()
+        if alt_text:
+            doc_pr_nodes = run._r.findall(".//wp:docPr", {
+                "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            })
+            for node in doc_pr_nodes:
+                node.set("descr", alt_text)
         caption = block.get("caption")
         if caption:
             cap = doc.add_paragraph(str(caption))
             cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _format_paragraph_runs(cap, preset)
+    elif block_type == "toc":
+        title = str(block.get("title", "Contents")).strip()
+        if title:
+            doc.add_heading(title, level=1)
+        levels = block.get("levels", [1, 2, 3])
+        if (
+            not isinstance(levels, list)
+            or not levels
+            or any(
+                not isinstance(level, int)
+                or isinstance(level, bool)
+                or level < 1
+                or level > 9
+                for level in levels
+            )
+        ):
+            raise DocxSkillError("toc.levels must contain integers from 1 to 9")
+        first, last = min(levels), max(levels)
+        paragraph = doc.add_paragraph()
+        _append_field(
+            paragraph,
+            f'TOC \\o "{first}-{last}" \\h \\z \\u',
+            "Update this field to populate the table of contents.",
+        )
+        if bool(block.get("page_break_after", True)):
+            doc.add_page_break()
+    elif block_type == "field":
+        paragraph = doc.add_paragraph()
+        paragraph.alignment = _paragraph_alignment(str(block.get("alignment", "left")))
+        _append_field(
+            paragraph,
+            str(block.get("instruction", "")),
+            str(block.get("placeholder", "")),
+        )
     elif block_type == "page_break":
         doc.add_page_break()
     elif block_type == "spacer":
@@ -661,22 +1155,36 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         raise DocxSkillError(f"Unsupported content block type: {block_type}")
 
 
-def create_docx(spec_path: str | Path, output_path: str | Path) -> dict[str, Any]:
+def create_docx(
+    spec_path: str | Path,
+    output_path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
     spec_file = Path(spec_path).expanduser().resolve()
+    assert_control_path_is_distinct(
+        spec_file,
+        output_path,
+        purpose="Create specification",
+    )
     spec = load_json(spec_file)
-    if isinstance(spec, list):
-        spec = {"content": spec}
     if not isinstance(spec, dict):
-        raise DocxSkillError("Create specification must be an object or content array")
+        raise DocxSkillError(
+            "Create specification must be an object", code="invalid-spec"
+        )
+    validate_create_spec(spec)
     preset_name = str(spec.get("preset", "business-report"))
     if preset_name not in PRESETS:
         raise DocxSkillError(f"Unknown preset: {preset_name}")
     preset = dict(PRESETS[preset_name])
-    output = require_docx_path(output_path, must_exist=False)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    resolved_fonts = resolve_fonts(spec, preset)
+    preset["body_font"] = resolved_fonts["latin"]
+    preset["east_asia_font"] = resolved_fonts["east_asia"]
+    output = prepare_output_docx_path(output_path, overwrite=overwrite)
 
     doc = Document()
     _configure_document(doc, spec, preset)
+    _enable_field_updates(doc)
     props = doc.core_properties
     metadata = spec.get("metadata", {})
     if isinstance(metadata, dict):
@@ -687,15 +1195,11 @@ def create_docx(spec_path: str | Path, output_path: str | Path) -> dict[str, Any
     if spec.get("header"):
         for section in doc.sections:
             paragraph = section.header.paragraphs[0]
-            paragraph.text = str(spec["header"])
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            _format_paragraph_runs(paragraph, preset)
+            _set_story(paragraph, spec["header"], preset)
     if spec.get("footer"):
         for section in doc.sections:
             paragraph = section.footer.paragraphs[0]
-            paragraph.text = str(spec["footer"])
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _format_paragraph_runs(paragraph, preset)
+            _set_story(paragraph, spec["footer"], preset)
 
     content = spec.get("content", [])
     if not isinstance(content, list):
@@ -705,14 +1209,16 @@ def create_docx(spec_path: str | Path, output_path: str | Path) -> dict[str, Any
             raise DocxSkillError("Every content block must be an object")
         _add_content_block(doc, block, preset, spec_file.parent)
 
-    temp = output.with_suffix(".docx.tmp")
-    doc.save(str(temp))
-    os.replace(temp, output)
+    with temporary_sibling(output, suffix=".tmp.docx") as temp:
+        doc.save(str(temp))
+        assert_valid_docx(temp)
+        temp.replace(output)
     validation = assert_valid_docx(output)
     return {
         "status": "ok",
         "out": str(output),
         "preset": preset_name,
+        "fonts": resolved_fonts,
         "blocks": len(content),
         "validation": validation,
     }
@@ -728,17 +1234,17 @@ def _run_spans(paragraph: Paragraph) -> list[tuple[int, int, Any]]:
     return spans
 
 
-def _replace_once(paragraph: Paragraph, match: str, replacement: str) -> bool:
-    full_text = "".join(run.text for run in paragraph.runs)
-    start = full_text.find(match)
-    if start < 0:
-        return False
-    end = start + len(match)
+def _replace_range(
+    paragraph: Paragraph, start: int, end: int, replacement: str
+) -> None:
     spans = _run_spans(paragraph)
     start_index = next((i for i, (a, b, _) in enumerate(spans) if a <= start < b), None)
     end_index = next((i for i, (a, b, _) in enumerate(spans) if a < end <= b), None)
     if start_index is None or end_index is None:
-        return False
+        raise DocxSkillError(
+            "Unable to map a text replacement back to Word runs",
+            code="edit-run-mapping-failed",
+        )
     start_a, _, start_run = spans[start_index]
     end_a, _, end_run = spans[end_index]
     prefix = start_run.text[: start - start_a]
@@ -750,11 +1256,121 @@ def _replace_once(paragraph: Paragraph, match: str, replacement: str) -> bool:
         for index in range(start_index + 1, end_index):
             spans[index][2].text = ""
         end_run.text = suffix
-    return True
 
 
-def _matching_paragraphs(doc: DocumentObject, match: str) -> list[Paragraph]:
-    return [paragraph for _, paragraph in iter_document_paragraphs(doc) if match in paragraph.text]
+def _replace_all(paragraph: Paragraph, match: str, replacement: str) -> int:
+    """Replace original non-overlapping matches without re-matching inserted text."""
+    full_text = "".join(run.text for run in paragraph.runs)
+    starts = _match_starts(full_text, match)
+    for start in reversed(starts):
+        _replace_range(paragraph, start, start + len(match), replacement)
+    return len(starts)
+
+
+def _match_starts(text: str, match: str) -> list[int]:
+    starts: list[int] = []
+    cursor = 0
+    while True:
+        start = text.find(match, cursor)
+        if start < 0:
+            break
+        starts.append(start)
+        cursor = start + len(match)
+    return starts
+
+
+def _replace_selected_text(
+    matches: list[tuple[str, Paragraph]],
+    match: str,
+    replacement: str,
+    occurrence: Any,
+) -> tuple[int, list[str]]:
+    if occurrence == "all":
+        affected = 0
+        locations: list[str] = []
+        for location, paragraph in matches:
+            count = _replace_all(paragraph, match, replacement)
+            affected += count
+            if count and location not in locations:
+                locations.append(location)
+        return affected, locations
+
+    targets: list[tuple[str, Paragraph, int]] = []
+    for location, paragraph in matches:
+        text = "".join(run.text for run in paragraph.runs)
+        targets.extend(
+            (location, paragraph, start)
+            for start in _match_starts(text, match)
+        )
+
+    if occurrence in (None, ""):
+        if len(targets) > 1:
+            raise DocxSkillError(
+                f"replace_text matched {len(targets)} text occurrences; "
+                "specify occurrence or location",
+                status="partial",
+                code="ambiguous-edit-target",
+                details={"matches": [location for location, _, _ in targets[:20]]},
+            )
+        selected = targets[:1]
+    elif occurrence == "first":
+        selected = targets[:1]
+    else:
+        try:
+            index = int(occurrence)
+        except (TypeError, ValueError) as exc:
+            raise DocxSkillError(
+                "replace_text.occurrence must be 'all', 'first', or a positive integer"
+            ) from exc
+        if index < 1:
+            raise DocxSkillError("replace_text.occurrence must be positive")
+        selected = targets[index - 1 : index]
+
+    for _, paragraph, start in selected:
+        _replace_range(paragraph, start, start + len(match), replacement)
+    locations = list(dict.fromkeys(location for location, _, _ in selected))
+    return len(selected), locations
+
+
+def _matching_paragraphs(
+    doc: DocumentObject, match: str, location: str | None = None
+) -> list[tuple[str, Paragraph]]:
+    return [
+        (paragraph_location, paragraph)
+        for paragraph_location, paragraph in iter_document_paragraphs(doc)
+        if match in paragraph.text
+        and (not location or paragraph_location.startswith(location))
+    ]
+
+
+def _select_paragraphs(
+    matches: list[tuple[str, Paragraph]],
+    occurrence: Any,
+    *,
+    action: str,
+) -> list[tuple[str, Paragraph]]:
+    if occurrence == "all":
+        return matches
+    if occurrence in (None, ""):
+        if len(matches) > 1:
+            raise DocxSkillError(
+                f"{action} matched {len(matches)} paragraphs; specify occurrence or location",
+                status="partial",
+                code="ambiguous-edit-target",
+                details={"matches": [location for location, _ in matches[:20]]},
+            )
+        return matches[:1]
+    if occurrence == "first":
+        return matches[:1]
+    try:
+        index = int(occurrence)
+    except (TypeError, ValueError) as exc:
+        raise DocxSkillError(
+            f"{action}.occurrence must be 'all', 'first', or a positive integer"
+        ) from exc
+    if index < 1:
+        raise DocxSkillError(f"{action}.occurrence must be positive")
+    return matches[index - 1 : index]
 
 
 def _insert_after(paragraph: Paragraph, text: str, style: str | None) -> Paragraph:
@@ -774,12 +1390,42 @@ def _delete_paragraph(paragraph: Paragraph) -> None:
 
 
 def edit_docx(
-    input_path: str | Path, patch_path: str | Path, output_path: str | Path
+    input_path: str | Path,
+    patch_path: str | Path,
+    output_path: str | Path,
+    *,
+    allow_lossy: bool = False,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
-    source, output = require_distinct_paths(input_path, output_path)
+    source, output = require_distinct_paths(
+        input_path, output_path, overwrite=overwrite
+    )
+    assert_control_path_is_distinct(
+        patch_path,
+        output,
+        purpose="Edit patch",
+    )
+    assert_safe_mutation(source, operation="edit")
     patch = load_json(patch_path)
     if not isinstance(patch, dict) or not isinstance(patch.get("operations"), list):
         raise DocxSkillError("Patch must contain an operations array")
+    validate_edit_patch(patch)
+    source_info = inspect_docx(source)
+    features = source_info.get("package_features", {})
+    high_risk = {
+        "embeddings": features.get("embeddings"),
+        "charts": features.get("charts"),
+        "content_controls": features.get("content_controls"),
+    }
+    present_high_risk = {key: value for key, value in high_risk.items() if value}
+    if present_high_risk and not allow_lossy:
+        raise blocked(
+            "The document contains package-sensitive features that a python-docx round trip "
+            "may not preserve. Use fallback-patch for a targeted OOXML change or obtain explicit "
+            "permission for --allow-lossy.",
+            code="lossy-edit-blocked",
+            details={"features": present_high_risk},
+        )
     doc = Document(str(source))
     operation_results: list[dict[str, Any]] = []
 
@@ -791,37 +1437,43 @@ def edit_docx(
         if action == "replace_text":
             match = str(operation.get("match", ""))
             replacement = str(operation.get("replacement", ""))
-            if not match:
-                raise DocxSkillError("replace_text requires a non-empty match")
-            limit_all = str(operation.get("occurrence", "first")) == "all"
-            for _, paragraph in list(iter_document_paragraphs(doc)):
-                while _replace_once(paragraph, match, replacement):
-                    affected += 1
-                    if not limit_all:
-                        break
-                if affected and not limit_all:
-                    break
+            occurrence = operation.get("occurrence")
+            location = str(operation.get("location", "")) or None
+            matches = _matching_paragraphs(doc, match, location)
+            affected, locations = _replace_selected_text(
+                matches, match, replacement, occurrence
+            )
+            operation["_locations"] = locations
         elif action == "insert_after":
             match = str(operation.get("match", ""))
-            matches = _matching_paragraphs(doc, match)
-            if matches:
-                _insert_after(matches[0], str(operation.get("text", "")), operation.get("style"))
-                affected = 1
+            matches = _matching_paragraphs(
+                doc, match, str(operation.get("location", "")) or None
+            )
+            selected = _select_paragraphs(matches, operation.get("occurrence"), action=action)
+            for _, paragraph in selected:
+                _insert_after(paragraph, str(operation.get("text", "")), operation.get("style"))
+                affected += 1
         elif action == "delete_paragraph":
             match = str(operation.get("match", ""))
-            matches = _matching_paragraphs(doc, match)
-            if matches:
-                _delete_paragraph(matches[0])
-                affected = 1
+            matches = _matching_paragraphs(
+                doc, match, str(operation.get("location", "")) or None
+            )
+            selected = _select_paragraphs(matches, operation.get("occurrence"), action=action)
+            for _, paragraph in selected:
+                _delete_paragraph(paragraph)
+                affected += 1
         elif action == "set_style":
             match = str(operation.get("match", ""))
             style = str(operation.get("style", ""))
             if not style:
                 raise DocxSkillError("set_style requires style")
-            matches = _matching_paragraphs(doc, match)
-            if matches:
-                matches[0].style = style
-                affected = 1
+            matches = _matching_paragraphs(
+                doc, match, str(operation.get("location", "")) or None
+            )
+            selected = _select_paragraphs(matches, operation.get("occurrence"), action=action)
+            for _, paragraph in selected:
+                paragraph.style = style
+                affected += 1
         elif action == "append_paragraph":
             doc.add_paragraph(str(operation.get("text", "")), style=str(operation.get("style", "Normal")))
             affected = 1
@@ -834,26 +1486,106 @@ def edit_docx(
                 if field in operation:
                     setattr(props, field, str(operation[field]))
                     affected += 1
+        elif action in {"set_header", "set_footer"}:
+            target_name = "header" if action == "set_header" else "footer"
+            alignment = _paragraph_alignment(str(operation.get("alignment", "center")))
+            seen_parts: set[str] = set()
+            for section in doc.sections:
+                story = getattr(section, target_name)
+                part_name = str(story.part.partname)
+                if part_name in seen_parts:
+                    continue
+                seen_parts.add(part_name)
+                paragraph = story.paragraphs[0]
+                paragraph.clear()
+                paragraph.alignment = alignment
+                _populate_field_template(
+                    paragraph,
+                    str(operation.get("text", "")),
+                    {
+                        "body_font": doc.styles["Normal"].font.name or "Arial",
+                        "east_asia_font": doc.styles["Normal"].font.name or "Microsoft YaHei",
+                    },
+                )
+                affected += 1
+        elif action == "set_table_cell":
+            table_index = int(operation.get("table", 0))
+            row_index = int(operation.get("row", 0))
+            column_index = int(operation.get("column", 0))
+            if table_index < 1 or table_index > len(doc.tables):
+                raise DocxSkillError("set_table_cell.table is out of range")
+            table = doc.tables[table_index - 1]
+            if row_index < 1 or row_index > len(table.rows):
+                raise DocxSkillError("set_table_cell.row is out of range")
+            if column_index < 1 or column_index > len(table.columns):
+                raise DocxSkillError("set_table_cell.column is out of range")
+            table.cell(row_index - 1, column_index - 1).text = str(operation.get("text", ""))
+            affected = 1
+        elif action == "append_table_row":
+            table_index = int(operation.get("table", 0))
+            values = operation.get("values")
+            if table_index < 1 or table_index > len(doc.tables):
+                raise DocxSkillError("append_table_row.table is out of range")
+            table = doc.tables[table_index - 1]
+            if not isinstance(values, list) or len(values) != len(table.columns):
+                raise DocxSkillError(
+                    "append_table_row.values must contain one value per table column"
+                )
+            cells = table.add_row().cells
+            for index, value in enumerate(values):
+                cells[index].text = str(value)
+            affected = 1
         else:
             raise DocxSkillError(f"Unsupported edit action: {action}")
-        operation_results.append({"action": action, "affected": affected})
+        if affected == 0 and not bool(operation.get("allow_missing", False)):
+            raise DocxSkillError(
+                f"{action} did not affect the document",
+                status="partial",
+                code="edit-target-not-found",
+                details={"action": action, "match": operation.get("match")},
+            )
+        operation_results.append(
+            {
+                "action": action,
+                "affected": affected,
+                "locations": operation.pop("_locations", []),
+            }
+        )
 
-    temp = output.with_suffix(".docx.tmp")
-    doc.save(str(temp))
-    os.replace(temp, output)
+    with temporary_sibling(output, suffix=".tmp.docx") as temp:
+        doc.save(str(temp))
+        assert_valid_docx(temp)
+        temp.replace(output)
     validation = assert_valid_docx(output)
     return {
         "status": "ok",
         "input": str(source),
         "out": str(output),
         "operations": operation_results,
+        "lossy_override": allow_lossy,
         "validation": validation,
     }
 
 
 def compare_docx(before_path: str | Path, after_path: str | Path, output_json: str | Path) -> dict[str, Any]:
-    before = inspect_docx(before_path)
-    after = inspect_docx(after_path)
+    before_source = require_docx_path(before_path)
+    after_source = require_docx_path(after_path)
+    json_output = prepare_json_artifact_path(
+        output_json,
+        protected_paths=(before_source, after_source),
+        purpose="Comparison output",
+    )
+    before = inspect_docx(before_source)
+    after = inspect_docx(after_source)
+    comparison_coverage = {
+        "before": before.get("inspection_coverage"),
+        "after": after.get("inspection_coverage"),
+    }
+    coverage_complete = all(
+        item.get("status") == "complete"
+        for item in comparison_coverage.values()
+        if isinstance(item, dict)
+    )
     before_lines = [item["text"] for item in before["paragraphs"]]
     after_lines = [item["text"] for item in after["paragraphs"]]
     diff = list(
@@ -866,24 +1598,57 @@ def compare_docx(before_path: str | Path, after_path: str | Path, output_json: s
         )
     )
     result = {
-        "status": "ok",
-        "before": str(Path(before_path).resolve()),
-        "after": str(Path(after_path).resolve()),
+        "status": "ok" if coverage_complete else "partial",
+        "before": str(before_source),
+        "after": str(after_source),
+        "inspection_coverage": comparison_coverage,
         "paragraph_count_before": len(before_lines),
         "paragraph_count_after": len(after_lines),
         "table_count_before": before["table_count"],
         "table_count_after": after["table_count"],
+        "heading_count_before": len(before["headings"]),
+        "heading_count_after": len(after["headings"]),
+        "section_count_before": len(before["sections"]),
+        "section_count_after": len(after["sections"]),
+        "field_count_before": len(before.get("fields", [])),
+        "field_count_after": len(after.get("fields", [])),
+        "image_count_before": before.get("image_parts", 0),
+        "image_count_after": after.get("image_parts", 0),
+        "package_feature_changes": {
+            key: {
+                "before": before.get("package_features", {}).get(key),
+                "after": after.get("package_features", {}).get(key),
+            }
+            for key in sorted(
+                set(before.get("package_features", {}))
+                | set(after.get("package_features", {}))
+            )
+            if before.get("package_features", {}).get(key)
+            != after.get("package_features", {}).get(key)
+        },
+        "metadata_changes": {
+            key: {"before": before["metadata"].get(key), "after": after["metadata"].get(key)}
+            for key in sorted(set(before["metadata"]) | set(after["metadata"]))
+            if before["metadata"].get(key) != after["metadata"].get(key)
+        },
         "diff": diff,
     }
-    write_json(output_json, result)
-    result["out"] = str(Path(output_json).resolve())
+    write_json(json_output, result)
+    result["out"] = str(json_output)
     return result
 
 
 def sanitize_docx(
-    input_path: str | Path, output_path: str | Path, *, remove_comments: bool = False
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    remove_comments: bool = False,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
-    source, output = require_distinct_paths(input_path, output_path)
+    source, output = require_distinct_paths(
+        input_path, output_path, overwrite=overwrite
+    )
+    assert_safe_mutation(source, operation="sanitize")
     with unpacked_copy(source) as (_, package):
         core_path = package / "docProps" / "core.xml"
         if core_path.exists():
@@ -957,5 +1722,16 @@ def sanitize_docx(
         "input": str(source),
         "out": str(output),
         "removed_comments": remove_comments,
+        "scope": [
+            "core author, last-modified-by, subject, and keywords",
+            "custom properties",
+            "Word rsid attributes",
+            "comments" if remove_comments else "comments retained",
+        ],
+        "remaining_risks": [
+            "visible text and images are not redacted",
+            "embedded object and image metadata are not recursively sanitized",
+            "external relationship targets are not removed",
+        ],
         "validation": assert_valid_docx(output),
     }
