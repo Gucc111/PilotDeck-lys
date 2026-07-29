@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { parse as parseYaml } from 'yaml';
 import { authenticatedFetch } from '../../../../utils/api';
+import { usePilotDeckConfig } from '../../../../hooks/usePilotDeckConfig';
+import { buildModelRefOptions, type ModelRefOption } from '../../../../shared/buildModelRefOptions';
 import type {
   SettingsProject,
   TeammateCatalog,
@@ -9,7 +12,6 @@ import type {
   TeammateWorkspaceBinding,
 } from '../../types/types';
 import {
-  type ArrayDraftField,
   type DraftField,
   type TeammateDraft,
   type TeammatesView,
@@ -24,7 +26,6 @@ import {
   normalizeDiagnostics,
   normalizeTeammates,
   normalizeWorkspaceBindings,
-  parseArrayField,
   readJson,
   validateDraft,
 } from './teammatesShared';
@@ -62,6 +63,18 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
   const workspaceRequestIds = useRef<Record<string, number>>({});
 
   const firstProjectPath = projectOptions[0]?.value ?? '';
+
+  const { raw: configRaw } = usePilotDeckConfig();
+  const modelOptions: ModelRefOption[] = useMemo(() => {
+    if (!configRaw) return [];
+    try {
+      const parsed = parseYaml(configRaw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return buildModelRefOptions(parsed.model?.providers);
+      }
+    } catch { /* ignore parse errors */ }
+    return [];
+  }, [configRaw]);
 
   const loadTeammates = useCallback(async () => {
     setLoading(true);
@@ -207,12 +220,6 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
     setDraft((current) => ({ ...current, [field]: value }));
     setValidationErrors((current) => ({ ...current, [field]: undefined }));
     setServerDiagnostics([]);
-  };
-
-  const addCatalogValue = (field: ArrayDraftField, value: string) => {
-    const values = parseArrayField(draft[field]);
-    if (values.includes(value)) return;
-    updateDraft(field, [...values, value].join('\n'));
   };
 
   const save = async () => {
@@ -378,6 +385,7 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       saving={saving}
       isNew={view.kind === 'new'}
       projects={projectOptions}
+      modelOptions={modelOptions}
       workspaceBindingsMap={workspaceBindingsMap}
       catalogMap={catalogMap}
       workspaceLoadingSet={workspaceLoadingSet}
@@ -385,7 +393,6 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       canonicalProjectKeyMap={canonicalProjectKeyMap}
       bindingError={bindingError}
       onUpdateDraft={updateDraft}
-      onAddCatalogValue={addCatalogValue}
       onSave={() => void save()}
       onBack={navigateToList}
       onSaveBinding={(projectPath, teammateId, binding) =>

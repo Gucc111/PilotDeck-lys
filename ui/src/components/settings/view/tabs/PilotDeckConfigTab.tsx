@@ -61,6 +61,7 @@ import {
   type CatalogModel,
 } from '../../../../shared/catalogProviders';
 import { fetchProviderModels, fetchRemoteDefaultModels, type ApiModelListItem } from '../../../../shared/modelListApi';
+import { buildModelRefOptions } from '../../../../shared/buildModelRefOptions';
 import type { SettingsProject } from '../../types/types';
 import { isCronConfigEnabled, patch } from './pilotDeckConfigForm';
 
@@ -1486,35 +1487,9 @@ function ensureModelRefsConfigured<T extends PilotDeckConfig>(config: T, refs: A
   return refs.reduce((next, ref) => ensureModelRefConfigured(next, ref), config);
 }
 
-// Build the "provider/model" options for agent / memory / router model dropdowns
-// from configured providers. Catalog providers expose every catalog model, while
-// custom/off-catalog models come from the provider's saved models map.
-function buildModelRefOptions(config: PilotDeckConfig): Array<{ value: string; label: string }> {
-  const out: Array<{ value: string; label: string }> = [];
-  const providers = config.model?.providers ?? {};
-  for (const [pid, prov] of Object.entries(providers)) {
-    const catalog = findCatalogProviderById(pid);
-    const seen = new Set<string>();
-
-    if (catalog) {
-      for (const model of catalog.models) {
-        seen.add(model.id);
-        out.push({
-          value: `${pid}/${model.id}`,
-          label: `${catalog.displayName}: ${model.displayName}`,
-        });
-      }
-    }
-
-    for (const mid of Object.keys(prov.models ?? {})) {
-      if (seen.has(mid)) continue;
-      out.push({
-        value: `${pid}/${mid}`,
-        label: catalog ? `${catalog.displayName}: ${mid}` : `${pid}/${mid}`,
-      });
-    }
-  }
-  return out;
+// Thin wrapper so existing callers keep the `(config)` signature.
+function buildModelRefOptionsFromConfig(config: PilotDeckConfig) {
+  return buildModelRefOptions(config.model?.providers);
 }
 
 function defaultCapabilitiesForProtocol(protocol?: CatalogProviderProtocol): {
@@ -1583,7 +1558,7 @@ function activeModelCapabilities(config: PilotDeckConfig): {
 function AgentsSection({ config, onChange }: { config: PilotDeckConfig; onChange: (next: PilotDeckConfig) => void }) {
   const { t } = useTranslation('settings');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const refOptions = buildModelRefOptions(config);
+  const refOptions = buildModelRefOptionsFromConfig(config);
   const mainRef = config.agent?.model ?? '';
   const subDefault = config.agent?.subagents?.default ?? 'inherit';
 
@@ -2304,7 +2279,7 @@ function MemorySection({
   // Memory uses a "provider/model" reference, or "inherit" to fall back
   // to agent.model. The backend treats `undefined` and `"inherit"` the
   // same way, so we map both to the inherit option in the UI.
-  const refOptions = buildModelRefOptions(config);
+  const refOptions = buildModelRefOptionsFromConfig(config);
   const options = [
     { value: 'inherit', label: t('pilotDeckConfig.panels.memory.model.inherit') },
     ...refOptions,
@@ -3002,7 +2977,7 @@ function RouterFallbackEditor({ config, onChange }: { config: PilotDeckConfig; o
   const { t } = useTranslation('settings');
   const fallback = config.router?.fallback ?? {};
   const entries = Object.entries(fallback);
-  const modelOpts = buildModelRefOptions(config);
+  const modelOpts = buildModelRefOptionsFromConfig(config);
   const [newKey, setNewKey] = useState('');
 
   const setChain = (scenario: string, chain: string[]) =>
@@ -3122,7 +3097,7 @@ function TokenSaverTierEditor({ config, onChange }: { config: PilotDeckConfig; o
   const { t } = useTranslation('settings');
   const tiers = config.router?.tokenSaver?.tiers ?? {};
   const entries = Object.entries(tiers);
-  const modelOpts = buildModelRefOptions(config);
+  const modelOpts = buildModelRefOptionsFromConfig(config);
   const [newKey, setNewKey] = useState('');
 
   const setTier = (key: string, field: 'model' | 'description', value: string) =>
@@ -3264,7 +3239,7 @@ function TokenSaverRulesEditor({ config, onChange }: { config: PilotDeckConfig; 
 
 function RouterLevelEditor({ config, onChange }: { config: PilotDeckConfig; onChange: (next: PilotDeckConfig) => void }) {
   const { t } = useTranslation('settings');
-  const modelOpts = buildModelRefOptions(config);
+  const modelOpts = buildModelRefOptionsFromConfig(config);
   const defaultValue = config.router?.scenarios?.default ?? '';
   const judgeValue = config.router?.tokenSaver?.judge ?? '';
   const tiers = config.router?.tokenSaver?.tiers ?? {};
@@ -3344,7 +3319,7 @@ function RouterSection({ config, onChange }: { config: PilotDeckConfig; onChange
   const [showAdvanced, setShowAdvanced] = useState(false);
   const r = config.router ?? {};
   const enabled = r.enabled !== false;
-  const modelOpts = buildModelRefOptions(config);
+  const modelOpts = buildModelRefOptionsFromConfig(config);
 
   const ts = r.tokenSaver ?? {};
   const ao = r.autoOrchestrate ?? {};

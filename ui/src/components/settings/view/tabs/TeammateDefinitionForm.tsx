@@ -1,8 +1,8 @@
 import { type ReactNode } from 'react';
 import { AlertTriangle, Loader2, Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button } from '../../../../shared/view/ui';
-import { cn } from '../../../../lib/utils';
+import { Button, Select, MultiSelect } from '../../../../shared/view/ui';
+import type { ModelRefOption } from '../../../../shared/buildModelRefOptions';
 import type { TeammateCatalog, TeammateDiagnostic } from '../../types/types';
 import {
   type ArrayDraftField,
@@ -25,8 +25,8 @@ export default function TeammateDefinitionForm({
   hasWorkspace,
   saving,
   isNew,
+  modelOptions,
   onUpdateDraft,
-  onAddCatalogValue,
   onSave,
   onCancel,
 }: {
@@ -38,12 +38,17 @@ export default function TeammateDefinitionForm({
   hasWorkspace: boolean;
   saving: boolean;
   isNew: boolean;
+  modelOptions: ModelRefOption[];
   onUpdateDraft: (field: DraftField, value: string) => void;
-  onAddCatalogValue: (field: ArrayDraftField, value: string) => void;
   onSave: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation('settings');
+
+  const modelSelectOptions = [
+    { value: '', label: t('teammates.placeholders.model') },
+    ...modelOptions,
+  ];
 
   return (
     <form
@@ -63,7 +68,6 @@ export default function TeammateDefinitionForm({
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label={t('teammates.fields.id')}
-            description={t('teammates.fields.idHelp')}
             error={validationErrors.id}
           >
             <input
@@ -106,27 +110,23 @@ export default function TeammateDefinitionForm({
           />
         </Field>
 
-        <Field
-          label={t('teammates.fields.model')}
-          description={t('teammates.fields.modelHelp')}
-        >
-          <input
+        <Field label={t('teammates.fields.model')}>
+          <Select
             value={draft.model}
-            onChange={(event) => onUpdateDraft('model', event.target.value)}
-            placeholder={t('teammates.placeholders.model')}
-            className={INPUT_CLASS}
+            onChange={(v) => onUpdateDraft('model', v)}
+            options={modelSelectOptions}
           />
         </Field>
 
         {ARRAY_FIELDS.map((field) => (
-          <ArrayField
-            key={field}
-            field={field}
-            value={draft[field]}
-            catalogValues={catalog?.[field] ?? []}
-            onChange={(value) => onUpdateDraft(field, value)}
-            onAddCatalogValue={(value) => onAddCatalogValue(field, value)}
-          />
+          <Field key={field} label={t(`teammates.fields.${field}`)}>
+            <MultiSelect
+              selected={parseArrayField(draft[field])}
+              options={catalog?.[field] ?? []}
+              onChange={(values) => onUpdateDraft(field, values.join('\n'))}
+              placeholder={t(`teammates.placeholders.${field}`)}
+            />
+          </Field>
         ))}
 
         {!hasWorkspace && (
@@ -161,84 +161,18 @@ export default function TeammateDefinitionForm({
   );
 }
 
-function ArrayField({
-  field,
-  value,
-  catalogValues,
-  onChange,
-  onAddCatalogValue,
-}: {
-  field: ArrayDraftField;
-  value: string;
-  catalogValues: string[];
-  onChange: (value: string) => void;
-  onAddCatalogValue: (value: string) => void;
-}) {
-  const { t } = useTranslation('settings');
-  const selected = new Set(parseArrayField(value));
-
-  return (
-    <Field
-      label={t(`teammates.fields.${field}`)}
-      description={t(
-        field === 'tools'
-          ? 'teammates.fields.toolsHelp'
-          : 'teammates.fields.arrayHelp',
-      )}
-    >
-      <textarea
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={t(`teammates.placeholders.${field}`)}
-        rows={3}
-        className={TEXTAREA_CLASS}
-      />
-      {catalogValues.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pt-1">
-          {catalogValues.map((entry) => {
-            const isSelected = selected.has(entry);
-            return (
-              <button
-                key={entry}
-                type="button"
-                onClick={() => onAddCatalogValue(entry)}
-                disabled={isSelected}
-                className={cn(
-                  'rounded-full border px-2 py-1 text-[11px] font-medium transition-colors',
-                  isSelected
-                    ? 'border-primary/30 bg-primary/10 text-primary'
-                    : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground',
-                )}
-              >
-                {entry}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </Field>
-  );
-}
-
 function Field({
   label,
-  description,
   error,
   children,
 }: {
   label: ReactNode;
-  description?: ReactNode;
   error?: string;
   children: ReactNode;
 }) {
   return (
     <label className="block space-y-2">
-      <span>
-        <span className="block text-sm font-medium text-foreground">{label}</span>
-        {description && (
-          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">{description}</span>
-        )}
-      </span>
+      <span className="block text-sm font-medium text-foreground">{label}</span>
       {children}
       {error && <span className="block text-xs text-destructive">{error}</span>}
     </label>

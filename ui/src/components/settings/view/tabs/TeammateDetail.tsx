@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { PillBar, Pill } from '../../../../shared/view/ui';
+import type { ModelRefOption } from '../../../../shared/buildModelRefOptions';
 import type {
   TeammateCatalog,
   TeammateDiagnostic,
@@ -9,7 +10,6 @@ import type {
   TeammateWorkspaceBinding,
 } from '../../types/types';
 import type {
-  ArrayDraftField,
   DraftField,
   ProjectOption,
   TeammateDraft,
@@ -31,6 +31,7 @@ export default function TeammateDetail({
   saving,
   isNew,
   projects,
+  modelOptions,
   workspaceBindingsMap,
   catalogMap,
   workspaceLoadingSet,
@@ -38,7 +39,6 @@ export default function TeammateDetail({
   canonicalProjectKeyMap,
   bindingError,
   onUpdateDraft,
-  onAddCatalogValue,
   onSave,
   onBack,
   onSaveBinding,
@@ -53,6 +53,7 @@ export default function TeammateDetail({
   saving: boolean;
   isNew: boolean;
   projects: ProjectOption[];
+  modelOptions: ModelRefOption[];
   workspaceBindingsMap: Record<string, Record<string, TeammateWorkspaceBinding>>;
   catalogMap: Record<string, TeammateCatalog | null>;
   workspaceLoadingSet: Set<string>;
@@ -60,7 +61,6 @@ export default function TeammateDetail({
   canonicalProjectKeyMap: Record<string, string>;
   bindingError: string | null;
   onUpdateDraft: (field: DraftField, value: string) => void;
-  onAddCatalogValue: (field: ArrayDraftField, value: string) => void;
   onSave: () => void;
   onBack: () => void;
   onSaveBinding: (
@@ -119,8 +119,8 @@ export default function TeammateDetail({
           hasWorkspace={hasWorkspace}
           saving={saving}
           isNew={isNew}
+          modelOptions={modelOptions}
           onUpdateDraft={onUpdateDraft}
-          onAddCatalogValue={onAddCatalogValue}
           onSave={onSave}
           onCancel={onBack}
         />

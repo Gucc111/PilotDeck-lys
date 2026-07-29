@@ -3,5 +3,8 @@ export { Button, buttonVariants } from './Button';
 export { default as DarkModeToggle } from './DarkModeToggle';
 export { Input } from './Input';
 export { ScrollArea } from './ScrollArea';
+export { Select } from './Select';
+export type { SelectOption } from './Select';
+export { MultiSelect } from './MultiSelect';
 export { default as Tooltip } from './Tooltip';
 export { PillBar, Pill } from './PillBar';
