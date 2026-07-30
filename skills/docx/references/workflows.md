@@ -2,7 +2,9 @@
 
 Use this guide to choose the correct lifecycle for reading, creating, editing, reviewing, comparing, sanitizing, and delivering Word documents.
 
-Begin every modifying workflow with `capabilities` and the relevant `schema`.
+Begin every modifying workflow with `capabilities`, `prepare`, and the relevant
+`schema`. `prepare` freezes acceptance and returns the canonical paths for the
+current `PILOTDECK_WORK_DIR`; never guess or search for another turn directory.
 The standard command owns common operations;
 [capabilities-and-fallbacks.md](capabilities-and-fallbacks.md) owns every
 exception. Every mutation produces an internal candidate below
@@ -33,20 +35,27 @@ Do not change or re-export the source for a read-only question. State when a req
 ## 2. New document creation
 
 1. Clarify the requested outcome from available context without inventing facts.
-2. Select an archetype and one design preset.
+2. Select an archetype, then freeze one style path. Use user mode only for a
+   supplied template, concrete visual requirements, or an existing document
+   whose style must be preserved. Otherwise use the single built-in neutral
+   template. Never infer a colored theme from the document archetype.
 3. Read `design-and-layout.md` and map content to appropriate forms.
-4. Freeze the acceptance manifest from the current user request, then query
-   `schema --command create` and write a strict JSON specification in the task
-   workspace. Do not loosen acceptance after a candidate fails.
-5. Run `create` to a new internal candidate path.
+4. Run `prepare --style-mode builtin` or the corresponding user style source
+   with requirements from the current user request, then query
+   `schema --command create` and write a strict JSON specification below the
+   returned `tmp` path. Do not loosen acceptance after a candidate fails.
+5. Copy the frozen style policy into the create specification and run `create`
+   with the acceptance manifest to a new internal candidate path.
 6. If the required feature is outside the schema, choose an auxiliary asset or declared fallback; never run an ad hoc builder directly.
 7. Inspect the candidate and run `audit --profile draft`.
 8. Correct content or design defects and repeat.
-9. If a TOC is required, run `refresh-toc` after content and headings are stable.
-10. Run preflight with the frozen acceptance manifest and inspect all current page images.
-11. Bind the visual-review JSON to the initial report's candidate SHA-256 and
-    each current page-image SHA-256, record a page-specific passed/failed note
-    for every rendered page, then rerun preflight.
+9. If a TOC is required, run `refresh-toc` after content and headings are
+   stable. It writes visible cached entries and disables field updates on
+   open; do not enable automatic updates merely to refresh the TOC.
+10. Run `qa-init` with the frozen acceptance manifest and resolve its automated gate.
+11. Open every current page path, call `qa-record` immediately with a
+    page-specific passed/failed note, then run `qa-finalize`. Do not handwrite
+    review JSON or calculate page hashes.
 12. Run `deliver --new-document` once with the exact candidate and successful preflight report.
 
 Use placeholders or clearly marked assumptions when required information is missing. Do not silently fabricate names, dates, financial values, citations, legal terms, or technical results.
@@ -62,7 +71,7 @@ Use placeholders or clearly marked assumptions when required information is miss
 6. Verify each operation's `affected` count. Missing or ambiguous targets return `partial`; refine them rather than guessing.
 7. Re-inspect the changed area and compare the output with the resolved input when useful.
 8. Validate, audit, render, and inspect every page affected by pagination changes. For safety, inspect all pages before final delivery.
-9. Pass acceptance and per-page visual-review gates, then promote the exact
+9. Pass `qa-init`, per-page `qa-record`, and `qa-finalize`, then promote the exact
    candidate with `deliver --source <user-referenced-path>` to a new final
    filename. The delivery becomes the latest version for the next turn.
 
@@ -161,15 +170,20 @@ For each page:
 6. render again and discard stale QA images.
 
 Treat page PNGs and optional PDFs as internal QA unless the user explicitly
-requests them. Rendering alone is not acceptance: write an acceptance manifest,
-resolve or disposition warnings, inspect every PNG, and submit a visual-review
-JSON with each page-image SHA-256 plus a page-specific result and note for
-every current page. Repeated generic notes and stale page images are rejected.
+requests them. Rendering alone is not acceptance: freeze requirements with
+`prepare`, resolve or disposition warnings from `qa-init`, inspect every PNG,
+and call `qa-record` for every current page before `qa-finalize`. Never edit
+the review JSON or calculate image hashes manually; `qa-init` emits the
+normalized decoded-pixel digests consumed by the gate. Repeated generic notes
+and stale page images are rejected.
 Automated body-ink checks also block unintended blank pages and surface
 suspiciously sparse pages. A searchable PDF text layer
 does not compensate for text that is missing from the rendered page. A TOC
 field is not accepted until `refresh-toc` produces visible cached entries and
-page numbers. `deliver` also requires the acceptance manifest and rejects
+page numbers. A final candidate that requests automatic field updates is
+blocked unless the current user explicitly accepted the Word opening prompt
+and `deliver --allow-update-fields-on-open` is used. `deliver` also requires
+the acceptance manifest and rejects
 visual evidence or preflight reports bound to another candidate digest.
 
 ## 10. Failure handling

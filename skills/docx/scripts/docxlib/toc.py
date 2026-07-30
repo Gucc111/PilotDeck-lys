@@ -16,6 +16,7 @@ from .common import (
     require_distinct_paths,
     unpacked_copy,
 )
+from .fields import set_package_update_fields_on_open
 from .render import render_docx
 
 
@@ -386,6 +387,7 @@ def refresh_toc(
                 details={"iterations": 5},
             )
         with unpacked_copy(stable_source) as (_, package):
+            set_package_update_fields_on_open(package, enabled=False)
             pack_docx(package, output)
     final_render = render_docx(
         output,

@@ -16,6 +16,7 @@ from .common import (
     require_docx_path,
     temporary_sibling,
 )
+from .fields import update_fields_on_open_enabled
 from .lineage import (
     backup_replaced_source,
     latest_input_path,
@@ -56,6 +57,7 @@ def deliver_docx(
     replace_source: bool = False,
     use_exact_source: bool = False,
     overwrite: bool = False,
+    allow_update_fields_on_open: bool = False,
 ) -> dict[str, Any]:
     if (source_path is None) == (not new_document):
         raise DocxSkillError(
@@ -134,6 +136,21 @@ def deliver_docx(
             "Only a candidate that passed the complete preflight gate can be delivered",
             code="preflight-not-passed",
             details={"gate": gate_state, "report": str(report_path)},
+        )
+    if (
+        update_fields_on_open_enabled(candidate)
+        and not allow_update_fields_on_open
+    ):
+        raise blocked(
+            "The DOCX requests automatic field updates when Word opens it. "
+            "Refresh cached fields and disable update-on-open before delivery, "
+            "or use --allow-update-fields-on-open only when the user explicitly "
+            "requested dynamic field updates and accepted the opening prompt.",
+            code="fields-update-on-open",
+            details={
+                "candidate": str(candidate),
+                "explicit_opt_in_flag": "--allow-update-fields-on-open",
+            },
         )
 
     requested_source = (

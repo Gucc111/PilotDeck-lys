@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any
 
@@ -26,6 +27,13 @@ from docxlib.fallback import fallback_create, fallback_patch
 from docxlib.lineage import latest_input_path, resolve_latest_input
 from docxlib.preflight import preflight_docx
 from docxlib.protocol import capabilities, schema_for
+from docxlib.qa import (
+    docx_task_paths,
+    finalize_visual_qa,
+    initialize_visual_qa,
+    prepare_docx_task,
+    record_visual_review,
+)
 from docxlib.render import render_docx
 from docxlib.review import finalize_docx, review_docx
 from docxlib.toc import refresh_toc
@@ -48,6 +56,52 @@ def _parser() -> argparse.ArgumentParser:
         choices=("create", "edit", "review"),
     )
 
+    prepare_parser = sub.add_parser(
+        "prepare",
+        help="Create turn-scoped DOCX paths and freeze an acceptance manifest",
+    )
+    prepare_parser.add_argument("--require-text", action="append")
+    prepare_parser.add_argument(
+        "--require-heading",
+        action="append",
+        help="Required heading as TEXT or LEVEL:TEXT; may be repeated",
+    )
+    prepare_parser.add_argument("--min-pages", type=int)
+    prepare_parser.add_argument("--max-pages", type=int)
+    prepare_parser.add_argument("--require-toc", action="store_true")
+    prepare_parser.add_argument("--protect-source", action="append")
+    prepare_parser.add_argument(
+        "--style-mode",
+        choices=("builtin", "user"),
+        default="builtin",
+        help=(
+            "Freeze either the built-in neutral template or a user-provided "
+            "style source for this task"
+        ),
+    )
+    prepare_parser.add_argument(
+        "--style-source",
+        choices=(
+            "explicit-requirements",
+            "reference-template",
+            "existing-document",
+        ),
+        help="Required when --style-mode user",
+    )
+    prepare_parser.add_argument(
+        "--style-requirement",
+        action="append",
+        help=(
+            "Concrete user-supplied visual requirement; repeat as needed. "
+            "Required for an explicit-requirements style source."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace the frozen manifest only after the user changes requirements",
+    )
+
     inspect_parser = sub.add_parser("inspect", help="Extract DOCX structure and metadata")
     inspect_parser.add_argument("--input", required=True)
     inspect_parser.add_argument("--out")
@@ -59,6 +113,13 @@ def _parser() -> argparse.ArgumentParser:
     create_parser = sub.add_parser("create", help="Create a DOCX from a JSON specification")
     create_parser.add_argument("--spec", required=True)
     create_parser.add_argument("--out", required=True)
+    create_parser.add_argument(
+        "--acceptance",
+        help=(
+            "Frozen acceptance manifest. Defaults to the current task manifest "
+            "when PILOTDECK_WORK_DIR is set."
+        ),
+    )
     create_parser.add_argument("--overwrite", action="store_true")
 
     edit_parser = sub.add_parser("edit", help="Apply local edits from a JSON patch")
@@ -202,6 +263,58 @@ def _parser() -> argparse.ArgumentParser:
     )
     preflight_parser.add_argument("--timeout", type=int, default=120)
 
+    qa_init_parser = sub.add_parser(
+        "qa-init",
+        help=(
+            "Run the automated gate and create a page-review skeleton with "
+            "canonical page-image hashes"
+        ),
+    )
+    qa_init_parser.add_argument("--input", required=True)
+    qa_init_parser.add_argument("--acceptance")
+    qa_init_parser.add_argument("--out-dir")
+    qa_init_parser.add_argument("--report")
+    qa_init_parser.add_argument("--visual-review")
+    qa_init_parser.add_argument(
+        "--profile", choices=("draft", "final", "accessible"), default="final"
+    )
+    qa_init_parser.add_argument("--dispositions")
+    qa_init_parser.add_argument(
+        "--disposition",
+        action="append",
+        help="Inline warning disposition in code=rationale form; may be repeated",
+    )
+    qa_init_parser.add_argument("--timeout", type=int, default=120)
+    qa_init_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace stale review evidence after the candidate changes",
+    )
+
+    qa_record_parser = sub.add_parser(
+        "qa-record",
+        help="Record one inspected page without copying paths or image hashes",
+    )
+    qa_record_parser.add_argument("--visual-review")
+    qa_record_parser.add_argument("--page", required=True, type=int)
+    qa_record_parser.add_argument(
+        "--status", required=True, choices=("passed", "failed")
+    )
+    qa_record_parser.add_argument("--notes", required=True)
+
+    qa_finalize_parser = sub.add_parser(
+        "qa-finalize",
+        help=(
+            "Finalize the gate against the exact render and candidate created "
+            "by qa-init"
+        ),
+    )
+    qa_finalize_parser.add_argument("--input", required=True)
+    qa_finalize_parser.add_argument("--acceptance")
+    qa_finalize_parser.add_argument("--initial-report")
+    qa_finalize_parser.add_argument("--report")
+    qa_finalize_parser.add_argument("--visual-review")
+
     deliver_parser = sub.add_parser(
         "deliver",
         help="Atomically promote a fully preflighted internal candidate to the requested output",
@@ -235,6 +348,14 @@ def _parser() -> argparse.ArgumentParser:
             "requests an older/original base"
         ),
     )
+    deliver_parser.add_argument(
+        "--allow-update-fields-on-open",
+        action="store_true",
+        help=(
+            "Deliver a DOCX that requests field updates when Word opens it only "
+            "after the user explicitly accepts the opening prompt"
+        ),
+    )
     deliver_parser.add_argument("--overwrite", action="store_true")
 
     resolve_latest_parser = sub.add_parser(
@@ -251,11 +372,42 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _inline_dispositions(values: list[str] | None) -> dict[str, str]:
+    dispositions: dict[str, str] = {}
+    for item in values or []:
+        if "=" not in item:
+            raise DocxSkillError(
+                "--disposition must use code=rationale syntax",
+                code="invalid-warning-disposition",
+            )
+        code, rationale = item.split("=", 1)
+        if not code.strip() or not rationale.strip():
+            raise DocxSkillError(
+                "--disposition requires a non-empty code and rationale",
+                code="invalid-warning-disposition",
+            )
+        dispositions[code.strip()] = rationale.strip()
+    return dispositions
+
+
 def _execute(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "capabilities":
         return capabilities()
     if args.command == "schema":
         return schema_for(args.schema_command)
+    if args.command == "prepare":
+        return prepare_docx_task(
+            required_text=args.require_text,
+            required_headings=args.require_heading,
+            min_pages=args.min_pages,
+            max_pages=args.max_pages,
+            require_toc=args.require_toc,
+            protected_sources=args.protect_source,
+            style_mode=args.style_mode,
+            style_source=args.style_source,
+            style_requirements=args.style_requirement,
+            overwrite=args.overwrite,
+        )
     if args.command == "inspect":
         result = inspect_docx(args.input)
         result = filter_inspection(
@@ -275,7 +427,15 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             result["out"] = str(json_output)
         return result
     if args.command == "create":
-        return create_docx(args.spec, args.out, overwrite=args.overwrite)
+        acceptance = args.acceptance
+        if acceptance is None and os.environ.get("PILOTDECK_WORK_DIR"):
+            acceptance = str(docx_task_paths()["acceptance"])
+        return create_docx(
+            args.spec,
+            args.out,
+            acceptance_path=acceptance,
+            overwrite=args.overwrite,
+        )
     if args.command == "edit":
         return edit_docx(
             latest_input_path(
@@ -359,20 +519,6 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             timeout_seconds=args.timeout,
         )
     if args.command == "preflight":
-        inline_dispositions: dict[str, str] = {}
-        for item in args.disposition or []:
-            if "=" not in item:
-                raise DocxSkillError(
-                    "--disposition must use code=rationale syntax",
-                    code="invalid-warning-disposition",
-                )
-            code, rationale = item.split("=", 1)
-            if not code.strip() or not rationale.strip():
-                raise DocxSkillError(
-                    "--disposition requires a non-empty code and rationale",
-                    code="invalid-warning-disposition",
-                )
-            inline_dispositions[code.strip()] = rationale.strip()
         visual_review_status = (
             "passed"
             if args.visual_reviewed
@@ -384,7 +530,7 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             report_path=args.report,
             profile=args.profile,
             dispositions_path=args.dispositions,
-            dispositions=inline_dispositions,
+            dispositions=_inline_dispositions(args.disposition),
             acceptance_path=args.acceptance,
             visual_review_path=args.visual_review,
             required_text=args.require_text,
@@ -392,6 +538,35 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             max_pages=args.max_pages,
             visual_review_status=visual_review_status,
             timeout_seconds=args.timeout,
+        )
+    if args.command == "qa-init":
+        return initialize_visual_qa(
+            args.input,
+            acceptance_path=args.acceptance,
+            output_dir=args.out_dir,
+            report_path=args.report,
+            review_path=args.visual_review,
+            profile=args.profile,
+            dispositions_path=args.dispositions,
+            dispositions=_inline_dispositions(args.disposition),
+            timeout_seconds=args.timeout,
+            overwrite=args.overwrite,
+        )
+    if args.command == "qa-record":
+        review = args.visual_review or docx_task_paths()["visual_review"]
+        return record_visual_review(
+            review,
+            page=args.page,
+            status=args.status,
+            notes=args.notes,
+        )
+    if args.command == "qa-finalize":
+        return finalize_visual_qa(
+            args.input,
+            acceptance_path=args.acceptance,
+            initial_report_path=args.initial_report,
+            report_path=args.report,
+            review_path=args.visual_review,
         )
     if args.command == "deliver":
         return deliver_docx(
@@ -403,6 +578,7 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             replace_source=args.replace_source,
             use_exact_source=args.use_exact_source,
             overwrite=args.overwrite,
+            allow_update_fields_on_open=args.allow_update_fields_on_open,
         )
     if args.command == "resolve-latest":
         return resolve_latest_input(

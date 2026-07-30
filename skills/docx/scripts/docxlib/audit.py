@@ -17,6 +17,7 @@ from .common import (
     write_json,
 )
 from .core import inspect_docx, iter_document_paragraphs, iter_document_tables
+from .fields import update_fields_on_open_enabled
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -58,6 +59,57 @@ def _image_alt_texts(path: Path) -> list[str]:
     return values
 
 
+def _cell_fill(cell: Any) -> str | None:
+    properties = cell._tc.tcPr
+    if properties is None:
+        return None
+    shading = properties.find(qn("w:shd"))
+    if shading is None:
+        return None
+    value = (shading.get(qn("w:fill")) or "").strip().upper()
+    if not value or value in {"AUTO", "NONE", "FFFFFF"}:
+        return None
+    return value
+
+
+def _paragraph_fill(paragraph: Any) -> str | None:
+    properties = paragraph._p.pPr
+    if properties is None:
+        return None
+    shading = properties.find(qn("w:shd"))
+    if shading is None:
+        return None
+    value = (shading.get(qn("w:fill")) or "").strip().upper()
+    if not value or value in {"AUTO", "NONE", "FFFFFF"}:
+        return None
+    return value
+
+
+def _table_border_colors(table: Any) -> set[str]:
+    properties = table._tbl.tblPr
+    if properties is None:
+        return set()
+    borders = properties.find(qn("w:tblBorders"))
+    if borders is None:
+        return set()
+    values: set[str] = set()
+    for border in borders:
+        value = (border.get(qn("w:color")) or "").strip().upper()
+        if value and value not in {"AUTO", "NONE", "FFFFFF"}:
+            values.add(value)
+    return values
+
+
+def _is_chromatic_fill(value: str) -> bool:
+    if not re.fullmatch(r"[0-9A-F]{6}", value):
+        return False
+    red, green, blue = (
+        int(value[index : index + 2], 16)
+        for index in (0, 2, 4)
+    )
+    return max(red, green, blue) - min(red, green, blue) >= 12
+
+
 def audit_docx(
     input_path: str | Path,
     output_json: str | Path | None = None,
@@ -89,11 +141,17 @@ def audit_docx(
     direct_font_runs = 0
     visible_runs = 0
     body_paragraphs = 0
+    chromatic_text_runs = 0
+    chromatic_used_styles: set[str] = set()
+    chromatic_paragraph_fills = 0
     for location, paragraph in iter_document_paragraphs(doc):
         text = paragraph.text.strip()
         if text:
             body_paragraphs += 1
         style_name = paragraph.style.name if paragraph.style else ""
+        paragraph_fill = _paragraph_fill(paragraph)
+        if paragraph_fill and _is_chromatic_fill(paragraph_fill):
+            chromatic_paragraph_fills += 1
         if (
             text
             and style_name.casefold() == "caption"
@@ -137,6 +195,11 @@ def audit_docx(
                 if style_font is not None and style_font.color.rgb is not None
                 else None
             )
+            effective_color = run_color or style_color
+            if effective_color and _is_chromatic_fill(effective_color.upper()):
+                chromatic_text_runs += 1
+                if not run_color and style_name:
+                    chromatic_used_styles.add(style_name)
             differs_from_style = bool(
                 (run.font.name and (style_font is None or run.font.name != style_font.name))
                 or (run.font.size and (style_font is None or run.font.size != style_font.size))
@@ -210,11 +273,43 @@ def audit_docx(
                     f"section {index}",
                 )
 
+    table_cell_count = 0
+    explicitly_filled_cells = 0
+    chromatic_filled_cells = 0
+    accent_table_styles = 0
+    accent_tables_with_manual_fill = 0
+    chromatic_table_borders = 0
     for table_index, (table_location, table) in enumerate(
         iter_document_tables(doc),
         start=1,
     ):
         location = f"{table_location} (table {table_index})"
+        style_name = table.style.name if table.style is not None else ""
+        is_accent_style = "accent" in style_name.casefold()
+        if is_accent_style:
+            accent_table_styles += 1
+        if any(
+            _is_chromatic_fill(value)
+            for value in _table_border_colors(table)
+        ):
+            chromatic_table_borders += 1
+        table_has_manual_fill = False
+        seen_cells: set[int] = set()
+        for row in table.rows:
+            for cell in row.cells:
+                cell_id = id(cell._tc)
+                if cell_id in seen_cells:
+                    continue
+                seen_cells.add(cell_id)
+                table_cell_count += 1
+                fill = _cell_fill(cell)
+                if fill:
+                    table_has_manual_fill = True
+                    explicitly_filled_cells += 1
+                    if _is_chromatic_fill(fill):
+                        chromatic_filled_cells += 1
+        if is_accent_style and table_has_manual_fill:
+            accent_tables_with_manual_fill += 1
         grid = table._tbl.tblGrid
         grid_columns = list(grid) if grid is not None else []
         if len(grid_columns) != len(table.columns):
@@ -275,6 +370,45 @@ def audit_docx(
                         f"{location}, header cell {cell_index}",
                     )
 
+    chromatic_fill_ratio = (
+        chromatic_filled_cells / table_cell_count
+        if table_cell_count
+        else 0.0
+    )
+    if chromatic_filled_cells >= 4 and chromatic_fill_ratio >= 0.2:
+        _issue(
+            issues,
+            "warning",
+            "excessive-chromatic-table-fill",
+            (
+                f"{chromatic_filled_cells} of {table_cell_count} table cells "
+                "use explicit non-neutral fills. Confirm that a colored theme "
+                "was requested; otherwise use white body cells and neutral headers."
+            ),
+        )
+    if accent_table_styles >= 2:
+        _issue(
+            issues,
+            "warning",
+            "repeated-accent-table-styles",
+            (
+                f"{accent_table_styles} tables use Accent styles. Repeated Accent "
+                "tables can dominate a formal report; use neutral styles unless "
+                "the user requested a branded or colorful design."
+            ),
+        )
+    if accent_tables_with_manual_fill:
+        _issue(
+            issues,
+            "warning",
+            "accent-style-with-manual-fill",
+            (
+                f"{accent_tables_with_manual_fill} Accent-style table(s) also "
+                "contain direct cell shading. Choose the table style or explicit "
+                "fills, not both."
+            ),
+        )
+
     image_alt_texts = _image_alt_texts(path)
     if profile == "accessible":
         for index, alt_text in enumerate(image_alt_texts, start=1):
@@ -296,6 +430,19 @@ def audit_docx(
         )
 
     if profile in {"final", "accessible"}:
+        if update_fields_on_open_enabled(path):
+            _issue(
+                issues,
+                "warning",
+                "fields-update-on-open",
+                (
+                    "The document requests automatic field updates when Word "
+                    "opens it. This can trigger an external-field warning even "
+                    "when only a TOC is present. Refresh cached field results and "
+                    "disable update-on-open before delivery unless the user "
+                    "explicitly requested dynamic updates."
+                ),
+            )
         if info["comments"]:
             _issue(
                 issues,
@@ -386,6 +533,14 @@ def audit_docx(
             "tables": info["table_count"],
             "images": len(image_alt_texts),
             "fields": len(info.get("fields", [])),
+            "table_cells": table_cell_count,
+            "explicitly_filled_table_cells": explicitly_filled_cells,
+            "chromatic_filled_table_cells": chromatic_filled_cells,
+            "accent_table_styles": accent_table_styles,
+            "chromatic_text_runs": chromatic_text_runs,
+            "chromatic_used_style_count": len(chromatic_used_styles),
+            "chromatic_paragraph_fills": chromatic_paragraph_fills,
+            "chromatic_table_borders": chromatic_table_borders,
             "inspection_coverage": info.get("inspection_coverage", {}).get("status"),
         },
         "issues": issues,

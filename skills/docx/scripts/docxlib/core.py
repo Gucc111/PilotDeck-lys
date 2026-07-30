@@ -42,65 +42,19 @@ from .common import (
     unpacked_copy,
     write_json,
 )
+from .fields import set_document_update_fields_on_open
 from .protocol import (
     SUPPORTED_FIELD_KEYWORDS,
+    normalize_style_policy,
     validate_create_spec,
     validate_edit_patch,
 )
+from .templates import resolve_document_style
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS = {"w": W_NS, "r": R_NS}
-
-PRESETS: dict[str, dict[str, Any]] = {
-    "business-report": {
-        "body_font": "Arial",
-        "east_asia_font": "Microsoft YaHei",
-        "body_size": 10.5,
-        "title_size": 24,
-        "heading_color": "1F4E79",
-        "accent": "D9EAF7",
-        "space_after": 6,
-    },
-    "formal-memo": {
-        "body_font": "Times New Roman",
-        "east_asia_font": "SimSun",
-        "body_size": 11,
-        "title_size": 22,
-        "heading_color": "222222",
-        "accent": "E7E6E6",
-        "space_after": 5,
-    },
-    "proposal": {
-        "body_font": "Aptos",
-        "east_asia_font": "Microsoft YaHei",
-        "body_size": 10.5,
-        "title_size": 26,
-        "heading_color": "2F5597",
-        "accent": "DEEAF6",
-        "space_after": 7,
-    },
-    "sop": {
-        "body_font": "Arial",
-        "east_asia_font": "Microsoft YaHei",
-        "body_size": 10,
-        "title_size": 22,
-        "heading_color": "375623",
-        "accent": "E2F0D9",
-        "space_after": 4,
-    },
-    "simple-document": {
-        "body_font": "Arial",
-        "east_asia_font": "Microsoft YaHei",
-        "body_size": 11,
-        "title_size": 22,
-        "heading_color": "000000",
-        "accent": "F2F2F2",
-        "space_after": 6,
-    },
-}
-
 
 def _note_entry_count(
     archive: zipfile.ZipFile,
@@ -135,6 +89,16 @@ CJK_FONT_CANDIDATES: dict[str, list[str]] = {
     "Windows": ["Microsoft YaHei", "DengXian", "SimSun", "Arial Unicode MS"],
     "Linux": ["Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei", "DejaVu Sans"],
 }
+CJK_SERIF_FONT_CANDIDATES: dict[str, list[str]] = {
+    "Darwin": ["Songti SC", "STSong", "PingFang SC", "Arial Unicode MS"],
+    "Windows": ["SimSun", "NSimSun", "Microsoft YaHei", "Arial Unicode MS"],
+    "Linux": [
+        "Noto Serif CJK SC",
+        "Source Han Serif SC",
+        "Noto Sans CJK SC",
+        "DejaVu Sans",
+    ],
+}
 
 
 def _fontconfig_match(font_name: str) -> str | None:
@@ -155,25 +119,26 @@ def _fontconfig_match(font_name: str) -> str | None:
     return value or None
 
 
-def resolve_fonts(spec: dict[str, Any], preset: dict[str, Any]) -> dict[str, str]:
-    requested = spec.get("fonts") if isinstance(spec.get("fonts"), dict) else {}
-    latin = str(requested.get("latin") or preset["body_font"])
-    if requested.get("east_asia"):
-        east_asia = str(requested["east_asia"])
-    else:
-        system = platform.system()
-        candidates = CJK_FONT_CANDIDATES.get(system, CJK_FONT_CANDIDATES["Linux"])
-        preset_candidate = str(preset["east_asia_font"])
-        ordered = list(candidates)
-        if preset_candidate not in ordered:
-            ordered.append(preset_candidate)
-        east_asia = ordered[0]
-        if system == "Linux":
-            for candidate in ordered:
-                matched = _fontconfig_match(candidate)
-                if matched and matched.casefold() == candidate.casefold():
-                    east_asia = candidate
-                    break
+def resolve_fonts(style: dict[str, Any]) -> dict[str, str]:
+    latin = str(style["body_font"])
+    system = platform.system()
+    candidate_map = (
+        CJK_SERIF_FONT_CANDIDATES
+        if style.get("cjk_family") == "serif"
+        else CJK_FONT_CANDIDATES
+    )
+    candidates = candidate_map.get(system, candidate_map["Linux"])
+    style_candidate = str(style["east_asia_font"])
+    ordered = list(candidates)
+    if style_candidate not in ordered:
+        ordered.append(style_candidate)
+    east_asia = ordered[0]
+    if system == "Linux":
+        for candidate in ordered:
+            matched = _fontconfig_match(candidate)
+            if matched and matched.casefold() == candidate.casefold():
+                east_asia = candidate
+                break
     return {"latin": latin, "east_asia": east_asia}
 
 
@@ -675,7 +640,7 @@ def filter_inspection(
     return filtered
 
 
-def _configure_document(doc: DocumentObject, spec: dict[str, Any], preset: dict[str, Any]) -> None:
+def _configure_document(doc: DocumentObject, spec: dict[str, Any], style_tokens: dict[str, Any]) -> None:
     page = str(spec.get("page", "a4")).lower()
     for section in doc.sections:
         if page == "letter":
@@ -695,23 +660,54 @@ def _configure_document(doc: DocumentObject, spec: dict[str, Any], preset: dict[
 
     styles = doc.styles
     normal = styles["Normal"]
-    _set_style_fonts(normal, preset["body_font"], preset["east_asia_font"], preset["body_size"])
-    normal.paragraph_format.space_after = Pt(preset["space_after"])
-    normal.paragraph_format.line_spacing = 1.15
+    _set_style_fonts(normal, style_tokens["body_font"], style_tokens["east_asia_font"], style_tokens["body_size"])
+    normal.paragraph_format.space_after = Pt(style_tokens["space_after"])
+    line_spacing_points = style_tokens.get("normal_line_spacing_points")
+    normal.paragraph_format.line_spacing = (
+        Pt(float(line_spacing_points)) if line_spacing_points else 1.15
+    )
+    first_line_indent = style_tokens.get("normal_first_line_indent_inches")
+    if first_line_indent is not None:
+        normal.paragraph_format.first_line_indent = Inches(
+            float(first_line_indent)
+        )
+    if style_tokens.get("normal_alignment") == "justify":
+        normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    heading_sizes = style_tokens.get("heading_sizes")
     for level in range(1, 4):
         style = styles[f"Heading {level}"]
+        heading_size = (
+            float(heading_sizes[level - 1])
+            if isinstance(heading_sizes, (list, tuple))
+            and len(heading_sizes) >= level
+            else style_tokens["body_size"] + (7 - level * 1.5)
+        )
         _set_style_fonts(
             style,
-            preset["body_font"],
-            preset["east_asia_font"],
-            preset["body_size"] + (7 - level * 1.5),
+            style_tokens["body_font"],
+            style_tokens["east_asia_font"],
+            heading_size,
         )
         style.font.bold = True
-        style.font.color.rgb = RGBColor.from_string(preset["heading_color"])
+        style.font.color.rgb = RGBColor.from_string(style_tokens["heading_color"])
         style.paragraph_format.space_before = Pt(12 if level == 1 else 8)
         style.paragraph_format.space_after = Pt(5)
         style.paragraph_format.keep_with_next = True
         style.paragraph_format.keep_together = True
+    caption = styles["Caption"]
+    _set_style_fonts(
+        caption,
+        style_tokens["body_font"],
+        style_tokens["east_asia_font"],
+        style_tokens["body_size"],
+    )
+    caption.font.color.rgb = RGBColor.from_string(
+        style_tokens["heading_color"]
+    )
+    caption.font.italic = False
+    caption.paragraph_format.space_before = Pt(6)
+    caption.paragraph_format.space_after = Pt(4)
+    caption.paragraph_format.keep_with_next = True
 
 
 def _shade_cell(cell: _Cell, fill: str) -> None:
@@ -723,22 +719,46 @@ def _shade_cell(cell: _Cell, fill: str) -> None:
     shd.set(qn("w:fill"), fill)
 
 
-def _format_paragraph_runs(paragraph: Paragraph, preset: dict[str, Any]) -> None:
+def _set_cell_text_color(cell: _Cell, color: str) -> None:
+    rgb = RGBColor.from_string(color)
+    for paragraph in cell.paragraphs:
+        for run in paragraph.runs:
+            run.font.color.rgb = rgb
+
+
+def _set_table_borders(table: Table, color: str) -> None:
+    properties = table._tbl.tblPr
+    borders = properties.find(qn("w:tblBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        properties.append(borders)
+    for name in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        border = borders.find(qn(f"w:{name}"))
+        if border is None:
+            border = OxmlElement(f"w:{name}")
+            borders.append(border)
+        border.set(qn("w:val"), "single")
+        border.set(qn("w:sz"), "4")
+        border.set(qn("w:space"), "0")
+        border.set(qn("w:color"), color)
+
+
+def _format_paragraph_runs(paragraph: Paragraph, style_tokens: dict[str, Any]) -> None:
     for run in paragraph.runs:
-        _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+        _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
 
 
-def _populate_paragraph(paragraph: Paragraph, block: dict[str, Any], preset: dict[str, Any]) -> None:
+def _populate_paragraph(paragraph: Paragraph, block: dict[str, Any], style_tokens: dict[str, Any]) -> None:
     runs = block.get("runs")
     if not isinstance(runs, list):
         paragraph.add_run(str(block.get("text", "")))
-        _format_paragraph_runs(paragraph, preset)
+        _format_paragraph_runs(paragraph, style_tokens)
         return
     for item in runs:
         if not isinstance(item, dict):
             raise DocxSkillError("Every rich-text run must be an object")
         run = paragraph.add_run(str(item.get("text", "")))
-        _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+        _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
         run.bold = bool(item.get("bold", False))
         run.italic = bool(item.get("italic", False))
         run.underline = bool(item.get("underline", False))
@@ -751,13 +771,18 @@ def _populate_paragraph(paragraph: Paragraph, block: dict[str, Any], preset: dic
             run.font.size = Pt(float(item["size_pt"]))
 
 
-def _set_paragraph_callout(paragraph: Paragraph, fill: str, accent: str) -> None:
+def _set_paragraph_callout(
+    paragraph: Paragraph,
+    fill: str | None,
+    accent: str,
+) -> None:
     properties = paragraph._p.get_or_add_pPr()
-    shading = properties.find(qn("w:shd"))
-    if shading is None:
-        shading = OxmlElement("w:shd")
-        properties.append(shading)
-    shading.set(qn("w:fill"), fill)
+    if fill:
+        shading = properties.find(qn("w:shd"))
+        if shading is None:
+            shading = OxmlElement("w:shd")
+            properties.append(shading)
+        shading.set(qn("w:fill"), fill)
     borders = properties.find(qn("w:pBdr"))
     if borders is None:
         borders = OxmlElement("w:pBdr")
@@ -927,21 +952,21 @@ def _append_field(paragraph: Paragraph, instruction: str, placeholder: str = "")
     end_run._r.append(end)
 
 
-def _populate_field_template(paragraph: Paragraph, text: str, preset: dict[str, Any]) -> None:
+def _populate_field_template(paragraph: Paragraph, text: str, style_tokens: dict[str, Any]) -> None:
     cursor = 0
     pattern = re.compile(r"\{(PAGE|NUMPAGES)\}")
     for match in pattern.finditer(text):
         if match.start() > cursor:
             run = paragraph.add_run(text[cursor : match.start()])
-            _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
         _append_field(paragraph, match.group(1), "1")
         cursor = match.end()
     if cursor < len(text):
         run = paragraph.add_run(text[cursor:])
-        _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+        _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
 
 
-def _set_story(paragraph: Paragraph, value: str | dict[str, Any], preset: dict[str, Any]) -> None:
+def _set_story(paragraph: Paragraph, value: str | dict[str, Any], style_tokens: dict[str, Any]) -> None:
     if isinstance(value, dict):
         text = str(value.get("text", ""))
         alignment = str(value.get("alignment", "center"))
@@ -950,58 +975,59 @@ def _set_story(paragraph: Paragraph, value: str | dict[str, Any], preset: dict[s
         alignment = "center"
     paragraph.clear()
     paragraph.alignment = _paragraph_alignment(alignment)
-    _populate_field_template(paragraph, text, preset)
+    _populate_field_template(paragraph, text, style_tokens)
 
 
-def _enable_field_updates(doc: DocumentObject) -> None:
-    settings = doc.settings.element
-    update = settings.find(qn("w:updateFields"))
-    if update is None:
-        update = OxmlElement("w:updateFields")
-        settings.append(update)
-    update.set(qn("w:val"), "true")
-
-
-def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[str, Any], base_dir: Path) -> None:
+def _add_content_block(doc: DocumentObject, block: dict[str, Any], style_tokens: dict[str, Any], base_dir: Path) -> None:
     block_type = str(block.get("type", "paragraph"))
     text = str(block.get("text", ""))
     if block_type == "title":
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.space_after = Pt(14)
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
         for run in paragraph.runs:
-            run.font.size = run.font.size or Pt(preset["title_size"])
+            run.font.size = run.font.size or Pt(style_tokens["title_size"])
             run.bold = True if run.bold is None else run.bold
             if run.font.color.rgb is None:
-                run.font.color.rgb = RGBColor.from_string(preset["heading_color"])
+                run.font.color.rgb = RGBColor.from_string(style_tokens["title_color"])
     elif block_type == "subtitle":
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
         for run in paragraph.runs:
-            run.font.size = run.font.size or Pt(preset["body_size"] + 2)
+            run.font.size = run.font.size or Pt(style_tokens["body_size"] + 2)
             if run.font.color.rgb is None:
                 run.font.color.rgb = RGBColor(89, 89, 89)
     elif block_type == "heading":
         level = max(1, min(3, int(block.get("level", 1))))
         paragraph = doc.add_heading("", level=level)
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
+        for run in paragraph.runs:
+            _set_run_fonts(
+                run,
+                style_tokens["body_font"],
+                style_tokens["east_asia_font"],
+            )
+            run.font.size = paragraph.style.font.size
+            run.font.color.rgb = RGBColor.from_string(
+                style_tokens["heading_color"]
+            )
     elif block_type in {"paragraph", "body"}:
         paragraph = doc.add_paragraph(style=str(block.get("style", "Normal")))
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
         if block.get("bold"):
             for run in paragraph.runs:
                 run.bold = True
     elif block_type == "bullet":
         paragraph = doc.add_paragraph(style="List Bullet")
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
     elif block_type == "numbered":
         paragraph = doc.add_paragraph(style="List Number")
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
     elif block_type == "quote":
         paragraph = doc.add_paragraph(style="Quote")
-        _populate_paragraph(paragraph, block, preset)
+        _populate_paragraph(paragraph, block, style_tokens)
         paragraph.paragraph_format.left_indent = Inches(0.3)
     elif block_type == "callout":
         paragraph = doc.add_paragraph()
@@ -1009,22 +1035,26 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         paragraph.paragraph_format.right_indent = Inches(0.08)
         paragraph.paragraph_format.space_before = Pt(5)
         paragraph.paragraph_format.space_after = Pt(8)
-        locale = str(preset.get("locale", "")).lower()
+        locale = str(style_tokens.get("locale", "")).lower()
         default_label = "提示" if locale.startswith("zh") else "Note"
         label = str(block.get("label", default_label)).strip()
         if label:
             label_run = paragraph.add_run(f"{label}: ")
             label_run.bold = True
-            _set_run_fonts(label_run, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(label_run, style_tokens["body_font"], style_tokens["east_asia_font"])
         if isinstance(block.get("runs"), list):
-            _populate_paragraph(paragraph, {"runs": block["runs"]}, preset)
+            _populate_paragraph(paragraph, {"runs": block["runs"]}, style_tokens)
         else:
             run = paragraph.add_run(text)
-            _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
+        raw_fill = block.get("fill", style_tokens["callout_fill"])
+        fill = str(raw_fill).lstrip("#") if raw_fill else None
         _set_paragraph_callout(
             paragraph,
-            str(block.get("fill", preset["accent"])).lstrip("#"),
-            str(block.get("accent", preset["heading_color"])).lstrip("#"),
+            fill,
+            str(
+                block.get("accent", style_tokens["callout_border_color"])
+            ).lstrip("#"),
         )
     elif block_type == "checklist":
         items = block.get("items")
@@ -1041,9 +1071,9 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
             is_checked = index < len(checked_values) and bool(checked_values[index])
             marker = paragraph.add_run("\u2612 " if is_checked else "\u2610 ")
             marker.bold = True
-            _set_run_fonts(marker, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(marker, style_tokens["body_font"], style_tokens["east_asia_font"])
             run = paragraph.add_run(str(item))
-            _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
     elif block_type == "definition_list":
         items = block.get("items")
         if not isinstance(items, list) or not items:
@@ -1054,16 +1084,16 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
             paragraph = doc.add_paragraph()
             term = paragraph.add_run(f"{item['term']}: ")
             term.bold = True
-            _set_run_fonts(term, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(term, style_tokens["body_font"], style_tokens["east_asia_font"])
             definition = paragraph.add_run(str(item.get("definition", "")))
-            _set_run_fonts(definition, preset["body_font"], preset["east_asia_font"])
+            _set_run_fonts(definition, style_tokens["body_font"], style_tokens["east_asia_font"])
     elif block_type == "source_list":
         items = block.get("items")
         if not isinstance(items, list) or not items:
             raise DocxSkillError("A source_list requires a non-empty items array")
         for item in items:
             paragraph = doc.add_paragraph(str(item), style="List Number")
-            _format_paragraph_runs(paragraph, preset)
+            _format_paragraph_runs(paragraph, style_tokens)
     elif block_type == "table":
         headers = block.get("headers", [])
         rows = block.get("rows", [])
@@ -1082,20 +1112,46 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
             caption.paragraph_format.keep_with_next = True
             caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
             caption.add_run(caption_text)
-            _format_paragraph_runs(caption, preset)
+            _format_paragraph_runs(caption, style_tokens)
         table = doc.add_table(rows=1 if headers else 0, cols=column_count)
-        table.style = str(block.get("style", "Table Grid"))
+        table.style = str(block.get("style", style_tokens["table_style"]))
         table.alignment = WD_TABLE_ALIGNMENT.LEFT
+        border_color = str(
+            block.get("border_color", style_tokens["table_border_color"])
+        ).lstrip("#")
+        _set_table_borders(table, border_color)
         if headers:
+            raw_header_fill = block.get(
+                "header_fill",
+                style_tokens["table_header_fill"],
+            )
+            header_fill = (
+                str(raw_header_fill).lstrip("#") if raw_header_fill else None
+            )
+            raw_header_text_color = block.get(
+                "header_text_color",
+                style_tokens["table_header_text_color"],
+            )
+            header_text_color = (
+                str(raw_header_text_color).lstrip("#")
+                if raw_header_text_color
+                else None
+            )
             for index, value in enumerate(headers):
                 cell = table.rows[0].cells[index]
                 cell.text = str(value)
                 cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-                cell.paragraphs[0].alignment = paragraph_alignments[index]
-                _shade_cell(cell, preset["accent"])
-                for run in cell.paragraphs[0].runs:
+                header_paragraph = cell.paragraphs[0]
+                header_paragraph.alignment = paragraph_alignments[index]
+                header_paragraph.paragraph_format.first_line_indent = Pt(0)
+                header_paragraph.paragraph_format.line_spacing = 1
+                if header_fill:
+                    _shade_cell(cell, header_fill)
+                for run in header_paragraph.runs:
                     run.bold = True
-                    _set_run_fonts(run, preset["body_font"], preset["east_asia_font"])
+                    _set_run_fonts(run, style_tokens["body_font"], style_tokens["east_asia_font"])
+                if header_text_color:
+                    _set_cell_text_color(cell, header_text_color)
         for row_values in rows:
             if not isinstance(row_values, list) or len(row_values) != column_count:
                 raise DocxSkillError("Every table row must match the column count")
@@ -1105,7 +1161,9 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
                 cells[index].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
                 for paragraph in cells[index].paragraphs:
                     paragraph.alignment = paragraph_alignments[index]
-                    _format_paragraph_runs(paragraph, preset)
+                    paragraph.paragraph_format.first_line_indent = Pt(0)
+                    paragraph.paragraph_format.line_spacing = 1
+                    _format_paragraph_runs(paragraph, style_tokens)
         widths = _column_widths_twips(
             block, headers, rows, column_count, _table_available_twips(doc)
         )
@@ -1138,9 +1196,9 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], preset: dict[
         if caption:
             cap = doc.add_paragraph(str(caption))
             cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _format_paragraph_runs(cap, preset)
+            _format_paragraph_runs(cap, style_tokens)
     elif block_type == "toc":
-        locale = str(preset.get("locale", "")).lower()
+        locale = str(style_tokens.get("locale", "")).lower()
         title = str(
             block.get("title", "目录" if locale.startswith("zh") else "Contents")
         ).strip()
@@ -1193,6 +1251,7 @@ def create_docx(
     spec_path: str | Path,
     output_path: str | Path,
     *,
+    acceptance_path: str | Path | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     spec_file = assert_internal_control_path(
@@ -1210,19 +1269,58 @@ def create_docx(
             "Create specification must be an object", code="invalid-spec"
         )
     validate_create_spec(spec)
-    preset_name = str(spec.get("preset", "business-report"))
-    if preset_name not in PRESETS:
-        raise DocxSkillError(f"Unknown preset: {preset_name}")
-    preset = dict(PRESETS[preset_name])
-    preset["locale"] = str(spec.get("locale", "en-US"))
-    resolved_fonts = resolve_fonts(spec, preset)
-    preset["body_font"] = resolved_fonts["latin"]
-    preset["east_asia_font"] = resolved_fonts["east_asia"]
+    spec_policy = normalize_style_policy(spec.get("style_policy"))
+    if spec_policy is None:
+        raise DocxSkillError(
+            "Create specification requires style_policy",
+            code="invalid-style-policy",
+        )
+    if acceptance_path is not None:
+        acceptance_file = assert_internal_control_path(
+            acceptance_path,
+            purpose="Acceptance manifest",
+        )
+        acceptance = load_json(acceptance_file)
+        if not isinstance(acceptance, dict):
+            raise DocxSkillError(
+                "Acceptance manifest must be an object",
+                code="invalid-acceptance-manifest",
+            )
+        accepted_policy = normalize_style_policy(
+            acceptance.get("style_policy"),
+            default_builtin=False,
+        )
+        if accepted_policy is None:
+            raise DocxSkillError(
+                "Acceptance manifest does not freeze style_policy",
+                code="style-policy-not-frozen",
+            )
+        if spec_policy != accepted_policy:
+            raise DocxSkillError(
+                "Create specification style_policy does not match the frozen acceptance manifest",
+                code="style-policy-mismatch",
+                details={
+                    "specified": spec_policy,
+                    "accepted": accepted_policy,
+                },
+            )
+    locale = str(spec.get("locale", "en-US"))
+    style_policy, style_tokens = resolve_document_style(
+        locale=locale,
+        style_policy_value=spec_policy,
+        style_overrides_value=spec.get("style_overrides"),
+    )
+    resolved_fonts = resolve_fonts(style_tokens)
+    style_tokens["body_font"] = resolved_fonts["latin"]
+    style_tokens["east_asia_font"] = resolved_fonts["east_asia"]
     output = prepare_output_docx_path(output_path, overwrite=overwrite)
 
     doc = Document()
-    _configure_document(doc, spec, preset)
-    _enable_field_updates(doc)
+    _configure_document(doc, spec, style_tokens)
+    set_document_update_fields_on_open(
+        doc,
+        enabled=bool(spec.get("update_fields_on_open", False)),
+    )
     props = doc.core_properties
     props.author = ""
     props.last_modified_by = ""
@@ -1236,11 +1334,11 @@ def create_docx(
     if spec.get("header"):
         for section in doc.sections:
             paragraph = section.header.paragraphs[0]
-            _set_story(paragraph, spec["header"], preset)
+            _set_story(paragraph, spec["header"], style_tokens)
     if spec.get("footer"):
         for section in doc.sections:
             paragraph = section.footer.paragraphs[0]
-            _set_story(paragraph, spec["footer"], preset)
+            _set_story(paragraph, spec["footer"], style_tokens)
 
     content = spec.get("content", [])
     if not isinstance(content, list):
@@ -1248,7 +1346,7 @@ def create_docx(
     for block in content:
         if not isinstance(block, dict):
             raise DocxSkillError("Every content block must be an object")
-        _add_content_block(doc, block, preset, spec_file.parent)
+        _add_content_block(doc, block, style_tokens, spec_file.parent)
 
     with temporary_sibling(output, suffix=".tmp.docx") as temp:
         doc.save(str(temp))
@@ -1258,7 +1356,8 @@ def create_docx(
     return {
         "status": "ok",
         "out": str(output),
-        "preset": preset_name,
+        "style_policy": style_policy,
+        "template": style_tokens["template"],
         "fonts": resolved_fonts,
         "blocks": len(content),
         "validation": validation,

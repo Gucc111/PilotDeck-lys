@@ -30,14 +30,13 @@ current request to authorize `--replace-source`.
 
 ```json
 {
-  "preset": "business-report",
+  "style_policy": {
+    "mode": "builtin",
+    "template": "neutral-document-v1"
+  },
   "locale": "en-US",
   "page": "letter",
   "orientation": "portrait",
-  "fonts": {
-    "latin": "Arial",
-    "east_asia": "Microsoft YaHei"
-  },
   "margins_inches": {
     "top": 0.8,
     "right": 0.8,
@@ -58,11 +57,39 @@ current request to authorize `--replace-source`.
 }
 ```
 
-Supported presets: `business-report`, `formal-memo`, `proposal`, `sop`, and `simple-document`.
+`style_policy` must match the policy frozen by `prepare`.
+
+- Built-in mode is
+  `{"mode":"builtin","template":"neutral-document-v1"}`. It is the default
+  when the user did not provide visual instructions. It does not permit
+  `style_overrides` or block-level colors/styles.
+- User mode is
+  `{"mode":"user","source":"explicit-requirements|reference-template|existing-document"}`.
+  An `explicit-requirements` source also requires a non-empty `requirements`
+  array containing the user's concrete instructions.
+- Generic goals such as “formal report” or “professional document” do not
+  qualify as explicit visual requirements.
 
 Supported page values: `a4` and `letter`. Supported orientations: `portrait` and `landscape`.
 
-`fonts` is optional. When `east_asia` is omitted, the creator chooses an installed CJK-capable default for the current platform. Use the actual content locale such as `zh-CN` or `en-US`; locale-aware defaults include Chinese TOC and callout labels. Header and footer values may be strings or objects with `text` and `alignment` (`left`, `center`, or `right`). `{PAGE}` and `{NUMPAGES}` create real fields.
+User mode may include a centralized `style_overrides` object with
+`body_font`, `east_asia_font`, `body_size`, `title_size`, `title_color`,
+`heading_color`, three `heading_sizes`, `normal_alignment`,
+`normal_first_line_indent_inches`, `normal_line_spacing_points`,
+`table_style`, table header/border colors, callout fill/border colors, and
+`space_after`. Do not scatter these decisions through content blocks. The
+creator maps missing CJK fonts to an installed platform fallback.
+
+Use the actual content locale such as `zh-CN` or `en-US`; locale-aware defaults
+include Chinese TOC and callout labels. Header and footer values may be strings
+or objects with `text` and `alignment` (`left`, `center`, or `right`). `{PAGE}`
+and `{NUMPAGES}` create real fields.
+
+`update_fields_on_open` is optional and defaults to `false`. Do not enable it
+to populate a TOC. It can make Word show a warning when the file opens.
+Enable it only when the user explicitly wants Word to recalculate fields on
+open and accepts that prompt; final delivery requires the separate
+`--allow-update-fields-on-open` opt-in.
 
 ## 2. Content blocks
 
@@ -84,10 +111,11 @@ Heading levels must be 1–3.
 ### Paragraph
 
 ```json
-{"type": "paragraph", "text": "The program is ready to proceed.", "style": "Normal"}
+{"type": "paragraph", "text": "The program is ready to proceed."}
 ```
 
 Use `"bold": true` only when the entire paragraph requires bold treatment. Use rich-text runs for local emphasis.
+Built-in mode does not permit the `style` field.
 
 ### Bullet and numbered items
 
@@ -111,12 +139,12 @@ Create one block per list item. Do not place multiple items in one paragraph wit
   "type": "callout",
   "label": "Decision",
   "text": "Proceed after the final readiness review.",
-  "fill": "D9EAF7",
-  "accent": "1F4E79"
+  "accent": "595959"
 }
 ```
 
-Colors are six-digit RGB hex values. Keep callouts short.
+Colors are six-digit RGB hex values. `fill` is optional; omit it for a neutral
+callout. Keep callouts short.
 
 ### Checklist
 
@@ -214,9 +242,11 @@ Use `runs` instead of `text` when local emphasis is required:
 }
 ```
 
-Supported run fields: `text`, `bold`, `italic`, `underline`, `color`, and `size_pt`.
+Supported run fields are `text`, `bold`, `italic`, and `underline`. User style
+mode may additionally use `color` and `size_pt` when those values follow the
+user's concrete requirements.
 
-Use rich runs with `title`, `subtitle`, `heading`, `paragraph`, `bullet`, `numbered`, `quote`, and `callout` blocks. Avoid direct formatting on most body text; repeated formatting belongs in styles or presets.
+Use rich runs with `title`, `subtitle`, `heading`, `paragraph`, `bullet`, `numbered`, `quote`, and `callout` blocks. Avoid direct formatting on most body text; repeated formatting belongs in the frozen style policy.
 
 ## 4. Table specification
 
@@ -231,7 +261,6 @@ Use rich runs with `title`, `subtitle`, `heading`, `paragraph`, `bullet`, `numbe
   "column_widths": [4, 2, 1.5],
   "alignments": ["left", "left", "center"],
   "repeat_header": true,
-  "style": "Table Grid",
   "caption": "Table 1. Launch readiness"
 }
 ```
@@ -244,9 +273,14 @@ Rules:
 - The creator writes explicit table, grid, and cell widths in DXA.
 - Rows auto-expand; do not simulate fixed height with blank lines.
 - Set `repeat_header` to `true` for multi-page data tables.
-- Supported table styles are `Table Grid`, `Light Shading Accent 1`,
-  `Light Grid Accent 1`, and `Medium Shading 1 Accent 1`. Any other value is a
-  specification error rather than a silent fallback.
+- Built-in mode always uses the neutral template: white cells, bold black
+  headers, and neutral borders. It rejects `style`, `header_fill`,
+  `header_text_color`, and `border_color` on a table block.
+- User mode may use those fields when they implement the supplied style.
+  Supported table styles are `Table Grid`, `Light Grid`, `Light Shading`,
+  `Light Shading Accent 1`, `Light Grid Accent 1`, and
+  `Medium Shading 1 Accent 1`. Any other value is a specification error rather
+  than a silent fallback.
 - A caption is placed before the table and kept with it across pagination.
 
 ## 5. Edit patch

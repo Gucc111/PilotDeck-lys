@@ -10,18 +10,46 @@ from typing import Any, Iterable
 from .common import DocxSkillError, assert_internal_control_path
 
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 6
 RESULT_STATUSES = ("ok", "partial", "unsupported", "blocked", "error")
 RICH_RUN_FIELDS = {"text", "bold", "italic", "underline", "color", "size_pt"}
 ALIGNMENTS = ("left", "center", "right")
 SUPPORTED_FIELD_KEYWORDS = ("TOC", "PAGE", "NUMPAGES", "DATE", "TIME")
+BUILTIN_TEMPLATE_ID = "neutral-document-v1"
+STYLE_POLICY_MODES = ("builtin", "user")
+USER_STYLE_SOURCES = (
+    "explicit-requirements",
+    "reference-template",
+    "existing-document",
+)
 SUPPORTED_TABLE_STYLES = (
     "Table Grid",
+    "Light Grid",
+    "Light Shading",
     "Light Shading Accent 1",
     "Light Grid Accent 1",
     "Medium Shading 1 Accent 1",
 )
 HEX_COLOR_PATTERN = r"^#?[0-9A-Fa-f]{6}$"
+STYLE_OVERRIDE_FIELDS = {
+    "body_font",
+    "east_asia_font",
+    "body_size",
+    "title_size",
+    "title_color",
+    "heading_color",
+    "heading_sizes",
+    "normal_alignment",
+    "normal_first_line_indent_inches",
+    "normal_line_spacing_points",
+    "table_style",
+    "table_header_fill",
+    "table_header_text_color",
+    "table_border_color",
+    "callout_fill",
+    "callout_border_color",
+    "space_after",
+}
 JSON_SCALAR_SCHEMA: dict[str, Any] = {
     "type": ["string", "number", "boolean", "null"]
 }
@@ -57,6 +85,9 @@ CREATE_BLOCK_SCHEMAS: dict[str, set[str]] = {
         "repeat_header",
         "style",
         "caption",
+        "header_fill",
+        "header_text_color",
+        "border_color",
     },
     "image": {"type", "path", "width_inches", "caption", "alt_text"},
     "toc": {"type", "title", "levels", "page_break_after"},
@@ -169,6 +200,19 @@ CREATE_BLOCK_PROPERTY_SCHEMAS: dict[str, dict[str, Any]] = {
         "repeat_header": {"type": "boolean"},
         "style": {"enum": list(SUPPORTED_TABLE_STYLES)},
         "caption": {"type": "string"},
+        "header_fill": {
+            "oneOf": [
+                {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                {"type": "null"},
+            ]
+        },
+        "header_text_color": {
+            "oneOf": [
+                {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                {"type": "null"},
+            ]
+        },
+        "border_color": {"type": "string", "pattern": HEX_COLOR_PATTERN},
     },
     "image": {
         "type": {"const": "image"},
@@ -241,8 +285,77 @@ CREATE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "preset": {"enum": ["business-report", "formal-memo", "proposal", "sop", "simple-document"]},
+        "style_policy": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mode": {"enum": list(STYLE_POLICY_MODES)},
+                "template": {"const": BUILTIN_TEMPLATE_ID},
+                "source": {"enum": list(USER_STYLE_SOURCES)},
+                "requirements": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+            },
+            "required": ["mode"],
+        },
+        "style_overrides": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "body_font": {"type": "string", "minLength": 1},
+                "east_asia_font": {"type": "string", "minLength": 1},
+                "body_size": {"type": "number", "exclusiveMinimum": 0},
+                "title_size": {"type": "number", "exclusiveMinimum": 0},
+                "title_color": {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                "heading_color": {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                "heading_sizes": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {"type": "number", "exclusiveMinimum": 0},
+                },
+                "normal_alignment": {"enum": ["left", "justify"]},
+                "normal_first_line_indent_inches": {
+                    "type": "number",
+                    "minimum": 0,
+                },
+                "normal_line_spacing_points": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                },
+                "table_style": {"enum": list(SUPPORTED_TABLE_STYLES)},
+                "table_header_fill": {
+                    "oneOf": [
+                        {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                        {"type": "null"},
+                    ]
+                },
+                "table_header_text_color": {
+                    "oneOf": [
+                        {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                        {"type": "null"},
+                    ]
+                },
+                "table_border_color": {
+                    "type": "string",
+                    "pattern": HEX_COLOR_PATTERN,
+                },
+                "callout_fill": {
+                    "oneOf": [
+                        {"type": "string", "pattern": HEX_COLOR_PATTERN},
+                        {"type": "null"},
+                    ]
+                },
+                "callout_border_color": {
+                    "type": "string",
+                    "pattern": HEX_COLOR_PATTERN,
+                },
+                "space_after": {"type": "number", "minimum": 0},
+            },
+        },
         "locale": {"type": "string", "minLength": 1},
+        "update_fields_on_open": {"type": "boolean"},
         "page": {"enum": ["a4", "letter"]},
         "orientation": {"enum": ["portrait", "landscape"]},
         "margins_inches": {
@@ -253,14 +366,6 @@ CREATE_SCHEMA: dict[str, Any] = {
                 "right": {"type": "number", "exclusiveMinimum": 0},
                 "bottom": {"type": "number", "exclusiveMinimum": 0},
                 "left": {"type": "number", "exclusiveMinimum": 0},
-            },
-        },
-        "fonts": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "latin": {"type": "string", "minLength": 1},
-                "east_asia": {"type": "string", "minLength": 1},
             },
         },
         "metadata": {
@@ -537,6 +642,14 @@ def capabilities() -> dict[str, Any]:
             "final_output_requires_command": "deliver",
             "delivery_requires_matching_preflight_sha256": True,
             "visual_review_requires_page_image_sha256": True,
+            "task_setup_command": "prepare",
+            "canonical_visual_review_commands": [
+                "qa-init",
+                "qa-record",
+                "qa-finalize",
+            ],
+            "page_image_sha256_is_generated_by_cli": True,
+            "manual_page_hashing_is_blocked_by_protocol": True,
             "automated_blank_page_gate": True,
             "existing_outputs_blocked_by_default": True,
             "explicit_overwrite_flag": "--overwrite",
@@ -546,6 +659,10 @@ def capabilities() -> dict[str, Any]:
             "new_document_must_use_new_path": True,
             "session_lineage_resolves_latest_version": True,
             "exact_older_input_requires_flag": "--use-exact-input",
+            "field_updates_on_open_disabled_by_default": True,
+            "field_updates_on_open_delivery_requires_flag": (
+                "--allow-update-fields-on-open"
+            ),
             "fallback_create_can_overwrite": False,
             "atomic_validation_before_replace": True,
         },
@@ -595,7 +712,12 @@ def capabilities() -> dict[str, Any]:
         },
         "runtime_dependencies": {
             "libreoffice": {
-                "required_for": ["render", "refresh-toc", "preflight"],
+                "required_for": [
+                    "render",
+                    "refresh-toc",
+                    "preflight",
+                    "qa-init",
+                ],
                 "probe_command": "check",
                 "installation": "external",
                 "missing_result": "unsupported",
@@ -629,13 +751,38 @@ def capabilities() -> dict[str, Any]:
                 "command": "create",
                 "features": {
                     "structured_prose_lists_tables_images": _capability("supported"),
+                    "two_path_style_policy": _capability(
+                        "supported",
+                        reason=(
+                            "Every task freezes either the built-in neutral template "
+                            "or a concrete user-provided style source. Generic document "
+                            "genres do not activate a colored theme."
+                        ),
+                    ),
+                    "neutral_builtin_template": _capability(
+                        "supported",
+                        reason=(
+                            "The single built-in template uses black hierarchy, "
+                            "white tables, neutral borders, and restrained callouts "
+                            "with locale-aware Chinese and Latin typography."
+                        ),
+                    ),
+                    "user_style_overrides": _capability(
+                        "supported",
+                        reason=(
+                            "Concrete user requirements, a reference template, or an "
+                            "existing document may provide explicit style tokens."
+                        ),
+                    ),
                     "page_and_numpages_fields": _capability("supported"),
                     "toc_field": _capability(
                         "partial",
                         command="refresh-toc",
                         reason=(
                             "Create inserts a live TOC field; refresh-toc must populate "
-                            "its visible cached entries and page numbers before delivery."
+                            "its visible cached entries and page numbers before delivery. "
+                            "The refreshed result disables update-on-open to avoid a "
+                            "Word opening prompt."
                         ),
                     ),
                     "headers_footers_and_cjk_fonts": _capability("supported"),
@@ -715,12 +862,22 @@ def capabilities() -> dict[str, Any]:
                 },
             },
             "validate_audit_render": {
-                "command": "preflight",
+                "command": "qa-init",
                 "features": {
                     "package_validation": _capability("supported"),
                     "warning_dispositions": _capability("supported"),
-                    "acceptance_manifest": _capability("supported"),
-                    "per_page_visual_review_evidence": _capability("supported"),
+                    "acceptance_manifest": _capability(
+                        "supported", command="prepare"
+                    ),
+                    "per_page_visual_review_evidence": _capability(
+                        "supported",
+                        command="qa-record",
+                        reason=(
+                            "qa-init binds the current candidate and rendered page "
+                            "pixels; qa-record records one inspected page without "
+                            "manual path or digest copying."
+                        ),
+                    ),
                     "libreoffice_render": _capability(
                         "supported",
                         reason=(
@@ -853,21 +1010,176 @@ def _require_hex_color(value: Any, context: str) -> None:
         )
 
 
-def validate_create_spec(spec: dict[str, Any]) -> None:
-    _reject_unknown(spec, CREATE_SCHEMA["properties"], "create specification")
-    if "preset" in spec and (
-        not isinstance(spec["preset"], str)
-        or spec["preset"]
-        not in {
-            "business-report",
-            "formal-memo",
-            "proposal",
-            "sop",
-            "simple-document",
+def normalize_style_policy(
+    value: Any,
+    *,
+    default_builtin: bool = True,
+) -> dict[str, Any] | None:
+    if value is None:
+        if not default_builtin:
+            return None
+        return {
+            "mode": "builtin",
+            "template": BUILTIN_TEMPLATE_ID,
         }
+    if not isinstance(value, dict):
+        raise DocxSkillError(
+            "style_policy must be an object",
+            code="invalid-style-policy",
+        )
+    _reject_unknown(
+        value,
+        {"mode", "template", "source", "requirements"},
+        "style_policy",
+    )
+    mode = value.get("mode")
+    if mode not in STYLE_POLICY_MODES:
+        raise DocxSkillError(
+            "style_policy.mode must be builtin or user",
+            code="invalid-style-policy",
+        )
+    requirements = value.get("requirements", [])
+    if not isinstance(requirements, list) or any(
+        not isinstance(item, str) or not item.strip()
+        for item in requirements
     ):
         raise DocxSkillError(
-            f"Unknown preset: {spec['preset']!r}", code="invalid-spec"
+            "style_policy.requirements must contain non-empty strings",
+            code="invalid-style-policy",
+        )
+    normalized_requirements = list(
+        dict.fromkeys(item.strip() for item in requirements)
+    )
+    if mode == "builtin":
+        if value.get("source") is not None or normalized_requirements:
+            raise DocxSkillError(
+                "Builtin style_policy cannot declare a user style source or requirements",
+                code="invalid-style-policy",
+            )
+        template = value.get("template", BUILTIN_TEMPLATE_ID)
+        if template != BUILTIN_TEMPLATE_ID:
+            raise DocxSkillError(
+                f"Unsupported builtin template: {template!r}",
+                code="invalid-style-policy",
+                details={"supported": [BUILTIN_TEMPLATE_ID]},
+            )
+        return {
+            "mode": "builtin",
+            "template": BUILTIN_TEMPLATE_ID,
+        }
+
+    if value.get("template") is not None:
+        raise DocxSkillError(
+            "User style_policy cannot select a builtin template",
+            code="invalid-style-policy",
+        )
+    source = value.get("source")
+    if source not in USER_STYLE_SOURCES:
+        raise DocxSkillError(
+            "User style_policy requires a declared source",
+            code="invalid-style-policy",
+            details={"supported_sources": list(USER_STYLE_SOURCES)},
+        )
+    if source == "explicit-requirements" and not normalized_requirements:
+        raise DocxSkillError(
+            "Explicit user style requires at least one concrete requirement",
+            code="invalid-style-policy",
+        )
+    normalized: dict[str, Any] = {
+        "mode": "user",
+        "source": source,
+    }
+    if normalized_requirements:
+        normalized["requirements"] = normalized_requirements
+    return normalized
+
+
+def _validate_style_overrides(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise DocxSkillError(
+            "style_overrides must be an object",
+            code="invalid-style-policy",
+        )
+    _reject_unknown(value, STYLE_OVERRIDE_FIELDS, "style_overrides")
+    for field in ("body_font", "east_asia_font"):
+        if field in value:
+            _require_string(
+                value[field],
+                f"style_overrides.{field}",
+                allow_empty=False,
+            )
+    for field in (
+        "body_size",
+        "title_size",
+        "normal_line_spacing_points",
+    ):
+        if field in value and (
+            not _is_number(value[field]) or value[field] <= 0
+        ):
+            raise DocxSkillError(
+                f"style_overrides.{field} must be a positive number",
+                code="invalid-style-policy",
+            )
+    for field in ("normal_first_line_indent_inches", "space_after"):
+        if field in value and (
+            not _is_number(value[field]) or value[field] < 0
+        ):
+            raise DocxSkillError(
+                f"style_overrides.{field} must be a non-negative number",
+                code="invalid-style-policy",
+            )
+    heading_sizes = value.get("heading_sizes")
+    if heading_sizes is not None and (
+        not isinstance(heading_sizes, list)
+        or len(heading_sizes) != 3
+        or any(not _is_number(item) or item <= 0 for item in heading_sizes)
+    ):
+        raise DocxSkillError(
+            "style_overrides.heading_sizes must contain three positive numbers",
+            code="invalid-style-policy",
+        )
+    for field in (
+        "title_color",
+        "heading_color",
+        "table_border_color",
+        "callout_border_color",
+    ):
+        if field in value:
+            _require_hex_color(value[field], f"style_overrides.{field}")
+    for field in (
+        "table_header_fill",
+        "table_header_text_color",
+        "callout_fill",
+    ):
+        if field in value and value[field] is not None:
+            _require_hex_color(value[field], f"style_overrides.{field}")
+    if value.get("normal_alignment") not in {None, "left", "justify"}:
+        raise DocxSkillError(
+            "style_overrides.normal_alignment must be left or justify",
+            code="invalid-style-policy",
+        )
+    if (
+        "table_style" in value
+        and value["table_style"] not in SUPPORTED_TABLE_STYLES
+    ):
+        raise DocxSkillError(
+            f"Unsupported table style: {value['table_style']!r}",
+            code="invalid-style-policy",
+            details={"supported_table_styles": list(SUPPORTED_TABLE_STYLES)},
+        )
+    return dict(value)
+
+
+def validate_create_spec(spec: dict[str, Any]) -> None:
+    _reject_unknown(spec, CREATE_SCHEMA["properties"], "create specification")
+    style_policy = normalize_style_policy(spec.get("style_policy"))
+    style_overrides = _validate_style_overrides(spec.get("style_overrides"))
+    if style_policy["mode"] == "builtin" and style_overrides:
+        raise DocxSkillError(
+            "Builtin style_policy does not allow style_overrides",
+            code="builtin-style-override",
         )
     if "page" in spec and (
         not isinstance(spec["page"], str) or spec["page"] not in {"a4", "letter"}
@@ -882,6 +1194,13 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
         )
     if "locale" in spec:
         _require_string(spec["locale"], "locale", allow_empty=False)
+    if "update_fields_on_open" in spec and not isinstance(
+        spec["update_fields_on_open"], bool
+    ):
+        raise DocxSkillError(
+            "update_fields_on_open must be boolean",
+            code="invalid-spec",
+        )
     margins = spec.get("margins_inches")
     if margins is not None:
         if not isinstance(margins, dict):
@@ -893,13 +1212,6 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
                     f"margins_inches.{name} must be a positive number",
                     code="invalid-spec",
                 )
-    fonts = spec.get("fonts")
-    if fonts is not None:
-        if not isinstance(fonts, dict):
-            raise DocxSkillError("fonts must be an object", code="invalid-spec")
-        _reject_unknown(fonts, {"latin", "east_asia"}, "fonts")
-        for name, value in fonts.items():
-            _require_string(value, f"fonts.{name}", allow_empty=False)
     metadata = spec.get("metadata")
     if metadata is not None:
         if not isinstance(metadata, dict):
@@ -986,6 +1298,12 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
                             code="invalid-spec",
                         )
                 if "color" in run:
+                    if style_policy["mode"] == "builtin":
+                        raise DocxSkillError(
+                            "Builtin style_policy does not allow run color overrides",
+                            code="builtin-style-override",
+                            details={"block": block_type, "index": index},
+                        )
                     _require_hex_color(
                         run["color"], f"{block_type}.runs.color"
                     )
@@ -996,6 +1314,15 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
                     raise DocxSkillError(
                         f"{block_type}.runs.size_pt must be a positive number",
                         code="invalid-spec",
+                    )
+                if (
+                    "size_pt" in run
+                    and style_policy["mode"] == "builtin"
+                ):
+                    raise DocxSkillError(
+                        "Builtin style_policy does not allow run size overrides",
+                        code="builtin-style-override",
+                        details={"block": block_type, "index": index},
                     )
         if block_type == "heading":
             level = block.get("level")
@@ -1008,6 +1335,12 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
                 raise DocxSkillError("heading.level must be an integer from 1 to 3")
         if block_type in {"paragraph", "body"}:
             if "style" in block:
+                if style_policy["mode"] == "builtin":
+                    raise DocxSkillError(
+                        "Builtin style_policy does not allow paragraph style overrides",
+                        code="builtin-style-override",
+                        details={"block": block_type, "index": index},
+                    )
                 _require_string(
                     block["style"], f"{block_type}.style", allow_empty=False
                 )
@@ -1021,6 +1354,12 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
                     if field == "label":
                         _require_string(block[field], "callout.label")
                     else:
+                        if style_policy["mode"] == "builtin":
+                            raise DocxSkillError(
+                                f"Builtin style_policy does not allow callout.{field}",
+                                code="builtin-style-override",
+                                details={"index": index},
+                            )
                         _require_hex_color(block[field], f"callout.{field}")
         if block_type in {"checklist", "source_list"}:
             items = block.get("items")
@@ -1070,6 +1409,24 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
                         code="invalid-spec",
                     )
         if block_type == "table":
+            forbidden_builtin_table_fields = {
+                "style",
+                "header_fill",
+                "header_text_color",
+                "border_color",
+            } & set(block)
+            if (
+                style_policy["mode"] == "builtin"
+                and forbidden_builtin_table_fields
+            ):
+                raise DocxSkillError(
+                    "Builtin style_policy does not allow table style overrides",
+                    code="builtin-style-override",
+                    details={
+                        "index": index,
+                        "fields": sorted(forbidden_builtin_table_fields),
+                    },
+                )
             headers = block.get("headers", [])
             rows = block.get("rows", [])
             if not isinstance(headers, list) or not isinstance(rows, list):
@@ -1123,6 +1480,13 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
             for field in ("style", "caption"):
                 if field in block:
                     _require_string(block[field], f"table.{field}")
+            for field in (
+                "header_fill",
+                "header_text_color",
+                "border_color",
+            ):
+                if field in block and block[field] is not None:
+                    _require_hex_color(block[field], f"table.{field}")
             if (
                 "style" in block
                 and block["style"] not in SUPPORTED_TABLE_STYLES

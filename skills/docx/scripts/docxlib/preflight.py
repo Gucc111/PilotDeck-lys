@@ -18,7 +18,7 @@ from .common import (
     write_json,
 )
 from .core import inspect_docx
-from .protocol import load_dispositions
+from .protocol import load_dispositions, normalize_style_policy
 from .render import render_docx
 from .toc import toc_status
 
@@ -90,6 +90,7 @@ def _acceptance_requirements(
     acceptance: dict[str, Any],
 ) -> dict[str, Any]:
     allowed = {
+        "style_policy",
         "required_text",
         "required_headings",
         "page_count",
@@ -103,6 +104,10 @@ def _acceptance_requirements(
             code="invalid-acceptance-manifest",
             details={"unknown": unknown},
         )
+    style_policy = normalize_style_policy(
+        acceptance.get("style_policy"),
+        default_builtin=False,
+    )
     required_text = acceptance.get("required_text", [])
     if not isinstance(required_text, list) or any(
         not isinstance(value, str) or not value.strip() for value in required_text
@@ -206,12 +211,64 @@ def _acceptance_requirements(
             }
         )
     return {
+        "style_policy": style_policy,
         "required_text": required_text,
         "required_headings": normalized_headings,
         "page_count": page_count,
         "toc": toc,
         "protected_sources": normalized_sources,
     }
+
+
+def _builtin_style_gate_issues(
+    acceptance: dict[str, Any],
+    audit: dict[str, Any],
+) -> list[dict[str, Any]]:
+    policy = acceptance.get("style_policy")
+    if not isinstance(policy, dict) or policy.get("mode") != "builtin":
+        return []
+    summary = audit.get("summary", {})
+    checks = (
+        (
+            "chromatic_filled_table_cells",
+            "builtin-style-chromatic-table-fill",
+            "The built-in neutral template does not allow chromatic table fills.",
+        ),
+        (
+            "accent_table_styles",
+            "builtin-style-accent-table",
+            "The built-in neutral template does not allow Accent table styles.",
+        ),
+        (
+            "chromatic_text_runs",
+            "builtin-style-chromatic-text",
+            "The built-in neutral template requires black or neutral text.",
+        ),
+        (
+            "chromatic_paragraph_fills",
+            "builtin-style-chromatic-paragraph-fill",
+            "The built-in neutral template does not allow chromatic paragraph fills.",
+        ),
+        (
+            "chromatic_table_borders",
+            "builtin-style-chromatic-table-border",
+            "The built-in neutral template requires neutral table borders.",
+        ),
+    )
+    issues: list[dict[str, Any]] = []
+    for metric, code, message in checks:
+        count = int(summary.get(metric, 0) or 0)
+        if count:
+            issues.append(
+                {
+                    "severity": "error",
+                    "code": code,
+                    "message": message,
+                    "metric": metric,
+                    "count": count,
+                }
+            )
+    return issues
 
 
 def _visual_review_result(
@@ -253,9 +310,16 @@ def _visual_review_result(
             },
             issues,
         )
-    if set(review) - {"artifact_sha256", "status", "pages"}:
+    allowed_review_fields = {"protocol", "artifact_sha256", "status", "pages"}
+    if set(review) - allowed_review_fields:
         raise DocxSkillError(
-            "Visual review may contain only artifact_sha256, status, and pages",
+            "Visual review contains unsupported fields",
+            code="invalid-visual-review",
+        )
+    protocol = review.get("protocol")
+    if protocol not in {None, "pilotdeck-docx-visual-review/v2"}:
+        raise DocxSkillError(
+            "Unsupported visual review protocol",
             code="invalid-visual-review",
         )
     reviewed_sha256 = review.get("artifact_sha256")
@@ -277,9 +341,9 @@ def _visual_review_result(
                 "reviewed_sha256": reviewed_sha256.lower(),
             }
         )
-    if review.get("status") not in {"passed", "failed"}:
+    if review.get("status") not in {"pending", "passed", "failed"}:
         raise DocxSkillError(
-            "visual review status must be passed or failed",
+            "visual review status must be pending, passed, or failed",
             code="invalid-visual-review",
         )
     pages = review.get("pages")
@@ -289,37 +353,70 @@ def _visual_review_result(
             code="invalid-visual-review",
         )
     seen: set[int] = set()
+    completed_pages: list[int] = []
     failed_pages: list[int] = []
+    pending_pages: list[int] = []
     notes: list[str] = []
     expected_image_hashes = {
         index: _page_image_sha256(image)
         for index, image in enumerate(rendered_images, start=1)
     }
     for item in pages:
+        allowed_page_fields = {
+            "page",
+            "status",
+            "notes",
+            "image_sha256",
+            "reviewed_at",
+            "recorded_via",
+        }
+        if not isinstance(item, dict) or set(item) - allowed_page_fields:
+            raise DocxSkillError(
+                "Visual review page contains unsupported fields",
+                code="invalid-visual-review",
+            )
+        item_status = item.get("status")
+        item_notes = item.get("notes")
         if (
-            not isinstance(item, dict)
-            or set(item) - {"page", "status", "notes", "image_sha256"}
-            or not isinstance(item.get("page"), int)
+            not isinstance(item.get("page"), int)
             or isinstance(item.get("page"), bool)
             or item["page"] < 1
-            or item.get("status") not in {"passed", "failed"}
-            or not isinstance(item.get("notes"), str)
-            or not item["notes"].strip()
+            or item_status not in {"pending", "passed", "failed"}
+            or not isinstance(item_notes, str)
             or not isinstance(item.get("image_sha256"), str)
             or not re.fullmatch(r"[0-9a-fA-F]{64}", item["image_sha256"])
         ):
             raise DocxSkillError(
                 "Each visual review page requires page, image_sha256, "
-                "passed/failed status, and non-empty notes",
+                "pending/passed/failed status, and notes",
                 code="invalid-visual-review",
             )
+        if item_status != "pending" and not item_notes.strip():
+            raise DocxSkillError(
+                "Completed visual review pages require page-specific notes",
+                code="invalid-visual-review",
+            )
+        if protocol is not None and item_status != "pending":
+            if (
+                not isinstance(item.get("reviewed_at"), str)
+                or not item["reviewed_at"].strip()
+                or item.get("recorded_via") != "docx.qa-record/v1"
+            ):
+                raise DocxSkillError(
+                    "Protocol v2 page reviews must be recorded with qa-record",
+                    code="invalid-visual-review",
+                )
         if item["page"] in seen:
             raise DocxSkillError(
                 f"Visual review page {item['page']} is duplicated",
                 code="invalid-visual-review",
             )
         seen.add(item["page"])
-        notes.append(re.sub(r"\s+", " ", item["notes"].strip()).casefold())
+        if item_status == "pending":
+            pending_pages.append(item["page"])
+        else:
+            completed_pages.append(item["page"])
+            notes.append(re.sub(r"\s+", " ", item_notes.strip()).casefold())
         expected_image_hash = expected_image_hashes.get(item["page"])
         if expected_image_hash != item["image_sha256"].lower():
             issues.append(
@@ -334,7 +431,7 @@ def _visual_review_result(
                     "reviewed_sha256": item["image_sha256"].lower(),
                 }
             )
-        if item["status"] == "failed":
+        if item_status == "failed":
             failed_pages.append(item["page"])
     expected = set(range(1, rendered_pages + 1))
     if seen != expected:
@@ -347,6 +444,18 @@ def _visual_review_result(
                 "unexpected_pages": sorted(seen - expected),
             }
         )
+    if pending_pages:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "visual-review-incomplete",
+                "message": (
+                    "Every current rendered page must be inspected and recorded "
+                    "with qa-record."
+                ),
+                "pending_pages": sorted(pending_pages),
+            }
+        )
     if review["status"] == "failed" or failed_pages:
         issues.append(
             {
@@ -356,7 +465,23 @@ def _visual_review_result(
                 "failed_pages": failed_pages,
             }
         )
-    if rendered_pages > 1 and len(set(notes)) == 1:
+    if review["status"] == "pending" and not pending_pages:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "visual-review-status-incomplete",
+                "message": "The visual review is still marked pending.",
+            }
+        )
+    if review["status"] == "passed" and (pending_pages or failed_pages):
+        issues.append(
+            {
+                "severity": "error",
+                "code": "visual-review-status-mismatch",
+                "message": "The visual review status conflicts with page results.",
+            }
+        )
+    if rendered_pages > 1 and len(notes) == rendered_pages and len(set(notes)) == 1:
         issues.append(
             {
                 "severity": "error",
@@ -373,8 +498,10 @@ def _visual_review_result(
             "status": status,
             "required": status != "passed",
             "report": str(review_path),
+            "protocol": protocol,
             "artifact_sha256": reviewed_sha256.lower(),
-            "pages_reviewed": sorted(seen),
+            "pages_reviewed": sorted(completed_pages),
+            "pending_pages": sorted(pending_pages),
         },
         issues,
     )
@@ -487,7 +614,10 @@ def preflight_docx(
         present = _normalize_text(value) in normalized_rendered
         coverage_checks.append({"text": value, "present": present})
 
-    gate_issues: list[dict[str, Any]] = []
+    gate_issues: list[dict[str, Any]] = _builtin_style_gate_issues(
+        acceptance,
+        audit,
+    )
     for warning in validation.get("warnings", []):
         gate_issues.append(
             {

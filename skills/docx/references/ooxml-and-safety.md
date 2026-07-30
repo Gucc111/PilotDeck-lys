@@ -52,6 +52,14 @@ Inspection reports field instructions and external relationships. Treat field di
 
 Do not silently rewrite field instructions, bookmarks, hyperlinks, or relationship targets during unrelated edits. The creator supports TOC, PAGE, NUMPAGES, DATE, and TIME fields. Verify their displayed results in rendering; a valid field instruction does not prove its cached display is current. For a created TOC, use `refresh-toc` to retain the live field while generating visible cached entries and page numbers, then require `toc.populated` in acceptance.
 
+The creator does not set `w:updateFields` by default, and `refresh-toc`
+removes that update-on-open request after caching stable results. This avoids
+the Word warning that a document's fields may refer to other files. The final
+audit reports `fields-update-on-open`, and delivery blocks it unless the
+current user explicitly accepts dynamic updates and the
+`--allow-update-fields-on-open` flag is used. This opt-in does not authorize
+following external relationships.
+
 Treat unexpected external relationships as a security and privacy signal. Do not follow remote targets automatically.
 
 ## 5. Privacy and sanitization

@@ -30,9 +30,18 @@ from .core import (
 )
 from .delivery import deliver_docx
 from .fallback import _fallback_environment, fallback_create, fallback_patch
+from .fields import (
+    set_package_update_fields_on_open,
+    update_fields_on_open_enabled,
+)
 from .lineage import latest_input_path, resolve_latest_input
 from .preflight import preflight_docx
 from .protocol import capabilities, schema_for
+from .qa import (
+    finalize_visual_qa,
+    initialize_visual_qa,
+    record_visual_review,
+)
 from .render import find_soffice, render_docx
 from .review import finalize_docx, review_docx
 from .toc import refresh_toc, toc_status
@@ -76,7 +85,7 @@ def run_smoke_test() -> dict[str, Any]:
         root = Path(temp_dir)
 
         capability_result = capabilities()
-        assert capability_result["protocol_version"] == 3
+        assert capability_result["protocol_version"] == 6
         assert len(capability_result["capability_states"]) == len(
             set(capability_result["capability_states"])
         )
@@ -139,6 +148,11 @@ def run_smoke_test() -> dict[str, Any]:
         _dump(
             invalid_table_style_spec,
             {
+                "style_policy": {
+                    "mode": "user",
+                    "source": "explicit-requirements",
+                    "requirements": ["Use the requested shaded table style."],
+                },
                 "content": [
                     {
                         "type": "table",
@@ -162,9 +176,20 @@ def run_smoke_test() -> dict[str, Any]:
         _dump(
             create_spec,
             {
-                "preset": "business-report",
+                "style_policy": {
+                    "mode": "user",
+                    "source": "explicit-requirements",
+                    "requirements": [
+                        "Use a blue report hierarchy and Arial typography."
+                    ],
+                },
+                "style_overrides": {
+                    "body_font": "Arial",
+                    "title_color": "1F4E79",
+                    "heading_color": "1F4E79",
+                    "table_header_fill": "D9EAF7",
+                },
                 "locale": "zh-CN",
-                "fonts": {"latin": "Arial"},
                 "metadata": {
                     "title": "2026 项目复盘报告",
                     "author": "PilotDeck Test",
@@ -223,6 +248,168 @@ def run_smoke_test() -> dict[str, Any]:
             created,
         )
         create_docx(create_spec, created, overwrite=True)
+        assert not update_fields_on_open_enabled(created)
+
+        neutral_spec = root / "neutral-create.json"
+        _dump(
+            neutral_spec,
+            {
+                "locale": "zh-CN",
+                "content": [
+                    {"type": "title", "text": "中文技术报告"},
+                    {"type": "heading", "level": 1, "text": "总体结论"},
+                    {
+                        "type": "paragraph",
+                        "text": "正文通过字体、层级、间距和线条组织内容。",
+                    },
+                    {
+                        "type": "callout",
+                        "label": "结论",
+                        "text": "默认不使用装饰性色块。",
+                    },
+                    {
+                        "type": "table",
+                        "headers": ["指标", "结果", "说明", "状态"],
+                        "rows": [["覆盖率", "100%", "已核验", "通过"]],
+                        "column_widths": [2, 1, 2, 1],
+                    },
+                ],
+            },
+        )
+        neutral_docx = root / "neutral.docx"
+        neutral_creation = create_docx(neutral_spec, neutral_docx)
+        assert neutral_creation["template"] == "neutral-document-v1"
+        assert neutral_creation["style_policy"] == {
+            "mode": "builtin",
+            "template": "neutral-document-v1",
+        }
+        assert not update_fields_on_open_enabled(neutral_docx)
+        with zipfile.ZipFile(neutral_docx) as archive:
+            neutral_document = ET.fromstring(archive.read("word/document.xml"))
+            neutral_styles = ET.fromstring(archive.read("word/styles.xml"))
+            direct_fills = neutral_document.findall(
+                ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tcPr/"
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}shd"
+            )
+            assert not direct_fills
+            direct_colors = {
+                node.get(
+                    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val"
+                )
+                for node in neutral_document.findall(
+                    ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color"
+                )
+            }
+            assert "1F4E79" not in direct_colors
+            caption_style = neutral_styles.find(
+                ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}style"
+                "[@{http://schemas.openxmlformats.org/wordprocessingml/2006/main}styleId='Caption']"
+            )
+            assert caption_style is not None
+            caption_color = caption_style.find(
+                ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color"
+            )
+            assert caption_color is not None
+            assert caption_color.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val"
+            ) == "000000"
+        neutral_audit = audit_docx(neutral_docx, profile="final")
+        neutral_codes = {
+            item["code"] for item in neutral_audit["issues"]
+        }
+        assert "fields-update-on-open" not in neutral_codes
+        assert "excessive-chromatic-table-fill" not in neutral_codes
+        assert "repeated-accent-table-styles" not in neutral_codes
+        steps.append("neutral-chinese-default")
+
+        builtin_override_specs = {
+            "style-overrides": {
+                "style_policy": {
+                    "mode": "builtin",
+                    "template": "neutral-document-v1",
+                },
+                "style_overrides": {"title_color": "1F4E79"},
+                "content": [{"type": "title", "text": "Rejected"}],
+            },
+            "run-color": {
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "runs": [{"text": "Rejected", "color": "1F4E79"}],
+                    }
+                ],
+            },
+            "table-style": {
+                "content": [
+                    {
+                        "type": "table",
+                        "headers": ["A"],
+                        "rows": [["B"]],
+                        "style": "Light Shading Accent 1",
+                    }
+                ],
+            },
+        }
+        for label, value in builtin_override_specs.items():
+            spec_path = root / f"builtin-{label}.json"
+            _dump(spec_path, value)
+            _expect_error(
+                create_docx,
+                "error",
+                "builtin-style-override",
+                spec_path,
+                root / f"builtin-{label}.docx",
+            )
+            negative_checks.append(f"builtin-style-{label}-blocked")
+
+        builtin_acceptance = root / "builtin-acceptance.json"
+        _dump(
+            builtin_acceptance,
+            {
+                "style_policy": {
+                    "mode": "builtin",
+                    "template": "neutral-document-v1",
+                }
+            },
+        )
+        _expect_error(
+            create_docx,
+            "error",
+            "style-policy-mismatch",
+            create_spec,
+            root / "style-policy-mismatch.docx",
+            acceptance_path=builtin_acceptance,
+        )
+        negative_checks.append("style-policy-mismatch")
+
+        dynamic_field_spec = root / "dynamic-field-create.json"
+        _dump(
+            dynamic_field_spec,
+            {
+                "locale": "zh-CN",
+                "update_fields_on_open": True,
+                "content": [
+                    {"type": "title", "text": "显式动态域"},
+                    {
+                        "type": "field",
+                        "instruction": "DATE",
+                        "placeholder": "2026-07-30",
+                    },
+                ],
+            },
+        )
+        dynamic_field_docx = root / "dynamic-field.docx"
+        create_docx(dynamic_field_spec, dynamic_field_docx)
+        assert update_fields_on_open_enabled(dynamic_field_docx)
+        dynamic_field_codes = {
+            item["code"]
+            for item in audit_docx(
+                dynamic_field_docx,
+                profile="final",
+            )["issues"]
+        }
+        assert "fields-update-on-open" in dynamic_field_codes
+        steps.append("field-update-opt-in-audit")
         negative_checks.append("output-overwrite-guard")
         _expect_error(
             inspect_docx,
@@ -517,7 +704,6 @@ def run_smoke_test() -> dict[str, Any]:
         _dump(
             reentrant_spec,
             {
-                "preset": "simple-document",
                 "content": [{"type": "paragraph", "text": "aba aba"}],
             },
         )
@@ -1142,6 +1328,20 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
         rendered_pages = 0
         preflight_status = "not-run"
         if find_soffice():
+            builtin_style_gate = preflight_docx(
+                created,
+                root / "builtin-style-gate-render",
+                acceptance_path=builtin_acceptance,
+                profile="draft",
+            )
+            builtin_style_error_codes = {
+                item["code"]
+                for item in builtin_style_gate["unresolved"]["errors"]
+            }
+            assert "builtin-style-chromatic-text" in builtin_style_error_codes
+            assert "builtin-style-chromatic-table-fill" in builtin_style_error_codes
+            negative_checks.append("builtin-style-preflight-gate")
+
             toc_candidate = root / "toc-refreshed.docx"
             toc_refresh = refresh_toc(
                 created,
@@ -1151,6 +1351,7 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             assert toc_refresh["toc"]["populated"]
             assert toc_refresh["iterations"] >= 2
             assert toc_status(toc_candidate)["entries"] >= 1
+            assert not update_fields_on_open_enabled(toc_candidate)
             steps.append("refresh-visible-toc")
 
             long_toc_spec = root / "long-toc.json"
@@ -1182,7 +1383,6 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             _dump(
                 long_toc_spec,
                 {
-                    "preset": "business-report",
                     "locale": "zh-CN",
                     "page": "a4",
                     "content": long_toc_content,
@@ -1205,7 +1405,6 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             _dump(
                 blank_page_spec,
                 {
-                    "preset": "business-report",
                     "content": [
                         {"type": "title", "text": "Blank-page regression"},
                         {"type": "page_break"},
@@ -1226,6 +1425,124 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
                 for item in blank_page_render["layout_metrics"]
             ), blank_page_render["layout_metrics"]
             negative_checks.append("blank-body-page-detection")
+
+            previous_qa_work_dir = os.environ.get("PILOTDECK_WORK_DIR")
+            qa_command_work = root / "qa-command-work"
+            os.environ["PILOTDECK_WORK_DIR"] = str(qa_command_work)
+            try:
+                prepare_process = subprocess.run(
+                    [
+                        sys.executable,
+                        str(cli),
+                        "prepare",
+                        "--style-mode",
+                        "user",
+                        "--style-source",
+                        "explicit-requirements",
+                        "--style-requirement",
+                        "Use the blue report hierarchy exercised by this smoke test.",
+                        "--require-text",
+                        "项目概览",
+                        "--require-heading",
+                        "1:项目概览",
+                        "--min-pages",
+                        "1",
+                        "--require-toc",
+                        "--protect-source",
+                        str(create_spec),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=30,
+                    check=False,
+                    env=os.environ.copy(),
+                )
+                assert prepare_process.returncode == 0, (
+                    prepare_process.stdout,
+                    prepare_process.stderr,
+                )
+                prepared = json.loads(prepare_process.stdout)
+                assert prepared["status"] == "ok"
+                assert prepared["acceptance"]["style_policy"]["mode"] == "user"
+                assert (
+                    Path(prepared["paths"]["acceptance"]).parent
+                    == qa_command_work.resolve() / "docx" / "qa"
+                )
+                initialized = initialize_visual_qa(
+                    toc_candidate,
+                    dispositions={
+                        "personal-metadata": (
+                            "The smoke test intentionally sets an author."
+                        )
+                    },
+                )
+                assert initialized["status"] == "ok"
+                assert initialized["automated_gate"]["status"] == "passed"
+                initialized_review = json.loads(
+                    Path(initialized["visual_review"]).read_text(encoding="utf-8")
+                )
+                assert initialized_review["status"] == "pending"
+                assert [
+                    item["image_sha256"] for item in initialized_review["pages"]
+                ] == [
+                    item["image_sha256"] for item in initialized["pages"]
+                ]
+                incomplete_qa = finalize_visual_qa(
+                    toc_candidate,
+                )
+                assert incomplete_qa["status"] == "partial"
+                assert any(
+                    item["code"] == "visual-review-incomplete"
+                    for item in incomplete_qa["unresolved"]["errors"]
+                )
+                negative_checks.append("visual-review-recording-required")
+                for item in initialized["pages"]:
+                    recorded = record_visual_review(
+                        initialized["visual_review"],
+                        page=item["page"],
+                        status="passed",
+                        notes=(
+                            f"Page {item['page']} has readable content and "
+                            "no clipped page edge."
+                        ),
+                    )
+                    assert recorded["status"] == "ok"
+                assert recorded["review_status"] == "passed"
+                qa_final = finalize_visual_qa(
+                    toc_candidate,
+                )
+                assert qa_final["status"] == "ok", qa_final
+                assert qa_final["passed"]
+                changed_after_review = (
+                    qa_command_work / "docx" / "tmp" / "changed-after-review.docx"
+                )
+                sanitize_docx(
+                    toc_candidate,
+                    changed_after_review,
+                    remove_comments=False,
+                )
+                stale_qa = finalize_visual_qa(
+                    changed_after_review,
+                    report_path=(
+                        qa_command_work
+                        / "docx"
+                        / "qa"
+                        / "preflight-stale-candidate.json"
+                    ),
+                )
+                assert stale_qa["status"] == "partial"
+                assert any(
+                    item["code"] == "qa-candidate-changed"
+                    for item in stale_qa["unresolved"]["errors"]
+                )
+                negative_checks.append("qa-candidate-change-invalidates-review")
+                steps.append("deterministic-qa-protocol")
+            finally:
+                if previous_qa_work_dir is None:
+                    os.environ.pop("PILOTDECK_WORK_DIR", None)
+                else:
+                    os.environ["PILOTDECK_WORK_DIR"] = previous_qa_work_dir
 
             acceptance_path = root / "acceptance.json"
             _dump(
@@ -1431,6 +1748,40 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
                     visual_review_path=internal_visual,
                 )
                 assert delivery_preflight["passed"]
+                field_update_candidate = (
+                    delivery_work / "field-update-candidate.docx"
+                )
+                with unpacked_copy(internal_candidate) as (_, package):
+                    set_package_update_fields_on_open(
+                        package,
+                        enabled=True,
+                    )
+                    pack_docx(package, field_update_candidate)
+                field_update_report = (
+                    delivery_work / "field-update-preflight.json"
+                )
+                field_update_report_value = json.loads(
+                    json.dumps(delivery_preflight)
+                )
+                field_update_report_value["input"] = str(
+                    field_update_candidate.resolve()
+                )
+                field_update_report_value["artifact"]["sha256"] = (
+                    file_sha256(field_update_candidate)
+                )
+                _dump(field_update_report, field_update_report_value)
+                _expect_error(
+                    deliver_docx,
+                    "blocked",
+                    "fields-update-on-open",
+                    field_update_candidate,
+                    field_update_report,
+                    root / "field-update-delivery.docx",
+                    new_document=True,
+                )
+                negative_checks.append(
+                    "delivery-blocks-field-update-prompt"
+                )
                 no_acceptance_report = delivery_work / "preflight-no-acceptance.json"
                 no_acceptance_preflight = preflight_docx(
                     internal_candidate,

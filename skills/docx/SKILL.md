@@ -22,14 +22,19 @@ Invoke all deterministic operations through:
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" <command> [options]
 ```
 
-Use the turn-scoped PilotDeck work directory for every intermediate. The host sets `PILOTDECK_WORK_DIR`; the fallback keeps manual runs internal to the project:
+Use the turn-scoped PilotDeck work directory for every intermediate. The host
+sets `PILOTDECK_WORK_DIR`. For a manual run, explicitly export a unique
+project-internal directory before invoking any modifying command:
 
 ```bash
-WORKSPACE="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}/docx"
+export PILOTDECK_WORK_DIR="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}"
+WORKSPACE="$PILOTDECK_WORK_DIR/docx"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/qa"
 ```
 
-The CLI enforces this boundary whenever `PILOTDECK_WORK_DIR` is set. Create,
+`prepare`, `qa-init`, `qa-record`, and `qa-finalize` require this environment
+variable and never search for another session or turn directory. The CLI
+enforces this boundary whenever `PILOTDECK_WORK_DIR` is set. Create,
 edit, and review specifications; fallback scripts and manifests; inspections,
 audits, acceptance, dispositions, renders, visual reviews, preflight reports,
 and DOCX candidates are internal. Only `deliver --out` may create the one
@@ -43,6 +48,7 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 | User intent | Primary command | Read first |
 |---|---|---|
 | Discover exact support or JSON fields | `capabilities`, `schema` | [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md) |
+| Freeze acceptance and obtain canonical internal paths | `prepare` | This file |
 | Read, summarize, or inspect a DOCX | `inspect` | [workflows.md](references/workflows.md) |
 | Create a new document or substantially redesign one | `create` | [design-and-layout.md](references/design-and-layout.md), then [specifications.md](references/specifications.md) |
 | Make targeted edits while preserving the source | `edit` | [workflows.md](references/workflows.md), then [specifications.md](references/specifications.md) |
@@ -54,14 +60,15 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 | Audit styles, hierarchy, tables, accessibility, or finalization | `audit` | [design-and-layout.md](references/design-and-layout.md) |
 | Convert every page to PNG for visual QA | `render` | [workflows.md](references/workflows.md) |
 | Populate a live TOC with visible entries and page numbers | `refresh-toc` | [workflows.md](references/workflows.md) |
-| Run the final delivery gate | `preflight` | [workflows.md](references/workflows.md) |
+| Initialize, record, and complete visual QA | `qa-init`, `qa-record`, `qa-finalize` | [workflows.md](references/workflows.md) |
+| Run a lower-level diagnostic gate | `preflight` | [workflows.md](references/workflows.md) |
 | Promote exactly one passed candidate to the requested final path | `deliver` | [workflows.md](references/workflows.md) |
 | Resolve an original or prior path to the latest delivered session version | `resolve-latest` | [workflows.md](references/workflows.md) |
 | Perform an operation outside the standard schema | `fallback-patch` or `fallback-create` | [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md), then [ooxml-and-safety.md](references/ooxml-and-safety.md) |
 
 ## Non-negotiable operating contract
 
-1. Run `check`, then `capabilities`, before the first DOCX operation in a session. Run `fix` only if dependencies are missing and installation is allowed.
+1. Run `check`, then `capabilities`, before the first DOCX operation in a session. For a modifying request, run `prepare` before the first mutation to create canonical turn paths and freeze acceptance. Run `fix` only if dependencies are missing and installation is allowed.
 2. Run `schema --command <create|edit|review>` before writing a JSON specification. Unknown fields and operations are errors; never assume they were applied.
 3. Validate and inspect every existing input before changing it. Read package features and inspection coverage, not only extracted paragraph text. Never bypass declared document/write protection.
 4. If the operation is declared supported, use the bundled command first. Do not replace it with `python-docx`, direct ZIP/XML mutation, or another library.
@@ -69,7 +76,7 @@ Keep JSON specifications, inspections, comparisons, rendered pages, optional QA 
 6. Every fallback must be explicit: state the unmet capability and reason, keep its program under `WORKSPACE/tmp`, execute `fallback-patch` or `fallback-create`, and retain the generated manifest in `WORKSPACE/qa`.
 7. Before modifying an existing document, run `resolve-latest --input <user-referenced-path>` and use its `resolved` path as the editing base. The standard mutation commands also resolve tracked inputs defensively. Use `--use-exact-input` only when the current user request explicitly asks to restart from an older/original version.
 8. Apply the smallest change that satisfies an edit request. Preserve the original and write every mutation to a new internal candidate below `PILOTDECK_WORK_DIR`. Never write numbered drafts, sanitized copies, fallback candidates, or other DOCX intermediates into the project root. Existing candidate paths are blocked by default; `fallback-create` never overwrites.
-9. Use an acceptance manifest and per-page visual-review report with `preflight`. Every warning must be fixed or assigned a concrete disposition. A failed or undocumented visual review is blocking and cannot be dispositioned.
+9. Use `qa-init`, one `qa-record` call immediately after inspecting each current page image, and `qa-finalize`. Do not handwrite review JSON, guess a work path, or hash PNG files yourself. Every warning must be fixed or assigned a concrete disposition. A failed or undocumented visual review is blocking and cannot be dispositioned.
 10. Use `deliver` once, after preflight passes, to promote the exact SHA-256-bound candidate to the requested final path. Declare `--new-document` for creation or `--source` for a derived version. A new document must use a nonexistent final path; `--new-document --overwrite` is blocked. Existing-document work defaults to a new final filename. `--overwrite` alone never permits source replacement.
 11. Replace the source only when the current user request explicitly says to overwrite that exact file. In that case, and only then, pass `--source <path> --out <same-path> --replace-source`; the command retains a hidden recovery copy and updates the version chain. Past consent or a generic preference is insufficient.
 12. Return only requested deliverables. Keep specifications, candidates, manifests, audits, PNG pages, optional PDFs, hidden recovery copies, and other intermediates internal unless requested. Mention the final filename naturally; PilotDeck renders the file card. Do not add a Markdown download/view link unless the user explicitly asks for one.
@@ -138,7 +145,17 @@ For read-only questions, do not edit or re-export the source. Preserve qualifier
 Before writing the JSON specification:
 
 1. Identify the document archetype: brief, memo, report, proposal, SOP, reference guide, form, or simple document.
-2. Choose one supported preset and define page geometry, hierarchy, content forms, tables, images, headers, and footers.
+2. Freeze exactly one style path during `prepare`:
+   - `--style-mode user` only when the user supplied concrete visual
+     requirements, a reference template, or an existing DOCX whose style must
+     be preserved. Record the matching `--style-source` and any explicit
+     `--style-requirement`.
+   - `--style-mode builtin` for every other creation request. Words such as
+     “report”, “professional”, “formal”, “business”, or “polished” are document
+     goals, not permission to invent a color theme.
+   The built-in `neutral-document-v1` template is the only default: black
+   titles and headings, white tables with neutral lines, restrained callouts,
+   and locale-aware Chinese/Latin typography.
 3. Read [design-and-layout.md](references/design-and-layout.md). Map each major information unit to prose, a list, steps, a checklist, a callout, a definition list, a real data table, an image, or sources.
 4. Query `schema --command create`, read [specifications.md](references/specifications.md), and create a specification using only supported blocks.
 5. Run standard `create`. If the schema cannot express a required feature, follow the controlled fallback decision before writing custom code.
@@ -147,12 +164,24 @@ Before writing the JSON specification:
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" create \
   --spec "$WORKSPACE/tmp/document.json" \
+  --acceptance "$WORKSPACE/qa/acceptance.json" \
   --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
 Do not rely on Word defaults for page geometry, heading hierarchy, list semantics, table widths, or cell padding. Prefer reusable Word styles and real list definitions over manually formatted lookalikes. A chart may be generated as a local image and referenced by an image block without entering full-create fallback.
 
+The create specification's `style_policy` must exactly match the frozen
+acceptance manifest. Built-in mode rejects style overrides, per-run colors or
+sizes, paragraph style substitutions, callout colors, and table style/color
+overrides. User mode may express only the concrete style the user supplied.
+Do not switch modes after seeing a draft.
+
 If a candidate path already exists, use another path below `WORKSPACE/tmp` or intentionally replace that internal candidate. Do not create versioned candidates in the project root.
+
+Automatic field updates on open are disabled by default. Do not set
+`update_fields_on_open: true` merely to populate a TOC or page fields; it can
+make Word show an external-field warning. Use `refresh-toc` to cache visible
+TOC entries without an opening prompt.
 
 ## Edit existing documents surgically
 
@@ -285,86 +314,96 @@ CANDIDATE_DOCX="$WORKSPACE/tmp/candidate-with-toc.docx"
 
 `refresh-toc` renders the document, locates semantic Heading paragraphs on
 their rendered pages, and retains the live field while writing visible cached
-entries, dot leaders, and page numbers. Do not substitute a manually typed
-contents page. If there is no TOC, set `CANDIDATE_DOCX` to the current internal
-candidate.
+entries, dot leaders, and page numbers. It also disables update-on-open after
+the cached result is stable, so Word does not prompt merely because the
+document contains a TOC. Do not substitute a manually typed contents page. If
+there is no TOC, set `CANDIDATE_DOCX` to the current internal candidate.
 
-Write acceptance before the first document mutation. Keep the same file for
-the complete task. Do not relax page limits, required headings, TOC state, or
-protected-source hashes after seeing a failed candidate; fix the candidate
-instead:
-
-```json
-{
-  "required_text": ["Executive Summary", "Q2 Priorities"],
-  "required_headings": [
-    {"text": "Executive Summary", "level": 1},
-    {"text": "Q2 Priorities", "level": 1}
-  ],
-  "page_count": {"min": 8, "max": 12},
-  "toc": {"required": true, "populated": true},
-  "protected_sources": [
-    {
-      "path": "/absolute/path/to/source.xlsx",
-      "sha256": "64-lowercase-hex-characters"
-    }
-  ]
-}
-```
-
-Hash protected user inputs before the first mutation and copy those exact
-hashes into `protected_sources`. Omit constraints the user did not request;
-never invent a page count merely to make a gate pass.
-
-Run preflight once to render the current candidate and expose automated issues:
+Before the first mutation, freeze acceptance and obtain the canonical task
+paths with `prepare`:
 
 ```bash
-bash "$DOCX_SKILL_ROOT/scripts/docx.sh" preflight \
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" prepare \
+  --style-mode builtin \
+  --require-text "Executive Summary" \
+  --require-heading "1:Executive Summary" \
+  --min-pages 8 --max-pages 12 \
+  --require-toc \
+  --protect-source "/absolute/path/to/source.xlsx"
+```
+
+Repeat `--require-text`, `--require-heading`, and `--protect-source` as needed.
+For user-directed styling, replace `--style-mode builtin` with one of:
+
+```bash
+--style-mode user --style-source explicit-requirements \
+  --style-requirement "Use the supplied navy brand color for Heading 1"
+--style-mode user --style-source reference-template
+--style-mode user --style-source existing-document
+```
+
+Use user mode only for evidence present in the current request or input.
+Use `LEVEL:TEXT` only when the heading level is part of the requirement.
+Omit constraints the user did not request; never invent a page count merely
+to make a gate pass. `prepare` hashes protected sources itself and returns
+the exact `tmp`, `qa`, candidate, acceptance, render, and report paths. Reuse
+the frozen manifest for the complete task. Run `prepare --overwrite` only
+when the current user request changes the acceptance requirements, never
+after a candidate fails.
+
+After the candidate is stable, initialize deterministic QA:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" qa-init \
   --input "$CANDIDATE_DOCX" \
-  --out-dir "$WORKSPACE/qa/rendered" \
-  --report "$WORKSPACE/qa/preflight-initial.json" \
   --profile final \
-  --acceptance "$WORKSPACE/qa/acceptance.json"
+  --disposition "personal-metadata=The user explicitly requested this author."
 ```
 
-Resolve every error. Fix warnings or add a specific inline disposition such as
-`--disposition "personal-metadata=The user explicitly requested this author."`.
-Never use a generic “acceptable” rationale.
+`qa-init` runs the automated gate, writes the initial report, renders the
+latest candidate, and creates a pending visual-review file already bound to
+the candidate SHA-256 and each decoded page-image SHA-256. Its top-level
+`status: ok` means QA initialization completed; it does not mean the candidate
+passed. Read `automated_gate` and resolve every error. Fix warnings or add a
+specific disposition; never use a generic “acceptable” rationale.
 
-Inspect every latest PNG and record the actual page result:
+Open every page path returned by `qa-init`. Immediately after inspecting one
+page, record its page-specific result:
 
-```json
-{
-  "artifact_sha256": "sha256-from-the-initial-preflight-report",
-  "status": "passed",
-  "pages": [
-    {
-      "page": 1,
-      "image_sha256": "sha256-of-current-page-1.png",
-      "status": "passed",
-      "notes": "Cover is complete and unclipped."
-    },
-    {
-      "page": 2,
-      "image_sha256": "sha256-of-current-page-2.png",
-      "status": "passed",
-      "notes": "TOC entries and page numbers are visible."
-    }
-  ]
-}
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" qa-record \
+  --page 1 --status passed \
+  --notes "Cover title, margins, and footer are complete and unclipped."
+
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" qa-record \
+  --page 2 --status passed \
+  --notes "TOC entries, dot leaders, and page numbers are visible."
 ```
 
-Copy `artifact.sha256` from the initial preflight report exactly. This prevents
-review notes from being reused after the candidate changes. Copy each
-`image_sha256` from the matching current page image; stale page captures are
-rejected. The array must cover every current rendered page exactly once, and
-each note must describe that page rather than repeat a generic sentence.
-Automated blank/sparse-page checks run in addition to this human/vision review.
-Then rerun
-preflight with the same acceptance manifest, warning dispositions, and
-`--visual-review "$WORKSPACE/qa/visual-review.json"`. A bare
-`--visual-review-status passed` is deliberately rejected because it provides
-no page evidence.
+Do not edit the visual-review JSON, copy hashes, or run `sha256sum` on PNG
+files. PNG container-byte hashes are intentionally different from the
+normalized decoded-pixel hashes used by the gate. `qa-record` preserves the
+canonical digest and adds a timestamped record for exactly one page. Inspect
+and record every current page; do not infer unviewed pages from thumbnails or
+reuse a generic note.
+
+Complete the gate with the same candidate:
+
+```bash
+bash "$DOCX_SKILL_ROOT/scripts/docx.sh" qa-finalize \
+  --input "$CANDIDATE_DOCX"
+```
+
+`qa-finalize` validates the current candidate, frozen acceptance, protected
+sources, and recorded review against the exact render produced by `qa-init`;
+it does not create a second, potentially different LibreOffice render. Warning
+dispositions belong on `qa-init`. If they change, rerun `qa-init --overwrite`
+before reviewing pages. Any candidate change also makes the review stale:
+rerun `qa-init --overwrite`, inspect the newly rendered pages, and record them
+again. The lower-level `preflight` command remains available for diagnostics
+and compatibility, but the modifying workflow must use the deterministic QA
+commands. A bare `--visual-review-status passed` is deliberately rejected
+because it provides no page evidence.
 
 Delivery requires a non-empty acceptance manifest and passes only when
 preflight reports `status: ok`, `passed: true`,
@@ -382,6 +421,11 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" deliver \
 `deliver` verifies the candidate SHA-256 against the successful report and
 atomically writes the only project-visible DOCX. Any post-preflight mutation
 invalidates delivery and requires a fresh preflight.
+
+`deliver` blocks a document that still requests automatic field updates.
+`--allow-update-fields-on-open` is an exceptional opt-in: use it only when the
+current user explicitly requests dynamic updates and accepts the Word opening
+prompt. A warning disposition alone is not permission to use this flag.
 
 For an edited/reviewed/finalized/sanitized document, replace
 `--new-document` with `--source "$REQUESTED_INPUT_DOCX"`. The command records
