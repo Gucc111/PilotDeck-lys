@@ -44,6 +44,9 @@ Do not change or re-export the source for a read-only question. State when a req
    with requirements from the current user request, then query
    `schema --command create` and write a strict JSON specification below the
    returned `tmp` path. Do not loosen acceptance after a candidate fails.
+   Do not enable headers, footers, or page numbers unless the current user
+   explicitly requested them. When requested, freeze only the corresponding
+   `--allow-header`, `--allow-footer`, and/or `--allow-page-numbers` flags.
 5. Copy the frozen style policy into the create specification and run `create`
    with the acceptance manifest to a new internal candidate path.
 6. If the required feature is outside the schema, choose an auxiliary asset or declared fallback; never run an ad hoc builder directly.
@@ -56,7 +59,10 @@ Do not change or re-export the source for a read-only question. State when a req
 11. Open every current page path, call `qa-record` immediately with a
     page-specific passed/failed note, then run `qa-finalize`. Do not handwrite
     review JSON or calculate page hashes.
-12. Run `deliver --new-document` once with the exact candidate and successful preflight report.
+12. Run `deliver --new-document` once with the exact candidate and successful
+    preflight report. If the user did not specify a destination, keep the final
+    file in the current workspace. An outside-workspace destination must be
+    the exact path frozen by `prepare --external-output`.
 
 Use placeholders or clearly marked assumptions when required information is missing. Do not silently fabricate names, dates, financial values, citations, legal terms, or technical results.
 
@@ -65,7 +71,10 @@ Use placeholders or clearly marked assumptions when required information is miss
 1. Preserve the original by default.
 2. Run `resolve-latest` on the path named by the user. Inspect and modify the
    returned `resolved` document, not a stale original or prior revision.
-3. Run `inspect` and identify exact text, style, and location targets.
+3. Run `prepare --existing-document`, then `inspect` and identify exact text,
+   style, and location targets. Existing recurring content may remain, but
+   `set_header`, `set_footer`, and new page fields require explicit frozen
+   permission.
 4. Use the smallest supported edit operation.
 5. Write to a new internal candidate path.
 6. Verify each operation's `affected` count. Missing or ambiguous targets return `partial`; refine them rather than guessing.

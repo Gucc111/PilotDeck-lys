@@ -161,6 +161,10 @@ Before writing the JSON specification:
 5. Run standard `create`. If the schema cannot express a required feature, follow the controlled fallback decision before writing custom code.
 6. Generate, inspect, compare when relevant, and run preflight.
 
+For a new document, omit `header`, `footer`, `PAGE`, and `NUMPAGES` unless the
+current user explicitly requested them. `prepare` denies all three by default;
+the create and preflight gates enforce the frozen decision.
+
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" create \
   --spec "$WORKSPACE/tmp/document.json" \
@@ -201,6 +205,7 @@ Use `edit` for supported local changes:
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" edit \
   --input "$INPUT_DOCX" \
   --patch "$WORKSPACE/tmp/edits.json" \
+  --acceptance "$WORKSPACE/qa/acceptance.json" \
   --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
@@ -333,6 +338,30 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" prepare \
 ```
 
 Repeat `--require-text`, `--require-heading`, and `--protect-source` as needed.
+For an edit, add `--existing-document`. Header, footer, and page-number
+permissions remain off unless the current request explicitly asks for them:
+
+```bash
+--allow-header
+--allow-footer
+--allow-page-numbers
+```
+
+Use only the permissions actually requested. Page numbers in a footer require
+both `--allow-footer` and `--allow-page-numbers`.
+
+`prepare` also freezes the current workspace as the default delivery boundary.
+When the user does not name a destination, choose a final `.docx` path inside
+that workspace. Never choose Desktop, Downloads, another project, or an
+arbitrary absolute path. Only when the current user explicitly supplies an
+exact outside-workspace path may `prepare` include:
+
+```bash
+--external-output "/exact/user/requested/path/result.docx"
+```
+
+This authorizes that exact path only. An explicit request to replace an
+existing source is handled separately by `deliver --replace-source`.
 For user-directed styling, replace `--style-mode builtin` with one of:
 
 ```bash
@@ -373,7 +402,7 @@ page, record its page-specific result:
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" qa-record \
   --page 1 --status passed \
-  --notes "Cover title, margins, and footer are complete and unclipped."
+  --notes "Cover title, margins, and body content are complete and unclipped."
 
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" qa-record \
   --page 2 --status passed \
@@ -421,6 +450,10 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" deliver \
 `deliver` verifies the candidate SHA-256 against the successful report and
 atomically writes the only project-visible DOCX. Any post-preflight mutation
 invalidates delivery and requires a fresh preflight.
+
+Relative `--out` paths resolve from the workspace frozen by `prepare`.
+Outside-workspace delivery is blocked unless the exact path was frozen with
+`--external-output`; a generic `--overwrite` never expands this boundary.
 
 `deliver` blocks a document that still requests automatic field updates.
 `--allow-update-fields-on-open` is an exceptional opt-in: use it only when the

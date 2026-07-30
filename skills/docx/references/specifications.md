@@ -51,8 +51,6 @@ current request to authorize `--replace-source`.
     "category": "Internal",
     "comments": "Prepared for review"
   },
-  "header": {"text": "INTERNAL", "alignment": "right"},
-  "footer": {"text": "Page {PAGE} of {NUMPAGES}", "alignment": "center"},
   "content": []
 }
 ```
@@ -84,6 +82,13 @@ Use the actual content locale such as `zh-CN` or `en-US`; locale-aware defaults
 include Chinese TOC and callout labels. Header and footer values may be strings
 or objects with `text` and `alignment` (`left`, `center`, or `right`). `{PAGE}`
 and `{NUMPAGES}` create real fields.
+
+Do not include a header, footer, `{PAGE}`, or `{NUMPAGES}` by default. They are
+valid only when the current request explicitly asks for them and `prepare`
+froze the corresponding permission. A page-number footer requires both
+`--allow-footer` and `--allow-page-numbers`. For edits, pass the frozen
+acceptance manifest; existing recurring content is preserved, while
+`set_header` and `set_footer` remain permission-gated.
 
 `update_fields_on_open` is optional and defaults to `false`. Do not enable it
 to populate a TOC. It can make Word show a warning when the file opens.

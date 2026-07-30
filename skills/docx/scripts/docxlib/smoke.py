@@ -85,7 +85,7 @@ def run_smoke_test() -> dict[str, Any]:
         root = Path(temp_dir)
 
         capability_result = capabilities()
-        assert capability_result["protocol_version"] == 6
+        assert capability_result["protocol_version"] == 7
         assert len(capability_result["capability_states"]) == len(
             set(capability_result["capability_states"])
         )
@@ -237,8 +237,39 @@ def run_smoke_test() -> dict[str, Any]:
                 ],
             },
         )
+        create_acceptance = root / "create-acceptance.json"
+        _dump(
+            create_acceptance,
+            {
+                "style_policy": {
+                    "mode": "user",
+                    "source": "explicit-requirements",
+                    "requirements": [
+                        "Use a blue report hierarchy and Arial typography."
+                    ],
+                },
+                "document_policy": {
+                    "origin": "new",
+                    "allow_header": True,
+                    "allow_footer": True,
+                    "allow_page_numbers": True,
+                },
+            },
+        )
+        _expect_error(
+            create_docx,
+            "blocked",
+            "unrequested-header",
+            create_spec,
+            root / "unrequested-header.docx",
+        )
+        negative_checks.append("unrequested-document-chrome-blocked")
         created = root / "created.docx"
-        creation = create_docx(create_spec, created)
+        creation = create_docx(
+            create_spec,
+            created,
+            acceptance_path=create_acceptance,
+        )
         assert creation["fonts"]["east_asia"]
         _expect_error(
             create_docx,
@@ -246,8 +277,14 @@ def run_smoke_test() -> dict[str, Any]:
             "output-exists",
             create_spec,
             created,
+            acceptance_path=create_acceptance,
         )
-        create_docx(create_spec, created, overwrite=True)
+        create_docx(
+            create_spec,
+            created,
+            acceptance_path=create_acceptance,
+            overwrite=True,
+        )
         assert not update_fields_on_open_enabled(created)
 
         neutral_spec = root / "neutral-create.json"
@@ -842,7 +879,12 @@ def run_smoke_test() -> dict[str, Any]:
             },
         )
         edited = root / "edited.docx"
-        edit_result = edit_docx(created, patch, edited)
+        edit_result = edit_docx(
+            created,
+            patch,
+            edited,
+            acceptance_path=create_acceptance,
+        )
         assert sum(item["affected"] for item in edit_result["operations"]) >= 5
         edited_info = inspect_docx(edited)
         assert edited_info["tables"][0]["cells"][2][1] == "已完成"
@@ -1448,6 +1490,9 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
                         "--min-pages",
                         "1",
                         "--require-toc",
+                        "--allow-header",
+                        "--allow-footer",
+                        "--allow-page-numbers",
                         "--protect-source",
                         str(create_spec),
                     ],
@@ -1548,12 +1593,29 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             _dump(
                 acceptance_path,
                 {
+                    "style_policy": {
+                        "mode": "user",
+                        "source": "explicit-requirements",
+                        "requirements": [
+                            "Use a blue report hierarchy and Arial typography."
+                        ],
+                    },
                     "required_text": ["项目概览"],
                     "required_headings": [
                         {"text": "项目概览", "level": 1},
                     ],
                     "page_count": {"min": 1},
                     "toc": {"required": True, "populated": True},
+                    "document_policy": {
+                        "origin": "new",
+                        "allow_header": True,
+                        "allow_footer": True,
+                        "allow_page_numbers": True,
+                    },
+                    "delivery": {
+                        "workspace_root": str(root),
+                        "scope": "workspace",
+                    },
                 },
             )
             initial_preflight = preflight_docx(
@@ -1726,6 +1788,7 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
                     "candidate-output-outside-work-dir",
                     internal_create_spec,
                     root / "leaked-candidate.docx",
+                    acceptance_path=internal_acceptance,
                 )
                 negative_checks.append("candidate-output-is-internal")
                 _expect_error(
@@ -1804,6 +1867,18 @@ with zipfile.ZipFile(a.out, "a", compression=zipfile.ZIP_DEFLATED) as archive:
                     new_document=True,
                 )
                 negative_checks.append("delivery-requires-acceptance")
+                _expect_error(
+                    deliver_docx,
+                    "blocked",
+                    "delivery-output-outside-workspace",
+                    internal_candidate,
+                    internal_report,
+                    root.parent / "outside-workspace.docx",
+                    new_document=True,
+                )
+                negative_checks.append(
+                    "delivery-defaults-to-current-workspace"
+                )
                 final_delivery = root / "delivered.docx"
                 delivered = deliver_docx(
                     internal_candidate,

@@ -23,6 +23,7 @@ from .lineage import (
     paths_are_same,
     record_delivery,
 )
+from .protocol import normalize_delivery_policy
 
 
 def _load_preflight_report(path: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -137,6 +138,21 @@ def deliver_docx(
             code="preflight-not-passed",
             details={"gate": gate_state, "report": str(report_path)},
         )
+    report_acceptance = report.get("acceptance", {})
+    acceptance_requirements = (
+        report_acceptance.get("requirements", {})
+        if isinstance(report_acceptance, dict)
+        else {}
+    )
+    if not isinstance(acceptance_requirements, dict):
+        raise blocked(
+            "The preflight report does not contain normalized acceptance requirements",
+            code="preflight-acceptance-invalid",
+            details={"report": str(report_path)},
+        )
+    delivery_policy = normalize_delivery_policy(
+        acceptance_requirements.get("delivery")
+    )
     if (
         update_fields_on_open_enabled(candidate)
         and not allow_update_fields_on_open
@@ -166,7 +182,12 @@ def deliver_docx(
         if requested_source is not None
         else None
     )
-    output_requested = require_docx_path(output_path, must_exist=False)
+    raw_output = Path(output_path).expanduser()
+    workspace_root = Path(delivery_policy["workspace_root"])
+    output_requested = require_docx_path(
+        raw_output if raw_output.is_absolute() else workspace_root / raw_output,
+        must_exist=False,
+    )
     if new_document and output_requested.exists():
         raise blocked(
             "A newly created document must be delivered to a new path; "
@@ -226,6 +247,9 @@ def deliver_docx(
     output = prepare_delivery_docx_path(
         output_requested,
         overwrite=((overwrite and not new_document) or replace_source),
+        workspace_root=workspace_root,
+        authorized_external_path=delivery_policy.get("path"),
+        replace_source_path=(requested_source if replace_source else None),
     )
     with temporary_sibling(output, suffix=".tmp.docx") as temporary:
         shutil.copy2(candidate, temporary)

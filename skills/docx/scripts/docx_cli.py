@@ -71,6 +71,36 @@ def _parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--require-toc", action="store_true")
     prepare_parser.add_argument("--protect-source", action="append")
     prepare_parser.add_argument(
+        "--existing-document",
+        action="store_true",
+        help=(
+            "Declare an edit of an existing DOCX. Existing recurring content "
+            "may be preserved, but must not be added unless explicitly allowed."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--allow-header",
+        action="store_true",
+        help="Use only when the current user explicitly requested a header",
+    )
+    prepare_parser.add_argument(
+        "--allow-footer",
+        action="store_true",
+        help="Use only when the current user explicitly requested a footer",
+    )
+    prepare_parser.add_argument(
+        "--allow-page-numbers",
+        action="store_true",
+        help="Use only when the current user explicitly requested page numbers",
+    )
+    prepare_parser.add_argument(
+        "--external-output",
+        help=(
+            "Freeze the exact absolute external .docx destination explicitly "
+            "supplied by the user; otherwise delivery stays in the workspace"
+        ),
+    )
+    prepare_parser.add_argument(
         "--style-mode",
         choices=("builtin", "user"),
         default="builtin",
@@ -126,6 +156,13 @@ def _parser() -> argparse.ArgumentParser:
     edit_parser.add_argument("--input", required=True)
     edit_parser.add_argument("--patch", required=True)
     edit_parser.add_argument("--out", required=True)
+    edit_parser.add_argument(
+        "--acceptance",
+        help=(
+            "Frozen acceptance manifest. Defaults to the current task manifest "
+            "when PILOTDECK_WORK_DIR is set."
+        ),
+    )
     edit_parser.add_argument("--overwrite", action="store_true")
     edit_parser.add_argument(
         "--use-exact-input",
@@ -406,6 +443,11 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             style_mode=args.style_mode,
             style_source=args.style_source,
             style_requirements=args.style_requirement,
+            existing_document=args.existing_document,
+            allow_header=args.allow_header,
+            allow_footer=args.allow_footer,
+            allow_page_numbers=args.allow_page_numbers,
+            external_output=args.external_output,
             overwrite=args.overwrite,
         )
     if args.command == "inspect":
@@ -437,12 +479,16 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             overwrite=args.overwrite,
         )
     if args.command == "edit":
+        acceptance = args.acceptance
+        if acceptance is None and os.environ.get("PILOTDECK_WORK_DIR"):
+            acceptance = str(docx_task_paths()["acceptance"])
         return edit_docx(
             latest_input_path(
                 args.input, use_exact_input=args.use_exact_input
             ),
             args.patch,
             args.out,
+            acceptance_path=acceptance,
             allow_lossy=args.allow_lossy,
             overwrite=args.overwrite,
         )

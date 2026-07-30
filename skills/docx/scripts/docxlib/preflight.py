@@ -14,11 +14,17 @@ from .common import (
     assert_internal_control_path,
     assert_valid_docx,
     file_sha256,
+    pilotdeck_workspace_root,
     prepare_json_artifact_path,
     write_json,
 )
 from .core import inspect_docx
-from .protocol import load_dispositions, normalize_style_policy
+from .protocol import (
+    load_dispositions,
+    normalize_delivery_policy,
+    normalize_document_policy,
+    normalize_style_policy,
+)
 from .render import render_docx
 from .toc import toc_status
 
@@ -91,6 +97,8 @@ def _acceptance_requirements(
 ) -> dict[str, Any]:
     allowed = {
         "style_policy",
+        "document_policy",
+        "delivery",
         "required_text",
         "required_headings",
         "page_count",
@@ -107,6 +115,16 @@ def _acceptance_requirements(
     style_policy = normalize_style_policy(
         acceptance.get("style_policy"),
         default_builtin=False,
+    )
+    document_policy = normalize_document_policy(
+        acceptance.get("document_policy")
+    )
+    delivery_policy = normalize_delivery_policy(
+        acceptance.get("delivery")
+        or {
+            "workspace_root": str(pilotdeck_workspace_root()),
+            "scope": "workspace",
+        }
     )
     required_text = acceptance.get("required_text", [])
     if not isinstance(required_text, list) or any(
@@ -212,6 +230,8 @@ def _acceptance_requirements(
         )
     return {
         "style_policy": style_policy,
+        "document_policy": document_policy,
+        "delivery": delivery_policy,
         "required_text": required_text,
         "required_headings": normalized_headings,
         "page_count": page_count,
@@ -265,6 +285,49 @@ def _builtin_style_gate_issues(
                     "code": code,
                     "message": message,
                     "metric": metric,
+                    "count": count,
+                }
+            )
+    return issues
+
+
+def _document_policy_gate_issues(
+    acceptance: dict[str, Any],
+    audit: dict[str, Any],
+) -> list[dict[str, Any]]:
+    policy = acceptance.get("document_policy", {})
+    if policy.get("origin") != "new":
+        return []
+    summary = audit.get("summary", {})
+    checks = (
+        (
+            "allow_header",
+            "header_content_items",
+            "unrequested-header",
+            "The new document contains a header that was not requested.",
+        ),
+        (
+            "allow_footer",
+            "footer_content_items",
+            "unrequested-footer",
+            "The new document contains a footer that was not requested.",
+        ),
+        (
+            "allow_page_numbers",
+            "page_number_fields",
+            "unrequested-page-numbers",
+            "The new document contains page-number fields that were not requested.",
+        ),
+    )
+    issues: list[dict[str, Any]] = []
+    for permission, metric, code, message in checks:
+        count = int(summary.get(metric, 0) or 0)
+        if not bool(policy.get(permission)) and count:
+            issues.append(
+                {
+                    "severity": "error",
+                    "code": code,
+                    "message": message,
                     "count": count,
                 }
             )
@@ -618,6 +681,8 @@ def preflight_docx(
         acceptance,
         audit,
     )
+    if acceptance_file is not None:
+        gate_issues.extend(_document_policy_gate_issues(acceptance, audit))
     for warning in validation.get("warnings", []):
         gate_issues.append(
             {
@@ -833,6 +898,9 @@ def preflight_docx(
         "toc-missing",
         "toc-not-populated",
         "blank-body-page",
+        "unrequested-header",
+        "unrequested-footer",
+        "unrequested-page-numbers",
     }
     coverage_passed = not any(
         item.get("code") in coverage_error_codes for item in unresolved_errors

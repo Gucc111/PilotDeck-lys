@@ -32,6 +32,10 @@ Do not jump from level 1 to an untracked Python builder. The inability to expres
 Every successful fallback still produces only an internal candidate. It does
 not authorize direct project-root output. Run acceptance, per-page visual QA,
 preflight, and `deliver` exactly as for a standard command.
+Fallbacks do not bypass the frozen document policy: an unrequested header,
+footer, or page-number field in a new document fails preflight. Final delivery
+also remains inside the frozen workspace unless the exact external path was
+authorized during `prepare`.
 For `fallback-patch`, the input path is resolved through the session version
 chain before the controlled script runs. Use `--use-exact-input` only when the
 current user explicitly requests an older/original editing base.

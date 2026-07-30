@@ -21,7 +21,9 @@ Design the document before drafting it.
 1. Identify the reader, decision, and document archetype.
 2. Estimate the page budget and content density.
 3. Freeze one style source. Do not mix a user-provided system with the built-in template.
-4. Define the title block, heading hierarchy, body rhythm, lists, tables, callouts, images, headers, and footers.
+4. Define the title block, heading hierarchy, body rhythm, lists, tables,
+   callouts, and images. Define headers, footers, or page numbers only when the
+   user explicitly requests them.
 5. Map every major content unit to the lightest form that helps the reader understand or act.
 6. Generate a working DOCX, render it, and refine the design from the pages rather than from assumptions.
 

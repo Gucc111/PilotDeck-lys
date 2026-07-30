@@ -45,6 +45,7 @@ from .common import (
 from .fields import set_document_update_fields_on_open
 from .protocol import (
     SUPPORTED_FIELD_KEYWORDS,
+    normalize_document_policy,
     normalize_style_policy,
     validate_create_spec,
     validate_edit_patch,
@@ -1275,6 +1276,7 @@ def create_docx(
             "Create specification requires style_policy",
             code="invalid-style-policy",
         )
+    document_policy = normalize_document_policy(None)
     if acceptance_path is not None:
         acceptance_file = assert_internal_control_path(
             acceptance_path,
@@ -1304,6 +1306,58 @@ def create_docx(
                     "accepted": accepted_policy,
                 },
             )
+        document_policy = normalize_document_policy(
+            acceptance.get("document_policy")
+        )
+    for story_name, permission in (
+        ("header", "allow_header"),
+        ("footer", "allow_footer"),
+    ):
+        story = spec.get(story_name)
+        story_text = (
+            story
+            if isinstance(story, str)
+            else story.get("text", "")
+            if isinstance(story, dict)
+            else ""
+        )
+        if str(story_text).strip() and not document_policy[permission]:
+            raise blocked(
+                f"The create specification adds an unrequested {story_name}",
+                code=f"unrequested-{story_name}",
+                details={
+                    "next": (
+                        f"Remove {story_name} from the specification, or rerun "
+                        f"prepare with --allow-{story_name} only when the user "
+                        "explicitly requested it."
+                    )
+                },
+            )
+    page_number_requested = any(
+        re.search(r"\{(?:PAGE|NUMPAGES)\}", str(value), re.IGNORECASE)
+        for value in (
+            spec.get("header", ""),
+            spec.get("footer", ""),
+        )
+    ) or any(
+        isinstance(block, dict)
+        and block.get("type") == "field"
+        and str(block.get("instruction", "")).strip().upper().split(maxsplit=1)[0]
+        in {"PAGE", "NUMPAGES"}
+        for block in spec.get("content", [])
+    )
+    if page_number_requested and not document_policy["allow_page_numbers"]:
+        raise blocked(
+            "The create specification adds page numbers that were not requested",
+            code="unrequested-page-numbers",
+            details={
+                "next": (
+                    "Remove PAGE/NUMPAGES fields, or rerun prepare with "
+                    "--allow-page-numbers and the matching --allow-header or "
+                    "--allow-footer only when explicitly requested."
+                )
+            },
+        )
     locale = str(spec.get("locale", "en-US"))
     style_policy, style_tokens = resolve_document_style(
         locale=locale,
@@ -1534,6 +1588,7 @@ def edit_docx(
     patch_path: str | Path,
     output_path: str | Path,
     *,
+    acceptance_path: str | Path | None = None,
     allow_lossy: bool = False,
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -1554,6 +1609,57 @@ def edit_docx(
     if not isinstance(patch, dict) or not isinstance(patch.get("operations"), list):
         raise DocxSkillError("Patch must contain an operations array")
     validate_edit_patch(patch)
+    document_policy = normalize_document_policy(None)
+    if acceptance_path is not None:
+        acceptance_file = assert_internal_control_path(
+            acceptance_path,
+            purpose="Acceptance manifest",
+        )
+        acceptance = load_json(acceptance_file)
+        if not isinstance(acceptance, dict):
+            raise DocxSkillError(
+                "Acceptance manifest must be an object",
+                code="invalid-acceptance-manifest",
+            )
+        document_policy = normalize_document_policy(
+            acceptance.get("document_policy")
+        )
+    for operation in patch["operations"]:
+        if not isinstance(operation, dict):
+            continue
+        action = str(operation.get("action", ""))
+        if action in {"set_header", "set_footer"}:
+            story_name = "header" if action == "set_header" else "footer"
+            if not document_policy[f"allow_{story_name}"]:
+                raise blocked(
+                    f"The edit patch adds or changes an unrequested {story_name}",
+                    code=f"unrequested-{story_name}",
+                    details={
+                        "next": (
+                            f"Remove set_{story_name}, or rerun prepare with "
+                            f"--allow-{story_name} only when the user explicitly "
+                            "requested the change."
+                        )
+                    },
+                )
+            if (
+                re.search(
+                    r"\{(?:PAGE|NUMPAGES)\}",
+                    str(operation.get("text", "")),
+                    re.IGNORECASE,
+                )
+                and not document_policy["allow_page_numbers"]
+            ):
+                raise blocked(
+                    "The edit patch adds page numbers that were not requested",
+                    code="unrequested-page-numbers",
+                    details={
+                        "next": (
+                            "Remove PAGE/NUMPAGES fields, or rerun prepare with "
+                            "--allow-page-numbers."
+                        )
+                    },
+                )
     source_info = inspect_docx(source)
     features = source_info.get("package_features", {})
     high_risk = {

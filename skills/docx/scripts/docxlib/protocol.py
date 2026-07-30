@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from .common import DocxSkillError, assert_internal_control_path
 
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 RESULT_STATUSES = ("ok", "partial", "unsupported", "blocked", "error")
 RICH_RUN_FIELDS = {"text", "bold", "italic", "underline", "color", "size_pt"}
 ALIGNMENTS = ("left", "center", "right")
@@ -22,6 +22,7 @@ USER_STYLE_SOURCES = (
     "reference-template",
     "existing-document",
 )
+DOCUMENT_ORIGINS = ("new", "existing")
 SUPPORTED_TABLE_STYLES = (
     "Table Grid",
     "Light Grid",
@@ -657,6 +658,10 @@ def capabilities() -> dict[str, Any]:
             "source_replacement_requires_current_user_authorization": True,
             "source_replacement_creates_hidden_backup": True,
             "new_document_must_use_new_path": True,
+            "new_document_chrome_disabled_by_default": True,
+            "header_footer_page_numbers_require_explicit_acceptance": True,
+            "final_output_defaults_to_current_workspace": True,
+            "external_output_requires_exact_frozen_path": True,
             "session_lineage_resolves_latest_version": True,
             "exact_older_input_requires_flag": "--use-exact-input",
             "field_updates_on_open_disabled_by_default": True,
@@ -1091,6 +1096,104 @@ def normalize_style_policy(
     }
     if normalized_requirements:
         normalized["requirements"] = normalized_requirements
+    return normalized
+
+
+def normalize_document_policy(value: Any) -> dict[str, Any]:
+    """Normalize the frozen rules for recurring document chrome."""
+    if value is None:
+        return {
+            "origin": "new",
+            "allow_header": False,
+            "allow_footer": False,
+            "allow_page_numbers": False,
+        }
+    if not isinstance(value, dict):
+        raise DocxSkillError(
+            "document_policy must be an object",
+            code="invalid-document-policy",
+        )
+    _reject_unknown(
+        value,
+        {
+            "origin",
+            "allow_header",
+            "allow_footer",
+            "allow_page_numbers",
+        },
+        "document_policy",
+    )
+    origin = value.get("origin", "new")
+    if origin not in DOCUMENT_ORIGINS:
+        raise DocxSkillError(
+            "document_policy.origin must be new or existing",
+            code="invalid-document-policy",
+        )
+    normalized: dict[str, Any] = {"origin": origin}
+    for name in ("allow_header", "allow_footer", "allow_page_numbers"):
+        setting = value.get(name, False)
+        if not isinstance(setting, bool):
+            raise DocxSkillError(
+                f"document_policy.{name} must be boolean",
+                code="invalid-document-policy",
+            )
+        normalized[name] = setting
+    return normalized
+
+
+def normalize_delivery_policy(value: Any) -> dict[str, Any]:
+    """Normalize the workspace-scoped final output contract."""
+    if not isinstance(value, dict):
+        raise DocxSkillError(
+            "delivery must be an object",
+            code="invalid-delivery-policy",
+        )
+    _reject_unknown(
+        value,
+        {"workspace_root", "scope", "path"},
+        "delivery",
+    )
+    workspace_root = value.get("workspace_root")
+    if not isinstance(workspace_root, str) or not workspace_root.strip():
+        raise DocxSkillError(
+            "delivery.workspace_root must be a non-empty absolute path",
+            code="invalid-delivery-policy",
+        )
+    root = Path(workspace_root).expanduser()
+    if not root.is_absolute():
+        raise DocxSkillError(
+            "delivery.workspace_root must be absolute",
+            code="invalid-delivery-policy",
+        )
+    scope = value.get("scope", "workspace")
+    if scope not in {"workspace", "exact-external"}:
+        raise DocxSkillError(
+            "delivery.scope must be workspace or exact-external",
+            code="invalid-delivery-policy",
+        )
+    normalized: dict[str, Any] = {
+        "workspace_root": str(root.resolve()),
+        "scope": scope,
+    }
+    path = value.get("path")
+    if scope == "exact-external":
+        if not isinstance(path, str) or not path.strip():
+            raise DocxSkillError(
+                "delivery.path is required for exact-external scope",
+                code="invalid-delivery-policy",
+            )
+        external = Path(path).expanduser()
+        if not external.is_absolute() or external.suffix.lower() != ".docx":
+            raise DocxSkillError(
+                "delivery.path must be an absolute .docx path",
+                code="invalid-delivery-policy",
+            )
+        normalized["path"] = str(external.resolve())
+    elif path is not None:
+        raise DocxSkillError(
+            "delivery.path is valid only for exact-external scope",
+            code="invalid-delivery-policy",
+        )
     return normalized
 
 

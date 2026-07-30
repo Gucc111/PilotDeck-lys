@@ -12,12 +12,18 @@ from .common import (
     file_sha256,
     load_json,
     pilotdeck_work_dir,
+    pilotdeck_workspace_root,
     prepare_json_artifact_path,
     require_docx_path,
     write_json,
 )
 from .preflight import _visual_review_result, preflight_docx
-from .protocol import BUILTIN_TEMPLATE_ID, normalize_style_policy
+from .protocol import (
+    BUILTIN_TEMPLATE_ID,
+    normalize_delivery_policy,
+    normalize_document_policy,
+    normalize_style_policy,
+)
 
 
 VISUAL_REVIEW_PROTOCOL = "pilotdeck-docx-visual-review/v2"
@@ -90,6 +96,11 @@ def prepare_docx_task(
     style_mode: str = "builtin",
     style_source: str | None = None,
     style_requirements: list[str] | None = None,
+    existing_document: bool = False,
+    allow_header: bool = False,
+    allow_footer: bool = False,
+    allow_page_numbers: bool = False,
+    external_output: str | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     if min_pages is not None and min_pages < 1:
@@ -150,7 +161,48 @@ def prepare_docx_task(
             code="invalid-style-policy",
         )
 
-    manifest: dict[str, Any] = {"style_policy": style_policy}
+    document_policy = normalize_document_policy(
+        {
+            "origin": "existing" if existing_document else "new",
+            "allow_header": allow_header,
+            "allow_footer": allow_footer,
+            "allow_page_numbers": allow_page_numbers,
+        }
+    )
+    workspace_root = pilotdeck_workspace_root()
+    raw_delivery: dict[str, Any] = {
+        "workspace_root": str(workspace_root),
+        "scope": "workspace",
+    }
+    if external_output is not None:
+        external = Path(external_output).expanduser()
+        if not external.is_absolute():
+            raise DocxSkillError(
+                "--external-output must be the exact absolute .docx path "
+                "explicitly supplied by the user",
+                code="invalid-delivery-policy",
+            )
+        resolved_external = external.resolve()
+        if resolved_external.suffix.lower() != ".docx":
+            raise DocxSkillError(
+                "--external-output must end in .docx",
+                code="invalid-delivery-policy",
+            )
+        try:
+            resolved_external.relative_to(workspace_root)
+        except ValueError:
+            raw_delivery = {
+                "workspace_root": str(workspace_root),
+                "scope": "exact-external",
+                "path": str(resolved_external),
+            }
+    delivery_policy = normalize_delivery_policy(raw_delivery)
+
+    manifest: dict[str, Any] = {
+        "style_policy": style_policy,
+        "document_policy": document_policy,
+        "delivery": delivery_policy,
+    }
     text_requirements = list(
         dict.fromkeys(
             value.strip()
@@ -195,7 +247,7 @@ def prepare_docx_task(
     write_json(acceptance_path, manifest)
     return {
         "status": "ok",
-        "protocol": "pilotdeck-docx-task/v1",
+        "protocol": "pilotdeck-docx-task/v2",
         "acceptance_frozen": True,
         "paths": {name: str(path) for name, path in paths.items()},
         "acceptance": manifest,

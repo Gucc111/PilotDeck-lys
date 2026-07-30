@@ -149,6 +149,34 @@ def pilotdeck_work_dir() -> Path | None:
     return Path(configured).expanduser().resolve() if configured else None
 
 
+def pilotdeck_workspace_root() -> Path:
+    """Return the workspace that owns the current PilotDeck task."""
+    for name in ("PILOTDECK_WORKSPACE_CWD", "PILOTDECK_PROJECT_ROOT"):
+        configured = os.environ.get(name, "").strip()
+        if configured:
+            root = Path(configured).expanduser().resolve()
+            if not root.is_dir():
+                raise blocked(
+                    f"{name} does not identify an existing workspace directory",
+                    code="workspace-root-invalid",
+                    details={"environment": name, "workspace_root": str(root)},
+                )
+            return root
+
+    work_dir = pilotdeck_work_dir()
+    if work_dir is not None:
+        for ancestor in (work_dir, *work_dir.parents):
+            if (
+                ancestor.name == "work"
+                and ancestor.parent.name == ".pilotdeck"
+            ):
+                return ancestor.parent.parent.resolve()
+        # Standalone tests and manual CLI runs may provide an isolated work
+        # directory without PilotDeck's normal .pilotdeck/work hierarchy.
+        return work_dir.parent.resolve()
+    return Path.cwd().resolve()
+
+
 def _is_relative_to(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)
@@ -223,9 +251,60 @@ def prepare_output_docx_path(
 
 
 def prepare_delivery_docx_path(
-    path: str | Path, *, overwrite: bool = False
+    path: str | Path,
+    *,
+    overwrite: bool = False,
+    workspace_root: str | Path | None = None,
+    authorized_external_path: str | Path | None = None,
+    replace_source_path: str | Path | None = None,
 ) -> Path:
-    target = require_docx_path(path, must_exist=False)
+    root = (
+        Path(workspace_root).expanduser().resolve()
+        if workspace_root is not None
+        else pilotdeck_workspace_root()
+    )
+    if not root.is_dir():
+        raise blocked(
+            "The frozen workspace root is not an existing directory",
+            code="workspace-root-invalid",
+            details={"workspace_root": str(root)},
+        )
+    raw_target = Path(path).expanduser()
+    target = require_docx_path(
+        raw_target if raw_target.is_absolute() else root / raw_target,
+        must_exist=False,
+    )
+    external = (
+        require_docx_path(authorized_external_path, must_exist=False)
+        if authorized_external_path is not None
+        else None
+    )
+    replace_source = (
+        require_docx_path(replace_source_path, must_exist=False)
+        if replace_source_path is not None
+        else None
+    )
+    if (
+        not _is_relative_to(target, root)
+        and target != external
+        and target != replace_source
+    ):
+        raise blocked(
+            "Final DOCX output must stay inside the current workspace unless "
+            "the user explicitly supplied this exact external destination",
+            code="delivery-output-outside-workspace",
+            details={
+                "out": str(target),
+                "workspace_root": str(root),
+                "authorized_external_path": (
+                    str(external) if external is not None else None
+                ),
+                "next": (
+                    "Choose a path under the workspace, or freeze the exact "
+                    "user-requested external path during prepare."
+                ),
+            },
+        )
     work_dir = pilotdeck_work_dir()
     if work_dir is not None and _is_relative_to(target, work_dir):
         raise blocked(

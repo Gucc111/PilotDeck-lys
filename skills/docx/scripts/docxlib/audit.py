@@ -144,10 +144,16 @@ def audit_docx(
     chromatic_text_runs = 0
     chromatic_used_styles: set[str] = set()
     chromatic_paragraph_fills = 0
+    header_content_items = 0
+    footer_content_items = 0
     for location, paragraph in iter_document_paragraphs(doc):
         text = paragraph.text.strip()
         if text:
             body_paragraphs += 1
+            if ".header" in location:
+                header_content_items += 1
+            elif ".footer" in location:
+                footer_content_items += 1
         style_name = paragraph.style.name if paragraph.style else ""
         paragraph_fill = _paragraph_fill(paragraph)
         if paragraph_fill and _is_chromatic_fill(paragraph_fill):
@@ -513,6 +519,19 @@ def audit_docx(
                 "External relationships remain; confirm every target is intentional.",
             )
 
+    fields = info.get("fields", [])
+    page_number_fields = 0
+    for field in fields:
+        part = str(field.get("part", "")).casefold()
+        instruction = str(field.get("instruction", "")).strip().upper()
+        keyword = instruction.split(maxsplit=1)[0] if instruction else ""
+        if part.startswith("word/header"):
+            header_content_items += 1
+        elif part.startswith("word/footer"):
+            footer_content_items += 1
+        if keyword in {"PAGE", "NUMPAGES"}:
+            page_number_fields += 1
+
     counts = {
         severity: sum(1 for item in issues if item["severity"] == severity)
         for severity in ("error", "warning", "info")
@@ -533,6 +552,9 @@ def audit_docx(
             "tables": info["table_count"],
             "images": len(image_alt_texts),
             "fields": len(info.get("fields", [])),
+            "header_content_items": header_content_items,
+            "footer_content_items": footer_content_items,
+            "page_number_fields": page_number_fields,
             "table_cells": table_cell_count,
             "explicitly_filled_table_cells": explicitly_filled_cells,
             "chromatic_filled_table_cells": chromatic_filled_cells,
