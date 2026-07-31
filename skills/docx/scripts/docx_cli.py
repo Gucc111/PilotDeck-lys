@@ -68,7 +68,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     prepare_parser.add_argument("--min-pages", type=int)
     prepare_parser.add_argument("--max-pages", type=int)
+    prepare_parser.add_argument(
+        "--min-images",
+        type=int,
+        help="Minimum number of embedded images required in the final DOCX",
+    )
     prepare_parser.add_argument("--require-toc", action="store_true")
+    prepare_parser.add_argument(
+        "--document-structure",
+        choices=("simple", "formal-report"),
+        default="simple",
+        help=(
+            "Use formal-report when the user expects a separate cover, TOC "
+            "page, and body start page"
+        ),
+    )
     prepare_parser.add_argument("--protect-source", action="append")
     prepare_parser.add_argument(
         "--existing-document",
@@ -438,7 +452,9 @@ def _execute(args: argparse.Namespace) -> dict[str, Any]:
             required_headings=args.require_heading,
             min_pages=args.min_pages,
             max_pages=args.max_pages,
+            min_images=args.min_images,
             require_toc=args.require_toc,
+            document_structure=args.document_structure,
             protected_sources=args.protect_source,
             style_mode=args.style_mode,
             style_source=args.style_source,

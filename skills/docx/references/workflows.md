@@ -40,8 +40,10 @@ Do not change or re-export the source for a read-only question. State when a req
    whose style must be preserved. Otherwise use the single built-in neutral
    template. Never infer a colored theme from the document archetype.
 3. Read `design-and-layout.md` and map content to appropriate forms.
-4. Run `prepare --style-mode builtin` or the corresponding user style source
-   with requirements from the current user request, then query
+4. Run `prepare --style-mode builtin` or the corresponding user style source.
+   Add `--document-structure formal-report` for a cover + TOC + body report,
+   and add `--min-images N` when figures are required. Include requirements
+   from the current user request, then query
    `schema --command create` and write a strict JSON specification below the
    returned `tmp` path. Do not loosen acceptance after a candidate fails.
    Do not enable headers, footers, or page numbers unless the current user
@@ -75,7 +77,9 @@ Use placeholders or clearly marked assumptions when required information is miss
    style, and location targets. Existing recurring content may remain, but
    `set_header`, `set_footer`, and new page fields require explicit frozen
    permission.
-4. Use the smallest supported edit operation.
+4. Use the smallest supported edit operation. Ordinary anchored image insertion
+   is supported by `insert_image`; use fallback only for unsupported wrapping,
+   floating placement, or package-sensitive structures.
 5. Write to a new internal candidate path.
 6. Verify each operation's `affected` count. Missing or ambiguous targets return `partial`; refine them rather than guessing.
 7. Re-inspect the changed area and compare the output with the resolved input when useful.

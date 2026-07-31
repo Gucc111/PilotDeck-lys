@@ -34,6 +34,9 @@ current request to authorize `--replace-source`.
     "mode": "builtin",
     "template": "neutral-document-v1"
   },
+  "document_structure": {
+    "archetype": "simple"
+  },
   "locale": "en-US",
   "page": "letter",
   "orientation": "portrait",
@@ -69,6 +72,24 @@ current request to authorize `--replace-source`.
   qualify as explicit visual requirements.
 
 Supported page values: `a4` and `letter`. Supported orientations: `portrait` and `landscape`.
+
+`document_structure` must also match `prepare`. Use the simple structure for
+ordinary documents:
+
+```json
+{"document_structure": {"archetype": "simple"}}
+```
+
+Use the formal report structure only for a cover + TOC + body document:
+
+```json
+{"document_structure": {"archetype": "formal-report"}}
+```
+
+The formal structure requires the first content block to be `title`, exactly
+one `toc` block, and body content after it. The creator inserts exactly one
+page boundary before the TOC and another after it. Do not add manual duplicate
+breaks around the TOC.
 
 User mode may include a centralized `style_overrides` object with
 `body_font`, `east_asia_font`, `body_size`, `title_size`, `title_color`,
@@ -200,6 +221,8 @@ The output is a visible checklist, not an interactive Word content control.
 ```
 
 Resolve relative paths from the JSON file's directory. Remote URLs are rejected.
+Raster images are decoded before insertion, transparency is flattened onto a
+white background, and fully blank or invalid images are rejected.
 
 ### Table of contents and fields
 
@@ -308,6 +331,17 @@ Rules:
       "location": "body"
     },
     {
+      "action": "insert_image",
+      "match": "Recommendation",
+      "path": "figures/timeline.png",
+      "placement": "after",
+      "width_inches": 5.5,
+      "caption": "Figure 1. Delivery timeline",
+      "alt_text": "Milestones from discovery through launch",
+      "occurrence": 1,
+      "location": "body"
+    },
+    {
       "action": "set_style",
       "match": "Risk summary",
       "style": "Heading 1"
@@ -335,6 +369,8 @@ Supported actions:
 
 - `replace_text`: match across adjacent runs while retaining the first and last run formatting.
 - `insert_after`: insert one paragraph after a selected matching paragraph.
+- `insert_image`: insert a normalized local image before or after a selected
+  matching paragraph, with optional caption and alternative text.
 - `delete_paragraph`: delete a selected paragraph containing `match`.
 - `set_style`: set a Word style on a selected matching paragraph.
 - `append_paragraph`: append a paragraph.

@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from .common import DocxSkillError, assert_internal_control_path
 
 
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 8
 RESULT_STATUSES = ("ok", "partial", "unsupported", "blocked", "error")
 RICH_RUN_FIELDS = {"text", "bold", "italic", "underline", "color", "size_pt"}
 ALIGNMENTS = ("left", "center", "right")
@@ -23,6 +23,7 @@ USER_STYLE_SOURCES = (
     "existing-document",
 )
 DOCUMENT_ORIGINS = ("new", "existing")
+DOCUMENT_ARCHETYPES = ("simple", "formal-report")
 SUPPORTED_TABLE_STYLES = (
     "Table Grid",
     "Light Grid",
@@ -355,6 +356,17 @@ CREATE_SCHEMA: dict[str, Any] = {
                 "space_after": {"type": "number", "minimum": 0},
             },
         },
+        "document_structure": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "archetype": {"enum": list(DOCUMENT_ARCHETYPES)},
+                "cover_page": {"type": "boolean"},
+                "toc_page": {"type": "boolean"},
+                "body_starts_on_new_page": {"type": "boolean"},
+            },
+            "required": ["archetype"],
+        },
         "locale": {"type": "string", "minLength": 1},
         "update_fields_on_open": {"type": "boolean"},
         "page": {"enum": ["a4", "letter"]},
@@ -416,6 +428,18 @@ EDIT_ACTION_SCHEMAS: dict[str, set[str]] = {
         "allow_missing",
     },
     "insert_after": {"action", "match", "text", "style", "occurrence", "location", "allow_missing"},
+    "insert_image": {
+        "action",
+        "match",
+        "path",
+        "placement",
+        "width_inches",
+        "caption",
+        "alt_text",
+        "occurrence",
+        "location",
+        "allow_missing",
+    },
     "delete_paragraph": {"action", "match", "occurrence", "location", "allow_missing"},
     "set_style": {"action", "match", "style", "occurrence", "location", "allow_missing"},
     "append_paragraph": {"action", "text", "style"},
@@ -459,6 +483,15 @@ EDIT_ACTION_PROPERTY_SCHEMAS: dict[str, dict[str, Any]] = {
         **deepcopy(EDIT_COMMON_TARGET_PROPERTIES),
         "text": {"type": "string"},
         "style": {"type": "string"},
+    },
+    "insert_image": {
+        "action": {"const": "insert_image"},
+        **deepcopy(EDIT_COMMON_TARGET_PROPERTIES),
+        "path": {"type": "string", "minLength": 1},
+        "placement": {"enum": ["before", "after"]},
+        "width_inches": {"type": "number", "exclusiveMinimum": 0},
+        "caption": {"type": "string"},
+        "alt_text": {"type": "string"},
     },
     "delete_paragraph": {
         "action": {"const": "delete_paragraph"},
@@ -511,6 +544,7 @@ EDIT_ACTION_PROPERTY_SCHEMAS: dict[str, dict[str, Any]] = {
 EDIT_ACTION_REQUIRED_FIELDS: dict[str, list[str]] = {
     "replace_text": ["action", "match", "replacement"],
     "insert_after": ["action", "match", "text"],
+    "insert_image": ["action", "match", "path"],
     "delete_paragraph": ["action", "match"],
     "set_style": ["action", "match", "style"],
     "append_paragraph": ["action", "text"],
@@ -756,6 +790,21 @@ def capabilities() -> dict[str, Any]:
                 "command": "create",
                 "features": {
                     "structured_prose_lists_tables_images": _capability("supported"),
+                    "formal_report_pagination": _capability(
+                        "supported",
+                        reason=(
+                            "The formal-report structure enforces a separate cover, "
+                            "TOC page, and body start page and is checked during preflight."
+                        ),
+                    ),
+                    "image_normalization_and_acceptance": _capability(
+                        "supported",
+                        reason=(
+                            "Raster images are decoded, transparency is flattened, "
+                            "blank assets are rejected, and prepare can freeze a "
+                            "minimum image count."
+                        ),
+                    ),
                     "two_path_style_policy": _capability(
                         "supported",
                         reason=(
@@ -818,7 +867,14 @@ def capabilities() -> dict[str, Any]:
                 "features": {
                     "text_paragraph_metadata": _capability("supported"),
                     "header_footer_and_table_cells": _capability("supported"),
-                    "images_fields_sections_and_complex_styles": _capability(
+                    "anchored_image_insertion": _capability(
+                        "supported",
+                        reason=(
+                            "A local raster image can be inserted before or after an "
+                            "unambiguous paragraph target with caption and alt text."
+                        ),
+                    ),
+                    "fields_sections_and_complex_styles": _capability(
                         "fallback", fallback="Use fallback-patch with an explicit OOXML part allowlist."
                     ),
                     "signed_or_protected_documents": _capability(
@@ -1141,6 +1197,65 @@ def normalize_document_policy(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def normalize_document_structure(value: Any) -> dict[str, Any]:
+    """Normalize pagination rules that define the document's major sections."""
+    if value is None:
+        return {
+            "archetype": "simple",
+            "cover_page": False,
+            "toc_page": False,
+            "body_starts_on_new_page": False,
+        }
+    if not isinstance(value, dict):
+        raise DocxSkillError(
+            "document_structure must be an object",
+            code="invalid-document-structure",
+        )
+    _reject_unknown(
+        value,
+        {
+            "archetype",
+            "cover_page",
+            "toc_page",
+            "body_starts_on_new_page",
+        },
+        "document_structure",
+    )
+    archetype = value.get("archetype", "simple")
+    if archetype not in DOCUMENT_ARCHETYPES:
+        raise DocxSkillError(
+            "document_structure.archetype must be simple or formal-report",
+            code="invalid-document-structure",
+        )
+    formal = archetype == "formal-report"
+    normalized: dict[str, Any] = {"archetype": archetype}
+    for name in ("cover_page", "toc_page", "body_starts_on_new_page"):
+        setting = value.get(name, formal)
+        if not isinstance(setting, bool):
+            raise DocxSkillError(
+                f"document_structure.{name} must be boolean",
+                code="invalid-document-structure",
+            )
+        normalized[name] = setting
+    if formal and not all(
+        normalized[name]
+        for name in ("cover_page", "toc_page", "body_starts_on_new_page")
+    ):
+        raise DocxSkillError(
+            "formal-report requires a separate cover, TOC page, and body start page",
+            code="invalid-document-structure",
+        )
+    if not formal and any(
+        normalized[name]
+        for name in ("cover_page", "toc_page", "body_starts_on_new_page")
+    ):
+        raise DocxSkillError(
+            "Separate cover/TOC/body pagination requires archetype formal-report",
+            code="invalid-document-structure",
+        )
+    return normalized
+
+
 def normalize_delivery_policy(value: Any) -> dict[str, Any]:
     """Normalize the workspace-scoped final output contract."""
     if not isinstance(value, dict):
@@ -1278,6 +1393,9 @@ def _validate_style_overrides(value: Any) -> dict[str, Any]:
 def validate_create_spec(spec: dict[str, Any]) -> None:
     _reject_unknown(spec, CREATE_SCHEMA["properties"], "create specification")
     style_policy = normalize_style_policy(spec.get("style_policy"))
+    document_structure = normalize_document_structure(
+        spec.get("document_structure")
+    )
     style_overrides = _validate_style_overrides(spec.get("style_overrides"))
     if style_policy["mode"] == "builtin" and style_overrides:
         raise DocxSkillError(
@@ -1343,6 +1461,39 @@ def validate_create_spec(spec: dict[str, Any]) -> None:
     content = spec.get("content", [])
     if not isinstance(content, list):
         raise DocxSkillError("content must be an array", code="invalid-spec")
+    if document_structure["archetype"] == "formal-report":
+        block_types = [
+            str(block.get("type", ""))
+            for block in content
+            if isinstance(block, dict)
+        ]
+        if not block_types or block_types[0] != "title":
+            raise DocxSkillError(
+                "formal-report content must start with a title block",
+                code="invalid-document-structure",
+            )
+        if block_types.count("toc") != 1:
+            raise DocxSkillError(
+                "formal-report content must contain exactly one toc block",
+                code="invalid-document-structure",
+            )
+        toc_index = block_types.index("toc")
+        if not any(
+            block_type in {
+                "heading",
+                "paragraph",
+                "body",
+                "table",
+                "image",
+                "bullet",
+                "numbered",
+            }
+            for block_type in block_types[toc_index + 1 :]
+        ):
+            raise DocxSkillError(
+                "formal-report content requires body content after the TOC",
+                code="invalid-document-structure",
+            )
     for index, block in enumerate(content):
         if not isinstance(block, dict):
             raise DocxSkillError("Every content block must be an object", code="invalid-spec")
@@ -1692,7 +1843,13 @@ def validate_edit_patch(patch: dict[str, Any]) -> None:
                 },
             )
         _reject_unknown(operation, EDIT_ACTION_SCHEMAS[action], f"{action} operation")
-        if action in {"replace_text", "insert_after", "delete_paragraph", "set_style"}:
+        if action in {
+            "replace_text",
+            "insert_after",
+            "insert_image",
+            "delete_paragraph",
+            "set_style",
+        }:
             if not isinstance(operation.get("match"), str) or not operation["match"]:
                 raise DocxSkillError(f"{action} requires a non-empty match", code="invalid-patch")
         if "location" in operation and not isinstance(operation["location"], str):
@@ -1732,6 +1889,31 @@ def validate_edit_patch(patch: dict[str, Any]) -> None:
                 raise DocxSkillError(
                     f"{action}.style must be a string", code="invalid-patch"
                 )
+        if action == "insert_image":
+            if not isinstance(operation.get("path"), str) or not operation["path"].strip():
+                raise DocxSkillError(
+                    "insert_image.path is required and must be a non-empty string",
+                    code="invalid-patch",
+                )
+            if operation.get("placement", "after") not in {"before", "after"}:
+                raise DocxSkillError(
+                    "insert_image.placement must be before or after",
+                    code="invalid-patch",
+                )
+            if "width_inches" in operation and (
+                not _is_number(operation["width_inches"])
+                or operation["width_inches"] <= 0
+            ):
+                raise DocxSkillError(
+                    "insert_image.width_inches must be a positive number",
+                    code="invalid-patch",
+                )
+            for field in ("caption", "alt_text"):
+                if field in operation and not isinstance(operation[field], str):
+                    raise DocxSkillError(
+                        f"insert_image.{field} must be a string",
+                        code="invalid-patch",
+                    )
         if action == "set_style" and not str(operation.get("style", "")).strip():
             raise DocxSkillError("set_style.style is required", code="invalid-patch")
         if action == "set_metadata":

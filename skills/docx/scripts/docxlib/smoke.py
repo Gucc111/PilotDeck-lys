@@ -11,6 +11,8 @@ from xml.etree import ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
 
+from PIL import Image
+
 from .audit import audit_docx
 from .common import (
     DocxSkillError,
@@ -85,7 +87,7 @@ def run_smoke_test() -> dict[str, Any]:
         root = Path(temp_dir)
 
         capability_result = capabilities()
-        assert capability_result["protocol_version"] == 7
+        assert capability_result["protocol_version"] == 8
         assert len(capability_result["capability_states"]) == len(
             set(capability_result["capability_states"])
         )
@@ -129,6 +131,10 @@ def run_smoke_test() -> dict[str, Any]:
                 "additionalProperties"
             ]
             is False
+        )
+        assert any(
+            item["properties"].get("action", {}).get("const") == "insert_image"
+            for item in edit_schema["properties"]["operations"]["items"]["oneOf"]
         )
         assert review_schema["properties"]["comments"]["items"]["additionalProperties"] is False
         steps.append("capability-contract")
@@ -354,10 +360,93 @@ def run_smoke_test() -> dict[str, Any]:
         neutral_codes = {
             item["code"] for item in neutral_audit["issues"]
         }
+        assert "text-line-height-clipping" not in neutral_codes
         assert "fields-update-on-open" not in neutral_codes
         assert "excessive-chromatic-table-fill" not in neutral_codes
         assert "repeated-accent-table-styles" not in neutral_codes
         steps.append("neutral-chinese-default")
+
+        illustration = root / "illustration.png"
+        Image.new("RGB", (640, 360), (245, 245, 245)).save(illustration)
+        with Image.open(illustration) as image:
+            pixels = image.load()
+            for index in range(80, 560):
+                pixels[index, 180] = (20, 20, 20)
+            image.save(illustration)
+        formal_spec = root / "formal-create.json"
+        _dump(
+            formal_spec,
+            {
+                "style_policy": {
+                    "mode": "builtin",
+                    "template": "neutral-document-v1",
+                },
+                "document_structure": {"archetype": "formal-report"},
+                "locale": "zh-CN",
+                "content": [
+                    {"type": "title", "text": "正式报告"},
+                    {"type": "subtitle", "text": "封面副标题"},
+                    {"type": "toc", "title": "目录"},
+                    {"type": "heading", "level": 1, "text": "第一章"},
+                    {"type": "paragraph", "text": "正文从新页面开始。"},
+                    {
+                        "type": "image",
+                        "path": str(illustration),
+                        "caption": "图 1 示例图",
+                        "alt_text": "一条横向深色线条",
+                    },
+                ],
+            },
+        )
+        formal_docx = root / "formal.docx"
+        formal_creation = create_docx(formal_spec, formal_docx)
+        assert formal_creation["document_structure"]["archetype"] == "formal-report"
+        with zipfile.ZipFile(formal_docx) as archive:
+            formal_document = ET.fromstring(archive.read("word/document.xml"))
+            page_breaks = formal_document.findall(
+                ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}br"
+                "[@{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type='page']"
+            )
+            assert len(page_breaks) >= 2
+        formal_audit = audit_docx(formal_docx, profile="final")
+        assert formal_audit["summary"]["images"] == 1
+        assert {
+            "text-line-height-clipping",
+            "image-line-height-clipping",
+        }.isdisjoint({
+            item["code"] for item in formal_audit["issues"]
+        })
+        steps.append("formal-report-pagination-and-image")
+
+        image_patch = root / "insert-image.json"
+        _dump(
+            image_patch,
+            {
+                "operations": [
+                    {
+                        "action": "insert_image",
+                        "match": "总体结论",
+                        "path": str(illustration),
+                        "placement": "after",
+                        "caption": "图 2 编辑插图",
+                        "alt_text": "编辑流程插入的示例图",
+                    }
+                ]
+            },
+        )
+        image_edited = root / "image-edited.docx"
+        image_edit_result = edit_docx(
+            neutral_docx,
+            image_patch,
+            image_edited,
+        )
+        assert image_edit_result["operations"][0]["affected"] == 1
+        image_edit_audit = audit_docx(image_edited, profile="final")
+        assert image_edit_audit["summary"]["images"] == 1
+        assert "image-line-height-clipping" not in {
+            item["code"] for item in image_edit_audit["issues"]
+        }
+        steps.append("anchored-image-edit")
 
         builtin_override_specs = {
             "style-overrides": {

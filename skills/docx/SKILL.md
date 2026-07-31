@@ -157,9 +157,17 @@ Before writing the JSON specification:
    titles and headings, white tables with neutral lines, restrained callouts,
    and locale-aware Chinese/Latin typography.
 3. Read [design-and-layout.md](references/design-and-layout.md). Map each major information unit to prose, a list, steps, a checklist, a callout, a definition list, a real data table, an image, or sources.
-4. Query `schema --command create`, read [specifications.md](references/specifications.md), and create a specification using only supported blocks.
-5. Run standard `create`. If the schema cannot express a required feature, follow the controlled fallback decision before writing custom code.
-6. Generate, inspect, compare when relevant, and run preflight.
+   If the user requests illustrations, figures, diagrams, or charts, treat
+   image presence as an acceptance requirement. Generate local assets below
+   the returned `tmp` path and use standard image blocks; do not merely create
+   images that never enter the DOCX.
+4. Choose `--document-structure formal-report` when the deliverable requires a
+   cover, TOC, and body. That structure owns the page boundaries: cover page,
+   TOC on a new page, and body on another new page. Use `simple` for briefs,
+   memos, forms, and documents without that three-part structure.
+5. Query `schema --command create`, read [specifications.md](references/specifications.md), and create a specification using only supported blocks. Copy the frozen `document_structure` into the specification.
+6. Run standard `create`. If the schema cannot express a required feature, follow the controlled fallback decision before writing custom code.
+7. Generate, inspect, compare when relevant, and run preflight.
 
 For a new document, omit `header`, `footer`, `PAGE`, and `NUMPAGES` unless the
 current user explicitly requested them. `prepare` denies all three by default;
@@ -172,7 +180,7 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" create \
   --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
-Do not rely on Word defaults for page geometry, heading hierarchy, list semantics, table widths, or cell padding. Prefer reusable Word styles and real list definitions over manually formatted lookalikes. A chart may be generated as a local image and referenced by an image block without entering full-create fallback.
+Do not rely on Word defaults for page geometry, title line height, heading hierarchy, list semantics, table widths, or cell padding. Prefer reusable Word styles and real list definitions over manually formatted lookalikes. A chart may be generated as a local image and referenced by an image block without entering full-create fallback. When the user asks for one or more figures, freeze `--min-images` so a text-only candidate cannot pass.
 
 The create specification's `style_policy` must exactly match the frozen
 acceptance manifest. Built-in mode rejects style overrides, per-run colors or
@@ -209,7 +217,7 @@ bash "$DOCX_SKILL_ROOT/scripts/docx.sh" edit \
   --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
-Preserve structure and formatting unless the user requests redesign. Prefer inline replacement over paragraph replacement, and paragraph replacement over full-document reconstruction. Ambiguous targets require `occurrence` or `location`. A missing target returns `partial`; it is not a successful no-op.
+Preserve structure and formatting unless the user requests redesign. Prefer inline replacement over paragraph replacement, and paragraph replacement over full-document reconstruction. Use standard `insert_image` to place a local figure before or after an unambiguous paragraph anchor; do not jump to an OOXML fallback for ordinary inline image insertion. Ambiguous targets require `occurrence` or `location`. A missing target returns `partial`; it is not a successful no-op.
 
 The standard editor blocks a `python-docx` round trip when package-sensitive features could be lost. Prefer `fallback-patch` with a narrow OOXML part allowlist. Use `--allow-lossy` only when the user explicitly accepts the listed fidelity risk; record that decision.
 
@@ -330,14 +338,19 @@ paths with `prepare`:
 ```bash
 bash "$DOCX_SKILL_ROOT/scripts/docx.sh" prepare \
   --style-mode builtin \
+  --document-structure formal-report \
   --require-text "Executive Summary" \
   --require-heading "1:Executive Summary" \
   --min-pages 8 --max-pages 12 \
+  --min-images 2 \
   --require-toc \
   --protect-source "/absolute/path/to/source.xlsx"
 ```
 
 Repeat `--require-text`, `--require-heading`, and `--protect-source` as needed.
+Use `--min-images` only when figures are part of the user request. A
+`formal-report` automatically requires a populated semantic TOC and freezes
+separate cover/TOC/body pagination.
 For an edit, add `--existing-document`. Header, footer, and page-number
 permissions remain off unless the current request explicitly asks for them:
 
@@ -522,7 +535,7 @@ Before returning a DOCX, confirm all of the following:
 - preflight reports `status: ok`, `passed: true`, `coverage.status: passed`, and `visual_review.status: passed`;
 - every warning is fixed or has a specific recorded disposition;
 - every rendered page from the latest candidate has a non-empty review note;
-- required headings, page constraints, TOC state, and protected source hashes satisfy the acceptance manifest;
+- required headings, page constraints, image count, document structure, TOC state, and protected source hashes satisfy the acceptance manifest;
 - comments and revisions match the requested delivery state;
 - metadata and privacy state match the request;
 - the delivered SHA-256 matches the passed preflight report;

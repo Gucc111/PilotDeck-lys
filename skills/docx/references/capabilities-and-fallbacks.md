@@ -28,6 +28,9 @@ Use the lowest sufficient level:
 5. **Report unsupported or blocked** — required for signatures, document/write protection, rights management, unsafe packages, or fidelity that cannot be verified.
 
 Do not jump from level 1 to an untracked Python builder. The inability to express one feature does not authorize reconstruction of an existing document.
+Standard creation normalizes local raster assets, and standard editing supports
+anchored inline image insertion before or after a paragraph. Use fallback only
+when a material requirement needs unsupported floating/wrapping behavior.
 
 Every successful fallback still produces only an internal candidate. It does
 not authorize direct project-root output. Run acceptance, per-page visual QA,

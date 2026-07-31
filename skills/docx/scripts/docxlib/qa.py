@@ -22,6 +22,7 @@ from .protocol import (
     BUILTIN_TEMPLATE_ID,
     normalize_delivery_policy,
     normalize_document_policy,
+    normalize_document_structure,
     normalize_style_policy,
 )
 
@@ -91,7 +92,9 @@ def prepare_docx_task(
     required_headings: list[str] | None = None,
     min_pages: int | None = None,
     max_pages: int | None = None,
+    min_images: int | None = None,
     require_toc: bool = False,
+    document_structure: str = "simple",
     protected_sources: list[str] | None = None,
     style_mode: str = "builtin",
     style_source: str | None = None,
@@ -116,6 +119,11 @@ def prepare_docx_task(
     if min_pages and max_pages and min_pages > max_pages:
         raise DocxSkillError(
             "min_pages cannot exceed max_pages",
+            code="invalid-acceptance-manifest",
+        )
+    if min_images is not None and min_images < 0:
+        raise DocxSkillError(
+            "min_images must be non-negative",
             code="invalid-acceptance-manifest",
         )
 
@@ -169,6 +177,9 @@ def prepare_docx_task(
             "allow_page_numbers": allow_page_numbers,
         }
     )
+    structure_policy = normalize_document_structure(
+        {"archetype": document_structure}
+    )
     workspace_root = pilotdeck_workspace_root()
     raw_delivery: dict[str, Any] = {
         "workspace_root": str(workspace_root),
@@ -201,6 +212,7 @@ def prepare_docx_task(
     manifest: dict[str, Any] = {
         "style_policy": style_policy,
         "document_policy": document_policy,
+        "document_structure": structure_policy,
         "delivery": delivery_policy,
     }
     text_requirements = list(
@@ -227,8 +239,10 @@ def prepare_docx_task(
             page_count["max"] = max_pages
         manifest["page_count"] = page_count
 
-    if require_toc:
+    if require_toc or structure_policy["archetype"] == "formal-report":
         manifest["toc"] = {"required": True, "populated": True}
+    if min_images is not None:
+        manifest["images"] = {"min": min_images}
 
     source_requirements: list[dict[str, str]] = []
     for value in protected_sources or []:

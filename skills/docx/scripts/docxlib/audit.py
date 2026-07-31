@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import re
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
+from PIL import Image, ImageChops, UnidentifiedImageError
 
 from .common import (
     DocxSkillError,
@@ -57,6 +59,116 @@ def _image_alt_texts(path: Path) -> list[str]:
             for node in root.findall(".//wp:docPr", NS):
                 values.append((node.get("descr") or node.get("title") or "").strip())
     return values
+
+
+def _raster_media_issues(path: Path) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    raster_suffixes = {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".tif",
+        ".tiff",
+    }
+    with zipfile.ZipFile(path) as archive:
+        for part_name in archive.namelist():
+            if (
+                not part_name.startswith("word/media/")
+                or Path(part_name).suffix.lower() not in raster_suffixes
+            ):
+                continue
+            try:
+                with Image.open(BytesIO(archive.read(part_name))) as image:
+                    image.load()
+                    rgba = image.convert("RGBA")
+                    if rgba.getchannel("A").getbbox() is None:
+                        issues.append(
+                            {
+                                "code": "embedded-image-transparent",
+                                "message": "An embedded raster image is fully transparent.",
+                                "location": part_name,
+                            }
+                        )
+                        continue
+                    flattened = Image.alpha_composite(
+                        Image.new("RGBA", rgba.size, (255, 255, 255, 255)),
+                        rgba,
+                    ).convert("RGB")
+                    white = Image.new("RGB", flattened.size, (255, 255, 255))
+                    if ImageChops.difference(flattened, white).getbbox() is None:
+                        issues.append(
+                            {
+                                "code": "embedded-image-blank",
+                                "message": "An embedded raster image is visually blank.",
+                                "location": part_name,
+                            }
+                        )
+            except (
+                KeyError,
+                Image.DecompressionBombError,
+                UnidentifiedImageError,
+                OSError,
+                ValueError,
+            ) as exc:
+                issues.append(
+                    {
+                        "code": "embedded-image-invalid",
+                        "message": f"An embedded raster image cannot be decoded: {exc}",
+                        "location": part_name,
+                    }
+                )
+    return issues
+
+
+def _exact_line_spacing_points(paragraph: Any) -> float | None:
+    style = paragraph.style
+    candidates = [paragraph._p.pPr]
+    seen: set[int] = set()
+    while style is not None and id(style) not in seen:
+        seen.add(id(style))
+        candidates.append(style.element.pPr)
+        style = style.base_style
+    for properties in candidates:
+        if properties is None:
+            continue
+        spacing = properties.find(qn("w:spacing"))
+        if spacing is None or spacing.get(qn("w:line")) is None:
+            continue
+        if (spacing.get(qn("w:lineRule")) or "").lower() != "exact":
+            return None
+        if spacing.get(qn("w:line")):
+            try:
+                return int(spacing.get(qn("w:line"))) / 20
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _maximum_font_size_points(paragraph: Any) -> float | None:
+    values: list[float] = []
+    style_size = paragraph.style.font.size if paragraph.style else None
+    for run in paragraph.runs:
+        if not run.text.strip():
+            continue
+        size = run.font.size or style_size
+        if size is not None:
+            values.append(float(size.pt))
+    return max(values) if values else None
+
+
+def _maximum_inline_height_points(paragraph: Any) -> float | None:
+    values: list[float] = []
+    for extent in paragraph._p.findall(".//wp:extent", paragraph._p.nsmap):
+        raw_height = extent.get("cy")
+        if raw_height is None:
+            continue
+        try:
+            values.append(int(raw_height) / 12_700)
+        except (TypeError, ValueError):
+            continue
+    return max(values) if values else None
 
 
 def _cell_fill(cell: Any) -> str | None:
@@ -221,6 +333,42 @@ def audit_docx(
                     f"Text is set to {run.font.size.pt:g} pt; verify readability.",
                     location,
                 )
+        exact_line = _exact_line_spacing_points(paragraph)
+        max_font = _maximum_font_size_points(paragraph)
+        max_inline_height = _maximum_inline_height_points(paragraph)
+        if (
+            text
+            and exact_line is not None
+            and max_font is not None
+            and exact_line + 0.5 < max_font * 1.1
+        ):
+            _issue(
+                issues,
+                "error" if profile in {"final", "accessible"} else "warning",
+                "text-line-height-clipping",
+                (
+                    f"The paragraph uses {exact_line:g} pt exact line height "
+                    f"for text up to {max_font:g} pt, which can clip glyphs. "
+                    "Use automatic or at-least line spacing."
+                ),
+                location,
+            )
+        if (
+            exact_line is not None
+            and max_inline_height is not None
+            and exact_line + 0.5 < max_inline_height
+        ):
+            _issue(
+                issues,
+                "error" if profile in {"final", "accessible"} else "warning",
+                "image-line-height-clipping",
+                (
+                    f"The paragraph uses {exact_line:g} pt exact line height "
+                    f"for an inline image up to {max_inline_height:g} pt high, "
+                    "which clips the image. Use automatic line spacing."
+                ),
+                location,
+            )
 
     for index, (level, text) in enumerate(heading_levels):
         if index == 0 and level > 1:
@@ -416,6 +564,14 @@ def audit_docx(
         )
 
     image_alt_texts = _image_alt_texts(path)
+    for image_issue in _raster_media_issues(path):
+        _issue(
+            issues,
+            "error",
+            image_issue["code"],
+            image_issue["message"],
+            image_issue["location"],
+        )
     if profile == "accessible":
         for index, alt_text in enumerate(image_alt_texts, start=1):
             if not alt_text:

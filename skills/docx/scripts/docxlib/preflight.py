@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+from docx import Document
+from docx.oxml.ns import qn
 
 from .audit import audit_docx
 from .common import (
@@ -23,6 +25,7 @@ from .protocol import (
     load_dispositions,
     normalize_delivery_policy,
     normalize_document_policy,
+    normalize_document_structure,
     normalize_style_policy,
 )
 from .render import render_docx
@@ -98,11 +101,13 @@ def _acceptance_requirements(
     allowed = {
         "style_policy",
         "document_policy",
+        "document_structure",
         "delivery",
         "required_text",
         "required_headings",
         "page_count",
         "toc",
+        "images",
         "protected_sources",
     }
     unknown = sorted(set(acceptance) - allowed)
@@ -118,6 +123,9 @@ def _acceptance_requirements(
     )
     document_policy = normalize_document_policy(
         acceptance.get("document_policy")
+    )
+    document_structure = normalize_document_structure(
+        acceptance.get("document_structure")
     )
     delivery_policy = normalize_delivery_policy(
         acceptance.get("delivery")
@@ -203,6 +211,21 @@ def _acceptance_requirements(
             "acceptance.toc values must be boolean",
             code="invalid-acceptance-manifest",
         )
+    images = acceptance.get("images", {})
+    if not isinstance(images, dict) or set(images) - {"min"}:
+        raise DocxSkillError(
+            "acceptance.images may contain only min",
+            code="invalid-acceptance-manifest",
+        )
+    if "min" in images and (
+        not isinstance(images["min"], int)
+        or isinstance(images["min"], bool)
+        or images["min"] < 0
+    ):
+        raise DocxSkillError(
+            "acceptance.images.min must be a non-negative integer",
+            code="invalid-acceptance-manifest",
+        )
     protected_sources = acceptance.get("protected_sources", [])
     if not isinstance(protected_sources, list):
         raise DocxSkillError(
@@ -231,13 +254,118 @@ def _acceptance_requirements(
     return {
         "style_policy": style_policy,
         "document_policy": document_policy,
+        "document_structure": document_structure,
         "delivery": delivery_policy,
         "required_text": required_text,
         "required_headings": normalized_headings,
         "page_count": page_count,
         "toc": toc,
+        "images": images,
         "protected_sources": normalized_sources,
     }
+
+
+def _paragraph_has_page_break(paragraph: Any) -> bool:
+    properties = paragraph._p.pPr
+    if (
+        properties is not None
+        and properties.find(qn("w:pageBreakBefore")) is not None
+    ):
+        return True
+    return any(
+        (node.get(qn("w:type")) or "text") == "page"
+        for node in paragraph._p.findall(".//w:br", paragraph._p.nsmap)
+    )
+
+
+def _paragraph_is_toc_field(paragraph: Any) -> bool:
+    instructions = [
+        str(node.text or "").strip()
+        for node in paragraph._p.findall(".//w:instrText", paragraph._p.nsmap)
+    ]
+    return any(
+        instruction.upper().split(maxsplit=1)[0] == "TOC"
+        for instruction in instructions
+        if instruction
+    )
+
+
+def _document_structure_gate_issues(
+    acceptance: dict[str, Any],
+    input_path: str | Path,
+) -> list[dict[str, Any]]:
+    structure = acceptance.get("document_structure", {})
+    if structure.get("archetype") != "formal-report":
+        return []
+    doc = Document(str(input_path))
+    paragraphs = doc.paragraphs
+    issues: list[dict[str, Any]] = []
+    toc_indexes = [
+        index
+        for index, paragraph in enumerate(paragraphs)
+        if _paragraph_is_toc_field(paragraph)
+    ]
+    if len(toc_indexes) != 1:
+        return [
+            {
+                "severity": "error",
+                "code": "formal-report-toc-count",
+                "message": (
+                    "A formal report requires exactly one semantic TOC field; "
+                    f"found {len(toc_indexes)}."
+                ),
+            }
+        ]
+    toc_index = toc_indexes[0]
+    nonempty_before = [
+        index
+        for index, paragraph in enumerate(paragraphs[:toc_index])
+        if paragraph.text.strip()
+    ]
+    if not nonempty_before:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "formal-report-cover-missing",
+                "message": "The formal report has no cover content before its TOC.",
+            }
+        )
+    elif not any(
+        _paragraph_has_page_break(paragraph)
+        for paragraph in paragraphs[nonempty_before[0] : toc_index]
+    ):
+        issues.append(
+            {
+                "severity": "error",
+                "code": "formal-report-cover-not-separated",
+                "message": "The TOC must start on a new page after the cover.",
+            }
+        )
+
+    body_break_seen = False
+    body_found = False
+    for paragraph in paragraphs[toc_index + 1 :]:
+        body_break_seen = body_break_seen or _paragraph_has_page_break(paragraph)
+        if paragraph.text.strip():
+            body_found = True
+            break
+    if not body_found:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "formal-report-body-missing",
+                "message": "The formal report has no body content after its TOC.",
+            }
+        )
+    elif not body_break_seen:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "formal-report-body-not-separated",
+                "message": "The report body must start on a new page after the TOC.",
+            }
+        )
+    return issues
 
 
 def _builtin_style_gate_issues(
@@ -683,6 +811,9 @@ def preflight_docx(
     )
     if acceptance_file is not None:
         gate_issues.extend(_document_policy_gate_issues(acceptance, audit))
+        gate_issues.extend(
+            _document_structure_gate_issues(acceptance, input_path)
+        )
     for warning in validation.get("warnings", []):
         gate_issues.append(
             {
@@ -790,6 +921,21 @@ def preflight_docx(
                     "run refresh-toc before preflight."
                 ),
                 "toc": toc,
+            }
+        )
+    minimum_images = acceptance["images"].get("min")
+    actual_images = int(audit.get("summary", {}).get("images", 0) or 0)
+    if minimum_images is not None and actual_images < minimum_images:
+        gate_issues.append(
+            {
+                "severity": "error",
+                "code": "image-count-below-minimum",
+                "message": (
+                    f"The document contains {actual_images} image(s), below "
+                    f"the required minimum {minimum_images}."
+                ),
+                "required": minimum_images,
+                "actual": actual_images,
             }
         )
     protected_source_checks: list[dict[str, Any]] = []

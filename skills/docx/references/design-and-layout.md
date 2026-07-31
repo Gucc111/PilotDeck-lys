@@ -160,9 +160,19 @@ Use local image paths only. Choose a width that remains inside the text area and
 
 - Place the caption immediately after the image.
 - Keep the image and caption together when possible.
+- Image paragraphs must use automatic line spacing. Exact body-text line
+  spacing clips inline drawings even when the embedded image is valid.
 - Provide meaningful alternative text when accessibility is required. Set `alt_text` on every meaningful image block; decorative images may use an empty description only when that choice is intentional and verified in the accessible audit.
 - Do not use images as a substitute for editable text when the user needs to revise the content.
 - Inspect image sharpness, scaling, wrapping, and page position after rendering.
+- When the request explicitly requires illustrations, freeze a minimum image
+  count during `prepare` and verify the final package contains those images.
+  Generating a PNG in tmp is not completion until it is embedded in the DOCX.
+- For formal reports, use the formal-report structure so the cover, TOC, and
+  body begin on separate pages. Do not imitate page separation with repeated
+  blank paragraphs.
+- A title's line box must be at least large enough for its largest glyph. Avoid
+  exact line spacing below roughly 110% of the maximum font size.
 
 ## 8. Template following
 

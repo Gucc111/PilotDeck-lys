@@ -14,7 +14,7 @@ from docx import Document
 from docx.document import Document as DocumentObject
 from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Mm, Pt, RGBColor
@@ -43,9 +43,11 @@ from .common import (
     write_json,
 )
 from .fields import set_document_update_fields_on_open
+from .media import normalized_image_stream, resolve_local_image
 from .protocol import (
     SUPPORTED_FIELD_KEYWORDS,
     normalize_document_policy,
+    normalize_document_structure,
     normalize_style_policy,
     validate_create_spec,
     validate_edit_patch,
@@ -979,6 +981,78 @@ def _set_story(paragraph: Paragraph, value: str | dict[str, Any], style_tokens: 
     _populate_field_template(paragraph, text, style_tokens)
 
 
+def _set_picture_alt_text(inline: Any, alt_text: str) -> None:
+    if not alt_text:
+        return
+    for node in inline.findall(
+        ".//wp:docPr",
+        {
+            "wp": (
+                "http://schemas.openxmlformats.org/drawingml/"
+                "2006/wordprocessingDrawing"
+            )
+        },
+    ):
+        node.set("descr", alt_text)
+        node.set("title", alt_text)
+
+
+def _add_normalized_picture(
+    paragraph: Paragraph,
+    image_path: Path,
+    *,
+    width_inches: float,
+    alt_text: str = "",
+) -> dict[str, Any]:
+    # The built-in document style intentionally uses exact line spacing for
+    # ordinary body text. An inline picture inherits that spacing unless the
+    # picture paragraph explicitly opts out, which clips the drawing to one
+    # text line in Word/LibreOffice. Give image paragraphs automatic line
+    # spacing so their full inline extent participates in layout.
+    paragraph.paragraph_format.line_spacing = 1.0
+    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    stream, metadata = normalized_image_stream(image_path)
+    inline = paragraph.add_run().add_picture(
+        stream,
+        width=Inches(width_inches),
+    )._inline
+    _set_picture_alt_text(inline, alt_text)
+    return metadata
+
+
+def _structured_content(
+    content: list[dict[str, Any]],
+    structure: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if structure["archetype"] != "formal-report":
+        return content
+    toc_index = next(
+        index
+        for index, block in enumerate(content)
+        if block.get("type") == "toc"
+    )
+    normalized: list[dict[str, Any]] = []
+    skip_page_break_after_toc = False
+    for index, original in enumerate(content):
+        block = deepcopy(original)
+        if index == toc_index:
+            while normalized and normalized[-1].get("type") == "page_break":
+                normalized.pop()
+            normalized.append({"type": "page_break"})
+            block["page_break_after"] = True
+            normalized.append(block)
+            skip_page_break_after_toc = True
+            continue
+        if (
+            skip_page_break_after_toc
+            and index == toc_index + 1
+            and block.get("type") == "page_break"
+        ):
+            continue
+        normalized.append(block)
+    return normalized
+
+
 def _add_content_block(doc: DocumentObject, block: dict[str, Any], style_tokens: dict[str, Any], base_dir: Path) -> None:
     block_type = str(block.get("type", "paragraph"))
     text = str(block.get("text", ""))
@@ -986,9 +1060,12 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], style_tokens:
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.space_after = Pt(14)
+        title_size = float(style_tokens["title_size"])
+        paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.AT_LEAST
+        paragraph.paragraph_format.line_spacing = Pt(max(title_size * 1.25, title_size + 4))
         _populate_paragraph(paragraph, block, style_tokens)
         for run in paragraph.runs:
-            run.font.size = run.font.size or Pt(style_tokens["title_size"])
+            run.font.size = run.font.size or Pt(title_size)
             run.bold = True if run.bold is None else run.bold
             if run.font.color.rgb is None:
                 run.font.color.rgb = RGBColor.from_string(style_tokens["title_color"])
@@ -1175,26 +1252,19 @@ def _add_content_block(doc: DocumentObject, block: dict[str, Any], style_tokens:
             _repeat_table_header(table.rows[0])
         doc.add_paragraph()
     elif block_type == "image":
-        raw_path = Path(str(block.get("path", ""))).expanduser()
-        image_path = raw_path if raw_path.is_absolute() else (base_dir / raw_path)
-        image_path = image_path.resolve()
-        if not image_path.is_file():
-            raise DocxSkillError(f"Image not found: {image_path}")
-        if str(block.get("path", "")).startswith(("http://", "https://")):
-            raise DocxSkillError("Remote images are not allowed")
+        image_path = resolve_local_image(block.get("path"), base_dir=base_dir)
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = paragraph.add_run()
-        run.add_picture(str(image_path), width=Inches(float(block.get("width_inches", 5.5))))
         alt_text = str(block.get("alt_text", "")).strip()
-        if alt_text:
-            doc_pr_nodes = run._r.findall(".//wp:docPr", {
-                "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
-            })
-            for node in doc_pr_nodes:
-                node.set("descr", alt_text)
+        _add_normalized_picture(
+            paragraph,
+            image_path,
+            width_inches=float(block.get("width_inches", 5.5)),
+            alt_text=alt_text,
+        )
         caption = block.get("caption")
         if caption:
+            paragraph.paragraph_format.keep_with_next = True
             cap = doc.add_paragraph(str(caption))
             cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _format_paragraph_runs(cap, style_tokens)
@@ -1271,6 +1341,9 @@ def create_docx(
         )
     validate_create_spec(spec)
     spec_policy = normalize_style_policy(spec.get("style_policy"))
+    document_structure = normalize_document_structure(
+        spec.get("document_structure")
+    )
     if spec_policy is None:
         raise DocxSkillError(
             "Create specification requires style_policy",
@@ -1309,6 +1382,18 @@ def create_docx(
         document_policy = normalize_document_policy(
             acceptance.get("document_policy")
         )
+        accepted_structure = normalize_document_structure(
+            acceptance.get("document_structure")
+        )
+        if document_structure != accepted_structure:
+            raise DocxSkillError(
+                "Create specification document_structure does not match the frozen acceptance manifest",
+                code="document-structure-mismatch",
+                details={
+                    "specified": document_structure,
+                    "accepted": accepted_structure,
+                },
+            )
     for story_name, permission in (
         ("header", "allow_header"),
         ("footer", "allow_footer"),
@@ -1397,7 +1482,8 @@ def create_docx(
     content = spec.get("content", [])
     if not isinstance(content, list):
         raise DocxSkillError("content must be an array")
-    for block in content:
+    rendered_content = _structured_content(content, document_structure)
+    for block in rendered_content:
         if not isinstance(block, dict):
             raise DocxSkillError("Every content block must be an object")
         _add_content_block(doc, block, style_tokens, spec_file.parent)
@@ -1414,6 +1500,7 @@ def create_docx(
         "template": style_tokens["template"],
         "fonts": resolved_fonts,
         "blocks": len(content),
+        "document_structure": document_structure,
         "validation": validation,
     }
 
@@ -1577,6 +1664,42 @@ def _insert_after(paragraph: Paragraph, text: str, style: str | None) -> Paragra
     return new_paragraph
 
 
+def _insert_image_relative(
+    paragraph: Paragraph,
+    *,
+    image_path: Path,
+    placement: str,
+    width_inches: float,
+    caption: str,
+    alt_text: str,
+) -> dict[str, Any]:
+    image_element = OxmlElement("w:p")
+    image_paragraph = Paragraph(image_element, paragraph._parent)
+    image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    metadata = _add_normalized_picture(
+        image_paragraph,
+        image_path,
+        width_inches=width_inches,
+        alt_text=alt_text,
+    )
+    image_paragraph.paragraph_format.keep_with_next = bool(caption)
+    if placement == "before":
+        paragraph._p.addprevious(image_element)
+    else:
+        paragraph._p.addnext(image_element)
+    if caption:
+        caption_element = OxmlElement("w:p")
+        caption_paragraph = Paragraph(caption_element, paragraph._parent)
+        try:
+            caption_paragraph.style = "Caption"
+        except KeyError:
+            pass
+        caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        caption_paragraph.add_run(caption)
+        image_element.addnext(caption_element)
+    return metadata
+
+
 def _delete_paragraph(paragraph: Paragraph) -> None:
     element = paragraph._element
     element.getparent().remove(element)
@@ -1703,6 +1826,34 @@ def edit_docx(
             for _, paragraph in selected:
                 _insert_after(paragraph, str(operation.get("text", "")), operation.get("style"))
                 affected += 1
+        elif action == "insert_image":
+            match = str(operation.get("match", ""))
+            matches = _matching_paragraphs(
+                doc, match, str(operation.get("location", "")) or None
+            )
+            selected = _select_paragraphs(
+                matches,
+                operation.get("occurrence"),
+                action=action,
+            )
+            image_path = resolve_local_image(
+                operation.get("path"),
+                base_dir=patch_file.parent,
+            )
+            image_metadata: list[dict[str, Any]] = []
+            for _, paragraph in selected:
+                image_metadata.append(
+                    _insert_image_relative(
+                        paragraph,
+                        image_path=image_path,
+                        placement=str(operation.get("placement", "after")),
+                        width_inches=float(operation.get("width_inches", 5.5)),
+                        caption=str(operation.get("caption", "")),
+                        alt_text=str(operation.get("alt_text", "")),
+                    )
+                )
+                affected += 1
+            operation["_image_metadata"] = image_metadata
         elif action == "delete_paragraph":
             match = str(operation.get("match", ""))
             matches = _matching_paragraphs(
@@ -1801,6 +1952,7 @@ def edit_docx(
                 "action": action,
                 "affected": affected,
                 "locations": operation.pop("_locations", []),
+                "images": operation.pop("_image_metadata", []),
             }
         )
 
