@@ -6,7 +6,7 @@
 import type { NormalizedMessage } from '../../../stores/useSessionStore';
 import type { ChatMessage, SubagentChildTool } from '../types/types';
 import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
-import { parseUserAttachmentNote } from '../utils/attachmentNotes';
+import { mergeUserAttachments, parseUserAttachmentNote } from '../utils/attachmentNotes';
 
 // Per-message conversion cache keyed by NormalizedMessage reference.
 // When patchMergedStreamingMessage creates a new object for the streaming
@@ -88,10 +88,10 @@ function convertSingleMessage(
       const storedAttachments = Array.isArray(msg.attachments)
         ? msg.attachments.filter((attachment) => attachment && typeof attachment.name === 'string')
         : undefined;
-      const userAttachments = [
-        ...(storedAttachments || []),
-        ...parsedUserContent.attachments,
-      ];
+      const userAttachments = mergeUserAttachments(
+        storedAttachments || [],
+        parsedUserContent.attachments,
+      );
 
       if (msg.role === 'user') {
         const userImages = Array.isArray(msg.images)
