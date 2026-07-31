@@ -485,6 +485,20 @@ describe('MessagesPaneV2 render behavior', () => {
     expect(document.querySelector('mark.chat-history-search-highlight-active')).toBeNull();
   });
 
+  it('does not capture the find shortcut from an active file search surface', () => {
+    renderPane({ messages: [makeMessage(0)] });
+    const fileSurface = document.createElement('div');
+    fileSurface.dataset.fileSearchSurface = '';
+    const fileInput = document.createElement('input');
+    fileSurface.append(fileInput);
+    document.body.append(fileSurface);
+
+    fireEvent.keyDown(fileInput, { key: 'f', ctrlKey: true });
+
+    expect(screen.queryByRole('search')).toBeNull();
+    fileSurface.remove();
+  });
+
   it('moves between mounted search results without resetting the conversation scroll position', async () => {
     const messages: ChatMessage[] = [
       {

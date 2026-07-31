@@ -12,6 +12,7 @@ import {
   type ContentReferenceSelectionMode,
   type ReferenceCapabilities,
 } from '../../../../types/contentReference';
+import { useFileSearchShortcut } from '../../hooks/useFileSearchShortcut';
 import BuiltinOfficeToolbar from './BuiltinOfficeToolbar';
 import RegionSelectionOverlay, { type CapturedRegion } from './RegionSelectionOverlay';
 
@@ -94,6 +95,7 @@ export default function PptxBuiltinPreview({
   onError,
 }: PptxBuiltinPreviewProps) {
   const { t } = useTranslation('codeEditor');
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<PptxViewer | null>(null);
   const highlightHandlesRef = useRef<SearchHighlightHandle[]>([]);
@@ -103,10 +105,17 @@ export default function PptxBuiltinPreview({
   const [zoom, setZoom] = useState(1);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [slideCount, setSlideCount] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState<TextSearchResult[]>([]);
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const [referenceMode, setReferenceMode] = useState<ContentReferenceSelectionMode | null>(null);
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+  useFileSearchShortcut({
+    containerRef: surfaceRef,
+    enabled: Boolean(viewer),
+    onOpen: openSearch,
+  });
 
   const clearHighlights = useCallback(() => {
     highlightHandlesRef.current.forEach((handle) => handle.dispose());
@@ -285,7 +294,11 @@ export default function PptxBuiltinPreview({
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-neutral-100 dark:bg-neutral-900">
+    <div
+      ref={surfaceRef}
+      data-file-search-surface
+      className="flex h-full min-h-0 w-full flex-col bg-neutral-100 dark:bg-neutral-900"
+    >
       <BuiltinOfficeToolbar
         navigationAvailable={slideCount > 0}
         navigationVisible={navigationVisible}
@@ -300,6 +313,8 @@ export default function PptxBuiltinPreview({
         onNextItem={() => goToSlide(currentSlide + 1)}
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
+        searchOpen={searchOpen}
+        onSearchOpenChange={setSearchOpen}
         searchMatchIndex={searchMatchIndex}
         searchMatchCount={searchMatches.length}
         onPreviousMatch={() => moveSearch(-1)}

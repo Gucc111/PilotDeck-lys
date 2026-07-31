@@ -149,6 +149,13 @@ export function useChatHistorySearch({
       const isFindShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f';
       if (isFindShortcut) {
         if (!captureFindShortcutInModal && document.querySelector('[data-modal-overlay]')) return;
+        const target = event.target;
+        if (
+          target instanceof Element
+          && target.closest('[data-file-search-surface]')
+        ) {
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         if (isOpen) {

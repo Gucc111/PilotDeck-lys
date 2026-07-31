@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderAsync } from 'docx-preview';
 import { useTranslation } from 'react-i18next';
 import {
@@ -8,6 +8,8 @@ import {
   type ContentReferenceSelectionMode,
   type ReferenceCapabilities,
 } from '../../../../types/contentReference';
+import { useDomFileSearch } from '../../hooks/useDomFileSearch';
+import { useFileSearchShortcut } from '../../hooks/useFileSearchShortcut';
 import BuiltinOfficeToolbar from './BuiltinOfficeToolbar';
 import RegionSelectionOverlay, { type CapturedRegion } from './RegionSelectionOverlay';
 import { floatingSelectionSingleActionClassName } from './floatingSelectionAction';
@@ -30,11 +32,6 @@ type OutlineItem = {
   id: string;
   level: number;
   title: string;
-  element: HTMLElement;
-};
-
-type SearchMatch = {
-  range: Range;
   element: HTMLElement;
 };
 
@@ -70,44 +67,6 @@ function findOutlineItems(root: HTMLElement): OutlineItem[] {
     .filter((item): item is OutlineItem => item !== null);
 }
 
-function findTextMatches(root: HTMLElement, query: string): SearchMatch[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  if (!normalizedQuery) return [];
-
-  const matches: SearchMatch[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent || parent.closest('style,script')) return NodeFilter.FILTER_REJECT;
-      return node.textContent?.trim()
-        ? NodeFilter.FILTER_ACCEPT
-        : NodeFilter.FILTER_REJECT;
-    },
-  });
-
-  let node = walker.nextNode();
-  while (node) {
-    const text = node.textContent || '';
-    const normalizedText = text.toLocaleLowerCase();
-    let start = 0;
-    while (start <= normalizedText.length - normalizedQuery.length) {
-      const index = normalizedText.indexOf(normalizedQuery, start);
-      if (index < 0) break;
-      const range = document.createRange();
-      range.setStart(node, index);
-      range.setEnd(node, index + normalizedQuery.length);
-      matches.push({
-        range,
-        element: node.parentElement || root,
-      });
-      start = index + Math.max(1, normalizedQuery.length);
-    }
-    node = walker.nextNode();
-  }
-
-  return matches;
-}
-
 export default function DocxBuiltinPreview({
   blob,
   projectName,
@@ -122,6 +81,7 @@ export default function DocxBuiltinPreview({
   onError,
 }: DocxBuiltinPreviewProps) {
   const { t } = useTranslation('codeEditor');
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const onErrorRef = useRef(onError);
@@ -131,15 +91,29 @@ export default function DocxBuiltinPreview({
   const [zoom, setZoom] = useState(1);
   const [pages, setPages] = useState<HTMLElement[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const [selectionAction, setSelectionAction] = useState<TextSelectionAction | null>(null);
   const [referenceMode, setReferenceMode] = useState<ContentReferenceSelectionMode | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
-  const searchMatchesRef = useRef<SearchMatch[]>([]);
-  const highlightId = useId().replace(/[^a-z0-9_-]/gi, '');
-  const allHighlightName = `pilotdeck-docx-search-${highlightId}`;
-  const activeHighlightName = `${allHighlightName}-active`;
+  const {
+    matchCount: searchMatchCount,
+    highlightStyles,
+  } = useDomFileSearch({
+    rootRef: viewerRef,
+    query: searchQuery,
+    activeIndex: searchMatchIndex,
+    onActiveIndexChange: setSearchMatchIndex,
+    enabled: rendered,
+    contentKey: rendered,
+  });
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+  useFileSearchShortcut({
+    containerRef: surfaceRef,
+    enabled: rendered,
+    onOpen: openSearch,
+  });
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -215,68 +189,17 @@ export default function DocxBuiltinPreview({
     return () => scroll.removeEventListener('scroll', updateCurrentPage);
   }, [pages]);
 
-  useEffect(() => {
-    const root = viewerRef.current;
-    const cssHighlights = (globalThis.CSS as unknown as {
-      highlights?: Map<string, unknown>;
-    })?.highlights;
-    const HighlightConstructor = (globalThis as unknown as {
-      Highlight?: new (...ranges: Range[]) => unknown;
-    }).Highlight;
-    cssHighlights?.delete(allHighlightName);
-    cssHighlights?.delete(activeHighlightName);
-    searchMatchesRef.current = [];
-
-    if (!root || !searchQuery.trim()) {
-      setSearchMatchIndex(0);
-      return;
-    }
-
-    const matches = findTextMatches(root, searchQuery);
-    searchMatchesRef.current = matches;
-    setSearchMatchIndex((current) => (
-      matches.length > 0 ? Math.min(current, matches.length - 1) : 0
-    ));
-    if (cssHighlights && HighlightConstructor && matches.length > 0) {
-      cssHighlights.set(
-        allHighlightName,
-        new HighlightConstructor(...matches.map((match) => match.range)),
-      );
-    }
-
-    return () => {
-      cssHighlights?.delete(allHighlightName);
-      cssHighlights?.delete(activeHighlightName);
-    };
-  }, [activeHighlightName, allHighlightName, rendered, searchQuery]);
-
-  useEffect(() => {
-    const matches = searchMatchesRef.current;
-    const cssHighlights = (globalThis.CSS as unknown as {
-      highlights?: Map<string, unknown>;
-    })?.highlights;
-    const HighlightConstructor = (globalThis as unknown as {
-      Highlight?: new (...ranges: Range[]) => unknown;
-    }).Highlight;
-    cssHighlights?.delete(activeHighlightName);
-    if (matches.length === 0) return;
-    const match = matches[Math.min(searchMatchIndex, matches.length - 1)];
-    if (cssHighlights && HighlightConstructor) {
-      cssHighlights.set(activeHighlightName, new HighlightConstructor(match.range));
-    }
-    match.element.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [activeHighlightName, searchMatchIndex, searchQuery]);
-
   const goToPage = useCallback((pageNumber: number) => {
     const page = pages[Math.max(0, Math.min(pages.length - 1, pageNumber - 1))];
     page?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }, [pages]);
 
   const moveSearch = useCallback((direction: -1 | 1) => {
-    const count = searchMatchesRef.current.length;
-    if (count === 0) return;
-    setSearchMatchIndex((current) => (current + direction + count) % count);
-  }, []);
+    if (searchMatchCount === 0) return;
+    setSearchMatchIndex((current) => (
+      (current + direction + searchMatchCount) % searchMatchCount
+    ));
+  }, [searchMatchCount]);
 
   const updateSelectionAction = useCallback(() => {
     if (referenceMode === 'region') return;
@@ -424,16 +347,13 @@ export default function DocxBuiltinPreview({
   ), [outline, t]);
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-neutral-100 dark:bg-neutral-900">
+    <div
+      ref={surfaceRef}
+      data-file-search-surface
+      className="flex h-full min-h-0 w-full flex-col bg-neutral-100 dark:bg-neutral-900"
+    >
       <style>{`
-        ::highlight(${allHighlightName}) {
-          background: rgba(250, 204, 21, 0.62);
-          color: inherit;
-        }
-        ::highlight(${activeHighlightName}) {
-          background: rgba(249, 115, 22, 0.88);
-          color: #111827;
-        }
+        ${highlightStyles}
         .pilotdeck-docx-wrapper {
           background: rgb(245 245 245) !important;
           padding: 28px !important;
@@ -458,8 +378,10 @@ export default function DocxBuiltinPreview({
         onNextItem={() => goToPage(currentPage + 1)}
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
+        searchOpen={searchOpen}
+        onSearchOpenChange={setSearchOpen}
         searchMatchIndex={searchMatchIndex}
-        searchMatchCount={searchMatchesRef.current.length}
+        searchMatchCount={searchMatchCount}
         onPreviousMatch={() => moveSearch(-1)}
         onNextMatch={() => moveSearch(1)}
         refreshing={refreshing}

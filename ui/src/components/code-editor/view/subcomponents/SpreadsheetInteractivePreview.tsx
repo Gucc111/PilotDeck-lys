@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   LocaleType,
   LogLevel,
@@ -37,6 +37,7 @@ import { UniverUIPlugin } from '@univerjs/ui';
 import '@univerjs/ui/facade';
 import UIEnUS from '@univerjs/ui/locale/en-US';
 import UIZhCN from '@univerjs/ui/locale/zh-CN';
+import { Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   createCellRangeContentReference,
@@ -45,7 +46,9 @@ import {
   type ContentReferenceSelectionMode,
   type ReferenceCapabilities,
 } from '../../../../types/contentReference';
+import { useFileSearchShortcut } from '../../hooks/useFileSearchShortcut';
 import ContentReferenceMenu from './ContentReferenceMenu';
+import FileSearchControls from './FileSearchControls';
 import RegionSelectionOverlay, { type CapturedRegion } from './RegionSelectionOverlay';
 import {
   floatingSelectionSingleActionClassName,
@@ -95,6 +98,13 @@ type SpreadsheetSelectionDraft = {
   cells: CellRangeSnapshot[];
   headers?: string[][];
   surroundingValues?: string[][];
+};
+
+type SpreadsheetSearchMatch = {
+  sheetId: string;
+  sheetIndex: number;
+  row: number;
+  column: number;
 };
 
 const MAX_REFERENCE_SNAPSHOT_ROWS = 100;
@@ -154,6 +164,7 @@ export default function SpreadsheetInteractivePreview({
   const univerLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('zh')
     ? LocaleType.ZH_CN
     : LocaleType.EN_US;
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<UniverRuntime | null>(null);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>({
@@ -162,6 +173,11 @@ export default function SpreadsheetInteractivePreview({
   });
   const [selectionDraft, setSelectionDraft] = useState<SpreadsheetSelectionDraft | null>(null);
   const [referenceMode, setReferenceMode] = useState<ContentReferenceSelectionMode | null>(null);
+  const [runtimeReady, setRuntimeReady] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchMatches, setSearchMatches] = useState<SpreadsheetSearchMatch[]>([]);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const selectionDraftRef = useRef<SpreadsheetSelectionDraft | null>(null);
   const addCellReferenceRef = useRef<() => void>(() => undefined);
   const referenceModeRef = useRef<ContentReferenceSelectionMode | null>(referenceMode);
@@ -176,11 +192,24 @@ export default function SpreadsheetInteractivePreview({
   activeSheetIndexRef.current = activeSheetIndex;
   zoomRef.current = zoom;
   referenceModeRef.current = referenceMode;
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchMatches([]);
+    setSearchMatchIndex(0);
+  }, []);
+  useFileSearchShortcut({
+    containerRef: surfaceRef,
+    enabled: runtimeReady,
+    onOpen: openSearch,
+  });
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
     let disposed = false;
+    setRuntimeReady(false);
 
     try {
       const univer = new Univer({
@@ -417,6 +446,7 @@ export default function SpreadsheetInteractivePreview({
         disposePopupComponent: () => popupComponent.dispose(),
         disposeSelectionPopup,
       };
+      setRuntimeReady(true);
     } catch (error) {
       onErrorRef.current(error instanceof Error ? error : new Error(String(error)));
     }
@@ -445,6 +475,57 @@ export default function SpreadsheetInteractivePreview({
     }
     fWorkbook.getActiveSheet().zoom(zoom);
   }, [activeSheetIndex, zoom]);
+
+  useEffect(() => {
+    const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+    const fWorkbook = runtimeRef.current?.api.getActiveWorkbook();
+    if (!runtimeReady || !normalizedQuery || !fWorkbook) {
+      setSearchMatches([]);
+      setSearchMatchIndex(0);
+      return;
+    }
+
+    const nextMatches: SpreadsheetSearchMatch[] = [];
+    workbook.sheetOrder.forEach((sheetId, sheetIndex) => {
+      const worksheet = fWorkbook.getSheetBySheetId(sheetId);
+      const sheetData = workbook.sheets[sheetId];
+      if (!worksheet || !sheetData?.cellData) return;
+
+      Object.entries(sheetData.cellData).forEach(([rowKey, rowData]) => {
+        const row = Number(rowKey);
+        if (!Number.isInteger(row) || !rowData) return;
+        Object.keys(rowData).forEach((columnKey) => {
+          const column = Number(columnKey);
+          if (!Number.isInteger(column)) return;
+          const displayValue = worksheet.getRange(row, column).getDisplayValue();
+          if (displayValue.toLocaleLowerCase().includes(normalizedQuery)) {
+            nextMatches.push({ sheetId, sheetIndex, row, column });
+          }
+        });
+      });
+    });
+
+    setSearchMatches(nextMatches);
+    setSearchMatchIndex(0);
+  }, [runtimeReady, searchQuery, workbook]);
+
+  useEffect(() => {
+    if (searchMatches.length === 0) return;
+    const match = searchMatches[Math.min(searchMatchIndex, searchMatches.length - 1)];
+    const fWorkbook = runtimeRef.current?.api.getActiveWorkbook();
+    const worksheet = fWorkbook?.getSheetBySheetId(match.sheetId);
+    if (!fWorkbook || !worksheet) return;
+    fWorkbook.setActiveSheet(worksheet);
+    worksheet.getRange(match.row, match.column).activate();
+    onActiveSheetChangeRef.current(match.sheetIndex);
+  }, [searchMatchIndex, searchMatches]);
+
+  const moveSearch = useCallback((direction: -1 | 1) => {
+    if (searchMatches.length === 0) return;
+    setSearchMatchIndex((current) => (
+      (current + direction + searchMatches.length) % searchMatches.length
+    ));
+  }, [searchMatches.length]);
 
   const capabilities: ReferenceCapabilities = {
     text: { state: 'unavailable', reason: 'NO_TEXT_LAYER' },
@@ -526,7 +607,11 @@ export default function SpreadsheetInteractivePreview({
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white">
+    <div
+      ref={surfaceRef}
+      data-file-search-surface
+      className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white"
+    >
       <div className="flex h-9 shrink-0 items-center border-b border-border bg-background text-sm">
         <div
           aria-label={t('contentReference.spreadsheet.currentCell')}
@@ -546,6 +631,23 @@ export default function SpreadsheetInteractivePreview({
           readOnly
           value={selectedCell.value}
         />
+        <button
+          type="button"
+          onClick={() => {
+            if (searchOpen) closeSearch();
+            else openSearch();
+          }}
+          title={t('builtinOfficePreview.search')}
+          aria-label={t('builtinOfficePreview.search')}
+          className={[
+            'mx-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
+            searchOpen
+              ? 'bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+              : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
+          ].join(' ')}
+        >
+          <Search className="h-3.5 w-3.5" strokeWidth={1.75} />
+        </button>
         <ContentReferenceMenu
           capabilities={capabilities}
           activeMode={referenceMode}
@@ -554,6 +656,26 @@ export default function SpreadsheetInteractivePreview({
           compact
         />
       </div>
+      {searchOpen ? (
+        <div className="flex min-h-11 shrink-0 items-center justify-end border-b border-border bg-background px-3 py-1.5">
+          <FileSearchControls
+            query={searchQuery}
+            onQueryChange={setSearchQuery}
+            matchIndex={searchMatchIndex}
+            matchCount={searchMatches.length}
+            onPrevious={() => moveSearch(-1)}
+            onNext={() => moveSearch(1)}
+            onClose={closeSearch}
+            searchLabel={t('builtinOfficePreview.search')}
+            placeholder={t('builtinOfficePreview.searchPlaceholder')}
+            previousLabel={t('pdfToolbar.previousResult')}
+            nextLabel={t('pdfToolbar.nextResult')}
+            closeLabel={t('builtinOfficePreview.closeSearch')}
+            noMatchesLabel={t('builtinOfficePreview.noMatches')}
+            className="max-w-sm"
+          />
+        </div>
+      ) : null}
       <div className="relative min-h-0 w-full flex-1 overflow-hidden bg-white">
         <div
           ref={containerRef}
