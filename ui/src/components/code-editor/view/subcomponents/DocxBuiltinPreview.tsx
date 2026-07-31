@@ -89,8 +89,6 @@ export default function DocxBuiltinPreview({
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [navigationVisible, setNavigationVisible] = useState(true);
   const [zoom, setZoom] = useState(1);
-  const [pages, setPages] = useState<HTMLElement[]>([]);
-  const [currentPage, setCurrentPage] = useState(1);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
@@ -127,8 +125,6 @@ export default function DocxBuiltinPreview({
     container.replaceChildren();
     setRendered(false);
     setOutline([]);
-    setPages([]);
-    setCurrentPage(1);
 
     renderAsync(blob, container, container, {
       className: 'pilotdeck-docx',
@@ -144,10 +140,6 @@ export default function DocxBuiltinPreview({
     })
       .then(() => {
         if (cancelled) return;
-        const nextPages = Array.from(
-          container.querySelectorAll<HTMLElement>('section.pilotdeck-docx'),
-        );
-        setPages(nextPages);
         setOutline(findOutlineItems(container));
         setRendered(true);
       })
@@ -167,32 +159,6 @@ export default function DocxBuiltinPreview({
     const wrapper = viewerRef.current?.querySelector<HTMLElement>('.pilotdeck-docx-wrapper');
     if (wrapper) wrapper.style.zoom = String(zoom);
   }, [rendered, zoom]);
-
-  useEffect(() => {
-    const scroll = scrollRef.current;
-    if (!scroll || pages.length === 0) return undefined;
-    const updateCurrentPage = () => {
-      const top = scroll.getBoundingClientRect().top + 24;
-      let closestIndex = 0;
-      let closestDistance = Number.POSITIVE_INFINITY;
-      pages.forEach((page, index) => {
-        const distance = Math.abs(page.getBoundingClientRect().top - top);
-        if (distance < closestDistance) {
-          closestDistance = distance;
-          closestIndex = index;
-        }
-      });
-      setCurrentPage(closestIndex + 1);
-    };
-    updateCurrentPage();
-    scroll.addEventListener('scroll', updateCurrentPage, { passive: true });
-    return () => scroll.removeEventListener('scroll', updateCurrentPage);
-  }, [pages]);
-
-  const goToPage = useCallback((pageNumber: number) => {
-    const page = pages[Math.max(0, Math.min(pages.length - 1, pageNumber - 1))];
-    page?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }, [pages]);
 
   const moveSearch = useCallback((direction: -1 | 1) => {
     if (searchMatchCount === 0) return;
@@ -222,10 +188,9 @@ export default function DocxBuiltinPreview({
     }
     const rangeRect = range.getBoundingClientRect();
     const scrollRect = scroll.getBoundingClientRect();
-    const page = (range.startContainer.parentElement || range.startContainer)
+    const section = (range.startContainer.parentElement || range.startContainer)
       && (range.startContainer.parentElement?.closest<HTMLElement>('section.pilotdeck-docx') || null);
-    const pageIndex = page ? pages.indexOf(page) : -1;
-    const pageRect = page?.getBoundingClientRect();
+    const sectionRect = section?.getBoundingClientRect();
     const heading = [...outline]
       .reverse()
       .find((item) => (
@@ -245,7 +210,6 @@ export default function DocxBuiltinPreview({
       renderer: { id: 'docx', backend: 'builtin', locatorQuality: 'semantic' },
       locator: {
         surface: 'document',
-        ...(pageIndex >= 0 ? { pageNumbers: [pageIndex + 1] } : {}),
         ...(heading ? { headingPath: [heading.title] } : {}),
         quote: {
           exact: selectedText,
@@ -254,12 +218,12 @@ export default function DocxBuiltinPreview({
             suffix: documentText.slice(prefixIndex + selectedText.length, prefixIndex + selectedText.length + 80),
           } : {}),
         },
-        ...(pageRect ? {
+        ...(sectionRect ? {
           rects: [{
-            x: (rangeRect.left - pageRect.left) / Math.max(1, pageRect.width),
-            y: (rangeRect.top - pageRect.top) / Math.max(1, pageRect.height),
-            width: rangeRect.width / Math.max(1, pageRect.width),
-            height: rangeRect.height / Math.max(1, pageRect.height),
+            x: (rangeRect.left - sectionRect.left) / Math.max(1, sectionRect.width),
+            y: (rangeRect.top - sectionRect.top) / Math.max(1, sectionRect.height),
+            width: rangeRect.width / Math.max(1, sectionRect.width),
+            height: rangeRect.height / Math.max(1, sectionRect.height),
           }],
         } : {}),
       },
@@ -271,7 +235,7 @@ export default function DocxBuiltinPreview({
       top: Math.max(12, rangeRect.top - scrollRect.top + scroll.scrollTop - 42),
       reference,
     });
-  }, [blob.size, fileName, filePath, outline, pages, projectName, referenceMode]);
+  }, [blob.size, fileName, filePath, outline, projectName, referenceMode]);
 
   useEffect(() => {
     const schedule = () => {
@@ -300,7 +264,6 @@ export default function DocxBuiltinPreview({
   };
 
   const handleRegionCommit = (capture: CapturedRegion) => {
-    const pageNumber = capture.pageNumber || currentPage;
     const reference = createImageRegionContentReference({
       selectionMode: 'region',
       source: {
@@ -310,9 +273,9 @@ export default function DocxBuiltinPreview({
         revision: { size: blob.size },
       },
       renderer: { id: 'docx', backend: 'builtin', locatorQuality: 'visual' },
-      locator: { surface: 'page', pageNumber, rect: capture.rect },
+      locator: { surface: 'document', rect: capture.rect },
       image: {
-        name: `reference-${fileName}-page-${pageNumber}-${Date.now()}.png`,
+        name: `reference-${fileName}-region-${Date.now()}.png`,
         mimeType: 'image/png',
         width: capture.width,
         height: capture.height,
@@ -366,16 +329,13 @@ export default function DocxBuiltinPreview({
           box-shadow: 0 1px 4px rgb(0 0 0 / 0.16) !important;
         }
       `}</style>
+      {/* docx-preview sections reflect stored break markers, not reliable Word pagination. */}
       <BuiltinOfficeToolbar
         navigationAvailable={outline.length > 0}
         navigationVisible={navigationVisible && outline.length > 0}
         onToggleNavigation={() => setNavigationVisible((value) => !value)}
         zoom={zoom}
         onZoomChange={setZoom}
-        currentItem={currentPage}
-        itemCount={pages.length}
-        onPreviousItem={() => goToPage(currentPage - 1)}
-        onNextItem={() => goToPage(currentPage + 1)}
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
         searchOpen={searchOpen}
@@ -428,14 +388,12 @@ export default function DocxBuiltinPreview({
             active={referenceMode === 'region'}
             hostRef={scrollRef}
             resolveTarget={(element) => {
-              const page = element?.closest<HTMLElement>('section.pilotdeck-docx');
-              if (!page || !viewerRef.current?.contains(page)) return null;
-              const pageIndex = pages.indexOf(page);
+              const section = element?.closest<HTMLElement>('section.pilotdeck-docx');
+              if (!section || !viewerRef.current?.contains(section)) return null;
               return {
-                element: page,
-                surface: 'page',
-                pageNumber: pageIndex >= 0 ? pageIndex + 1 : currentPage,
-                nearbyText: page.textContent?.replace(/\s+/g, ' ').trim(),
+                element: section,
+                surface: 'document',
+                nearbyText: section.textContent?.replace(/\s+/g, ' ').trim(),
               };
             }}
             onCommit={handleRegionCommit}
