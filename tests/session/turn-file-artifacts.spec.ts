@@ -34,6 +34,19 @@ test("TurnRunner emits and persists file artifacts before completing the turn", 
           join(projectRoot, ".pilotdeck", "work", input.sessionId, input.turnId, "builder.mjs"),
           "// internal\n",
         );
+        yield {
+          type: "tool_result",
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          result: {
+            type: "success",
+            toolCallId: "bash-1",
+            toolName: "bash",
+            content: [{ type: "text", text: "created files" }],
+            startedAt: "2026-07-21T10:00:00.000Z",
+            completedAt: "2026-07-21T10:00:00.500Z",
+          },
+        };
         yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
         return { result, messages: input.messages };
       },

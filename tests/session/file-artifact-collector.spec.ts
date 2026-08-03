@@ -6,6 +6,30 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { FileArtifactCollector } from "../../src/session/artifacts/FileArtifactCollector.js";
+import type { PilotDeckToolErrorCode } from "../../src/tool/index.js";
+
+function toolResult(toolName: string) {
+  return {
+    type: "success" as const,
+    toolCallId: `${toolName}-1`,
+    toolName,
+    content: [{ type: "text" as const, text: "ok" }],
+    startedAt: "2026-07-21T10:00:00.000Z",
+    completedAt: "2026-07-21T10:00:00.100Z",
+  };
+}
+
+function failedToolResult(toolName: string, code: PilotDeckToolErrorCode) {
+  return {
+    type: "error" as const,
+    toolCallId: `${toolName}-1`,
+    toolName,
+    error: { code, message: "Tool did not execute." },
+    content: [{ type: "text" as const, text: "Tool did not execute." }],
+    startedAt: "2026-07-21T10:00:00.000Z",
+    completedAt: "2026-07-21T10:00:00.100Z",
+  };
+}
 
 test("file artifacts include every meaningful workspace change without an extension allowlist", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifacts-"));
@@ -49,6 +73,7 @@ test("file artifacts include every meaningful workspace change without an extens
     await writeFile(join(projectRoot, ".env"), "API_KEY=secret");
     await writeFile(join(projectRoot, "private.pem"), "secret key");
 
+    collector.observeToolResult(toolResult("bash"));
     const artifacts = await collector.finish("incomplete");
 
     const expectedPaths = [
@@ -67,6 +92,74 @@ test("file artifacts include every meaningful workspace change without an extens
     assert.equal(artifacts.find((artifact) => artifact.path === "notes.custom")?.mimeType, undefined);
     assert.ok(artifacts.every((artifact) => artifact.status === "incomplete"));
     assert.ok(artifacts.every((artifact) => artifact.sha256.length === 64));
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("file artifact collection ignores workspace changes when no mutating tool ran", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-no-tool-"));
+  try {
+    await mkdir(join(projectRoot, "app"), { recursive: true });
+    await writeFile(join(projectRoot, "app", "page.tsx"), "before");
+
+    const collector = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "app", "page.tsx"), "changed outside the agent turn");
+    await writeFile(join(projectRoot, "app", "external.txt"), "external file");
+
+    assert.deepEqual(await collector.finish("complete"), []);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("read-only tool results do not enable workspace-diff artifacts", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-readonly-tool-"));
+  try {
+    await writeFile(join(projectRoot, "notes.txt"), "before");
+
+    const collector = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "notes.txt"), "changed outside a read-only tool");
+    collector.observeToolResult(toolResult("read_file"));
+
+    assert.deepEqual(await collector.finish("complete"), []);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("unexecuted mutating tool errors do not enable workspace-diff artifacts", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-denied-tool-"));
+  try {
+    await writeFile(join(projectRoot, "notes.txt"), "before");
+
+    const collector = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "notes.txt"), "changed outside a denied tool");
+    collector.observeToolResult(failedToolResult("bash", "permission_denied"));
+
+    assert.deepEqual(await collector.finish("complete"), []);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("mutating tool execution failures still enable workspace-diff artifacts", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-failed-tool-"));
+  try {
+    await writeFile(join(projectRoot, "notes.txt"), "before");
+
+    const collector = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "notes.txt"), "changed before a tool failure");
+    collector.observeToolResult(failedToolResult("bash", "tool_execution_failed"));
+
+    assert.deepEqual(
+      (await collector.finish("complete")).map((artifact) => artifact.path),
+      ["notes.txt"],
+    );
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }
@@ -95,6 +188,7 @@ test("file artifact fingerprints are reused for unchanged files across scans and
     assert.equal(hashCalls, 1, "the next turn reuses the cached workspace fingerprint");
 
     await writeFile(trackedFile, "after with a different size");
+    secondTurn.observeToolResult(toolResult("bash"));
     const artifacts = await secondTurn.finish("complete");
 
     assert.equal(hashCalls, 2, "only the changed file is re-hashed");
