@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { createAlwaysOnManager, createApplyHandler, SessionConfigOverrides, type AlwaysOnManager, type AlwaysOnConfig } from "../always-on/index.js";
 import { createCronManager, type CronManager, type CronConfig } from "../cron/index.js";
 import { connectRemoteGatewayIfAvailable, type Gateway, type GatewayEvent, type GatewaySubmitTurnInput } from "../gateway/index.js";
-import { CliChannel, TuiChannel, FeishuChannel, WeixinChannel, QQChannel, loadEnabledChannels } from "../adapters/index.js";
+import {
+  CliChannel, TuiChannel, FeishuChannel, WeixinChannel, QQChannel, WeComChannel,
+  loadEnabledChannels, ChannelStatePersistence,
+  FeishuSessionMapper, WeixinSessionMapper, QQSessionMapper, WeComSessionMapper,
+  type FeishuSessionMapperState, type WeixinSessionMapperState, type QQSessionMapperState, type WeComSessionMapperState,
+} from "../adapters/index.js";
 import {
   migrateSkillsToPilotDeck,
   type SkillMigrationConflictMode,
@@ -83,6 +88,17 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         sessionOverrides,
         logger: cronLogger,
         telemetry,
+        onResultDelivery: (delivery) => {
+          void serverRef?.deliverCronResult(delivery)
+            .then((delivered) => {
+              if (!delivered) {
+                console.warn(`[cron] result delivery was not handled task=${delivery.taskId} run=${delivery.runId}`);
+              }
+            })
+            .catch((error: unknown) => {
+              console.warn(`[cron] result delivery failed ${error instanceof Error ? error.message : String(error)}`);
+            });
+        },
       });
     }
 
@@ -96,7 +112,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       projectRoot,
       pilotHome,
       env,
-      skipDefaultProject: !!env.PILOTDECK_SKIP_DEFAULT_PROJECT,
+      fallbackProjectRoot: pilotHome,
       extraTools: [...(alwaysOn?.getTools() ?? []), ...(cron?.getTools() ?? [])],
       sessionOverrides,
       cron,
@@ -225,9 +241,24 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       console.log(`[pilotdeck] Subsystem hot-reload complete: ${parts.join(", ")}`);
     }
 
+    // --- Channel state persistence ---
+
+    const channelStatePersistence = new ChannelStatePersistence({
+      stateDir: resolve(pilotHome, "channels"),
+    });
+
     // --- Adapter hot-reload ---
 
     let serverRef: Awaited<ReturnType<typeof startPilotDeckServer>> | undefined;
+
+    async function hotStartWeixinChannel(): Promise<void> {
+      if (!serverRef) return;
+      const savedWeixin = await channelStatePersistence.load<WeixinSessionMapperState>("weixin");
+      await serverRef.hotStartChannel(new WeixinChannel({
+        mapper: savedWeixin ? new WeixinSessionMapper(savedWeixin) : undefined,
+        onStateChange: (state) => channelStatePersistence.save("weixin", state),
+      }));
+    }
 
     async function handleAdapterHotReload(config: (typeof snapshot)["config"]): Promise<void> {
       if (!serverRef) return;
@@ -235,6 +266,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
 
       const fCfg = config.adapters?.feishu;
       if (fCfg?.enabled === true) {
+        const savedFeishu = await channelStatePersistence.load<FeishuSessionMapperState>("feishu");
         const ch = new FeishuChannel({
           appId: fCfg.appId,
           appSecret: fCfg.appSecret,
@@ -242,6 +274,8 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
           verifyToken: fCfg.verifyToken,
           connectionMode: fCfg.connectionMode,
           domainName: fCfg.domainName,
+          mapper: savedFeishu ? new FeishuSessionMapper(savedFeishu) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("feishu", state),
         });
         await serverRef.hotStartChannel(ch);
         parts.push("feishu=started");
@@ -249,8 +283,41 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
 
       const wCfg = config.adapters?.weixin;
       if (wCfg?.enabled === true) {
-        await serverRef.hotStartChannel(new WeixinChannel());
+        await hotStartWeixinChannel();
         parts.push("weixin=started");
+      }
+
+      const qqCfg = config.adapters?.qq;
+      if (qqCfg?.enabled === true) {
+        const savedQQ = await channelStatePersistence.load<QQSessionMapperState>("qq");
+        await serverRef.hotStartChannel(new QQChannel({
+          appId: qqCfg.appId,
+          clientSecret: qqCfg.clientSecret,
+          allowGroups: qqCfg.allowGroups,
+          triggerPrefixes: qqCfg.triggerPrefixes,
+          maxMessageLength: qqCfg.maxMessageLength,
+          mapper: savedQQ ? new QQSessionMapper(savedQQ) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("qq", state),
+        }));
+        parts.push("qq=started");
+      }
+
+      const wcCfg = config.adapters?.wecom;
+      if (wcCfg?.enabled === true) {
+        const savedWeCom = await channelStatePersistence.load<WeComSessionMapperState>("wecom");
+        await serverRef.hotStartChannel(new WeComChannel({
+          botKey: wcCfg.token,
+          extra: wcCfg.extra,
+          mapper: savedWeCom ? new WeComSessionMapper(savedWeCom) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("wecom", state),
+        }));
+        parts.push("wecom=started");
+      }
+
+      const extraChannels = await loadEnabledChannels(config.adapters);
+      for (const ch of extraChannels) {
+        await serverRef.hotStartChannel(ch);
+        parts.push(`${ch.channelKey}=started`);
       }
 
       if (parts.length) {
@@ -263,6 +330,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     const envPort = Number.parseInt(env.PILOTDECK_GATEWAY_PORT ?? "", 10);
     const extraChannels = await loadEnabledChannels(snapshot.config.adapters);
     const feishuCfg = snapshot.config.adapters?.feishu;
+    const savedFeishuState = await channelStatePersistence.load<FeishuSessionMapperState>("feishu");
     const feishuChannel = feishuCfg?.enabled === true
       ? new FeishuChannel({
           appId: feishuCfg.appId,
@@ -271,21 +339,67 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
           verifyToken: feishuCfg.verifyToken,
           connectionMode: feishuCfg.connectionMode,
           domainName: feishuCfg.domainName,
+          mapper: savedFeishuState ? new FeishuSessionMapper(savedFeishuState) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("feishu", state),
         })
       : undefined;
     const weixinCfg = snapshot.config.adapters?.weixin;
-    const weixinChannel = weixinCfg?.enabled === true ? new WeixinChannel() : undefined;
+    const savedWeixinState = await channelStatePersistence.load<WeixinSessionMapperState>("weixin");
+    const weixinChannel = weixinCfg?.enabled === true
+      ? new WeixinChannel({
+          mapper: savedWeixinState ? new WeixinSessionMapper(savedWeixinState) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("weixin", state),
+        })
+      : undefined;
+    const qqCfg = snapshot.config.adapters?.qq;
+    const savedQQState = await channelStatePersistence.load<QQSessionMapperState>("qq");
+    const qqChannel = qqCfg?.enabled === true
+      ? new QQChannel({
+          appId: qqCfg.appId,
+          clientSecret: qqCfg.clientSecret,
+          allowGroups: qqCfg.allowGroups,
+          triggerPrefixes: qqCfg.triggerPrefixes,
+          maxMessageLength: qqCfg.maxMessageLength,
+          mapper: savedQQState ? new QQSessionMapper(savedQQState) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("qq", state),
+        })
+      : undefined;
+    const wecomCfg = snapshot.config.adapters?.wecom;
+    const savedWeComState = await channelStatePersistence.load<WeComSessionMapperState>("wecom");
+    const wecomChannel = wecomCfg?.enabled === true
+      ? new WeComChannel({
+          botKey: wecomCfg.token,
+          extra: wecomCfg.extra,
+          mapper: savedWeComState ? new WeComSessionMapper(savedWeComState) : undefined,
+          onStateChange: (state) => channelStatePersistence.save("wecom", state),
+        })
+      : undefined;
+    const allChannels = [...extraChannels, ...(wecomChannel ? [wecomChannel] : [])];
     const server = await startPilotDeckServer({
       gateway,
       port: readPort(argv) ?? (Number.isFinite(envPort) ? envPort : 18789),
       staticAssetsPath: resolve(projectRoot, "ui/dist"),
       feishu: feishuChannel,
       weixin: weixinChannel,
-      qq: new QQChannel(),
-      channels: extraChannels,
+      qq: qqChannel,
+      channels: allChannels,
       config: snapshot.config,
     });
     serverRef = server;
+    (
+      gateway as {
+        setPrepareWeixinLogin?: (
+          handler: () => Promise<{ requested: boolean; requestedAt: string; reason?: "unsupported" }>
+        ) => void;
+      }
+    ).setPrepareWeixinLogin?.(async () => {
+      const requestedAt = new Date().toISOString();
+      if (!serverRef) {
+        return { requested: false, requestedAt, reason: "unsupported" };
+      }
+      await hotStartWeixinChannel();
+      return { requested: true, requestedAt };
+    });
     bindServer(server);
     deferredBroadcast = (name, payload) => server.broadcastNotification(name, payload);
     console.log(`PilotDeck server listening: ${server.url}`);
@@ -295,6 +409,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     const stop = async () => {
       try {
+        await channelStatePersistence.flush();
         console.log(`[telemetry] shutdown snapshot ${JSON.stringify(telemetry.snapshot())}`);
         disposeGateway();
         await alwaysOn?.stop();
@@ -330,7 +445,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       await runGatewaySetup(argv.slice(2));
       return;
     }
-    console.error("Usage: pilotdeck gateway setup [feishu|weixin]");
+    console.error("Usage: pilotdeck gateway setup [feishu|weixin|wecom]");
     process.exitCode = 1;
     return;
   }
@@ -347,6 +462,12 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (command === "skills") {
     await handleSkillsCommand(argv.slice(1));
+    return;
+  }
+
+  if (command === "chat") {
+    const { runChatSearchCli } = await import("./commands/chatSearch.js");
+    await runChatSearchCli(argv.slice(1));
     return;
   }
 

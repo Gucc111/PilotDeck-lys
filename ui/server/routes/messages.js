@@ -21,6 +21,11 @@ import { createNormalizedMessage } from '../pilotdeck-message.js';
 const router = express.Router();
 const REPO_ROOT = process.cwd();
 
+function isSearchToolName(name) {
+  const normalized = String(name || '').toLowerCase();
+  return normalized === 'grep' || normalized === 'glob';
+}
+
 router.get('/:sessionId/messages', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -58,6 +63,7 @@ router.get('/:sessionId/messages', async (req, res) => {
       hasMore,
       offset,
       limit,
+      ...(result.tokenUsage ? { tokenUsage: result.tokenUsage } : {}),
     });
   } catch (error) {
     console.error('[messages] read_session_messages failed:', error);
@@ -159,6 +165,9 @@ function mapWebMessageToNormalized(message, sessionId) {
         ...(Array.isArray(message.images) && message.images.length > 0
           ? { images: message.images.map((image) => image?.data).filter(Boolean) }
           : {}),
+        ...(Array.isArray(payload.attachments) && payload.attachments.length > 0
+          ? { attachments: payload.attachments }
+          : {}),
         ...(payload.forkUnsupportedContent === true
           ? {
               forkUnsupportedContent: true,
@@ -171,6 +180,12 @@ function mapWebMessageToNormalized(message, sessionId) {
     }
     case 'thinking':
       return createNormalizedMessage({ ...base, kind: 'thinking', content: message.text || '' });
+    case 'file_artifacts':
+      return createNormalizedMessage({
+        ...base,
+        kind: 'file_artifacts',
+        artifacts: Array.isArray(message.artifacts) ? message.artifacts : [],
+      });
     case 'tool_use':
       return createNormalizedMessage({
         ...base,
@@ -184,12 +199,16 @@ function mapWebMessageToNormalized(message, sessionId) {
       const planPayload = message.payload && typeof message.payload === 'object'
           ? message.payload
           : {};
+      const searchPayload = isSearchToolName(message.toolName) && message.payload && typeof message.payload === 'object'
+          ? message.payload
+          : null;
       return createNormalizedMessage({
         ...base,
         kind: 'tool_result',
         toolId: message.toolCallId,
         content: message.text || '',
         isError: message.ok === false,
+        ...(message.resultPath ? { resultPath: message.resultPath } : {}),
         ...(message.errorCode ? { errorCode: message.errorCode } : {}),
         // Inline tool-result images (e.g. read_file on a PNG). The web
         // server already wraps the bare base64 from canonical messages as
@@ -206,6 +225,7 @@ function mapWebMessageToNormalized(message, sessionId) {
             planTitle: planPayload.planTitle,
             planSummary: planPayload.planSummary,
         } : {}),
+        ...(searchPayload ? { toolUseResult: searchPayload } : {}),
       });
     }
     case 'permission_request':
@@ -231,11 +251,24 @@ function mapWebMessageToNormalized(message, sessionId) {
         payload: message.payload,
       });
     case 'status':
-      return createNormalizedMessage({ ...base, kind: 'status', text: message.text || '' });
+      return createNormalizedMessage({
+        ...base,
+        kind: 'status',
+        text: message.text || '',
+        ...(message.contentI18n ? { contentI18n: message.contentI18n } : {}),
+        ...(message.userHintI18n ? { userHintI18n: message.userHintI18n } : {}),
+      });
     case 'complete':
       return createNormalizedMessage({ ...base, kind: 'complete' });
     case 'error':
-      return createNormalizedMessage({ ...base, kind: 'error', content: message.text || '' });
+      return createNormalizedMessage({
+        ...base,
+        kind: 'error',
+        content: message.text || '',
+        ...(message.payload?.detail?.userHint ? { userHint: message.payload.detail.userHint } : {}),
+        ...(message.contentI18n ? { contentI18n: message.contentI18n } : {}),
+        ...(message.userHintI18n ? { userHintI18n: message.userHintI18n } : {}),
+      });
     case 'interrupted':
       return createNormalizedMessage({ ...base, kind: 'interrupted', content: message.text || '' });
     case 'compact_boundary': {
@@ -245,6 +278,8 @@ function mapWebMessageToNormalized(message, sessionId) {
         kind: 'compact_boundary',
         trigger: payload.trigger || 'auto',
         preTokens: payload.preTokens,
+        postTokens: payload.postTokens,
+        messagesSummarized: payload.messagesSummarized,
         compactLevel: payload.level,
         compactStage: payload.stage,
         compactStageLabel: payload.stageLabel || payload.stage,

@@ -9,7 +9,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { SessionProvider } from '../types/app';
-import { authenticatedFetch } from '../utils/api';
+import { authenticatedFetch, readAgentStatusErrorFromResponse } from '../utils/api';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -31,7 +31,8 @@ export type MessageKind =
   | 'interrupted'
   | 'compact_boundary'
   | 'agent_activity'
-  | 'agent_activity_summary';
+  | 'agent_activity_summary'
+  | 'file_artifacts';
 
 export interface CompactProgress {
   level: number;
@@ -52,12 +53,36 @@ export interface NormalizedMessage {
   // kind-specific fields (flat for simplicity)
   role?: 'user' | 'assistant';
   content?: string;
+  contentI18n?: { key: string; params?: Record<string, unknown> };
+  userHintI18n?: { key: string; params?: Record<string, unknown> };
   images?: string[];
   attachments?: Array<{
+    kind?: 'file' | 'document-selection';
     name: string;
     path?: string;
     size?: number;
     mimeType?: string;
+    fileName?: string;
+    filePath?: string;
+    source?: 'pdf' | 'office-pdf';
+    pageNumbers?: number[];
+    selectedText?: string;
+    surroundingText?: string;
+    occurrenceIndex?: number | null;
+    createdAt?: string;
+    truncated?: boolean;
+  }>;
+  artifacts?: Array<{
+    id: string;
+    name: string;
+    path: string;
+    operation: 'created' | 'updated';
+    source: 'tool' | 'workspace_diff';
+    status: 'complete' | 'incomplete';
+    size: number;
+    sha256: string;
+    mimeType?: string;
+    createdAt: string;
   }>;
   toolName?: string;
   toolInput?: unknown;
@@ -79,6 +104,7 @@ export interface NormalizedMessage {
    * `pilotdeck-bridge.js#tool_call_finished` and `chatPermissions.ts`.
    */
   errorCode?: string;
+  resultPath?: string;
   text?: string;
   tokens?: number;
   canInterrupt?: boolean;
@@ -307,6 +333,40 @@ function hasEquivalentServerMessage(
   });
 }
 
+function hasSameTurnServerFinalMessage(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): boolean {
+  if (
+    realtimeMessage.isFinal !== true ||
+    (realtimeMessage.kind !== 'text' && realtimeMessage.kind !== 'thinking') ||
+    !realtimeMessage.serverTailIdAtStart
+  ) {
+    return false;
+  }
+
+  const tailIndex = serverMessages.findIndex((message) => (
+    message.id === realtimeMessage.serverTailIdAtStart
+  ));
+  if (tailIndex < 0) return false;
+  const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
+  if (realtimeTimestamp == null) return false;
+  const realtimeText = normalizeRealtimeText(realtimeMessage.content);
+  if (!realtimeText) return false;
+
+  return serverMessages.slice(tailIndex + 1).some((serverMessage) => {
+    if (serverMessage.kind !== realtimeMessage.kind) return false;
+    if (serverMessage.role !== realtimeMessage.role) return false;
+    if (realtimeMessage.runId != null && serverMessage.runId != null && serverMessage.runId !== realtimeMessage.runId) {
+      return false;
+    }
+    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
+    if (serverTimestamp == null) return false;
+    if (serverTimestamp < realtimeTimestamp) return false;
+    return normalizeRealtimeText(serverMessage.content) === realtimeText;
+  });
+}
+
 export function shouldKeepRealtimeAfterServerRefresh(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
@@ -319,6 +379,9 @@ export function shouldKeepRealtimeAfterServerRefresh(
     realtimeMessage.isFinal === true
     && (realtimeMessage.kind === 'text' || realtimeMessage.kind === 'thinking')
   ) {
+    if (hasSameTurnServerFinalMessage(realtimeMessage, serverMessages)) {
+      return false;
+    }
     return !hasEquivalentServerMessage(realtimeMessage, serverMessages);
   }
 
@@ -330,7 +393,7 @@ export function shouldKeepRealtimeAfterServerRefresh(
  * Server messages take priority (they're the persisted source of truth).
  * Realtime messages that aren't yet in server stay (in-flight streaming).
  */
-function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[]): NormalizedMessage[] {
+export function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[]): NormalizedMessage[] {
   if (realtime.length === 0) {
     return server;
   }
@@ -343,6 +406,7 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
     if (serverIds.has(message.id)) return false;
     if (isConfirmedUserMessageDuplicate(message, server)) return false;
     if (isLocalInterruptDuplicate(message, server)) return false;
+    if (hasSameTurnServerFinalMessage(message, server)) return false;
     // Dedup tool_use by toolId (invocation ID) — the message envelope ID
     // may differ between WebSocket replay and server-persisted copy, but
     // the underlying tool invocation is the same.
@@ -388,7 +452,38 @@ function getUpsertKey(message: NormalizedMessage): string {
   return message.id;
 }
 
-function upsertRealtimeMessages(
+function isCompatibleRealtimeTextRun(a: NormalizedMessage, b: NormalizedMessage): boolean {
+  if (a.runId != null && b.runId != null) return a.runId === b.runId;
+  const hasActiveStream = a.kind === 'stream_delta' || b.kind === 'stream_delta';
+  if (!hasActiveStream) return false;
+  const aTime = parseTimestampMs(a.timestamp);
+  const bTime = parseTimestampMs(b.timestamp);
+  if (aTime == null || bTime == null) return false;
+  return Math.abs(aTime - bTime) <= 10_000;
+}
+
+function findDuplicateAssistantRealtimeTextIndex(
+  messages: NormalizedMessage[],
+  incoming: NormalizedMessage,
+): number {
+  if (incoming.kind !== 'text' || incoming.role !== 'assistant') return -1;
+  const incomingText = normalizeRealtimeText(incoming.content);
+  if (!incomingText) return -1;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const existing = messages[index];
+    const isAssistantText = existing.kind === 'text' && existing.role === 'assistant';
+    const isActiveAssistantStream = existing.kind === 'stream_delta' && String(existing.id || '').startsWith('__streaming_');
+    if (!isAssistantText && !isActiveAssistantStream) continue;
+    if (!isCompatibleRealtimeTextRun(existing, incoming)) continue;
+    if (normalizeRealtimeText(existing.content) !== incomingText) continue;
+    return index;
+  }
+
+  return -1;
+}
+
+export function upsertRealtimeMessages(
   existing: NormalizedMessage[],
   incoming: NormalizedMessage[],
 ): NormalizedMessage[] {
@@ -396,6 +491,27 @@ function upsertRealtimeMessages(
   const updated = [...existing];
   const indexByKey = new Map(updated.map((message, index) => [getUpsertKey(message), index]));
   for (const message of incoming) {
+    if (message.kind === 'tool_result' && message.toolId && message.resultPath) {
+      const existingToolResultIndex = findLatestToolResultIndex(updated, message.toolId);
+      if (existingToolResultIndex >= 0) {
+        updated[existingToolResultIndex] = {
+          ...updated[existingToolResultIndex],
+          resultPath: message.resultPath,
+        };
+        continue;
+      }
+    }
+    const duplicateAssistantTextIndex = findDuplicateAssistantRealtimeTextIndex(updated, message);
+    if (duplicateAssistantTextIndex >= 0) {
+      const previousKey = getUpsertKey(updated[duplicateAssistantTextIndex]);
+      updated[duplicateAssistantTextIndex] = {
+        ...message,
+        serverTailIdAtStart: message.serverTailIdAtStart ?? updated[duplicateAssistantTextIndex].serverTailIdAtStart,
+      };
+      indexByKey.delete(previousKey);
+      indexByKey.set(getUpsertKey(message), duplicateAssistantTextIndex);
+      continue;
+    }
     const key = getUpsertKey(message);
     const existingIndex = indexByKey.get(key);
     if (existingIndex === undefined) {
@@ -406,6 +522,16 @@ function upsertRealtimeMessages(
     }
   }
   return updated;
+}
+
+function findLatestToolResultIndex(messages: NormalizedMessage[], toolId: string): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.kind === 'tool_result' && message.toolId === toolId) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -426,6 +552,19 @@ function forceRecomputeMerged(slot: SessionSlot): void {
   slot._lastServerRef = slot.serverMessages;
   slot._lastRealtimeRef = slot.realtimeMessages;
   slot.merged = computeMerged(slot.serverMessages, slot.realtimeMessages);
+}
+
+function streamingKey(sessionId: string, runId?: string): string {
+  return runId ? `${sessionId}_${runId}` : sessionId;
+}
+
+export function getFinalizedSubagentThinkingId(
+  sessionId: string,
+  subagentId: string,
+  timestamp?: string,
+): string {
+  const timestampSuffix = Date.parse(String(timestamp || '')) || Date.now();
+  return `subagent_thinking_${sessionId}_${subagentId}_${timestampSuffix}`;
 }
 
 /**
@@ -581,10 +720,16 @@ export function useSessionStore() {
 
       const qs = params.toString();
       const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const response = await authenticatedFetch(url);
+      const response = await authenticatedFetch(url, { suppressServerErrorToast: true });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const statusError = await readAgentStatusErrorFromResponse(response, {
+          event: 'web_http_request_failed',
+          code: 'session_messages_load_failed',
+          message: `Unable to load conversation messages (HTTP ${response.status}).`,
+          scope: 'session',
+        });
+        throw new Error(statusError.message);
       }
 
       const data = await response.json();
@@ -670,8 +815,16 @@ export function useSessionStore() {
     const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
 
     try {
-      const response = await authenticatedFetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const response = await authenticatedFetch(url, { suppressServerErrorToast: true });
+      if (!response.ok) {
+        const statusError = await readAgentStatusErrorFromResponse(response, {
+          event: 'web_http_request_failed',
+          code: 'session_messages_load_failed',
+          message: `Unable to load conversation messages (HTTP ${response.status}).`,
+          scope: 'session',
+        });
+        throw new Error(statusError.message);
+      }
       const data = await response.json();
       const olderMessages: NormalizedMessage[] = data.messages || [];
 
@@ -729,9 +882,14 @@ export function useSessionStore() {
 
   const recordSubagentLink = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
-    const toolCallId = (msg as Record<string, unknown>).toolCallId as string | undefined;
-    const subagentId = (msg as Record<string, unknown>).subagentId as string | undefined;
-    const subagentType = (msg as Record<string, unknown>).subagentType as string | undefined;
+    const linkMessage = msg as unknown as {
+      toolCallId?: string;
+      subagentId?: string;
+      subagentType?: string;
+    };
+    const toolCallId = linkMessage.toolCallId;
+    const subagentId = linkMessage.subagentId;
+    const subagentType = linkMessage.subagentType;
     if (toolCallId && subagentId) {
       const nextLinks = new Map(slot.subagentLinks);
       nextLinks.set(toolCallId, { subagentId, subagentType: subagentType || 'agent' });
@@ -881,7 +1039,7 @@ export function useSessionStore() {
     const updated = [...current];
     updated[existingIndex] = {
       ...stream,
-      id: `subagent_thinking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: getFinalizedSubagentThinkingId(sessionId, subagentId, stream.timestamp),
     };
     const nextMap = new Map(slot.subagentDetailMessages);
     nextMap.set(subagentId, updated);
@@ -952,9 +1110,17 @@ export function useSessionStore() {
 
       const qs = params.toString();
       const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const response = await authenticatedFetch(url);
+      const response = await authenticatedFetch(url, { suppressServerErrorToast: true });
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        const statusError = await readAgentStatusErrorFromResponse(response, {
+          event: 'web_http_request_failed',
+          code: 'session_messages_load_failed',
+          message: `Unable to refresh conversation messages (HTTP ${response.status}).`,
+          scope: 'session',
+        });
+        throw new Error(statusError.message);
+      }
       const data = await response.json();
 
       const incomingMessages = data.messages || [];
@@ -1005,9 +1171,9 @@ export function useSessionStore() {
    * Update or create a streaming message (accumulated text so far).
    * Uses a well-known ID so subsequent calls replace the same message.
    */
-  const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: SessionProvider) => {
+  const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: SessionProvider, runId?: string) => {
     const slot = getSlot(sessionId);
-    const streamId = `__streaming_${sessionId}`;
+    const streamId = `__streaming_${streamingKey(sessionId, runId)}`;
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       // Subsequent delta — preserve the original turn-start timestamp so
@@ -1043,6 +1209,7 @@ export function useSessionStore() {
         provider: msgProvider,
         kind: 'stream_delta',
         content: accumulatedText,
+        runId,
         serverTailIdAtStart: serverTailId ?? undefined,
       };
       slot.realtimeMessages = [...slot.realtimeMessages, msg];
@@ -1055,10 +1222,10 @@ export function useSessionStore() {
    * Finalize streaming: convert the streaming message to a regular text message.
    * The well-known streaming ID is replaced with a unique text message ID.
    */
-  const finalizeStreaming = useCallback((sessionId: string) => {
+  const finalizeStreaming = useCallback((sessionId: string, runId?: string) => {
     const slot = storeRef.current.get(sessionId);
     if (!slot) return;
-    const streamId = `__streaming_${sessionId}`;
+    const streamId = `__streaming_${streamingKey(sessionId, runId)}`;
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       const stream = slot.realtimeMessages[idx];
@@ -1080,9 +1247,9 @@ export function useSessionStore() {
    * Update or create a streaming thinking message (accumulated thinking so far).
    * Mirrors updateStreaming but uses kind='thinking' and a separate well-known ID.
    */
-  const updateStreamingThinking = useCallback((sessionId: string, accumulatedText: string, msgProvider: SessionProvider) => {
+  const updateStreamingThinking = useCallback((sessionId: string, accumulatedText: string, msgProvider: SessionProvider, runId?: string) => {
     const slot = getSlot(sessionId);
-    const streamId = `__streaming_thinking_${sessionId}`;
+    const streamId = `__streaming_thinking_${streamingKey(sessionId, runId)}`;
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       const existing = slot.realtimeMessages[idx];
@@ -1111,6 +1278,7 @@ export function useSessionStore() {
         provider: msgProvider,
         kind: 'thinking',
         content: accumulatedText,
+        runId,
         serverTailIdAtStart: serverTailId ?? undefined,
       };
       slot.realtimeMessages = [...slot.realtimeMessages, msg];
@@ -1123,10 +1291,10 @@ export function useSessionStore() {
    * Finalize streaming thinking: replace the well-known streaming thinking ID
    * with a unique ID so subsequent thinking blocks don't overwrite it.
    */
-  const finalizeStreamingThinking = useCallback((sessionId: string) => {
+  const finalizeStreamingThinking = useCallback((sessionId: string, runId?: string) => {
     const slot = storeRef.current.get(sessionId);
     if (!slot) return;
-    const streamId = `__streaming_thinking_${sessionId}`;
+    const streamId = `__streaming_thinking_${streamingKey(sessionId, runId)}`;
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       const stream = slot.realtimeMessages[idx];
@@ -1152,6 +1320,21 @@ export function useSessionStore() {
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     }
+  }, [notify]);
+
+  const clearAssistantRealtime = useCallback((sessionId: string) => {
+    const slot = storeRef.current.get(sessionId);
+    if (!slot) return;
+    const nextRealtime = slot.realtimeMessages.filter((message) => {
+      if (message.kind === 'thinking' || message.kind === 'stream_delta' || message.kind === 'stream_end') {
+        return false;
+      }
+      return !(message.kind === 'text' && message.role === 'assistant');
+    });
+    if (nextRealtime.length === slot.realtimeMessages.length) return;
+    slot.realtimeMessages = nextRealtime;
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
   }, [notify]);
 
   /**
@@ -1190,6 +1373,7 @@ export function useSessionStore() {
     updateStreamingThinking,
     finalizeStreamingThinking,
     clearRealtime,
+    clearAssistantRealtime,
     getMessages,
     getActivityMessages,
     getSubagentDetailMessages,
@@ -1205,7 +1389,7 @@ export function useSessionStore() {
     appendRealtime, upsertActivity, setActivities, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
     updateStreamingThinking, finalizeStreamingThinking,
-    clearRealtime, getMessages, getActivityMessages, getSubagentDetailMessages, getSessionSlot,
+    clearRealtime, clearAssistantRealtime, getMessages, getActivityMessages, getSubagentDetailMessages, getSessionSlot,
     recordSubagentLink, appendSubagentDetailMessage, updateSubagentDetailStreaming,
     finalizeSubagentDetailStreaming, updateSubagentDetailThinking, finalizeSubagentDetailThinking,
   ]);

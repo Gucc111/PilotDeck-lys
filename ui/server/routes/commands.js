@@ -12,6 +12,7 @@ import { readPilotDeckConfigFile, resolveModel } from '../services/pilotdeckConf
 import { resolvePilotHome } from '../utils/pilotPaths.js';
 import { executeTurnkeySlashCommand } from '../turnkey-slash.js';
 import { getRegisteredCommands } from '../../../src/adapters/channel/protocol/ChannelCommandRegistry.js';
+import { runChatSearchFormatted } from '../../../src/cli/commands/chatSearch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -273,6 +274,40 @@ const builtInCommands = [
  * Built-in command handlers
  * Each handler returns { type: 'builtin', action: string, data: any }
  */
+async function executeSearchCommand(args, context) {
+  const rawArg = (args || []).join(' ').trim();
+  if (!rawArg) {
+    return {
+      type: 'builtin',
+      action: 'search',
+      data: {
+        error: true,
+        content: 'Usage: /search <keyword> [--all] [--limit N] [--role user|assistant]\nExample: /search docker deploy',
+      },
+    };
+  }
+
+  const { result, text } = await runChatSearchFormatted({
+    arg: rawArg,
+    projectRoot: context?.projectPath,
+    pilotHome: resolvePilotHome(process.env),
+    locale: 'en',
+  });
+
+  return {
+    type: 'builtin',
+    action: 'search',
+    data: {
+      content: text,
+      format: 'markdown',
+      query: result.query,
+      matches: result.matches,
+      truncated: result.truncated,
+      sessionsScanned: result.sessionsScanned,
+    },
+  };
+}
+
 const builtInHandlers = {
   '/help': async (args, context) => {
     const helpText = `# PilotDeck Commands
@@ -544,6 +579,10 @@ Custom commands can be created in:
 
   '/turnkey': async (args) => executeTurnkeySlashCommand(args),
 
+  '/search': executeSearchCommand,
+  '/find': executeSearchCommand,
+  '/grep': executeSearchCommand,
+
   '/update': async (args, context) => {
     const subcommand = (args && args[0]) || 'apply';
 
@@ -720,7 +759,7 @@ Custom commands can be created in:
       workdir = effectiveProjectPath;
       dir = path.join('.pilotdeck', 'skills');
     } else {
-      workdir = path.join(os.homedir(), '.pilotdeck');
+      workdir = resolvePilotHome(process.env);
       dir = 'skills';
     }
     const installPath = path.join(workdir, dir, slug);
@@ -846,7 +885,7 @@ Custom commands can be created in:
 router.post('/list', async (req, res) => {
   try {
     const { projectPath } = req.body;
-    const homeDir = os.homedir();
+    const pilotHome = resolvePilotHome(process.env);
 
     const customCommandSources = [];
 
@@ -860,8 +899,8 @@ router.post('/list', async (req, res) => {
       customCommandSources.push(...projectCommands, ...projectSkills);
     }
 
-    const userCommandsDir = path.join(homeDir, '.pilotdeck', 'commands');
-    const userSkillsDir = path.join(homeDir, '.pilotdeck', 'skills');
+    const userCommandsDir = path.join(pilotHome, 'commands');
+    const userSkillsDir = path.join(pilotHome, 'skills');
     const [userCommands, userSkills] = await Promise.all([
       scanCommandsDirectory(userCommandsDir, userCommandsDir, 'user'),
       scanSkillsDirectory(userSkillsDir, 'user'),
@@ -1061,9 +1100,10 @@ router.post('/execute', async (req, res) => {
     // Security: validate commandPath is within allowed directories.
     {
       const resolvedPath = path.resolve(commandPath);
+      const pilotHome = resolvePilotHome(process.env);
       const allowedBases = [
-        path.resolve(path.join(os.homedir(), '.pilotdeck', 'commands')),
-        path.resolve(path.join(os.homedir(), '.pilotdeck', 'skills')),
+        path.resolve(path.join(pilotHome, 'commands')),
+        path.resolve(path.join(pilotHome, 'skills')),
       ];
       if (context?.projectPath) {
         allowedBases.push(

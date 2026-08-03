@@ -26,6 +26,7 @@ export {
 } from "./server/authToken.js";
 export type {
   ChannelAttachment,
+  GatewayOutboundAttachment,
   Gateway,
   GatewayActiveTurnSnapshot,
   GatewayActiveTurnSnapshotInput,
@@ -41,6 +42,7 @@ export type {
   ListSessionsInput,
   ListSessionsResult,
   NewSessionInput,
+  PrepareWeixinLoginResult,
   ReloadConfigResult,
   TurnUsage,
 } from "./protocol/index.js";

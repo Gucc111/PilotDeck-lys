@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { NormalizedMessage } from '../../stores/useSessionStore';
 import type { ChatMessage } from '../chat/types/types';
+import { normalizedToChatMessages } from '../chat/hooks/useChatMessages';
 import {
   buildRenderableMessageItems,
   getLiveProcessGroups,
   hasPendingWebFetchInRunningGroup,
   shouldShowWebFetchWaitingHint,
+  splitLiveProcessGroupDetailMessages,
+  type LiveProcessGroup,
   type RenderableMessageItem,
 } from './processGrouping';
 
@@ -32,6 +36,16 @@ function assistant(id: string, content: string, offsetMs = 1000): ChatMessage {
   };
 }
 
+function thinking(id: string, content = 'Thinking through the next step.', offsetMs = 500): ChatMessage {
+  return {
+    id,
+    type: 'assistant',
+    content,
+    timestamp: timestamp(offsetMs),
+    isThinking: true,
+  };
+}
+
 function tool(
   id: string,
   toolName: string,
@@ -49,6 +63,41 @@ function tool(
     toolId: id,
     toolInput: JSON.stringify(input),
     toolResult,
+  };
+}
+
+function normalizedText(
+  id: string,
+  role: 'user' | 'assistant',
+  content: string,
+  offsetMs = 0,
+): NormalizedMessage {
+  return {
+    id,
+    sessionId: 'session-1',
+    provider: 'pilotdeck',
+    kind: 'text',
+    role,
+    content,
+    timestamp: timestamp(offsetMs),
+  };
+}
+
+function normalizedTool(
+  id: string,
+  toolName: string,
+  input: Record<string, unknown> = {},
+  offsetMs = 0,
+): NormalizedMessage {
+  return {
+    id,
+    sessionId: 'session-1',
+    provider: 'pilotdeck',
+    kind: 'tool_use',
+    toolName,
+    toolId: id,
+    toolInput: input,
+    timestamp: timestamp(offsetMs),
   };
 }
 
@@ -397,7 +446,96 @@ describe('processGrouping', () => {
     const groups = getLiveProcessGroups(messages, { isAssistantWorking: true });
 
     expect(items.map((item) => item.message.id)).toEqual(['u1', 'a1', 'a-final']);
-    expect(groups).toHaveLength(2);
-    expect(groups.every((group) => group.afterOriginalIndex === 1)).toBe(true);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].afterOriginalIndex).toBe(1);
+    expect(groups[0].messages.map((message) => message.id)).toEqual(['read-1', 'grep-1']);
+  });
+
+  it('does not render thinking as standalone after empty live assistant shells', () => {
+    const messages = [
+      user('u1'),
+      assistant('a1', 'Starting work.', 100),
+      tool('bash-1', 'Bash', { command: 'head -30 package.json' }, 200, null),
+      assistant('a-empty', '', 250),
+      thinking('think-1', 'Inspect the command output next.', 300),
+    ];
+
+    const items = buildRenderableMessageItems(messages, { isAssistantWorking: true });
+    const groups = getLiveProcessGroups(messages, { isAssistantWorking: true });
+
+    expect(items.map((item) => item.message.id)).toEqual(['u1', 'a1']);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].messages.map((message) => message.id)).toEqual(['bash-1', 'think-1']);
+    expect(groups[0].detailMessages.map((message) => message.id)).toEqual(['bash-1', 'think-1']);
+  });
+
+  it('keeps leading live thinking inside the current running status details', () => {
+    const group: LiveProcessGroup = {
+      id: 'group-1',
+      afterOriginalIndex: 1,
+      beforeOriginalIndex: null,
+      startIndex: 2,
+      endIndex: 4,
+      messages: [
+        thinking('think-1', 'Decide which file to edit.', 200),
+        tool('edit-1', 'Edit', { file_path: '/repo/src/App.tsx' }, 300, null),
+      ],
+      detailMessages: [
+        thinking('think-1', 'Decide which file to edit.', 200),
+        tool('edit-1', 'Edit', { file_path: '/repo/src/App.tsx' }, 300, null),
+      ],
+      isRunning: true,
+    };
+
+    const split = splitLiveProcessGroupDetailMessages(group);
+
+    expect(split.beforeStatusMessages).toEqual([]);
+    expect(split.statusDetailMessages.map((message) => message.id)).toEqual(['think-1', 'edit-1']);
+  });
+
+  it('keeps normalized empty assistant shells available as process separators', () => {
+    const normalized = [
+      normalizedText('u1', 'user', 'Do the work'),
+      normalizedText('a1', 'assistant', 'Starting work.', 100),
+      normalizedTool('read-1', 'Read', { file_path: '/repo/src/App.tsx' }, 200),
+      normalizedText('a-empty-1', 'assistant', '', 250),
+      normalizedTool('grep-1', 'Grep', { pattern: 'MessagesPaneV2' }, 300),
+      normalizedText('a-empty-2', 'assistant', '', 350),
+      normalizedText('a-final', 'assistant', 'Here is the result.', 400),
+    ];
+
+    const messages = normalizedToChatMessages(normalized);
+    const items = buildRenderableMessageItems(messages, { isAssistantWorking: true });
+    const groups = getLiveProcessGroups(messages, { isAssistantWorking: true });
+
+    expect(messages.map((message) => message.id)).toEqual([
+      'u1',
+      'a1',
+      'read-1',
+      'a-empty-1',
+      'grep-1',
+      'a-empty-2',
+      'a-final',
+    ]);
+    expect(items.map((item) => item.message.id)).toEqual(['u1', 'a1', 'a-final']);
+    expect(groups).toHaveLength(1);
+    expect(groups.map((group) => group.messages.map((message) => message.id))).toEqual([
+      ['read-1', 'grep-1'],
+    ]);
+  });
+
+  it('still drops unrelated normalized empty assistant messages', () => {
+    const empty = normalizedText('a-empty', 'assistant', '');
+
+    expect(normalizedToChatMessages([
+      normalizedText('u1', 'user', 'Hello'),
+      empty,
+    ]).map((message) => message.id)).toEqual(['u1']);
+
+    expect(normalizedToChatMessages([
+      normalizedText('u1', 'user', 'Hello'),
+      normalizedTool('read-1', 'Read', { file_path: '/repo/src/App.tsx' }, 100),
+      empty,
+    ]).map((message) => message.id)).toEqual(['u1', 'read-1', 'a-empty']);
   });
 });

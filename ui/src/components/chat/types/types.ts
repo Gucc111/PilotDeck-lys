@@ -3,23 +3,50 @@ import type {
   ProjectSession,
   SessionProvider,
 } from '../../../types/app';
+import type { ContentReference } from '../../../types/contentReference';
 
 export type Provider = SessionProvider;
 
 export type PermissionMode = 'default' | 'bypassPermissions' | 'plan';
-export type ChatRunMode = 'agent' | 'plan';
+export type ChatRunMode = 'agent' | 'plan' | 'ask';
 
 export interface ChatImage {
   data: string;
   name: string;
+  path?: string;
   mimeType?: string;
+  size?: number;
 }
 
 export interface ChatAttachment {
+  kind?: 'file' | 'document-selection' | 'content-reference';
   name: string;
   path?: string;
   size?: number;
   mimeType?: string;
+  fileName?: string;
+  filePath?: string;
+  source?: 'pdf' | 'office-pdf';
+  pageNumbers?: number[];
+  selectedText?: string;
+  surroundingText?: string;
+  occurrenceIndex?: number | null;
+  createdAt?: string;
+  truncated?: boolean;
+  contentReference?: ContentReference;
+}
+
+export interface ChatFileArtifact {
+  id: string;
+  name: string;
+  path: string;
+  operation: 'created' | 'updated';
+  source: 'tool' | 'workspace_diff';
+  status: 'complete' | 'incomplete';
+  size: number;
+  sha256: string;
+  mimeType?: string;
+  createdAt: string;
 }
 
 export interface ToolResult {
@@ -60,6 +87,7 @@ export interface ChatMessage {
   timestamp: string | number | Date;
   images?: ChatImage[];
   attachments?: ChatAttachment[];
+  artifacts?: ChatFileArtifact[];
   reasoning?: string;
   isThinking?: boolean;
   isStreaming?: boolean;
@@ -85,6 +113,8 @@ export interface ChatMessage {
   runId?: string;
   compactTrigger?: string;
   preTokens?: number;
+  postTokens?: number;
+  messagesSummarized?: number;
   compactLevel?: number;
   compactStage?: string;
   compactStageLabel?: string;
@@ -168,7 +198,12 @@ export interface PermissionGrantResult {
   success: boolean;
   alreadyAllowed?: boolean;
   updatedSettings?: PilotDeckSettings;
+  completion?: Promise<PermissionGrantResult>;
 }
+
+export type SessionPermissionGrantResult = PermissionGrantResult & {
+  pending?: boolean;
+};
 
 export interface PendingPermissionRequest {
   requestId: string;
@@ -202,6 +237,7 @@ export interface ChatInterfaceProps {
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
+  subscribe?: (handler: (message: any) => void) => () => void;
   latestMessage: any;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onInputFocusChange?: (focused: boolean) => void;
@@ -236,4 +272,7 @@ export interface ChatInterfaceProps {
   // Fired the moment the user submits their first message from welcome
   // mode so the parent can leave any legacy welcome-only state.
   onExitWelcome?: () => void;
+  // Files workbench: render a quieter, narrow-panel empty state and keep the
+  // composer docked to the bottom instead of using the large welcome hero.
+  compact?: boolean;
 }

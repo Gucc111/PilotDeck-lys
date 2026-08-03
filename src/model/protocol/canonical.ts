@@ -2,7 +2,7 @@ import type { ModelCapabilities } from "./capabilities.js";
 import type { CanonicalModelError } from "./errors.js";
 import type { MultimodalConstraints } from "./multimodal.js";
 
-export type ModelProtocol = "anthropic" | "openai" | "google";
+export type ModelProtocol = "anthropic" | "openai" | "openai-responses" | "google";
 
 export type CanonicalRole = "user" | "assistant";
 
@@ -20,6 +20,8 @@ export type CanonicalThinkingBlock = {
    * when the message is replayed; preserved verbatim.
    */
   signature?: string;
+  /** Provider-native reasoning_content that should be replayed when present. */
+  reasoningContent?: string;
 };
 
 export type CanonicalImageBlock = {
@@ -82,8 +84,12 @@ export type CanonicalToolResultContentBlock =
 export type CanonicalToolResultReferenceBlock = {
   type: "tool_result_reference";
   toolCallId: string;
+  /** Mirrors CanonicalToolResultBlock.isError when a large error result is persisted. */
+  isError?: boolean;
   /** Absolute path to the persisted file. */
   path: string;
+  /** Workspace-relative path that can be read with read_file when available. */
+  readFilePath?: string;
   /** Original size in bytes / characters of the full result. */
   originalBytes: number;
   /** Truncated preview (UTF-8 text) sent inline alongside the reference. */
@@ -130,6 +136,12 @@ export type CanonicalContentBlock =
 export type CanonicalMessageMetadata = {
   /** True for messages injected by the system (e.g. JSON self-correct prompts). */
   synthetic?: boolean;
+  /** Synthetic prompt that should be consumed by the next assistant response only. */
+  transient?: boolean;
+  /** Stable id used by the agent loop to expire transient synthetic prompts. */
+  transientId?: string;
+  /** Message replaces compacted history and is omitted from the visible transcript. */
+  compactReplacement?: boolean;
   purpose?: string;
   forkCarryover?: {
     sourceSessionId: string;
@@ -159,8 +171,11 @@ export type CanonicalToolChoice =
     };
 
 export type CanonicalThinkingConfig = {
+  mode?: "default" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   enabled: boolean;
   budgetTokens?: number;
+  preserve?: boolean;
+  splitReasoning?: boolean;
 };
 
 /**
@@ -241,7 +256,7 @@ export type CanonicalModelEvent =
     }
   | { type: "message_start"; role: "assistant"; raw?: unknown }
   | { type: "text_delta"; text: string; raw?: unknown }
-  | { type: "thinking_delta"; text: string; signature?: string; raw?: unknown }
+  | { type: "thinking_delta"; text: string; signature?: string; reasoningContent?: string; raw?: unknown }
   | { type: "tool_call_start"; id: string; name: string; raw?: unknown }
   | { type: "tool_call_delta"; id: string; delta: string; raw?: unknown }
   | { type: "tool_call_end"; toolCall: CanonicalToolCall; wasRepaired?: boolean; raw?: unknown }
@@ -270,12 +285,18 @@ export type ProviderRetryConfig = {
   requestMaxRetries?: number;
   /** Max retries for dropped SSE streams. Default 2. */
   streamMaxRetries?: number;
-  /** Idle timeout (ms) for streaming responses before treating as lost. Default 300000 (5 min). */
+  /** First-token / idle timeout (ms) for streaming responses. Defaults through request timeout when omitted. */
   streamIdleTimeoutMs?: number;
-  /** Base delay (ms) for exponential backoff. Default 1000. */
+  /** Maximum streaming duration (ms). Default disabled. */
+  maxStreamingDurationMs?: number;
+  /** Repeated non-empty text chunk limit before treating a stream as looping. Default 100. */
+  repeatedChunkLimit?: number;
+  /** Base delay (ms) for retry backoff. Default 500. */
   baseDelayMs?: number;
-  /** Max delay cap (ms) for backoff. Default 30000. */
+  /** Max delay cap (ms) for backoff. Default 8000. */
   maxDelayMs?: number;
+  /** Jitter multiplier for retry backoff. Default 0.75. */
+  jitter?: number;
 };
 
 export type ProviderConfig = {

@@ -21,6 +21,7 @@ import type {
   CanonicalMessage,
   CanonicalUsage,
 } from "../../model/index.js";
+import { messageContent } from "../../model/protocol/clone.js";
 import type { AgentRuntimeConfig } from "../runtime/AgentRuntimeConfig.js";
 import type { AgentRuntimeDependencies } from "../runtime/AgentRuntimeDependencies.js";
 import { ToolRegistry } from "../../tool/registry/ToolRegistry.js";
@@ -47,7 +48,6 @@ import {
 
 
 const SUMMARY_FIELDS = ["Scope", "Result", "Key files", "Files changed", "Issues"] as const;
-const SUBAGENT_DEFAULT_MAX_TURNS = 16;
 
 export type SubAgentSessionOptions = {
   /** The subagent preset (general-purpose / explore / plan). */
@@ -69,7 +69,7 @@ export type SubAgentSessionOptions = {
   subagentSessionId: string;
   /** Stable subagent UUID — mirrors C3 sidechain naming. */
   subagentId: string;
-  /** Cap on AgentLoop turns inside the fork. Defaults to 16. */
+  /** Optional cap on AgentLoop turns inside the fork. Unbounded when omitted. */
   maxTurns?: number;
   /** Abort signal forwarded to the child loop. */
   abortSignal?: AbortSignal;
@@ -139,7 +139,7 @@ export class SubAgentSession {
       sessionId: this.options.subagentSessionId,
       turnId,
       messages,
-      maxTurns: this.options.maxTurns ?? SUBAGENT_DEFAULT_MAX_TURNS,
+      maxTurns: this.options.maxTurns,
       abortSignal: this.options.abortSignal,
     });
     while (true) {
@@ -191,9 +191,10 @@ export class SubAgentSession {
     const scoped = new ToolRegistry();
     const allowedSet = new Set(this.options.definition.allowedTools);
     const wildcard = allowedSet.has("*");
-    const forceReadOnly = this.options.definition.isReadOnly
-      || this.options.parentConfig.permissionMode === "plan";
     for (const tool of this.options.parentDependencies.tools.registry.list()) {
+      if (!wildcard && !allowedSet.has(tool.name)) {
+        continue;
+      }
       if (tool.name === "enter_plan_mode" || tool.name === "exit_plan_mode") {
         continue; // Subagents must not participate in the plan-mode workflow.
       }
@@ -206,10 +207,6 @@ export class SubAgentSession {
       if (tool.name === "ask_user_question") {
         continue; // Subagents have no elicitation channel.
       }
-      if (forceReadOnly && tool.isDestructive?.({} as never) === true) {
-        continue; // S9 — read-only subagents reject destructive tools outright
-      }
-      if (!wildcard && !allowedSet.has(tool.name)) continue;
       scoped.register(tool as PilotDeckToolDefinition);
     }
     return scoped;
@@ -266,6 +263,10 @@ export class SubAgentSession {
       uuid: this.options.parentDependencies.uuid,
       auditRecorder: this.options.parentDependencies.auditRecorder,
       lifecycle: this.options.parentDependencies.lifecycle,
+      tokenAccounting: this.options.parentDependencies.tokenAccounting,
+      getModelMaxContextTokens: this.options.parentDependencies.getModelMaxContextTokens,
+      getModelMaxOutputTokens: this.options.parentDependencies.getModelMaxOutputTokens,
+      getModelTokenLimits: this.options.parentDependencies.getModelTokenLimits,
       subagentTranscript: this.options.parentDependencies.subagentTranscript,
     };
   }
@@ -282,6 +283,10 @@ export class SubAgentSession {
       : subagentSystem;
     return {
       ...parent,
+      // Ask mode performs read-only checks against each tool call's real
+      // input. Do not probe dynamic isReadOnly implementations with a dummy
+      // object while constructing the registry.
+      runMode: this.isReadOnlySession() ? "ask" : parent.runMode,
       permissionContext: {
         ...parent.permissionContext,
         rules: {
@@ -299,6 +304,12 @@ export class SubAgentSession {
       },
     };
   }
+
+  private isReadOnlySession(): boolean {
+    return this.options.definition.isReadOnly
+      || this.options.parentConfig.permissionMode === "plan"
+      || this.options.parentConfig.runMode === "ask";
+  }
 }
 
 function extractFinalAssistantText(messages: CanonicalMessage[]): string {
@@ -306,7 +317,7 @@ function extractFinalAssistantText(messages: CanonicalMessage[]): string {
     const message = messages[i]!;
     if (message.role !== "assistant") continue;
     const parts: string[] = [];
-    for (const block of message.content) {
+    for (const block of messageContent(message)) {
       if (block.type === "text") parts.push(block.text);
     }
     if (parts.length > 0) return parts.join("\n").trim();

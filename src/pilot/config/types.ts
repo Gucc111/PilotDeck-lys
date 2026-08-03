@@ -70,6 +70,8 @@ export type PilotAgentConfig = {
    * or when you want compaction to kick in earlier.
    */
   maxContextTokens?: number;
+  /** Override the selected model catalog's output-token cap. */
+  maxOutputTokens?: number;
   thinking?: { enabled: boolean; budgetTokens?: number };
   subagents?: {
     timeoutMs?: number;
@@ -150,6 +152,8 @@ export type PilotWebSearchCustomProviderConfig = {
  * runtime; `apiKey` and `endpoint` apply to the selected provider.
  */
 export type PilotWebSearchConfig = {
+  /** Defaults to true when omitted. False removes web_search from the tool registry. */
+  enabled?: boolean;
   provider?: PilotWebSearchProvider;
   apiKey?: string;
   endpoint?: string;
@@ -191,6 +195,14 @@ export type PilotAdaptersConfig = {
     domainName?: "feishu" | "lark";
   };
   weixin?: { enabled: boolean };
+  qq?: {
+    enabled: boolean;
+    appId?: string;
+    clientSecret?: string;
+    allowGroups?: string[];
+    triggerPrefixes?: string[];
+    maxMessageLength?: number;
+  };
   telegram?: PilotPlatformAdapterConfig;
   discord?: PilotPlatformAdapterConfig;
   slack?: PilotPlatformAdapterConfig;

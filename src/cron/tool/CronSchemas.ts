@@ -5,7 +5,7 @@ export const CRON_SCHEDULE_SCHEMA = {
       required: ["type", "runAt"],
       additionalProperties: false,
       properties: {
-        type: { const: "once" },
+        type: { type: "string", const: "once" },
         runAt: { type: "string" },
       },
     },
@@ -14,9 +14,19 @@ export const CRON_SCHEDULE_SCHEMA = {
       required: ["type", "expression"],
       additionalProperties: false,
       properties: {
-        type: { const: "cron" },
+        type: { type: "string", const: "cron" },
         expression: { type: "string" },
         timezone: { type: "string" },
+      },
+    },
+    {
+      type: "object",
+      required: ["type", "amount", "unit"],
+      additionalProperties: false,
+      properties: {
+        type: { type: "string", const: "delay" },
+        amount: { type: "number", exclusiveMinimum: 0 },
+        unit: { type: "string", enum: ["second", "minute", "hour", "day"] },
       },
     },
   ],

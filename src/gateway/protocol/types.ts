@@ -1,4 +1,6 @@
 import type { AgentTurnResult } from "../../agent/index.js";
+import type { AgentStatusMessageInput } from "../../session/transcript/TranscriptWriter.js";
+import type { AgentRunMode } from "../../agent/protocol/input.js";
 import type {
   CronCreateInput,
   CronCreateResult,
@@ -68,6 +70,17 @@ export type ChannelAttachment = {
   metadata?: Record<string, unknown>;
 };
 
+export type GatewayOutboundAttachment = {
+  type: "file" | "image" | "text" | "unknown";
+  name?: string;
+  path?: string;
+  mimeType?: string;
+  content?: string;
+  bytes?: number;
+  source: "tool_result" | "media_reference" | "local_path";
+  metadata?: Record<string, unknown>;
+};
+
 export type TurnUsage = CanonicalUsage;
 
 export type GatewaySubmitTurnInput = {
@@ -78,6 +91,7 @@ export type GatewaySubmitTurnInput = {
   /** Override the agent session's working directory for this session. */
   workspaceCwd?: string;
   attachments?: ChannelAttachment[];
+  runMode?: AgentRunMode;
   mode?: GatewayMode;
   /** The user's actual permission preference before plan-mode override. */
   basePermissionMode?: GatewayMode;
@@ -98,12 +112,35 @@ export type GatewaySubmitTurnInput = {
     executionKind?: TelemetryExecutionKind;
     phase?: string;
   };
+  /**
+   * Channel-specific synthetic messages appended to the turn input.
+   * These are stored in the transcript with `metadata.synthetic: true`
+   * so they are visible to the model but hidden from the Web UI.
+   */
+  syntheticMessages?: Array<{ text: string; purpose?: string }>;
 };
 
-export type GatewayEvent =
+export type GatewayRecordAgentStatusMessageInput = {
+  sessionKey: string;
+  turnId: string;
+  projectKey?: string;
+  status: AgentStatusMessageInput;
+};
+
+type GatewayTurnScopedEventMetadata = {
+  /**
+   * Stable id of the active turn that produced this event. Turn-scoped events
+   * carry it so streaming clients can match deltas with lifecycle boundaries.
+   */
+  runId?: string;
+};
+
+export type GatewayEvent = GatewayTurnScopedEventMetadata & (
   | { type: "turn_started"; runId: string }
   | { type: "model_request_started"; model?: string; provider?: string }
   | { type: "assistant_text_delta"; text: string }
+  | { type: "assistant_attachment"; attachment: GatewayOutboundAttachment }
+  | { type: "file_artifacts"; artifacts: import("../../session/artifacts/FileArtifact.js").FileArtifact[] }
   | { type: "assistant_thinking_delta"; text: string }
   | { type: "tool_call_started"; toolCallId: string; name: string; argsPreview?: string }
   | {
@@ -171,13 +208,32 @@ export type GatewayEvent =
   | {
       type: "context_budget";
       used: number;
+      displayUsed?: number;
+      budgetUsed?: number;
       total: number;
+      effectiveTotal?: number;
+      reservedOutputTokens?: number;
       ratio: number;
       state: "ok" | "warning" | "blocking";
     }
   | { type: "turn_completed"; usage: TurnUsage; finishReason: AgentTurnResult["stopReason"] | string }
   | { type: "agent_status"; event: string; detail?: Record<string, unknown> }
-  | { type: "error"; message: string; code?: string; recoverable: boolean; userHint?: string };
+  | {
+      type: "error";
+      message: string;
+      code?: string;
+      recoverable: boolean;
+      userHint?: string;
+      providerError?: {
+        provider?: string;
+        protocol?: string;
+        status?: number;
+        code?: string;
+        message?: string;
+        raw?: string;
+      };
+    }
+);
 
 export type GatewayActiveTurnSnapshotInput = {
   sessionKey: string;
@@ -281,6 +337,13 @@ export type GatewayCronController = {
 export type ReloadConfigResult = {
   reloaded: boolean;
   changedPaths?: string[];
+  reason?: "unsupported" | "unchanged";
+};
+
+export type PrepareWeixinLoginResult = {
+  requested: boolean;
+  requestedAt: string;
+  reason?: "unsupported";
 };
 
 export type ReloadExtensionsInput = {
@@ -291,6 +354,7 @@ export type ReloadExtensionsInput = {
 export type ReloadExtensionsResult = {
   reloaded: boolean;
   changedPaths?: string[];
+  reason?: "unsupported" | "unchanged";
 };
 
 export type AlwaysOnApplyInput = {
@@ -317,11 +381,12 @@ export type AlwaysOnRerunPlanResult = {
 
 export interface Gateway {
   submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent>;
-  abortTurn(input: { sessionKey: string; runId?: string }): Promise<void>;
+  abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void>;
   listSessions(input: ListSessionsInput): Promise<ListSessionsResult>;
   resumeSession(input: { sessionKey: string }): Promise<{ sessionKey: string }>;
   newSession(input: NewSessionInput): Promise<{ sessionKey: string }>;
   closeSession(input: { sessionKey: string; reason?: string }): Promise<void>;
+  recordAgentStatusMessage?(input: GatewayRecordAgentStatusMessageInput): Promise<{ recorded: boolean }>;
   describeServer(): Promise<GatewayServerInfo>;
   getActiveTurnSnapshot?(input: GatewayActiveTurnSnapshotInput): Promise<GatewayActiveTurnSnapshot>;
   cronCreate(input: CronCreateInput): Promise<CronCreateResult>;
@@ -382,6 +447,13 @@ export interface Gateway {
   reloadConfig?(): Promise<ReloadConfigResult>;
 
   /**
+   * Ask the gateway host to start or restart the Weixin channel so it can
+   * generate a runtime QR code. The host owns channel construction; UI/server
+   * callers must not invoke `weixin-ilink.loginWithQR()` directly.
+   */
+  prepareWeixinLogin?(): Promise<PrepareWeixinLoginResult>;
+
+  /**
    * Trigger a plugin/skill/MCP extension reload without waiting for the file
    * watcher. Used by UI config writers that already know an extension-backed
    * file changed (for example `mcp.json`).
@@ -390,8 +462,8 @@ export interface Gateway {
 
   /**
    * Skill-management RPCs. The gateway is the authoritative owner of
-   * `~/.pilotdeck/skills/` (user scope) and `<project>/.pilotdeck/skills/`
-   * (project scope). The Web UI's REST endpoints under `/api/skills/*`
+   * bundled read-only skills, `~/.pilotdeck/skills/` (user scope), and
+   * `<project>/.pilotdeck/skills/` (project scope). The Web UI's REST endpoints under `/api/skills/*`
    * are now thin shims that forward here, so a skill the agent loads
    * and a skill the UI shows always come from the same place.
    *

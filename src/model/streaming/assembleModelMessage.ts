@@ -9,18 +9,28 @@ import type {
   CanonicalUsage,
 } from "../protocol/canonical.js";
 import type { CanonicalModelError } from "../protocol/errors.js";
-import { extractTextToolCalls } from "./parseTextToolCalls.js";
+import {
+  extractTextToolCalls,
+  hasTextToolCallSyntax,
+  type PartialTextToolCallInfo,
+} from "./parseTextToolCalls.js";
 
 export type ModelMessageAssemblerState = {
   content: CanonicalContentBlock[];
   textBuffer: string;
   thinkingBuffer: string;
+  thinkingReasoningContentBuffer: string;
   thinkingSignature?: string;
   usage: CanonicalUsage;
   finishReason?: CanonicalFinishReason;
   error?: CanonicalModelError;
   toolCalls: CanonicalToolCall[];
   hasRepairedToolCalls?: boolean;
+  hasPartialTextToolCall?: boolean;
+  partialTextToolCall?: PartialTextToolCallInfo;
+  hasTextFallbackToolCalls?: boolean;
+  textToolCallFormat?: PartialTextToolCallInfo["format"];
+  hasUnparsedTextToolCall?: boolean;
 };
 
 export type AssembledAssistantMessage = {
@@ -30,6 +40,11 @@ export type AssembledAssistantMessage = {
   toolCalls: CanonicalToolCall[];
   error?: CanonicalModelError;
   hasRepairedToolCalls?: boolean;
+  hasPartialTextToolCall?: boolean;
+  partialTextToolCall?: PartialTextToolCallInfo;
+  hasTextFallbackToolCalls?: boolean;
+  textToolCallFormat?: PartialTextToolCallInfo["format"];
+  hasUnparsedTextToolCall?: boolean;
 };
 
 export function createModelMessageAssemblerState(): ModelMessageAssemblerState {
@@ -37,6 +52,7 @@ export function createModelMessageAssemblerState(): ModelMessageAssemblerState {
     content: [],
     textBuffer: "",
     thinkingBuffer: "",
+    thinkingReasoningContentBuffer: "",
     usage: {},
     toolCalls: [],
   };
@@ -57,6 +73,9 @@ export function applyModelEventToAssembler(
       return;
     case "thinking_delta":
       state.thinkingBuffer += event.text;
+      if (event.reasoningContent !== undefined) {
+        state.thinkingReasoningContentBuffer += event.reasoningContent;
+      }
       if (event.signature !== undefined && event.signature.length > 0) {
         state.thinkingSignature = event.signature;
       }
@@ -92,19 +111,29 @@ export function assembleAssistantMessage(state: ModelMessageAssemblerState): Ass
 
   if (state.toolCalls.length === 0) {
     const textIdx = state.content.findIndex(
-      (b): b is CanonicalTextBlock => b.type === "text" && hasTextToolCallMarker(b.text),
+      (b): b is CanonicalTextBlock => b.type === "text" && hasTextToolCallSyntax(b.text),
     );
     if (textIdx >= 0) {
       const textBlock = state.content[textIdx] as CanonicalTextBlock;
-      const { toolCalls, remainingText } = extractTextToolCalls(textBlock.text);
-      if (toolCalls.length > 0) {
-        console.log(`[text-tool-call-fallback] Extracted ${toolCalls.length} tool call(s) from assistant text`);
-        if (remainingText.length > 0) {
-          (state.content[textIdx] as CanonicalTextBlock).text = remainingText;
+      const parseResult = extractTextToolCalls(textBlock.text);
+      const { detectedFormat, parseError, partialToolCall } = parseResult;
+      state.textToolCallFormat = detectedFormat;
+      if (partialToolCall) {
+        state.hasPartialTextToolCall = true;
+        state.partialTextToolCall = partialToolCall;
+      }
+      if (parseError) {
+        state.hasUnparsedTextToolCall = true;
+      }
+      if (parseResult.toolCalls.length > 0) {
+        console.log(`[text-tool-call-fallback] Extracted ${parseResult.toolCalls.length} tool call(s) from assistant text (format: ${detectedFormat ?? "unknown"})`);
+        state.hasTextFallbackToolCalls = true;
+        if (parseResult.remainingText.length > 0) {
+          (state.content[textIdx] as CanonicalTextBlock).text = parseResult.remainingText;
         } else {
           state.content.splice(textIdx, 1);
         }
-        for (const tc of toolCalls) {
+        for (const tc of parseResult.toolCalls) {
           state.content.push({ type: "tool_call", ...tc });
           state.toolCalls.push(tc);
         }
@@ -124,6 +153,11 @@ export function assembleAssistantMessage(state: ModelMessageAssemblerState): Ass
     toolCalls: [...state.toolCalls],
     error: state.error,
     hasRepairedToolCalls: state.hasRepairedToolCalls,
+    hasPartialTextToolCall: state.hasPartialTextToolCall,
+    partialTextToolCall: state.partialTextToolCall,
+    hasTextFallbackToolCalls: state.hasTextFallbackToolCalls,
+    textToolCallFormat: state.textToolCallFormat,
+    hasUnparsedTextToolCall: state.hasUnparsedTextToolCall,
   };
 }
 
@@ -156,29 +190,25 @@ function nextToolCallId(rawId: string | undefined, index: number, used: Set<stri
   }
 }
 
-const TEXT_TOOL_CALL_MARKERS = [
-  "<function=",
-  "<tool_call>",
-  "\uff5cDSML\uff5c",
-  "[TOOL_CALLS]",
-  "<|python_tag|>",
-];
-
-function hasTextToolCallMarker(text: string): boolean {
-  return TEXT_TOOL_CALL_MARKERS.some((m) => text.includes(m));
-}
-
 function flushTextBuffers(state: ModelMessageAssemblerState): void {
-  if (state.thinkingBuffer.length > 0 || state.thinkingSignature !== undefined) {
+  if (
+    state.thinkingBuffer.length > 0 ||
+    state.thinkingReasoningContentBuffer.length > 0 ||
+    state.thinkingSignature !== undefined
+  ) {
     const block: CanonicalThinkingBlock = {
       type: "thinking",
       text: state.thinkingBuffer,
     };
+    if (state.thinkingReasoningContentBuffer.length > 0) {
+      block.reasoningContent = state.thinkingReasoningContentBuffer;
+    }
     if (state.thinkingSignature !== undefined) {
       block.signature = state.thinkingSignature;
     }
     state.content.push(block);
     state.thinkingBuffer = "";
+    state.thinkingReasoningContentBuffer = "";
     state.thinkingSignature = undefined;
   }
 

@@ -21,8 +21,9 @@ import {
   type CanonicalContentBlock,
   type CanonicalImageBlock,
   type CanonicalMessage,
+  type CanonicalUsage,
 } from "../../model/index.js";
-import { listProjectSessions, readTranscript, findLastCompactBoundaryIndex, type SessionInfo } from "../../session/index.js";
+import { listProjectSessions, readTranscript, type SessionInfo } from "../../session/index.js";
 import type { AgentTranscriptEntry } from "../../session/transcript/TranscriptEntry.js";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { getPilotProjectChatDir } from "../../pilot/index.js";
@@ -36,9 +37,13 @@ import type { WebMessage, WebMessageKind, WebMessageRole } from "../client/webMe
 export type ReadWebSessionMessagesOptions = {
   projectRoot: string;
   pilotHome: string;
+  maxContextTokens?: number;
+  maxOutputTokens?: number;
   /** Override clock for deterministic tests. */
   now?: () => Date;
 };
+
+const DEFAULT_HISTORY_CONTEXT_TOKENS = 200_000;
 
 export async function readWebSessionMessages(
   input: WebReadSessionMessagesInput,
@@ -71,37 +76,13 @@ export async function readWebSessionMessages(
       }),
     );
 
-  const cumulativeWebCounts: number[] = [];
-  let cumulative = 0;
-  for (const group of flattenedPerMessage) {
-    cumulative += group.length;
-    cumulativeWebCounts.push(cumulative);
-  }
-
   const allMessages: WebMessage[] = flattenedPerMessage.flat();
 
-  for (const boundary of [...webReplay.compactBoundaries].reverse()) {
-    const insertPos =
-      boundary.insertAfterMessageIndex >= 0
-        ? (cumulativeWebCounts[boundary.insertAfterMessageIndex] ?? 0)
-        : 0;
-    const meta = boundary.metadata ?? {};
-    const compactMsg: WebMessage = {
-      id: `${input.sessionKey}-compact-${boundary.timestamp}`,
-      sessionKey: input.sessionKey,
-      projectKey: input.projectKey,
-      createdAt: boundary.timestamp,
-      provider: "pilotdeck",
-      role: "system",
-      kind: "compact_boundary",
-      text: "Context compacted",
-      payload: meta,
-      source: "history",
-    };
-    allMessages.splice(insertPos, 0, compactMsg);
-  }
-
   attachSubagentIds(entries, allMessages);
+  if (resolve(effectiveProjectRoot) !== resolve(options.pilotHome)) {
+    injectFileArtifactMessages(entries, allMessages, input.sessionKey, input.projectKey);
+  }
+  injectAgentStatusMessages(entries, allMessages, input.sessionKey, input.projectKey);
   injectErrorTurnMessages(entries, allMessages, input.sessionKey, input.projectKey);
   if (incompleteTurnIds.length > 0) {
     allMessages.push(createIncompleteTurnStatusMessage(input, incompleteTurnIds, options));
@@ -119,6 +100,7 @@ export async function readWebSessionMessages(
         ? String(offset + slice.length)
         : undefined,
     total: allMessages.length,
+    tokenUsage: tokenUsageFromTranscript(entries, options),
     session: {
       sessionId: sessionInfo?.sessionId ?? input.sessionKey,
       sessionKey: input.sessionKey,
@@ -137,6 +119,190 @@ export async function readWebSessionMessages(
       forkedFromTurnId: sessionInfo?.forkedFromTurnId,
     },
   };
+}
+
+function tokenUsageFromTranscript(
+  entries: AgentTranscriptEntry[],
+  options: Pick<ReadWebSessionMessagesOptions, "maxContextTokens" | "maxOutputTokens">,
+): Record<string, unknown> | undefined {
+  const latestBudget = latestContextBudget(entries);
+  const latestCompact = latestCompactBudget(entries);
+  if (latestCompact && (!latestBudget || latestCompact.index > latestBudget.index)) {
+    return tokenUsageFromCompactBoundary(latestCompact, latestBudget?.usage, options);
+  }
+  if (latestBudget) {
+    return latestBudget.usage;
+  }
+  const latestTurn = latestTurnUsage(entries);
+  if (!latestTurn) {
+    return undefined;
+  }
+  const inputTokens = positiveNumber(latestTurn.inputTokens);
+  const outputTokens = positiveNumber(latestTurn.outputTokens) ?? 0;
+  const cacheReadTokens = positiveNumber(latestTurn.cacheReadTokens) ?? 0;
+  const cacheWriteTokens = positiveNumber(latestTurn.cacheWriteTokens) ?? 0;
+  const totalTokens = positiveNumber(latestTurn.totalTokens);
+  const used = inputTokens !== undefined
+    ? Math.ceil(inputTokens + cacheReadTokens + cacheWriteTokens)
+    : totalTokens !== undefined
+      ? Math.max(0, Math.ceil(totalTokens - outputTokens))
+      : undefined;
+  if (used === undefined || used <= 0) {
+    return undefined;
+  }
+  const total = positiveNumber(options.maxContextTokens) ?? DEFAULT_HISTORY_CONTEXT_TOKENS;
+  const reservedOutputTokens = positiveNumber(options.maxOutputTokens) ?? 0;
+  const effectiveTotal = Math.max(1, total - reservedOutputTokens);
+  return {
+    used,
+    total,
+    effectiveTotal,
+    reservedOutputTokens,
+    source: "history",
+    exact: true,
+    breakdown: {
+      input: inputTokens ?? 0,
+      cacheRead: cacheReadTokens,
+      cacheWrite: cacheWriteTokens,
+      output: outputTokens,
+      total: totalTokens ?? Math.ceil(used + outputTokens),
+    },
+  };
+}
+
+type IndexedTokenUsage = {
+  index: number;
+  usage: Record<string, unknown>;
+};
+
+type IndexedCompactBudget = {
+  index: number;
+  preTokens?: number;
+  postTokens: number;
+  messagesSummarized?: number;
+};
+
+function latestContextBudget(entries: AgentTranscriptEntry[]): IndexedTokenUsage | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "agent_status_message" || entry.event !== "context_budget") {
+      continue;
+    }
+    const detail = isRecord(entry.detail) ? entry.detail : undefined;
+    if (!detail) {
+      continue;
+    }
+    const used = positiveNumber(detail.displayUsed) ?? positiveNumber(detail.used);
+    const total = positiveNumber(detail.total);
+    const effectiveTotal = positiveNumber(detail.effectiveTotal) ?? total;
+    if (used === undefined || total === undefined || effectiveTotal === undefined) {
+      continue;
+    }
+    return {
+      index,
+      usage: {
+        used,
+        ...(positiveNumber(detail.displayUsed) !== undefined ? { displayUsed: positiveNumber(detail.displayUsed) } : {}),
+        ...(positiveNumber(detail.budgetUsed) !== undefined ? { budgetUsed: positiveNumber(detail.budgetUsed) } : {}),
+        total,
+        effectiveTotal,
+        reservedOutputTokens: positiveNumber(detail.reservedOutputTokens) ?? 0,
+        ...(typeof detail.state === "string" ? { state: detail.state } : {}),
+        ...(typeof detail.ratio === "number" && Number.isFinite(detail.ratio) ? { ratio: detail.ratio } : {}),
+        source: "history",
+        exact: true,
+      },
+    };
+  }
+  return undefined;
+}
+
+function latestCompactBudget(entries: AgentTranscriptEntry[]): IndexedCompactBudget | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (
+      entry.type !== "control_boundary" ||
+      entry.boundary.kind !== "compact" ||
+      !("subtype" in entry.boundary) ||
+      entry.boundary.subtype !== "compact_boundary"
+    ) {
+      continue;
+    }
+    const metadata = entry.boundary.compactMetadata;
+    const postTokens = positiveNumber(metadata.postTokens);
+    if (postTokens === undefined) {
+      continue;
+    }
+    return {
+      index,
+      postTokens,
+      ...(positiveNumber(metadata.preTokens) !== undefined ? { preTokens: positiveNumber(metadata.preTokens) } : {}),
+      ...(positiveNumber(metadata.messagesSummarized) !== undefined
+        ? { messagesSummarized: positiveNumber(metadata.messagesSummarized) }
+        : {}),
+    };
+  }
+  return undefined;
+}
+
+function tokenUsageFromCompactBoundary(
+  compact: IndexedCompactBudget,
+  previousBudget: Record<string, unknown> | undefined,
+  options: Pick<ReadWebSessionMessagesOptions, "maxContextTokens" | "maxOutputTokens">,
+): Record<string, unknown> {
+  const used = Math.ceil(compact.postTokens);
+  const total = positiveNumber(previousBudget?.total)
+    ?? positiveNumber(options.maxContextTokens)
+    ?? DEFAULT_HISTORY_CONTEXT_TOKENS;
+  const reservedOutputTokens = positiveNumber(previousBudget?.reservedOutputTokens)
+    ?? positiveNumber(options.maxOutputTokens)
+    ?? 0;
+  const effectiveTotal = positiveNumber(previousBudget?.effectiveTotal)
+    ?? Math.max(1, total - reservedOutputTokens);
+  const ratio = used / effectiveTotal;
+  const state = ratio >= 0.95 ? "blocking" : ratio >= 0.8 ? "warning" : "ok";
+  return {
+    used,
+    displayUsed: used,
+    budgetUsed: used,
+    total,
+    effectiveTotal,
+    reservedOutputTokens,
+    ratio,
+    state,
+    source: "compact",
+    exact: false,
+    compacted: true,
+    ...(compact.preTokens !== undefined ? { preCompactUsed: compact.preTokens } : {}),
+    ...(compact.messagesSummarized !== undefined ? { messagesSummarized: compact.messagesSummarized } : {}),
+  };
+}
+
+function latestTurnUsage(entries: AgentTranscriptEntry[]): CanonicalUsage | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type === "turn_result" && hasPositiveUsage(entry.result.usage)) {
+      return entry.result.usage;
+    }
+  }
+  return undefined;
+}
+
+function hasPositiveUsage(usage: CanonicalUsage | undefined): boolean {
+  if (!usage) return false;
+  return positiveNumber(usage.inputTokens) !== undefined ||
+    positiveNumber(usage.outputTokens) !== undefined ||
+    positiveNumber(usage.cacheReadTokens) !== undefined ||
+    positiveNumber(usage.cacheWriteTokens) !== undefined ||
+    positiveNumber(usage.totalTokens) !== undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -191,35 +357,7 @@ export async function readSubagentWebMessages(
         entryTimestamp: webReplay.timestamps[index],
       }),
     );
-  const cumulativeWebCounts: number[] = [];
-  let cumulative = 0;
-  for (const group of flattenedPerMessage) {
-    cumulative += group.length;
-    cumulativeWebCounts.push(cumulative);
-  }
-
   const allMessages: WebMessage[] = flattenedPerMessage.flat();
-
-  for (const boundary of [...webReplay.compactBoundaries].reverse()) {
-    const insertPos =
-      boundary.insertAfterMessageIndex >= 0
-        ? (cumulativeWebCounts[boundary.insertAfterMessageIndex] ?? 0)
-        : 0;
-    const meta = boundary.metadata ?? {};
-    const compactMsg: WebMessage = {
-      id: `${input.sessionKey}::sub::${input.subagentId}-compact-${boundary.timestamp}`,
-      sessionKey: `${input.sessionKey}::sub::${input.subagentId}`,
-      projectKey: input.projectKey,
-      createdAt: boundary.timestamp,
-      provider: "pilotdeck",
-      role: "system",
-      kind: "compact_boundary",
-      text: "Context compacted",
-      payload: meta,
-      source: "history",
-    };
-    allMessages.splice(insertPos, 0, compactMsg);
-  }
 
   return { messages: allMessages, total: allMessages.length };
 }
@@ -465,7 +603,9 @@ function flushBlock(
       flushText();
       const resultText = flattenToolResultBlockText(block);
       const errorCode = readToolResultErrorCode(block.raw);
+      const toolName = readToolResultToolName(block.raw);
       const planData = readPlanData(block.raw);
+      const searchData = readSearchToolData(block.raw);
       const resultImages: NonNullable<WebMessage["images"]> = [];
       for (const sub of block.content) {
         if (sub.type === "image") {
@@ -481,10 +621,11 @@ function flushBlock(
         role: "tool",
         kind: "tool_result",
         toolCallId: block.toolCallId,
+        ...(toolName ? { toolName } : {}),
         ok: !block.isError,
         text: resultText,
         ...(errorCode ? { errorCode } : {}),
-        ...(planData ? { payload: planData } : {}),
+        ...(planData || searchData ? { payload: planData ?? searchData } : {}),
         ...(resultImages.length > 0 ? { images: resultImages } : {}),
         source: "history",
       });
@@ -501,8 +642,9 @@ function flushBlock(
         role: "tool",
         kind: "tool_result",
         toolCallId: block.toolCallId,
-        ok: true,
+        ok: !block.isError,
         text: block.preview,
+        resultPath: block.path,
         payload: {
           path: block.path,
           originalBytes: block.originalBytes,
@@ -598,6 +740,34 @@ type CompactBoundaryInfo = {
   metadata?: Record<string, unknown>;
 };
 
+function isCompactReplacementMessage(message: CanonicalMessage): boolean {
+  return message.metadata?.compactReplacement === true;
+}
+
+function shouldShowCompactReplacementInWeb(message: CanonicalMessage): boolean {
+  return !isCompactReplacementMessage(message);
+}
+
+function compactBoundaryMetadata(entry: AgentTranscriptEntry & { type: "control_boundary" }): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  if (
+    entry.boundary.kind === "compact" &&
+    "subtype" in entry.boundary &&
+    entry.boundary.subtype === "compact_boundary" &&
+    "compactMetadata" in entry.boundary
+  ) {
+    const cm = entry.boundary.compactMetadata as Record<string, unknown>;
+    meta.trigger = cm.trigger;
+    meta.preTokens = cm.preTokens;
+    meta.postTokens = cm.postTokens;
+    meta.messagesSummarized = cm.messagesSummarized;
+    meta.level = cm.level;
+    meta.stage = cm.stage;
+    meta.stageLabel = cm.stageLabel;
+  }
+  return meta;
+}
+
 function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
   messages: CanonicalMessage[];
   timestamps: string[];
@@ -605,7 +775,6 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
   forkUnsupportedContents: boolean[];
   compactBoundaries: CompactBoundaryInfo[];
 } {
-  const lastBoundaryIndex = findLastCompactBoundaryIndex(entries);
   const messages: CanonicalMessage[] = [];
   const timestamps: string[] = [];
   const entryIds: Array<string | undefined> = [];
@@ -614,16 +783,18 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
-    const beforeBoundary = lastBoundaryIndex !== -1 && index < lastBoundaryIndex;
 
     switch (entry.type) {
       case "accepted_input":
-        if (!beforeBoundary) {
+        {
           const entryForkUnsupported = entry.messages.some((message) =>
             message.content.some((block) => block.type !== "text"),
           );
           for (const message of entry.messages) {
             if (message.metadata?.synthetic) {
+              continue;
+            }
+            if (!shouldShowCompactReplacementInWeb(message)) {
               continue;
             }
             messages.push(cloneMessage(message));
@@ -636,31 +807,23 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
       case "assistant_message":
       case "tool_result_message":
       case "durable_message":
-        if (!beforeBoundary) {
-          if (entry.message.metadata?.synthetic) {
-            break;
-          }
-          messages.push(cloneMessage(entry.message));
-          timestamps.push(entry.createdAt);
-          entryIds.push(entry.entryId);
-          forkUnsupportedContents.push(false);
+        if (entry.message.metadata?.synthetic) {
+          break;
         }
+        if (!shouldShowCompactReplacementInWeb(entry.message)) {
+          break;
+        }
+        messages.push(cloneMessage(entry.message));
+        timestamps.push(entry.createdAt);
+        entryIds.push(entry.entryId);
+        forkUnsupportedContents.push(false);
         break;
       case "control_boundary": {
-        if (!beforeBoundary && entry.boundary && entry.boundary.kind === "compact") {
-          const meta: Record<string, unknown> = {};
-          if (entry.boundary.subtype === "compact_boundary" && "compactMetadata" in entry.boundary) {
-            const cm = entry.boundary.compactMetadata as Record<string, unknown>;
-            meta.trigger = cm.trigger;
-            meta.preTokens = cm.preTokens;
-            meta.level = cm.level;
-            meta.stage = cm.stage;
-            meta.stageLabel = cm.stageLabel;
-          }
+        if (entry.boundary && entry.boundary.kind === "compact") {
           compactBoundaries.push({
             insertAfterMessageIndex: messages.length - 1,
             timestamp: entry.createdAt,
-            metadata: meta,
+            metadata: compactBoundaryMetadata(entry),
           });
         }
         break;
@@ -676,7 +839,6 @@ function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
   timestamps: string[];
   compactBoundaries: CompactBoundaryInfo[];
 } {
-  const lastBoundaryIndex = findLastCompactBoundaryIndex(entries);
   const messages: CanonicalMessage[] = [];
   const timestamps: string[] = [];
   const compactBoundaries: CompactBoundaryInfo[] = [];
@@ -684,7 +846,6 @@ function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
-    const beforeBoundary = lastBoundaryIndex !== -1 && index < lastBoundaryIndex;
 
     switch (entry.type) {
       case "accepted_input":
@@ -695,31 +856,22 @@ function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
       case "tool_result_message":
       case "durable_message":
         sawExecutionMessage = true;
-        if (!beforeBoundary) {
-          messages.push(cloneMessage(entry.message));
-          timestamps.push(entry.createdAt);
+        if (entry.message.metadata?.synthetic || !shouldShowCompactReplacementInWeb(entry.message)) {
+          break;
         }
+        messages.push(cloneMessage(entry.message));
+        timestamps.push(entry.createdAt);
         break;
       case "control_boundary": {
         if (
-          !beforeBoundary &&
           sawExecutionMessage &&
           entry.boundary &&
           entry.boundary.kind === "compact"
         ) {
-          const meta: Record<string, unknown> = {};
-          if (entry.boundary.subtype === "compact_boundary" && "compactMetadata" in entry.boundary) {
-            const cm = entry.boundary.compactMetadata as Record<string, unknown>;
-            meta.trigger = cm.trigger;
-            meta.preTokens = cm.preTokens;
-            meta.level = cm.level;
-            meta.stage = cm.stage;
-            meta.stageLabel = cm.stageLabel;
-          }
           compactBoundaries.push({
             insertAfterMessageIndex: messages.length - 1,
             timestamp: entry.createdAt,
-            metadata: meta,
+            metadata: compactBoundaryMetadata(entry),
           });
         }
         break;
@@ -743,13 +895,9 @@ function attachSubagentIds(
   entries: AgentTranscriptEntry[],
   allMessages: WebMessage[],
 ): void {
-  const lastBoundaryIndex = findLastCompactBoundaryIndex(entries);
   const subagentQueue: string[] = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
-    if (lastBoundaryIndex !== -1 && index < lastBoundaryIndex) {
-      continue;
-    }
     if (entry.type === "subagent_started") {
       subagentQueue.push(entry.subagentId);
     }
@@ -767,10 +915,65 @@ function attachSubagentIds(
   }
 }
 
+function injectFileArtifactMessages(
+  entries: AgentTranscriptEntry[],
+  allMessages: WebMessage[],
+  sessionKey: string,
+  projectKey?: string,
+): void {
+  const artifactMessages: WebMessage[] = [];
+  const turnsWithToolResults = new Set(
+    entries
+      .filter((entry) =>
+        (entry.type === "assistant_message" || entry.type === "tool_result_message" || entry.type === "durable_message") &&
+        messageContainsToolResult(entry.message)
+      )
+      .map((entry) => entry.turnId),
+  );
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry.type !== "file_artifacts" || entry.artifacts.length === 0) continue;
+    const artifacts = turnsWithToolResults.has(entry.turnId)
+      ? entry.artifacts
+      : entry.artifacts.filter((artifact) => artifact.source !== "workspace_diff");
+    if (artifacts.length === 0) continue;
+    artifactMessages.push({
+      id: entry.entryId ?? `${sessionKey}-file-artifacts-${entry.turnId}-${entry.sequence}`,
+      sessionKey,
+      projectKey,
+      createdAt: entry.createdAt,
+      provider: "pilotdeck",
+      role: "assistant",
+      kind: "file_artifacts",
+      artifacts,
+      payload: { turnId: entry.turnId },
+      source: "history",
+      ...(entry.entryId ? { entryId: entry.entryId } : {}),
+    });
+  }
+
+  for (const artifactMessage of artifactMessages) {
+    let insertAt = allMessages.length;
+    for (let index = allMessages.length - 1; index >= 0; index -= 1) {
+      if (allMessages[index].createdAt <= artifactMessage.createdAt) {
+        insertAt = index + 1;
+        break;
+      }
+      if (index === 0) insertAt = 0;
+    }
+    allMessages.splice(insertAt, 0, artifactMessage);
+  }
+}
+
+function messageContainsToolResult(message: CanonicalMessage): boolean {
+  return message.content.some((block) => block.type === "tool_result" || block.type === "tool_result_reference");
+}
+
 /**
  * Scan transcript entries for failed turns (`turn_result` with `type === "error"`)
  * and inject corresponding `WebMessage { kind: 'error' }` into the message list
- * so error banners survive history reload.
+ * so error banners survive history reload when no visible semantic status
+ * already represents the same turn.
  */
 function injectErrorTurnMessages(
   entries: AgentTranscriptEntry[],
@@ -778,9 +981,19 @@ function injectErrorTurnMessages(
   sessionKey: string,
   projectKey?: string,
 ): void {
+  const visibleFailureStatusTurnIds = new Set(
+    entries
+      .filter((entry) =>
+        entry.type === "agent_status_message" &&
+        entry.kind === "error" &&
+        entry.detail?.visible !== false
+      )
+      .map((entry) => entry.turnId),
+  );
   const errorMessages: WebMessage[] = [];
   for (const entry of entries) {
     if (entry.type !== "turn_result" || entry.result.type !== "error") continue;
+    if (visibleFailureStatusTurnIds.has(entry.turnId)) continue;
     const errorTexts = entry.result.errors?.map((e) => e.message).filter(Boolean) ?? [];
     const text = errorTexts.length > 0
       ? errorTexts.join("\n")
@@ -813,12 +1026,63 @@ function injectErrorTurnMessages(
   }
 }
 
+function injectAgentStatusMessages(
+  entries: AgentTranscriptEntry[],
+  allMessages: WebMessage[],
+  sessionKey: string,
+  projectKey?: string,
+): void {
+  const statusMessages: WebMessage[] = [];
+  for (const entry of entries) {
+    if (entry.type !== "agent_status_message") continue;
+    statusMessages.push({
+      id: entry.entryId ?? `${sessionKey}-agent-status-${entry.turnId}-${entry.sequence}`,
+      sessionKey,
+      projectKey,
+      createdAt: entry.createdAt,
+      provider: "pilotdeck",
+      role: entry.kind === "error" ? "error" : "system",
+      kind: entry.kind,
+      text: entry.text,
+      ...(isI18nDescriptor(entry.detail?.messageI18n) ? { contentI18n: entry.detail.messageI18n } : {}),
+      ...(isI18nDescriptor(entry.detail?.userHintI18n) ? { userHintI18n: entry.detail.userHintI18n } : {}),
+      payload: { event: entry.event, ...(entry.detail ? { detail: entry.detail } : {}) },
+      source: "history",
+    });
+  }
+  if (statusMessages.length === 0) return;
+
+  for (const statusMsg of statusMessages) {
+    let insertAt = allMessages.length;
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i].createdAt <= statusMsg.createdAt) {
+        insertAt = i + 1;
+        break;
+      }
+      if (i === 0) insertAt = 0;
+    }
+    allMessages.splice(insertAt, 0, statusMsg);
+  }
+}
+
+function isI18nDescriptor(value: unknown): value is { key: string; params?: Record<string, unknown> } {
+  return typeof value === "object"
+    && value !== null
+    && typeof (value as { key?: unknown }).key === "string";
+}
+
 function readToolResultErrorCode(raw: unknown): string | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const error = (raw as { error?: unknown }).error;
   if (!error || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === "string" && code.length > 0 ? code : undefined;
+}
+
+function readToolResultToolName(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const toolName = (raw as { toolName?: unknown }).toolName;
+  return typeof toolName === "string" && toolName.length > 0 ? toolName : undefined;
 }
 
 function readPlanData(raw: unknown): Record<string, unknown> | undefined {
@@ -832,4 +1096,18 @@ function readPlanData(raw: unknown): Record<string, unknown> | undefined {
     planTitle: d.planTitle,
     planSummary: d.planSummary,
   };
+}
+
+function readSearchToolData(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as { toolName?: unknown; data?: unknown };
+  if (!isSearchToolName(record.toolName)) return undefined;
+  return record.data && typeof record.data === "object"
+    ? record.data as Record<string, unknown>
+    : undefined;
+}
+
+function isSearchToolName(name: unknown): boolean {
+  const normalized = typeof name === "string" ? name.toLowerCase() : "";
+  return normalized === "grep" || normalized === "glob";
 }

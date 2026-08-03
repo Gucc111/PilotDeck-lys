@@ -16,6 +16,7 @@ import {
   type SessionMetadataValue,
 } from "./TranscriptEntry.js";
 import type { AgentTranscriptWriter, AgentTranscriptWriterState } from "./TranscriptWriter.js";
+import type { FileArtifact } from "../artifacts/FileArtifact.js";
 
 export type SubagentTranscriptHandle = {
   /** UUID v4 of the subagent (matches sidechain filename). */
@@ -86,6 +87,30 @@ export class JsonlTranscriptWriter implements AgentTranscriptWriter {
       type,
       ...this.baseEntry(sessionId, turnId),
       message,
+    });
+  }
+
+  recordAgentStatusMessage(
+    sessionId: string,
+    turnId: string,
+    status: { event: string; kind: "status" | "error"; text: string; detail?: Record<string, unknown> },
+  ): Promise<void> {
+    return this.recordEntry({
+      type: "agent_status_message",
+      ...this.baseEntry(sessionId, turnId),
+      event: status.event,
+      kind: status.kind,
+      text: status.text,
+      ...(status.detail && Object.keys(status.detail).length > 0 ? { detail: status.detail } : {}),
+    });
+  }
+
+  recordFileArtifacts(sessionId: string, turnId: string, artifacts: FileArtifact[]): Promise<void> {
+    if (artifacts.length === 0) return Promise.resolve();
+    return this.recordEntry({
+      type: "file_artifacts",
+      ...this.baseEntry(sessionId, turnId),
+      artifacts,
     });
   }
 

@@ -17,11 +17,18 @@ export type RouterMutationsLog = {
   orchestrationActivated?: { tier: string; continued: boolean };
   asyncAgentLaunchedRewritten?: boolean;
   subagentTagStripped?: boolean;
-  subagentModelOverride?: boolean;
   mediaCapabilityRerouted?: {
     required: import("../../model/protocol/multimodal.js").InputModality[];
     from: string;
     to: string;
+  };
+  cacheAwareSwitch?: {
+    action: "kept_sticky" | "switched";
+    from: string;
+    to: string;
+    cachedCost: number;
+    prefillCost: number;
+    estimatedInputTokens: number;
   };
 };
 
@@ -69,6 +76,8 @@ export type RouterDecisionInput = {
     explicitModel?: string;
     /** Tier from the previous turn; fed to the judge for context-aware classification. */
     previousTier?: string;
+    previousProvider?: string;
+    previousModel?: string;
   };
 };
 

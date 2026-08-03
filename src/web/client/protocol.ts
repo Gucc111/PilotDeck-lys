@@ -16,6 +16,11 @@ export type WebGatewayMode =
   | "plan"
   | "bypassPermissions";
 
+export type WebAgentRunMode =
+  | "agent"
+  | "plan"
+  | "ask";
+
 export type WebGatewayChannelKey =
   | "cli"
   | "tui"
@@ -35,10 +40,15 @@ export type WebElicitationAnswer =
   | { type: "answered"; answers: Record<string, string | string[]>; annotations?: Record<string, { preview?: string; notes?: string }> }
   | { type: "cancelled"; reason?: string };
 
-export type WebGatewayEvent =
+type WebGatewayEventMetadata = {
+  runId?: string;
+};
+
+export type WebGatewayEvent = WebGatewayEventMetadata & (
   | { type: "turn_started"; runId: string }
   | { type: "assistant_text_delta"; text: string }
   | { type: "assistant_thinking_delta"; text: string }
+  | { type: "file_artifacts"; artifacts: import("../../session/artifacts/FileArtifact.js").FileArtifact[] }
   | {
       type: "tool_call_started";
       toolCallId: string;
@@ -66,6 +76,7 @@ export type WebGatewayEvent =
         detail?: "auto" | "low" | "high";
       }>;
     }
+  | { type: "tool_result_detail_available"; toolCallId: string; resultPath?: string; fullText?: string }
   | {
       type: "permission_request";
       requestId: string;
@@ -87,8 +98,24 @@ export type WebGatewayEvent =
   | { type: "config_changed"; changedPaths: string[]; changeClasses: string[] }
   | { type: "worktree_created"; runId: string; cwd: string }
   | { type: "worktree_removed"; cwd: string }
+  | { type: "agent_status"; event: string; detail?: Record<string, unknown> }
   | { type: "turn_completed"; usage: Record<string, number>; finishReason: string }
-  | { type: "error"; message: string; code?: string; recoverable: boolean };
+  | {
+      type: "error";
+      message: string;
+      code?: string;
+      recoverable: boolean;
+      userHint?: string;
+      providerError?: {
+        provider?: string;
+        protocol?: string;
+        status?: number;
+        code?: string;
+        message?: string;
+        raw?: string;
+      };
+    }
+);
 
 export type WebGatewayMethod =
   | "submit_turn"
@@ -132,6 +159,7 @@ export type WebSubmitTurnInput = {
   message: string;
   projectKey?: string;
   attachments?: WebChannelAttachment[];
+  runMode?: WebAgentRunMode;
   mode?: WebGatewayMode;
   basePermissionMode?: WebGatewayMode;
   /** Allow model-visible plan mode tools. Defaults to true only for explicit plan-mode turns. */
@@ -247,6 +275,7 @@ export type WebReadSessionMessagesResult = {
   messages: import("./webMessage.js").WebMessage[];
   nextCursor?: string;
   total?: number;
+  tokenUsage?: Record<string, unknown>;
   session: WebSessionInfo;
 };
 
@@ -275,6 +304,7 @@ export type WebForkSessionResult = {
   newSessionKey: string;
   prefillText: string;
   carriedMessageCount: number;
+  runMode?: WebAgentRunMode;
   mode?: WebGatewayMode;
 };
 

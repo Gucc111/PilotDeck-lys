@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { XCircle, GitBranch } from 'lucide-react';
@@ -8,13 +8,17 @@ import type {
   ClaudeWorkStatus,
   PilotDeckWorkStatus,
   PilotDeckPermissionSuggestion,
-  PermissionGrantResult,
+  SessionPermissionGrantResult,
 } from '../chat/types/types';
 import type { SessionStore } from '../../stores/useSessionStore';
 import { getSessionRequestParams, isReadOnlySession, type Project, type ProjectSession, type SessionProvider } from '../../types/app';
 import { getIntrinsicMessageKey } from '../chat/utils/messageKeys';
 import MessageRowV2 from './MessageRowV2';
 import SubagentDetailModal from './SubagentDetailModal';
+import ChatHistorySearchBar from './ChatHistorySearchBar';
+import { useRegisterChatHistorySearchControls } from './ChatHistorySearchController';
+import { useChatHistorySearch } from './useChatHistorySearch';
+import type { SearchableChatMessageInput } from './chatHistorySearchUtils';
 import { useSubagentMessages } from './useSubagentMessages';
 import { ProcessLiveStatus, ProcessRunHeader, StreamingThinkingPreview, type ProcessTraceStep } from './ProcessTrace';
 import { formatProcessDuration } from './processTraceUtils';
@@ -26,6 +30,7 @@ import {
   getWebFetchWaitingStep,
   shouldRenderLiveProcessGroup,
   shouldShowWebFetchWaitingHint,
+  splitLiveProcessGroupDetailMessages,
   type LiveProcessGroup,
   type RenderableMessageItem,
 } from './processGrouping';
@@ -58,7 +63,7 @@ type MessagesPaneV2Props = {
   onShowSettings?: () => void;
   onGrantSessionToolPermission?: (
     suggestion: PilotDeckPermissionSuggestion,
-  ) => PermissionGrantResult | null | undefined;
+  ) => SessionPermissionGrantResult | null | undefined;
   autoExpandTools?: boolean;
   showRawParameters?: boolean;
   showThinking?: boolean;
@@ -94,6 +99,22 @@ const MESSAGE_GAP_PX = 16;
 
 function isStreamingThinkingMessage(message: ChatMessage): boolean {
   return Boolean(message.isThinking && String(message.id || '').startsWith('__streaming_thinking_'));
+}
+
+function isRenderableAssistantProse(message: ChatMessage): boolean {
+  return (
+    message.type === 'assistant' &&
+    !message.isToolUse &&
+    !message.isThinking &&
+    !message.isStreaming &&
+    !message.isInteractivePrompt &&
+    !message.isSubagentContainer &&
+    !message.isTaskNotification &&
+    !message.isAgentActivity &&
+    !message.isAgentActivitySummary &&
+    typeof message.content === 'string' &&
+    message.content.trim().length > 0
+  );
 }
 
 function isSubagentThinkingPlaceholder(message: ChatMessage): boolean {
@@ -136,11 +157,13 @@ export function estimateMessageItemHeight(item: RenderableMessageItem): number {
   const processSummaryHeight = processSummaryCount * 32;
   const runHeaderHeight = (item.beforeRunAttachment ? 34 : 0) + (item.afterRunAttachment ? 34 : 0);
   const attachmentHeight = Array.isArray(item.message.attachments) && item.message.attachments.length > 0 ? 56 : 0;
+  const artifactCount = Array.isArray(item.message.artifacts) ? item.message.artifacts.length : 0;
+  const artifactHeight = artifactCount > 0 ? Math.min(artifactCount, 3) * 64 + 34 : 0;
   const imageHeight = Array.isArray(item.message.images) && item.message.images.length > 0 ? 180 : 0;
   const toolHeight = item.message.isToolUse || item.message.toolName ? 140 : 0;
 
   return clampNumber(
-    baseHeight + roughLines * 20 + runHeaderHeight + processSummaryHeight + attachmentHeight + imageHeight + toolHeight + MESSAGE_GAP_PX,
+    baseHeight + roughLines * 20 + runHeaderHeight + processSummaryHeight + attachmentHeight + artifactHeight + imageHeight + toolHeight + MESSAGE_GAP_PX,
     72,
     720,
   );
@@ -231,6 +254,7 @@ function MeasuredMessageItem({
     <div
       ref={itemRef}
       className={`chat-message ${isLast ? '' : compactBottomSpacing ? 'pb-2' : 'pb-4'}`}
+      data-message-key={itemKey}
       data-message-timestamp={message.timestamp ? String(message.timestamp) : undefined}
     >
       {children}
@@ -274,7 +298,7 @@ function isForkedChatSession(session: ProjectSession | null): boolean {
   );
 }
 
-export default function MessagesPaneV2({
+function MessagesPaneV2({
   scrollContainerRef,
   onWheel,
   onTouchMove,
@@ -452,15 +476,21 @@ export default function MessagesPaneV2({
   );
   const renderableMessages = useMemo(
     () => {
-      const filtered = visibleMessages.filter((message) =>
+      const lastUserIndex = isAssistantWorking
+        ? visibleMessages.reduce((lastIndex, message, index) => (
+            message.type === 'user' ? index : lastIndex
+          ), -1)
+        : -1;
+      const filtered = visibleMessages.filter((message, index) =>
         !message.isAgentActivity &&
         !isSubagentThinkingPlaceholder(message) &&
+        !(isAssistantWorking && message.isThinking && !message.isStreaming && index < lastUserIndex) &&
         (!inlineThinking && isStreamingThinkingMessage(message) ? false : true) &&
         !(message.isThinking && !showThinking)
       );
       return filtered;
     },
-    [visibleMessages, showThinking, inlineThinking],
+    [visibleMessages, showThinking, inlineThinking, isAssistantWorking],
   );
   const liveProcessDetailMessages = useMemo(
     () => isAssistantWorking ? getLiveProcessDetailMessages(renderableMessages) : [],
@@ -742,16 +772,23 @@ export default function MessagesPaneV2({
     const isLatestGroup = liveProcessGroups[liveProcessGroups.length - 1]?.id === group.id;
     const step = getLiveProcessGroupStep(group, t, group.isRunning && isLatestGroup ? liveStatusStep : null);
     const showWebFetchWaiting = shouldShowWebFetchWaitingHint(group, resolvedPlanModeActive);
+    const expanded = isProcessExpanded(group.id);
+    const { beforeStatusMessages, statusDetailMessages } = splitLiveProcessGroupDetailMessages(group);
     return (
       <Fragment key={group.id || `${group.afterOriginalIndex}-${index}`}>
+        {expanded && beforeStatusMessages.length > 0 ? (
+          <div className="pl-5">
+            {renderLiveProcessDetailMessages(beforeStatusMessages, `${group.id}-before-status`)}
+          </div>
+        ) : null}
         <ProcessLiveStatus
           step={step}
           compact
-          expanded={isProcessExpanded(group.id)}
+          expanded={expanded}
           onExpandedChange={(expanded) => handleProcessExpandedChange(group.id, expanded)}
         >
-          {group.detailMessages.length > 0
-            ? renderLiveProcessDetailMessages(group.detailMessages, group.id)
+          {statusDetailMessages.length > 0
+            ? renderLiveProcessDetailMessages(statusDetailMessages, group.id)
             : null}
         </ProcessLiveStatus>
         {showWebFetchWaiting ? (
@@ -785,6 +822,31 @@ export default function MessagesPaneV2({
     );
     const anchoredLiveGroups = liveProcessGroupsByAnchor.get(item.originalIndex) || [];
     const rendersLiveHeaderAfterItem = item.renderIndex === liveProcessHeaderIndex - 1;
+    const showAssistantActions = (() => {
+      if (!isRenderableAssistantProse(item.message)) {
+        return false;
+      }
+      if (isAssistantWorking && item.renderIndex >= liveProcessHeaderIndex) {
+        return false;
+      }
+
+      for (let index = item.renderIndex + 1; index < keyedMessageItems.length; index += 1) {
+        const candidate = keyedMessageItems[index]?.message;
+        if (!candidate) {
+          continue;
+        }
+        if (candidate.type === 'user') {
+          break;
+        }
+        if (candidate.type === 'error') {
+          return false;
+        }
+        if (isRenderableAssistantProse(candidate)) {
+          return false;
+        }
+      }
+      return true;
+    })();
 
     return (
       <Fragment key={item.itemKey}>
@@ -833,6 +895,7 @@ export default function MessagesPaneV2({
             onFork={onFork}
             forkCarriedMessageCount={forkCarriedMessageCount}
             forkDisabled={forkDisabled}
+            showAssistantActions={showAssistantActions}
           />
           {rendersLiveHeaderAfterItem ? (
             <LiveProcessHeader
@@ -885,13 +948,48 @@ export default function MessagesPaneV2({
     t,
   ]);
 
+  const keyedMessagesForSearch = useMemo<SearchableChatMessageInput[]>(() => {
+    return keyedMessageItems.map((item) => (
+      {
+        message: item.message,
+        messageKey: item.itemKey,
+        messageIndex: item.renderIndex,
+      }
+    ));
+  }, [keyedMessageItems]);
+
+  const chatHistorySearch = useChatHistorySearch({
+    scrollContainerRef,
+    keyedMessages: keyedMessagesForSearch,
+    measuredItemHeights,
+    allMessagesLoaded,
+    hasMoreMessages,
+    loadAllMessages,
+    sessionId,
+    renderWindowKey: `${virtualWindow.startIndex}:${virtualWindow.endIndex}`,
+  });
+  const searchIsRenderedByShell = useRegisterChatHistorySearchControls(chatHistorySearch);
+
   return (
-    <div
-      ref={scrollContainerRef}
-      onWheel={onWheel}
-      onTouchMove={onTouchMove}
-      className="relative flex-1 overflow-y-auto overflow-x-hidden bg-white dark:bg-neutral-950"
-    >
+    <div className="relative min-h-0 flex-1 overflow-hidden">
+      {chatHistorySearch.isOpen && !searchIsRenderedByShell ? (
+        <ChatHistorySearchBar
+          query={chatHistorySearch.query}
+          onQueryChange={chatHistorySearch.setQuery}
+          matchCount={chatHistorySearch.matches.length}
+          activeMatchIndex={chatHistorySearch.activeMatchIndex}
+          onPrevious={chatHistorySearch.goToPrevious}
+          onNext={chatHistorySearch.goToNext}
+          onClose={chatHistorySearch.closeSearch}
+          inputRef={chatHistorySearch.inputRef}
+        />
+      ) : null}
+      <div
+        ref={scrollContainerRef}
+        onWheel={onWheel}
+        onTouchMove={onTouchMove}
+        className="h-full overflow-y-auto overflow-x-hidden bg-white dark:bg-neutral-950"
+      >
       {hasSessionLoadError ? (
         <div className="mx-auto flex h-full max-w-[720px] flex-col items-center justify-center gap-3 px-6 py-10 text-center">
           <XCircle className="h-5 w-5 text-amber-600 dark:text-amber-400" strokeWidth={1.75} />
@@ -1092,9 +1190,12 @@ export default function MessagesPaneV2({
           onClose={() => setOpenSubagentId(null)}
         />
       ) : null}
+      </div>
     </div>
   );
 }
+
+export default memo(MessagesPaneV2);
 
 function isSubagentActivity(activity: ChatMessage): boolean {
   const activityId = String(activity.activityId || activity.runId || '');

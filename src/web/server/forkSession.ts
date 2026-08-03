@@ -22,7 +22,7 @@ import type {
   AgentSessionMetadataTranscriptEntry,
   AgentTranscriptEntry,
 } from "../../session/transcript/TranscriptEntry.js";
-import type { WebGatewayMode, WebForkSessionInput, WebForkSessionResult } from "../client/protocol.js";
+import type { WebAgentRunMode, WebGatewayMode, WebForkSessionInput, WebForkSessionResult } from "../client/protocol.js";
 
 export type ForkWebSessionOptions = {
   projectRoot: string;
@@ -55,6 +55,11 @@ function hasUnsupportedPrefillContent(entry: AgentAcceptedInputTranscriptEntry):
 
 function getForkMode(entry: AgentAcceptedInputTranscriptEntry): WebGatewayMode | undefined {
   return entry.metadata?.permissionMode === "plan" ? "plan" : undefined;
+}
+
+function getForkRunMode(entry: AgentAcceptedInputTranscriptEntry): WebAgentRunMode | undefined {
+  const value = entry.metadata?.runMode;
+  return value === "agent" || value === "plan" || value === "ask" ? value : undefined;
 }
 
 function buildForkTitle(
@@ -154,7 +159,10 @@ function shouldPreserveSourceEntry(entry: AgentTranscriptEntry, forkPoint: ForkP
   // Assistant-message forks preserve the selected response as conversation
   // context. Keep the completion marker so replay does not drop that turn as
   // incomplete, without pulling in later durable messages from the same turn.
-  return entry.type === "turn_result" && entry.turnId === forkPoint.target.turnId;
+  return (
+    entry.turnId === forkPoint.target.turnId &&
+    (entry.type === "turn_result" || entry.type === "file_artifacts")
+  );
 }
 
 function retargetAuxiliaryPath(
@@ -463,6 +471,7 @@ export async function forkWebSession(
     );
   }
   const forkMode = getForkMode(forkAcceptedInput);
+  const forkRunMode = getForkRunMode(forkAcceptedInput);
   const preservedSourceEntries = entries.filter((entry) => shouldPreserveSourceEntry(entry, forkPoint));
   const forkInputText = extractAcceptedInputText(forkAcceptedInput);
   const prefillText = forkPoint.preserveTarget ? "" : forkInputText;
@@ -526,6 +535,7 @@ export async function forkWebSession(
     newSessionKey,
     prefillText,
     carriedMessageCount,
+    ...(forkRunMode ? { runMode: forkRunMode } : {}),
     ...(forkMode ? { mode: forkMode } : {}),
   };
 }

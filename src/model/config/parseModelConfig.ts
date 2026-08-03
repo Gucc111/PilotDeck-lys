@@ -104,13 +104,30 @@ function parseProvider(providerId: string, rawProvider: unknown, env?: Credentia
     id: providerId,
     protocol,
     url: rawUrl,
-    apiKey: resolveApiKey(provider.apiKey, env),
+    apiKey: resolveProviderApiKey(providerId, provider.apiKey, env, catalogProvider?.apiKeyEnvVar),
     timeoutMs: readOptionalPositiveNumber(provider.timeoutMs, "timeoutMs"),
     headers: readStringRecord(provider.headers, "headers"),
     extraBody: isRecord(provider.extraBody) ? (provider.extraBody as Record<string, unknown>) : undefined,
     retry: parseRetryConfig(provider.retry),
     models,
   };
+}
+
+function resolveProviderApiKey(
+  providerId: string,
+  value: unknown,
+  env?: CredentialEnv,
+  catalogEnvVar?: string,
+): string {
+  if (providerId === "ollama" && value === undefined) {
+    return "ollama";
+  }
+  const hasBlankString = typeof value === "string" && value.trim().length === 0;
+  const hasConfigValue = value !== undefined && value !== null && !hasBlankString;
+  const effectiveValue = hasConfigValue
+    ? value
+    : catalogEnvVar ? `\${${catalogEnvVar}}` : value;
+  return resolveApiKey(effectiveValue, env);
 }
 
 function resolveDefaultProviderUrl(
@@ -130,7 +147,8 @@ function parseRetryConfig(raw: unknown): ProviderRetryConfig | undefined {
   const result: ProviderRetryConfig = {};
   const numFields = [
     "requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs",
-    "baseDelayMs", "maxDelayMs",
+    "maxStreamingDurationMs", "repeatedChunkLimit",
+    "baseDelayMs", "maxDelayMs", "jitter",
   ] as const;
   for (const key of numFields) {
     const value = raw[key];
@@ -227,7 +245,12 @@ function parseCapabilities(
     }
   }
 
-  return mergeCapabilities(defaults, overrides);
+  return {
+    ...mergeCapabilities(defaults, overrides),
+    ...(capabilities.supportsThinking !== undefined
+      ? { supportsThinkingExplicit: capabilities.supportsThinking }
+      : {}),
+  } as ModelCapabilities;
 }
 
 function parseMultimodal(

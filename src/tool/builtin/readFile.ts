@@ -1,7 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { PilotDeckToolDefinition } from "../protocol/types.js";
+import type { PermissionResult, PermissionRule } from "../../permission/index.js";
 import { PilotDeckToolRuntimeError } from "../protocol/errors.js";
+import { applyResultSizeLimit } from "../protocol/result.js";
 import { resolvePilotDeckWorkspacePath } from "./filesystem/pathSafety.js";
 import { readFileInRange } from "./filesystem/readFileInRange.js";
 import {
@@ -27,6 +29,10 @@ export type ReadFileInput = {
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_TEXT_TOKENS = 25_000;
+const LARGE_TEXT_AUTO_PAGE_BYTES = 200_000;
+const SAFE_TEXT_BUDGET_BYTES = 80_000;
+const OVERSIZED_LINE_PREVIEW_BYTES = 20_000;
+const DEFAULT_LARGE_TEXT_PREVIEW_LINES = 2_000;
 const MAX_PDF_PAGES_PER_REQUEST = 20;
 const PDF_AT_MENTION_INLINE_THRESHOLD = 10;
 const PDF_EXTRACT_SIZE_THRESHOLD = 3 * 1024 * 1024;
@@ -42,6 +48,7 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
       + "If the User provides a path to a file, assume that path is valid as long as it resolves inside the current workspace. "
       + "It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n"
       + "- The file_path parameter may be a workspace-relative path or an absolute path, but it must resolve inside the current workspace\n"
+      + "- If the user asks you to send or share a file, use send_attachment instead of read_file; do not inspect arbitrary binary files before sending them\n"
       + "- By default, offset is 1 and the tool reads from the beginning of the file\n"
       + "- You can optionally specify offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters\n"
       + "- Results are returned using cat -n format, with line numbers starting at 1\n"
@@ -53,7 +60,8 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
       + "- For large PDFs, provide the pages parameter to validate specific page ranges (e.g., pages: \"1-5\"). Maximum 20 pages per request\n"
       + "- This tool can read Jupyter notebooks (.ipynb files) and returns a text rendering of notebook cells and outputs\n"
       + "- This tool can only read files, not directories\n"
-      + "- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents",
+      + "- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents\n"
+      + "- If a previous tool result says it was persisted, truncated, or preview-only, read the file_path shown in that notice with read_file",
     kind: "filesystem",
     inputSchema: {
       type: "object",
@@ -84,7 +92,9 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
     },
     maxResultBytes: 200_000,
     isReadOnly: () => true,
-    isConcurrencySafe: () => true,
+    isConcurrencySafe: () => false,
+    checkPermissions: async (input, context): Promise<PermissionResult> =>
+      checkReadFilePermission(input.file_path, context),
     validateInput: async (input, context) => {
       if (input.offset !== undefined && input.offset < 1) {
         return {
@@ -134,13 +144,21 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
       if (hasBinaryExtension(absolutePath)) {
         return {
           ok: false,
-          issues: [{ path: "file_path", code: "invalid_schema", message: "binary files are not supported by read_file." }],
+          issues: [{
+            path: "file_path",
+            code: "invalid_schema",
+            message: "binary files are not supported by read_file. Use the relevant document, spreadsheet, or presentation skill for Office files; convert archives or other binary files to a supported text, PDF, or image format before inspection. Use send_attachment/send_file only when the user wants this file sent back through the current channel.",
+          }],
         };
       }
       return { ok: true, input };
     },
     execute: async (input, context) => {
-      const resolved = resolvePilotDeckWorkspacePath(input.file_path, context, { mustExist: true });
+      const resolved = resolvePilotDeckWorkspacePath(input.file_path, context, {
+        mustExist: true,
+        allowRegisteredReadFiles: true,
+        allowOutsideWorkspace: context.currentPermissionDecision?.type === "allow",
+      });
       if (!resolved.ok) {
         throw new PilotDeckToolRuntimeError(resolved.error.code, resolved.error.message, resolved.error.details);
       }
@@ -177,10 +195,26 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
             data: { filePath: resolved.relativePath, kind, modelSupportsImage: false },
           };
         }
-        const imageBuffer = await readFile(resolved.absolutePath);
-        const validated = await validateAndRepairImage(imageBuffer, mimeType);
+        const imageBuffer = await readFile(resolved.absolutePath, { signal: context.abortSignal });
         const maxImageBytes = Math.min(MAX_IMAGE_BYTES, context.modelMultimodal?.maxImageBytes ?? MAX_IMAGE_BYTES);
-        const compressed = await compressImageForBudget(validated.buffer, validated.mimeType, maxImageBytes);
+        const preparedImage = await prepareImageForModel(imageBuffer, mimeType, maxImageBytes);
+        if (!preparedImage.ok) {
+          return {
+            content: [{
+              type: "text",
+              text: `[Image file: ${resolved.relativePath}, ${fileStat.size} bytes, ${mimeType}. Image decoding failed, so it was not attached as model-visible image content. Diagnostic: ${preparedImage.error}]`,
+            }],
+            data: {
+              filePath: resolved.relativePath,
+              kind,
+              mimeType,
+              bytes: imageBuffer.byteLength,
+              imageDecodeFailed: true,
+              error: preparedImage.error,
+            },
+          };
+        }
+        const compressed = preparedImage.image;
         readState.set(dedupKey, {
           mtimeMs: Math.floor(fileStat.mtimeMs),
           kind,
@@ -214,7 +248,7 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
           throw new PilotDeckToolRuntimeError("invalid_tool_input", `Invalid PDF page range: ${input.pages}.`);
         }
 
-        const pdfBuffer = await readFile(resolved.absolutePath);
+        const pdfBuffer = await readFile(resolved.absolutePath, { signal: context.abortSignal });
         const pageCount = await countPdfPages(pdfBuffer);
 
         if (
@@ -408,7 +442,10 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
           pages: input.pages,
         });
         recordWriteSnapshot(
-          context, resolved.absolutePath, await readFile(resolved.absolutePath, "utf8"), fileStat.mtimeMs,
+          context,
+          resolved.absolutePath,
+          await readFile(resolved.absolutePath, { encoding: "utf8", signal: context.abortSignal }),
+          fileStat.mtimeMs,
           { offset: input.offset, limit: input.limit },
         );
         return {
@@ -426,9 +463,40 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
         };
       }
 
-      const ranged = await readFileInRange(resolved.absolutePath, offset, input.limit);
-      const text = renderReadableRange(ranged.content, ranged.startLine, ranged.totalLines);
-      ensureTokenBudget(text, resolved.relativePath);
+      const effectiveLimit = input.limit ?? (fileStat.size > LARGE_TEXT_AUTO_PAGE_BYTES ? DEFAULT_LARGE_TEXT_PREVIEW_LINES : undefined);
+      let ranged = await readFileInRange(resolved.absolutePath, offset, effectiveLimit, context.abortSignal);
+      let text = renderReadableRange(ranged.content, ranged.startLine, ranged.totalLines);
+      let autoPaged = input.limit === undefined && effectiveLimit !== undefined;
+      let toolResultRefAutoPaged = false;
+      if (autoPaged) {
+        while (isOverTextBudget(text) && ranged.lineCount > 1) {
+          const nextLimit = Math.max(1, Math.floor(ranged.lineCount / 2));
+          ranged = await readFileInRange(resolved.absolutePath, offset, nextLimit, context.abortSignal);
+          text = renderReadableRange(ranged.content, ranged.startLine, ranged.totalLines);
+        }
+      }
+      if (!autoPaged && isManagedToolResultRefPath(resolved.relativePath)) {
+        while (isOverTextBudget(text) && ranged.lineCount > 1) {
+          const nextLimit = Math.max(1, Math.floor(ranged.lineCount / 2));
+          ranged = await readFileInRange(resolved.absolutePath, offset, nextLimit, context.abortSignal);
+          text = renderReadableRange(ranged.content, ranged.startLine, ranged.totalLines);
+          toolResultRefAutoPaged = true;
+        }
+      }
+      if (isOverTextBudget(text) && input.limit === undefined) {
+        autoPaged = true;
+        text = renderOversizedLinePreview(text, resolved.relativePath, ranged.startLine);
+      }
+      if (isOverTextBudget(text) && toolResultRefAutoPaged) {
+        text = renderOversizedLinePreview(text, resolved.relativePath, ranged.startLine);
+      }
+      ensureTokenBudget(text, resolved.relativePath, ranged.startLine);
+      if (autoPaged && ranged.truncated) {
+        text += renderReadMoreNotice(resolved.relativePath, ranged.endLine + 1, ranged.lineCount);
+      }
+      if (toolResultRefAutoPaged && ranged.truncated) {
+        text += renderToolResultRefReadMoreNotice(resolved.relativePath, ranged.endLine + 1, ranged.lineCount);
+      }
       readState.set(dedupKey, {
         mtimeMs: ranged.mtimeMs,
         kind,
@@ -437,8 +505,11 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
         pages: input.pages,
       });
       recordWriteSnapshot(
-        context, resolved.absolutePath, ranged.fullContent, ranged.mtimeMs,
-        { offset: input.offset, limit: input.limit },
+        context,
+        resolved.absolutePath,
+        ranged.fullContent ?? ranged.content,
+        ranged.mtimeMs,
+        { offset: input.offset, limit: input.limit ?? (ranged.fullContent === undefined ? ranged.lineCount : undefined) },
       );
       return {
         content: [{ type: "text", text }],
@@ -449,6 +520,8 @@ export function createReadFileTool(): PilotDeckToolDefinition<ReadFileInput> {
           endLine: ranged.endLine,
           totalLines: ranged.totalLines,
           truncated: ranged.truncated,
+          autoPaged: autoPaged || toolResultRefAutoPaged,
+          nextOffset: ranged.truncated ? ranged.endLine + 1 : undefined,
         },
         metadata: { truncated: ranged.truncated },
       };
@@ -490,6 +563,45 @@ function renderReadableRange(content: string, startLine: number, totalLines: num
 
 function renderNumberedLines(lines: string[], startLine: number): string {
   return lines.map((line, index) => `${startLine + index}|${line}`).join("\n");
+}
+
+function renderReadMoreNotice(filePath: string, nextOffset: number, limit: number): string {
+  return "\n<system-reminder>"
+    + `The file is too large to read in one response, so read_file returned the first ${limit} lines. `
+    + `Continue with read_file({ file_path: "${filePath}", offset: ${nextOffset}, limit: ${limit} }) if you need more.`
+    + "</system-reminder>";
+}
+
+function renderToolResultRefReadMoreNotice(filePath: string, nextOffset: number, limit: number): string {
+  return "\n<system-reminder>"
+    + `The persisted tool result was too large for the requested range, so read_file returned ${limit} lines. `
+    + `Continue with read_file({ file_path: "${filePath}", offset: ${nextOffset}, limit: ${limit} }) if you need more.`
+    + "</system-reminder>";
+}
+
+function isManagedToolResultRefPath(filePath: string): boolean {
+  return /^\.pilotdeck[\\/]tool-results[\\/]refs[\\/]result-\d+\.(?:txt|json)$/.test(filePath);
+}
+
+function renderOversizedLinePreview(text: string, filePath: string, offset: number): string {
+  const limitedContent = applyResultSizeLimit([{ type: "text", text }], OVERSIZED_LINE_PREVIEW_BYTES).content[0];
+  const limited = limitedContent?.type === "text" ? limitedContent.text : text;
+  return limited
+    + "\n<system-reminder>"
+    + "This line range is still too large for the model context, so read_file returned a head/tail preview. "
+    + `Use a smaller line range, for example read_file({ file_path: "${filePath}", offset: ${offset}, limit: 1 }), or use grep to find the relevant section.`
+    + "</system-reminder>";
+}
+
+function isOverTextBudget(text: string): boolean {
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > LARGE_TEXT_AUTO_PAGE_BYTES) {
+    return true;
+  }
+  if (bytes <= SAFE_TEXT_BUDGET_BYTES) {
+    return false;
+  }
+  return countTokens(text) > MAX_TEXT_TOKENS;
 }
 
 async function renderPdfPagesAsImages(
@@ -586,11 +698,14 @@ function sliceRenderedText(
   };
 }
 
-function ensureTokenBudget(text: string, filePath: string): void {
-  if (countTokens(text) > MAX_TEXT_TOKENS) {
+function ensureTokenBudget(text: string, filePath: string, suggestedOffset?: number): void {
+  if (isOverTextBudget(text)) {
+    const action = suggestedOffset === undefined
+      ? "Use offset and limit to read a smaller portion."
+      : `Use a smaller limit, for example read_file({ file_path: "${filePath}", offset: ${suggestedOffset}, limit: 500 }).`;
     throw new PilotDeckToolRuntimeError(
       "result_too_large",
-      `File content from ${filePath} exceeds the text token budget. Use offset and limit to read a smaller portion.`,
+      `File content from ${filePath} exceeds the text token budget. ${action}`,
     );
   }
 }
@@ -637,6 +752,27 @@ async function validateAndRepairImage(
       `Image file appears truncated or corrupted (${buffer.length} bytes). Cannot decode.`,
     );
   }
+}
+
+async function prepareImageForModel(
+  buffer: Buffer,
+  mimeType: string,
+  maxBytes: number,
+): Promise<
+  | { ok: true; image: { buffer: Buffer; mimeType: string } }
+  | { ok: false; error: string }
+> {
+  try {
+    const validated = await validateAndRepairImage(buffer, mimeType);
+    return { ok: true, image: await compressImageForBudget(validated.buffer, validated.mimeType, maxBytes) };
+  } catch (error) {
+    return { ok: false, error: formatImageDecodeError(error) };
+  }
+}
+
+function formatImageDecodeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").slice(0, 300) || "unknown image decode error";
 }
 
 /**
@@ -717,4 +853,73 @@ async function compressImageForBudget(
     );
   }
   return { buffer: output, mimeType: outputMimeType };
+}
+
+function checkReadFilePermission(
+  inputPath: string,
+  context: Parameters<NonNullable<PilotDeckToolDefinition<ReadFileInput>["checkPermissions"]>>[1],
+): PermissionResult {
+  const workspaceResolved = resolvePilotDeckWorkspacePath(inputPath, context, {
+    mustExist: true,
+    allowRegisteredReadFiles: true,
+  });
+  if (workspaceResolved.ok) {
+    return { type: "passthrough" };
+  }
+  if (workspaceResolved.error.code !== "path_not_allowed") {
+    return {
+      type: "deny",
+      reason: { type: "safety", message: workspaceResolved.error.message },
+      message: workspaceResolved.error.message,
+    };
+  }
+
+  const outsideResolved = resolvePilotDeckWorkspacePath(inputPath, context, {
+    mustExist: true,
+    allowOutsideWorkspace: true,
+  });
+  if (!outsideResolved.ok) {
+    return {
+      type: "deny",
+      reason: { type: "safety", message: outsideResolved.error.message },
+      message: outsideResolved.error.message,
+    };
+  }
+
+  const rule = buildRecursiveReadFileRule(outsideResolved.absolutePath);
+  const reason = {
+    type: "tool" as const,
+    toolName: "read_file",
+    message: "read_file targets a path outside the workspace.",
+  };
+  return {
+    type: "ask",
+    reason,
+    request: {
+      toolCallId: "",
+      toolName: "read_file",
+      inputSummary: JSON.stringify({ file_path: outsideResolved.absolutePath }),
+      reason,
+      options: [
+        { id: "allow_once", label: "Allow once" },
+        { id: "allow_session", label: "Allow this folder for this session", rules: [rule] },
+        { id: "deny", label: "Deny" },
+        { id: "cancel", label: "Cancel" },
+      ],
+      metadata: {
+        externalPath: outsideResolved.absolutePath,
+        allowedDirectory: path.dirname(outsideResolved.absolutePath),
+        pattern: rule.pattern,
+      },
+    },
+  };
+}
+
+function buildRecursiveReadFileRule(absolutePath: string): PermissionRule {
+  return {
+    source: "session",
+    behavior: "allow",
+    toolName: "read_file",
+    pattern: path.join(path.dirname(absolutePath), "*"),
+  };
 }

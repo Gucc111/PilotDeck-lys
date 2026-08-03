@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { writeFile, mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { extname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentEvent, AgentInput, AgentTurnResult } from "../../agent/index.js";
 import {
   flattenToolResultBlockText,
   type CanonicalContentBlock,
+  type CanonicalMessage,
+  type CanonicalModelError,
   type CanonicalModelEvent,
 } from "../../model/index.js";
+import type { AgentError } from "../../agent/index.js";
 import { contentToText } from "../../tool/index.js";
 import type { SessionRouter } from "../SessionRouter.js";
 import { GatewayElicitationBus } from "../elicitation/GatewayElicitationBus.js";
@@ -22,12 +25,14 @@ import type {
   GatewayElicitationResponseInput,
   GatewayEvent,
   GatewayPermissionDecisionInput,
+  GatewayRecordAgentStatusMessageInput,
   GatewaySessionPermissionGrantInput,
   GatewayServerInfo,
   GatewaySubmitTurnInput,
   ListSessionsInput,
   ListSessionsResult,
   NewSessionInput,
+  PrepareWeixinLoginResult,
   AlwaysOnApplyInput,
   AlwaysOnApplyResult,
   AlwaysOnRerunPlanInput,
@@ -77,10 +82,13 @@ import type {
   SkillsListInput,
   SkillsListResult,
 } from "../../extension/skills/types.js";
+import { createVisibleErrorStatusDetail } from "../../status/agentStatus.js";
 import type { TelemetryClient } from "../../telemetry/index.js";
 import type { TelemetryExecutionKind, TelemetryModule } from "../../telemetry/index.js";
 
 const PLAN_COMMAND_USAGE = "用法：/plan <任务>\n例如：/plan 设计一个新功能";
+const MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS = 20_000;
+const MAX_GATEWAY_TOOL_DATA_STRING_CHARS = 4_000;
 
 export type InProcessGatewayOptions = {
   now?: () => Date;
@@ -95,6 +103,7 @@ export type InProcessGatewayOptions = {
   readSessionMessages?: (input: WebReadSessionMessagesInput) => Promise<WebReadSessionMessagesResult>;
   readSubagentMessages?: (input: WebReadSubagentMessagesInput) => Promise<WebReadSubagentMessagesResult>;
   forkSession?: (input: WebForkSessionInput) => Promise<WebForkSessionResult>;
+  recordAgentStatusMessage?: (input: GatewayRecordAgentStatusMessageInput) => Promise<{ recorded: boolean }>;
   /**
    * Web Phase 3 — pluggable project enumerator + describer.
    */
@@ -106,6 +115,7 @@ export type InProcessGatewayOptions = {
    * the PilotConfigStore + ProjectRuntimeRegistry lifecycle.
    */
   reloadConfig?: () => Promise<ReloadConfigResult>;
+  prepareWeixinLogin?: () => Promise<PrepareWeixinLoginResult>;
   /**
    * Pluggable extension/MCP reload handler wired by `createLocalGateway`.
    * Unlike `reloadConfig`, this does not depend on `pilotdeck.yaml` changing.
@@ -129,7 +139,7 @@ export type InProcessGatewayOptions = {
    */
   refreshConfigBeforeTurn?: () => Promise<void>;
   /**
-   * Authoritative skill CRUD manager backed by `~/.pilotdeck/skills/`.
+   * Authoritative skill CRUD manager for built-in, user, and project skills.
    * Wired by `createLocalGateway` so every host (CLI, TUI, Web UI bridge,
    * SDK) reads and writes the same skill directory the agent loads from.
    */
@@ -233,8 +243,9 @@ export class InProcessGateway implements Gateway {
   emitForSession(sessionKey: string, event: GatewayEvent): boolean {
     const sink = this.emitSinks.get(sessionKey);
     if (!sink) return false;
-    this.recordActiveTurnEvent(sessionKey, event);
-    sink(event);
+    const eventWithRunId = this.withActiveTurnRunId(sessionKey, event);
+    this.recordActiveTurnEvent(sessionKey, eventWithRunId);
+    sink(eventWithRunId);
     return true;
   }
 
@@ -292,11 +303,25 @@ export class InProcessGateway implements Gateway {
     }
     const runId = input.runId ?? this.uuid();
     if (!this.router.beginTurn(input.sessionKey, runId)) {
+      const message = `Session ${input.sessionKey} already has an active turn.`;
+      const userHint = "Wait for the current turn to finish or stop it before sending another message.";
+      yield {
+        type: "agent_status",
+        event: "session_busy",
+        detail: createVisibleErrorStatusDetail({
+          message,
+          code: "session_busy",
+          userHint,
+          scope: "session",
+          source: "gateway",
+        }),
+      };
       yield {
         type: "error",
         code: "session_busy",
-        message: `Session ${input.sessionKey} already has an active turn.`,
+        message,
         recoverable: true,
+        userHint,
       };
       return;
     }
@@ -316,6 +341,22 @@ export class InProcessGateway implements Gateway {
       truncated: false,
     });
     this.emitSinks.set(input.sessionKey, (event) => queue.enqueue(event));
+    const emitGatewayFailureStatus = (status: GatewayRecordAgentStatusMessageInput["status"]): Promise<void> => {
+      const recorded = this.recordGatewayStatusMessage({
+        sessionKey: input.sessionKey,
+        turnId: runId,
+        projectKey: input.projectKey,
+        status,
+      });
+      const statusEvent: GatewayEvent = {
+        type: "agent_status",
+        event: status.event,
+        detail: status.detail,
+      };
+      this.recordActiveTurnEvent(input.sessionKey, statusEvent);
+      queue.enqueue(statusEvent);
+      return recorded;
+    };
 
     if (input.workspaceCwd && this.options.setSessionCwd) {
       this.options.setSessionCwd(input.sessionKey, input.workspaceCwd);
@@ -336,11 +377,21 @@ export class InProcessGateway implements Gateway {
         if (input.timeoutMs !== undefined && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0) {
           timeoutHandle = setTimeout(() => {
             timedOut = true;
+            const message = `Turn exceeded the ${input.timeoutMs}ms timeout.`;
+            void emitGatewayFailureStatus(createGatewayFailureStatus({
+              event: "turn_timeout",
+              code: "turn_timeout",
+              message,
+              userHint: "The turn exceeded its wall-clock limit. Retry with a smaller task or increase the timeout.",
+              detail: { timeoutMs: input.timeoutMs },
+            }));
             const gatewayEvent: GatewayEvent = {
               type: "error",
+              runId,
               code: "turn_timeout",
-              message: `Turn exceeded the ${input.timeoutMs}ms timeout.`,
+              message,
               recoverable: false,
+              userHint: "The turn exceeded its wall-clock limit. Retry with a smaller task or increase the timeout.",
             };
             this.recordActiveTurnEvent(input.sessionKey, gatewayEvent);
             queue.enqueue(gatewayEvent);
@@ -357,6 +408,8 @@ export class InProcessGateway implements Gateway {
         }
         const permissionSettings = readPermissionSettings();
         const inputMode = normalizeGatewayModeForLegacyInput((input as { mode?: unknown }).mode);
+        const runMode = normalizeGatewayRunMode((input as { runMode?: unknown }).runMode)
+          ?? (inputMode === "plan" ? "plan" : "agent");
         const permissionMode = inputMode ?? (permissionSettings.skipPermissions ? "bypassPermissions" : undefined);
         const basePermissionMode = normalizeGatewayModeForLegacyInput((input as { basePermissionMode?: unknown }).basePermissionMode);
         const allowPlanModeTools = input.allowPlanModeTools ?? inputMode === "plan";
@@ -379,23 +432,33 @@ export class InProcessGateway implements Gateway {
         // Promote a text-only turn to blocks when the host channel attached
         // files/images. UI uploads come through this path; resolving them here
         // keeps attachment semantics in the gateway for every client.
+        const allowedReadFiles = await collectRegisteredAttachmentReadFiles(input.attachments);
         const agentInput = await buildAgentInputWithAttachments(
           input.message,
           input.attachments,
+          allowedReadFiles,
         );
+        const syntheticMessages: CanonicalMessage[] = (input.syntheticMessages ?? []).map((s) => ({
+          role: "user" as const,
+          content: [{ type: "text" as const, text: s.text }],
+          metadata: { synthetic: true, purpose: s.purpose ?? "channel_hint" },
+        }));
         for await (const event of session.submit(
           agentInput,
           {
             turnId: runId,
             maxTurns: input.maxTurns,
+            runMode,
             permissionMode,
             basePermissionMode,
             allowPlanModeTools,
             canPrompt: input.canPrompt,
+            allowedReadFiles,
             permissionRules: {
               ...persistedRules,
               allow: [...sessionAllowRules, ...persistedRules.allow],
             },
+            ...(syntheticMessages.length > 0 ? { syntheticMessages } : {}),
           },
         )) {
           if (this.turnCompletions.get(input.sessionKey) !== turnDone) {
@@ -411,6 +474,19 @@ export class InProcessGateway implements Gateway {
             phase: telemetryContext.phase,
           });
           for (const gatewayEvent of mapAgentEvent(event, runId)) {
+            if (gatewayEvent.type === "context_budget") {
+              this.recordGatewayStatusMessage({
+                sessionKey: input.sessionKey,
+                turnId: runId,
+                projectKey: input.projectKey,
+                status: {
+                  event: "context_budget",
+                  kind: "status",
+                  text: "context_budget",
+                  detail: { ...gatewayEvent },
+                },
+              }).catch(() => {});
+            }
             this.recordActiveTurnEvent(input.sessionKey, gatewayEvent);
             queue.enqueue(gatewayEvent);
           }
@@ -430,11 +506,20 @@ export class InProcessGateway implements Gateway {
           },
         });
         if (this.turnCompletions.get(input.sessionKey) === turnDone) {
+          const message = error instanceof Error ? error.message : String(error);
+          await emitGatewayFailureStatus(createGatewayFailureStatus({
+            event: "gateway_submit_failed",
+            code: "gateway_submit_failed",
+            message,
+            userHint: "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
+          }));
           const gatewayEvent: GatewayEvent = {
             type: "error",
+            runId,
             code: "gateway_submit_failed",
-            message: error instanceof Error ? error.message : String(error),
+            message,
             recoverable: false,
+            userHint: "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
           };
           this.recordActiveTurnEvent(input.sessionKey, gatewayEvent);
           queue.enqueue(gatewayEvent);
@@ -486,8 +571,9 @@ export class InProcessGateway implements Gateway {
     }
   }
 
-  async abortTurn(input: { sessionKey: string; runId?: string }): Promise<void> {
-    await this.router.abort(input.sessionKey, input.runId ? `aborted:${input.runId}` : "aborted");
+  async abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void> {
+    const reason = input.reason ?? (input.runId ? `aborted:${input.runId}` : "aborted");
+    await this.router.abort(input.sessionKey, reason);
     // Wait for the in-flight `submitTurn` (if any) to fully unwind so
     // `inFlightTurns` has been cleared by the time the RPC response is
     // sent. Otherwise a fast "stop → re-send" from a client races the
@@ -515,6 +601,24 @@ export class InProcessGateway implements Gateway {
   async closeSession(input: { sessionKey: string; reason?: string }): Promise<void> {
     await this.router.close(input.sessionKey);
     this.sessionPermissionGrants.delete(input.sessionKey);
+  }
+
+  async recordAgentStatusMessage(input: GatewayRecordAgentStatusMessageInput): Promise<{ recorded: boolean }> {
+    if (!this.options.recordAgentStatusMessage) {
+      return { recorded: false };
+    }
+    return this.options.recordAgentStatusMessage(input);
+  }
+
+  private async recordGatewayStatusMessage(input: GatewayRecordAgentStatusMessageInput): Promise<void> {
+    if (!this.options.recordAgentStatusMessage) {
+      return;
+    }
+    try {
+      await this.options.recordAgentStatusMessage(input);
+    } catch (error) {
+      console.warn("[pilotdeck] failed to record gateway status message:", error);
+    }
   }
 
   async describeServer(): Promise<GatewayServerInfo> {
@@ -645,14 +749,25 @@ export class InProcessGateway implements Gateway {
 
   async reloadConfig(): Promise<ReloadConfigResult> {
     if (!this.options.reloadConfig) {
-      return { reloaded: false };
+      return { reloaded: false, reason: "unsupported" };
     }
     return this.options.reloadConfig();
   }
 
+  async prepareWeixinLogin(): Promise<PrepareWeixinLoginResult> {
+    if (!this.options.prepareWeixinLogin) {
+      return {
+        requested: false,
+        requestedAt: new Date().toISOString(),
+        reason: "unsupported",
+      };
+    }
+    return this.options.prepareWeixinLogin();
+  }
+
   async reloadExtensions(input?: import("../protocol/types.js").ReloadExtensionsInput): Promise<import("../protocol/types.js").ReloadExtensionsResult> {
     if (!this.options.reloadExtensions) {
-      return { reloaded: false };
+      return { reloaded: false, reason: "unsupported" };
     }
     return this.options.reloadExtensions(input);
   }
@@ -667,6 +782,10 @@ export class InProcessGateway implements Gateway {
 
   setAlwaysOnRerunPlan(handler: InProcessGatewayOptions["alwaysOnRerunPlan"]): void {
     (this.options as { alwaysOnRerunPlan?: InProcessGatewayOptions["alwaysOnRerunPlan"] }).alwaysOnRerunPlan = handler;
+  }
+
+  setPrepareWeixinLogin(handler: InProcessGatewayOptions["prepareWeixinLogin"]): void {
+    (this.options as { prepareWeixinLogin?: InProcessGatewayOptions["prepareWeixinLogin"] }).prepareWeixinLogin = handler;
   }
 
   // -------------------------------------------------------------------
@@ -770,10 +889,28 @@ export class InProcessGateway implements Gateway {
       replay.truncated = true;
     }
   }
+
+  private withActiveTurnRunId(sessionKey: string, event: GatewayEvent): GatewayEvent {
+    if (getGatewayEventRunId(event)) return event;
+    const replay = this.activeTurnReplays.get(sessionKey);
+    if (!replay) return event;
+    return { ...event, runId: replay.runId };
+  }
 }
 
 function cloneGatewayEvent(event: GatewayEvent): GatewayEvent {
   return JSON.parse(JSON.stringify(event)) as GatewayEvent;
+}
+
+function getGatewayEventRunId(event: GatewayEvent): string | undefined {
+  return typeof event.runId === "string" && event.runId.trim()
+    ? event.runId.trim()
+    : undefined;
+}
+
+function withGatewayRunId(event: GatewayEvent, runId: string): GatewayEvent {
+  if (getGatewayEventRunId(event)) return event;
+  return { ...event, runId };
 }
 
 function resolveSubmitTurnTelemetry(input: GatewaySubmitTurnInput): {
@@ -802,6 +939,28 @@ function resolveSubmitTurnTelemetry(input: GatewaySubmitTurnInput): {
   };
 }
 
+function createGatewayFailureStatus(args: {
+  event: string;
+  code: string;
+  message: string;
+  userHint: string;
+  detail?: Record<string, unknown>;
+}): GatewayRecordAgentStatusMessageInput["status"] {
+  return {
+    event: args.event,
+    kind: "error",
+    text: args.message,
+    detail: createVisibleErrorStatusDetail({
+      message: args.message,
+      code: args.code,
+      userHint: args.userHint,
+      scope: "turn",
+      source: "gateway",
+      detail: args.detail,
+    }),
+  };
+}
+
 export function normalizeGatewayModeForLegacyInput(value: unknown): GatewaySubmitTurnInput["mode"] | undefined {
   if (value === undefined || value === null || value === "") {
     return undefined;
@@ -810,6 +969,16 @@ export function normalizeGatewayModeForLegacyInput(value: unknown): GatewaySubmi
     return value;
   }
   return "default";
+}
+
+export function normalizeGatewayRunMode(value: unknown): GatewaySubmitTurnInput["runMode"] | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (value === "agent" || value === "plan" || value === "ask") {
+    return value;
+  }
+  return "agent";
 }
 
 function emitSessionTelemetry(
@@ -1159,13 +1328,19 @@ function inferToolErrorCategory(code: string | undefined):
 }
 
 export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] {
+  return mapAgentEventForTurn(event, runId).map((gatewayEvent) =>
+    withGatewayRunId(gatewayEvent, runId)
+  );
+}
+
+function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] {
   switch (event.type) {
     case "turn_started":
       return [{ type: "turn_started", runId }];
     case "model_request_started":
       return [{ type: "model_request_started", model: event.model, provider: event.provider }];
     case "model_event":
-      return mapModelEvent(event.event);
+      return mapModelEvent(event.event, runId);
     case "tool_calls_detected":
       return event.calls.map((call) => ({
         type: "tool_call_started",
@@ -1175,6 +1350,7 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
       }));
     case "tool_result": {
       const fullText = event.result.content.map(contentToText).join("\n");
+      const resultPreview = limitGatewayToolResultPreview(fullText);
       const lines = fullText.split("\n");
       const lineCount = lines.length;
       const totalBytes = Buffer.byteLength(fullText, "utf-8");
@@ -1212,13 +1388,43 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
             }]
           : [],
       );
+      const attachments = event.result.content.flatMap((item): GatewayEvent[] => {
+        if (item.type === "image" && event.result.toolName !== "read_file") {
+          return [{
+            type: "assistant_attachment",
+            attachment: {
+              type: "image",
+              mimeType: item.mimeType,
+              content: item.data,
+              bytes: item.bytes,
+              name: `${safeGatewayPathPart(event.result.toolName)}-${safeGatewayPathPart(event.result.toolCallId)}.${extensionForMime(item.mimeType)}`,
+              source: "tool_result",
+              metadata: { toolCallId: event.result.toolCallId, toolName: event.result.toolName },
+            },
+          }];
+        }
+        if (item.type === "file") {
+          return [{
+            type: "assistant_attachment",
+            attachment: {
+              type: "file",
+              path: item.path,
+              mimeType: item.mimeType,
+              name: item.path.split(/[\\/]/).pop(),
+              source: "tool_result",
+              metadata: { toolCallId: event.result.toolCallId, toolName: event.result.toolName, description: item.description },
+            },
+          }];
+        }
+        return [];
+      });
 
       return [
         {
           type: "tool_call_finished",
           toolCallId: event.result.toolCallId,
           ok: event.result.type === "success",
-          resultPreview: fullText,
+          resultPreview,
           resultLineCount: lineCount,
           resultBytes: totalBytes,
           toolName: event.result.toolName,
@@ -1226,11 +1432,14 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
           ...(images.length > 0 ? { images } : {}),
           ...(event.result.type === "error" && { errorCode: event.result.error.code }),
           ...(event.result.type === "success" && event.result.data
-            ? { data: event.result.data as Record<string, unknown> }
+            ? { data: sanitizeGatewayToolData(event.result.data) }
             : {}),
         },
+        ...attachments,
       ];
     }
+    case "file_artifacts":
+      return [{ type: "file_artifacts", artifacts: event.artifacts }];
     case "mode_change_requested":
       return [{ type: "plan_mode_changed", mode: event.mode }];
     case "turn_completed":
@@ -1243,8 +1452,46 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
           message: event.error.message,
           recoverable: false,
           userHint: event.error.userHint,
+          providerError: providerErrorFromAgentError(event.error),
         },
       ];
+    case "token_cap_adjusted":
+      return [{
+        type: "agent_status",
+        event: "token_cap_adjusted",
+        detail: {
+          provider: event.provider,
+          model: event.model,
+          cap: event.cap,
+          previous: event.previous,
+          next: event.next,
+          reason: event.reason,
+        },
+      }];
+    case "empty_output_recovery":
+      return [{
+        type: "agent_status",
+        event: "empty_output_recovery",
+        detail: {
+          provider: event.provider,
+          model: event.model,
+          finishReason: event.finishReason,
+          previousMaxOutputTokens: event.previousMaxOutputTokens,
+          nextMaxOutputTokens: event.nextMaxOutputTokens,
+        },
+      }];
+    case "model_recovery_failed":
+      return [{
+        type: "agent_status",
+        event: "model_recovery_failed",
+        detail: {
+          provider: event.provider,
+          model: event.model,
+          code: event.error.code,
+          message: event.error.message,
+          providerError: providerErrorFromModelError(event.error),
+        },
+      }];
     case "session_aborted":
       return [
         {
@@ -1269,6 +1516,19 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
             toolCallId: block.toolCallId,
             resultPath: block.path,
           });
+          if (block.reason === "media_result_too_large") continue;
+          events.push({
+            type: "assistant_attachment",
+            attachment: {
+              type: block.mediaType === "image" ? "image" : "file",
+              path: block.path,
+              mimeType: block.mimeType,
+              bytes: block.originalBytes,
+              name: block.path.split(/[\\/]/).pop(),
+              source: "media_reference",
+              metadata: { toolCallId: block.toolCallId, reason: block.reason },
+            },
+          });
         } else if (block.type === "tool_result") {
           const projFullText = flattenToolResultBlockText(block);
           events.push({
@@ -1290,15 +1550,40 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
       return [{
         type: "agent_status",
         event: "compact_completed",
-        detail: { status: event.status, preTokens: event.preTokens, postTokens: event.postTokens },
+        detail: {
+          status: event.status,
+          preTokens: event.preTokens,
+          postTokens: event.postTokens,
+          messagesSummarized: event.messagesSummarized,
+        },
       }];
     case "context_budget":
+      const reservedOutputTokens = event.snapshot.reservedOutputTokens ?? event.snapshot.maxOutputTokens ?? 0;
+      const totalContextTokens = event.snapshot.effectiveContextTokens !== undefined
+        ? event.snapshot.totalContextTokens ?? event.snapshot.effectiveContextTokens + reservedOutputTokens
+        : event.snapshot.totalContextTokens ?? event.snapshot.maxContextTokens + reservedOutputTokens;
       return [{
         type: "context_budget",
         used: event.snapshot.tokens,
-        total: event.snapshot.maxContextTokens,
+        displayUsed: event.snapshot.displayTokens,
+        budgetUsed: event.snapshot.budgetTokens,
+        total: totalContextTokens,
+        effectiveTotal: event.snapshot.effectiveContextTokens ?? event.snapshot.maxContextTokens,
+        reservedOutputTokens,
         ratio: event.snapshot.ratio,
         state: event.snapshot.state,
+      }];
+    case "warning":
+      return [{
+        type: "agent_status",
+        event: "warning",
+        detail: { code: event.code, message: event.message, metadata: event.metadata },
+      }];
+    case "agent_status":
+      return [{
+        type: "agent_status",
+        event: event.event,
+        detail: event.detail,
       }];
     case "turn_continued":
       return [{
@@ -1334,6 +1619,7 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
       }));
     case "subagent_tool_result": {
       const fullText = event.result.content.map(contentToText).join("\n");
+      const resultPreview = limitGatewayToolResultPreview(fullText);
       const lines = fullText.split("\n");
       return [{
         type: "agent_status",
@@ -1344,8 +1630,8 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
           toolCallId: event.result.toolCallId,
           toolName: event.result.toolName,
           ok: event.result.type === "success",
-          content: fullText,
-          preview: lines.slice(0, 3).join("\n"),
+          content: resultPreview,
+          preview: limitGatewayToolResultPreview(lines.slice(0, 3).join("\n")),
           resultLineCount: lines.length,
           resultBytes: Buffer.byteLength(fullText, "utf-8"),
           ...(event.result.type === "error" && { errorCode: event.result.error.code }),
@@ -1402,12 +1688,72 @@ export function mapAgentEvent(event: AgentEvent, runId: string): GatewayEvent[] 
   }
 }
 
-function mapModelEvent(event: CanonicalModelEvent): GatewayEvent[] {
+function limitGatewayToolResultPreview(text: string): string {
+  if (text.length <= MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS) {
+    return text;
+  }
+  const marker = `\n\n... [Gateway preview truncated: ${text.length - MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS} characters omitted; full result remains available through persisted tool-result references when shown to the model.] ...\n\n`;
+  const available = Math.max(0, MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS - marker.length);
+  const headLength = Math.ceil(available / 2);
+  const tailLength = Math.floor(available / 2);
+  return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
+}
+
+function sanitizeGatewayToolData(value: unknown): Record<string, unknown> {
+  const sanitized = sanitizeGatewayToolDataValue(value);
+  return isRecord(sanitized) ? sanitized : { value: sanitized };
+}
+
+function sanitizeGatewayToolDataValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return limitGatewayToolDataString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeGatewayToolDataValue);
+  }
+  if (isRecord(value)) {
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      output[key] = sanitizeGatewayToolDataValue(item);
+    }
+    return output;
+  }
+  return value;
+}
+
+function limitGatewayToolDataString(value: string): string | { preview: string; originalChars: number; originalBytes: number; truncated: true } {
+  if (value.length <= MAX_GATEWAY_TOOL_DATA_STRING_CHARS) {
+    return value;
+  }
+  return {
+    preview: headTailString(value, MAX_GATEWAY_TOOL_DATA_STRING_CHARS, "Gateway data string truncated"),
+    originalChars: value.length,
+    originalBytes: Buffer.byteLength(value, "utf8"),
+    truncated: true,
+  };
+}
+
+function headTailString(text: string, maxChars: number, label: string): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const marker = `\n\n... [${label}: ${text.length - maxChars} characters omitted] ...\n\n`;
+  const available = Math.max(0, maxChars - marker.length);
+  const headLength = Math.ceil(available / 2);
+  const tailLength = Math.floor(available / 2);
+  return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mapModelEvent(event: CanonicalModelEvent, runId: string): GatewayEvent[] {
   switch (event.type) {
     case "text_delta":
-      return [{ type: "assistant_text_delta", text: event.text }];
+      return [{ type: "assistant_text_delta", text: event.text, runId }];
     case "thinking_delta":
-      return [{ type: "assistant_thinking_delta", text: event.text }];
+      return [{ type: "assistant_thinking_delta", text: event.text, runId }];
     case "error":
       // Model-level errors are internal control flow until AgentLoop decides
       // whether they are recoverable. Surfacing them here duplicates the final
@@ -1464,6 +1810,7 @@ function normalizePlanCommandInput(input: GatewaySubmitTurnInput): GatewaySubmit
   return {
     ...input,
     message: parsed.message,
+    runMode: "plan",
     mode: "plan",
     basePermissionMode: input.basePermissionMode ?? input.mode ?? "default",
     allowPlanModeTools: true,
@@ -1506,12 +1853,41 @@ function safeGatewayPathPart(value: string): string {
   return value.trim().replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "value";
 }
 
+const ATTACHMENT_PATH_NOTE_MARKER = "[Registered attachment files in this session:]";
+const READ_FILE_BINARY_ATTACHMENT_EXTENSIONS = new Set([
+  ".zip",
+  ".gz",
+  ".tar",
+  ".7z",
+  ".rar",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  ".odt",
+  ".ods",
+  ".odp",
+  ".pages",
+  ".key",
+  ".numbers",
+]);
+
 async function buildAgentInputWithAttachments(
   message: string,
   attachments: ChannelAttachment[] | undefined,
+  allowedReadFiles: string[],
 ): Promise<AgentInput> {
-  const attachmentBlocks = await attachmentsToContentBlocks(attachments);
-  if (attachmentBlocks.length === 0) {
+  const resolvedAttachments = await attachmentsToContentBlocks(attachments);
+  const attachmentBlocks = resolvedAttachments.blocks;
+  const pathNote = buildAttachmentPathNote(
+    attachments,
+    new Set(allowedReadFiles),
+    resolvedAttachments.directContentPaths,
+    resolvedAttachments.hasDiagnostics,
+  );
+  if (attachmentBlocks.length === 0 && !pathNote) {
     return { type: "text", text: message };
   }
   const blocks: CanonicalContentBlock[] = [];
@@ -1521,15 +1897,110 @@ async function buildAgentInputWithAttachments(
   for (const block of attachmentBlocks) {
     blocks.push(block);
   }
+  if (pathNote) {
+    blocks.push(pathNote);
+  }
   return { type: "blocks", content: blocks };
+}
+
+function buildAttachmentPathNote(
+  attachments: ChannelAttachment[] | undefined,
+  allowedReadFiles: Set<string>,
+  directContentPaths: Set<string>,
+  hasDiagnostics: boolean,
+): CanonicalContentBlock | undefined {
+  if (!attachments || attachments.length === 0) return undefined;
+  const seen = new Set<string>();
+  const lines: string[] = [];
+
+  for (const attachment of attachments) {
+    if (!attachment.path) continue;
+    const normalized = safeAllowedAttachmentPath(attachment.path, allowedReadFiles);
+    if (!normalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    const fallbackName = normalized.split(/[\\/]/).pop() || "attachment";
+    const name = String(attachment.name || fallbackName).replace(/[\r\n]+/g, " ").trim() || fallbackName;
+    lines.push(`- ${name}: ${normalized}`);
+  }
+
+  if (lines.length === 0) return undefined;
+  const guidance = hasDiagnostics
+    ? attachmentDiagnosticsGuidance(attachments, allowedReadFiles)
+    : "These are path references for reuse. If an image/PDF is already visible in this turn, do not call read_file just to view it.";
+  return {
+    type: "text",
+    text: `\n\n${ATTACHMENT_PATH_NOTE_MARKER}\n${lines.join("\n")}\n${guidance}`,
+  };
+}
+
+function attachmentDiagnosticsGuidance(
+  attachments: ChannelAttachment[],
+  allowedReadFiles: Set<string>,
+): string {
+  const hasInspectableAttachment = attachments.some((attachment) => {
+    if (!attachment.path) return false;
+    if (!safeAllowedAttachmentPath(attachment.path, allowedReadFiles)) return false;
+    return isReadFileInspectableAttachment(attachment);
+  });
+  if (!hasInspectableAttachment) {
+    return "Some attachments were not shown inline. These registered files are not directly inspectable with read_file; ask for a supported export or convert them before inspection.";
+  }
+  return "Some attachments were not shown inline. Use read_file with the exact path only for readable text, image, PDF, or notebook attachments; Office/archive/binary files need conversion before inspection.";
+}
+
+function isReadFileInspectableAttachment(attachment: ChannelAttachment): boolean {
+  const mimeType = attachment.mimeType?.toLowerCase() ?? "";
+  if (attachment.type === "image" || mimeType.startsWith("image/")) return true;
+  if (mimeType === "application/pdf") return true;
+  if (mimeType.startsWith("text/")) return true;
+  if (mimeType === "application/json" || mimeType.endsWith("+json")) return true;
+
+  const pathOrName = attachment.path || attachment.name || "";
+  const extension = extname(pathOrName).toLowerCase();
+  if (extension === ".pdf" || extension === ".ipynb") return true;
+  if (READ_FILE_BINARY_ATTACHMENT_EXTENSIONS.has(extension)) return false;
+  return true;
+}
+
+function safeAllowedAttachmentPath(path: string, allowedReadFiles: Set<string>): string | undefined {
+  const normalized = resolve(path);
+  if (allowedReadFiles.has(normalized)) return normalized;
+  return undefined;
+}
+
+async function collectRegisteredAttachmentReadFiles(
+  attachments: ChannelAttachment[] | undefined,
+): Promise<string[]> {
+  if (!attachments || attachments.length === 0) return [];
+  const allowed = new Set<string>();
+
+  for (const attachment of attachments) {
+    if (!attachment.path || !attachment.metadata?.channelKey) continue;
+    try {
+      const info = await stat(attachment.path);
+      if (!info.isFile()) continue;
+      allowed.add(resolve(attachment.path));
+      allowed.add(resolve(await realpath(attachment.path)));
+    } catch {
+      // Missing or inaccessible attachments are handled by attachment resolution diagnostics.
+    }
+  }
+
+  return [...allowed];
 }
 
 async function attachmentsToContentBlocks(
   attachments: ChannelAttachment[] | undefined,
-): Promise<CanonicalContentBlock[]> {
-  if (!attachments || attachments.length === 0) return [];
+): Promise<{ blocks: CanonicalContentBlock[]; directContentPaths: Set<string>; hasDiagnostics: boolean }> {
+  if (!attachments || attachments.length === 0) {
+    return { blocks: [], directContentPaths: new Set<string>(), hasDiagnostics: false };
+  }
   const blocks: CanonicalContentBlock[] = [];
   const resolverRequests: AttachmentRequest[] = [];
+  const resolverRequestPaths: Array<string | undefined> = [];
+  const directContentPaths = new Set<string>();
   const diagnostics: string[] = [];
 
   for (const att of attachments) {
@@ -1541,6 +2012,7 @@ async function attachmentsToContentBlocks(
         mimeType: att.mimeType,
         ...(typeof att.bytes === "number" ? { bytes: att.bytes } : {}),
       });
+      if (att.path) directContentPaths.add(resolve(att.path));
       continue;
     }
 
@@ -1552,10 +2024,13 @@ async function attachmentsToContentBlocks(
     if (!att.path) continue;
     if (att.type === "image" || att.mimeType?.startsWith("image/")) {
       resolverRequests.push({ type: "image", path: att.path, mimeType: att.mimeType });
+      resolverRequestPaths.push(resolve(att.path));
     } else if (att.mimeType === "application/pdf" || att.path.toLowerCase().endsWith(".pdf")) {
       resolverRequests.push({ type: "pdf", path: att.path });
+      resolverRequestPaths.push(resolve(att.path));
     } else {
       resolverRequests.push({ type: "file", path: att.path });
+      resolverRequestPaths.push(resolve(att.path));
     }
   }
 
@@ -1567,6 +2042,11 @@ async function attachmentsToContentBlocks(
         diagnostics.push(diagnostic.message);
       }
     }
+    if (resolved.blocks.length > 0 && diagnostics.length === 0) {
+      for (const requestPath of resolverRequestPaths) {
+        if (requestPath) directContentPaths.add(requestPath);
+      }
+    }
   }
 
   if (diagnostics.length > 0) {
@@ -1576,5 +2056,77 @@ async function attachmentsToContentBlocks(
     });
   }
 
-  return blocks;
+  return { blocks, directContentPaths, hasDiagnostics: diagnostics.length > 0 };
+}
+
+function sanitizeAttachmentName(name: string): string {
+  return name.replace(/[\r\n]+/g, " ").trim() || "attachment";
+}
+
+function providerErrorFromAgentError(error: AgentError): GatewayEventProviderError | undefined {
+  const details = error.details;
+  if (!details || typeof details !== "object") return undefined;
+  return providerErrorFromRecord(details as Record<string, unknown>);
+}
+
+function providerErrorFromModelError(error: CanonicalModelError): GatewayEventProviderError {
+  return {
+    provider: error.provider,
+    protocol: error.protocol,
+    status: error.status,
+    code: error.code,
+    message: error.message,
+    raw: stringifyProviderRaw(error.raw),
+  };
+}
+
+type GatewayEventProviderError = NonNullable<Extract<GatewayEvent, { type: "error" }>["providerError"]>;
+
+function providerErrorFromRecord(details: Record<string, unknown>): GatewayEventProviderError | undefined {
+  const provider = stringOrUndefined(details.provider);
+  const protocol = stringOrUndefined(details.protocol);
+  const status = numberOrUndefined(details.status);
+  const code = stringOrUndefined(details.code);
+  const message = stringOrUndefined(details.message);
+  const raw = stringifyProviderRaw(details.raw);
+  if (!provider && !protocol && status === undefined && !code && !message && !raw) return undefined;
+  return { provider, protocol, status, code, message, raw };
+}
+
+function stringifyProviderRaw(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const text = typeof raw === "string" ? raw : safeJsonStringify(raw);
+  if (!text) return undefined;
+  return text.length > 1_200 ? `${text.slice(0, 1_200)}…` : text;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function safeJsonStringify(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function extensionForMime(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    default:
+      return "bin";
+  }
 }

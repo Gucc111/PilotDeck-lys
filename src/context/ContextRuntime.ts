@@ -1,4 +1,4 @@
-import type { CanonicalMessage } from "../model/index.js";
+import type { CanonicalMessage, CanonicalUsage } from "../model/index.js";
 import type {
   ContextBoundary,
   ContextCaptureTurnInput,
@@ -11,6 +11,7 @@ import type {
   ModelContext,
 } from "./protocol/types.js";
 import type { AutoCompactResult } from "./DefaultContextRuntime.js";
+import type { TokenBudgetSnapshot } from "./budget/TokenBudgetManager.js";
 
 export type AgentContextPrepareInput = ContextPrepareInput;
 export type AgentPreparedContext = ModelContext;
@@ -58,8 +59,13 @@ export type AgentContextRuntime = {
    * context window after a routing decision.
    */
   tryAutoCompact?(input: {
+    sessionId?: string;
+    turnId?: string;
     messages: CanonicalMessage[];
     abortSignal?: AbortSignal;
     maxContextTokens?: number;
+    reservedOutputTokens?: number;
+    lastUsage?: CanonicalUsage;
+    budgetEvaluator?: (messages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>;
   }): Promise<AutoCompactResult>;
 };

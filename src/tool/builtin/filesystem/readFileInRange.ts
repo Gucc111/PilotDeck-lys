@@ -1,10 +1,13 @@
+import { createReadStream } from "node:fs";
+import type { Stats } from "node:fs";
+import { createInterface } from "node:readline";
 import { readFile, stat } from "node:fs/promises";
 import { PilotDeckToolRuntimeError } from "../../protocol/errors.js";
 
 export type ReadFileRangeResult = {
   content: string;
   /** Full file content (BOM-stripped). Available for snapshot hashing. */
-  fullContent: string;
+  fullContent?: string;
   lineCount: number;
   totalLines: number;
   totalBytes: number;
@@ -21,7 +24,9 @@ export async function readFileInRange(
   filePath: string,
   startLine: number,
   limit?: number,
+  signal?: AbortSignal,
 ): Promise<ReadFileRangeResult> {
+  throwIfAborted(signal);
   const fileStat = await stat(filePath).catch((error: unknown) => {
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new PilotDeckToolRuntimeError("file_not_found", `File ${filePath} does not exist.`);
@@ -32,7 +37,16 @@ export async function readFileInRange(
     throw new PilotDeckToolRuntimeError("file_conflict", `${filePath} is not a regular file.`);
   }
 
-  const buffer = await readFile(filePath);
+  if (limit !== undefined) {
+    return readFileLineRange(filePath, fileStat, startLine, limit, signal);
+  }
+
+  const buffer = await readFile(filePath, { signal }).catch((error: unknown) => {
+    if (signal?.aborted) {
+      throw abortedReadError();
+    }
+    throw error;
+  });
   if (buffer.includes(0)) {
     throw new PilotDeckToolRuntimeError("invalid_tool_input", `${filePath} appears to be a binary file.`);
   }
@@ -63,10 +77,98 @@ export async function readFileInRange(
   };
 }
 
+async function readFileLineRange(
+  filePath: string,
+  fileStat: Stats,
+  startLine: number,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<ReadFileRangeResult> {
+  throwIfAborted(signal);
+  const normalizedStart = Math.max(1, startLine);
+  const normalizedLimit = Math.max(0, limit);
+  const startIndex = normalizedStart - 1;
+  const endIndexExclusive = startIndex + normalizedLimit;
+  const selected: string[] = [];
+  let totalLines = 0;
+  let sawNul = false;
+  let aborted = false;
+
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  let rl: ReturnType<typeof createInterface> | undefined;
+  const stopReading = () => {
+    rl?.close();
+    stream.destroy();
+  };
+  const onData = (chunk: string | Buffer) => {
+    if (String(chunk).includes("\0")) {
+      sawNul = true;
+      stopReading();
+    }
+  };
+  const onAbort = () => {
+    aborted = true;
+    stopReading();
+  };
+  stream.on("data", onData);
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  rl = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const rawLine of rl) {
+      const line = totalLines === 0 ? stripBom(rawLine) : rawLine;
+      if (totalLines >= startIndex && totalLines < endIndexExclusive) {
+        selected.push(line);
+      }
+      totalLines += 1;
+    }
+  } catch (error) {
+    if (!sawNul && !aborted) throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    stream.off("data", onData);
+    stopReading();
+  }
+
+  if (aborted || signal?.aborted) {
+    throw abortedReadError();
+  }
+
+  if (sawNul) {
+    throw new PilotDeckToolRuntimeError("invalid_tool_input", `${filePath} appears to be a binary file.`);
+  }
+
+  const content = selected.join("\n");
+  const actualStart = selected.length > 0 ? normalizedStart : Math.min(normalizedStart, totalLines + 1);
+  const actualEnd = selected.length > 0 ? actualStart + selected.length - 1 : actualStart - 1;
+
+  return {
+    content,
+    lineCount: selected.length,
+    totalLines,
+    totalBytes: fileStat.size,
+    readBytes: Buffer.byteLength(content, "utf8"),
+    mtimeMs: Math.floor(fileStat.mtimeMs),
+    startLine: actualStart,
+    endLine: actualEnd,
+    truncated: startIndex > 0 || endIndexExclusive < totalLines,
+  };
+}
+
 function stripBom(value: string): string {
   return value.startsWith(UTF8_BOM) ? value.slice(1) : value;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw abortedReadError();
+  }
+}
+
+function abortedReadError(): PilotDeckToolRuntimeError {
+  return new PilotDeckToolRuntimeError("tool_aborted", "File reading was aborted.");
 }

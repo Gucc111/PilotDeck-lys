@@ -4,13 +4,18 @@ import type {
   CanonicalMessage,
   CanonicalModelRequest,
   CanonicalPdfBlock,
+  CanonicalThinkingBlock,
   CanonicalToolChoice,
   CanonicalToolSchema,
   ModelDefinition,
   ProviderConfig,
 } from "../../protocol/canonical.js";
 import { flattenToolResultBlockText } from "../../protocol/toolResultContent.js";
+import { messageContent } from "../../protocol/clone.js";
 import { cleanSchemaForGoogle, normalizeGoogleToolSchema } from "../google/schema.js";
+import { normalizeOpenAISchema } from "./schema.js";
+import { resolveThinkingPlan, throwIfUnsupportedThinkingPlan } from "../../thinking/registry.js";
+import { formatToolResultReferenceText } from "../toolResultReferenceText.js";
 
 export type OpenAIRequestBody = {
   model: string;
@@ -21,6 +26,10 @@ export type OpenAIRequestBody = {
   temperature?: number;
   stream?: boolean;
   metadata?: Record<string, unknown>;
+  reasoning?: { effort?: string };
+  thinking?: Record<string, unknown>;
+  reasoning_effort?: string;
+  reasoning_split?: boolean;
   /**
    * Provider-native structured output. Set when `request.outputSchema` is
    * provided. `strict` defaults to true unless the schema opts out.
@@ -59,6 +68,8 @@ export function buildOpenAIRequest(
   provider?: ProviderConfig,
 ): OpenAIRequestBody {
   const googleOpenAICompatible = isGoogleOpenAICompatibleProvider(provider);
+  const thinkingPlan = resolveThinkingPlan(request.thinking, provider ?? { id: "openai", protocol: "openai", url: "", apiKey: "", headers: {}, models: {} }, model);
+  throwIfUnsupportedThinkingPlan(thinkingPlan, request);
   const messages = repairOpenAIToolPairing(
     request.messages.flatMap((message, messageIndex) => toOpenAIMessages(message, messageIndex)),
   );
@@ -72,7 +83,7 @@ export function buildOpenAIRequest(
     max_tokens: request.maxOutputTokens ?? model.capabilities.maxOutputTokens,
     tools: request.tools?.map((tool) => toOpenAITool(tool, googleOpenAICompatible)),
     tool_choice: toOpenAIToolChoice(request.toolChoice),
-    temperature: request.temperature,
+    temperature: thinkingPlan.omitTemperature ? undefined : request.temperature,
     stream: request.stream,
     metadata: request.metadata
       ? Object.fromEntries(
@@ -89,13 +100,28 @@ export function buildOpenAIRequest(
         description: request.outputSchema.description,
         schema: googleOpenAICompatible
           ? normalizeGoogleOpenAIResponseSchema(request.outputSchema.schema)
-          : request.outputSchema.schema,
+          : normalizeOpenAISchema(request.outputSchema.schema),
         strict: request.outputSchema.strict ?? true,
       },
     };
   }
 
-  if (request.thinking?.enabled) {
+  if (thinkingPlan.useOpenAIReasoning && thinkingPlan.effort) {
+    body.reasoning = { effort: thinkingPlan.effort };
+  } else if (thinkingPlan.bodyPatch) {
+    Object.assign(body, thinkingPlan.bodyPatch);
+  } else if (thinkingPlan.useOpenAICompatibleThinking) {
+    if (thinkingPlan.thinkingType) {
+      body.thinking = { type: thinkingPlan.thinkingType };
+    } else if (thinkingPlan.enabled) {
+      body.thinking = { type: "enabled" };
+    }
+    if (thinkingPlan.effort) {
+      body.reasoning_effort = thinkingPlan.effort;
+    }
+  } else if (thinkingPlan.splitReasoning) {
+    body.reasoning_split = true;
+  } else if (request.thinking?.enabled) {
     (body as Record<string, unknown>).enable_thinking = true;
     const budget = request.thinking.budgetTokens;
     if (googleOpenAICompatible) {
@@ -110,21 +136,26 @@ export function buildOpenAIRequest(
   return body;
 }
 
-function toOpenAIMessages(message: CanonicalMessage, messageIndex: number): OpenAIMessage[] {
+function toOpenAIMessages(
+  message: CanonicalMessage,
+  messageIndex: number,
+): OpenAIMessage[] {
   if (message.role === "user") {
     return toOpenAIUserMessages(message);
   }
 
-  const toolResultBlocks = message.content
+  const content = messageContent(message);
+
+  const toolResultBlocks = content
     .filter((block) => block.type === "tool_result");
   const toolResultMessages = toolResultBlocks.map(toOpenAIToolResultMessage);
   const toolResultVisualMessages = toolResultBlocks.flatMap(toOpenAIToolResultVisualMessages);
 
-  const toolResultRefMessages = message.content
+  const toolResultRefMessages = content
     .filter((block) => block.type === "tool_result_reference")
     .map(toOpenAIToolResultReferenceMessage);
 
-  const assistantToolCalls = message.content
+  const assistantToolCalls = content
     .filter((block) => block.type === "tool_call")
     .map((block) => ({
       // Preserve the canonical id until `repairOpenAIToolPairing` can see the
@@ -137,8 +168,10 @@ function toOpenAIMessages(message: CanonicalMessage, messageIndex: number): Open
       },
     }));
 
-  const thinkingBlocks = message.content.filter((block) => block.type === "thinking");
-  const normalContent = message.content.filter(
+  const thinkingBlocks = content.filter(
+    (block): block is CanonicalThinkingBlock => block.type === "thinking",
+  );
+  const normalContent = content.filter(
     (block) =>
       block.type !== "tool_result" &&
       block.type !== "tool_result_reference" &&
@@ -155,10 +188,9 @@ function toOpenAIMessages(message: CanonicalMessage, messageIndex: number): Open
         : (message.role === "assistant" && thinkingBlocks.length > 0 ? "" : undefined),
       tool_calls: assistantToolCalls.length > 0 ? assistantToolCalls : undefined,
     };
-    // DeepSeek V4 requires reasoning_content to be passed back on assistant
-    // messages in multi-turn conversations; omitting it causes a 400 error.
-    if (message.role === "assistant" && thinkingBlocks.length > 0) {
-      msg.reasoning_content = thinkingBlocks.map((b) => b.text).join("\n");
+    const reasoningContent = toOpenAIReasoningContent(thinkingBlocks);
+    if (reasoningContent !== undefined) {
+      msg.reasoning_content = reasoningContent;
     }
     messages.push(msg);
   }
@@ -169,6 +201,7 @@ function toOpenAIMessages(message: CanonicalMessage, messageIndex: number): Open
 function toOpenAIUserMessages(message: CanonicalMessage): OpenAIMessage[] {
   const messages: OpenAIMessage[] = [];
   let normalContent: CanonicalContentBlock[] = [];
+  const content = messageContent(message);
 
   const flushNormalContent = () => {
     if (normalContent.length === 0) return;
@@ -179,13 +212,13 @@ function toOpenAIUserMessages(message: CanonicalMessage): OpenAIMessage[] {
     normalContent = [];
   };
 
-  for (let i = 0; i < message.content.length; i += 1) {
-    const block = message.content[i];
+  for (let i = 0; i < content.length; i += 1) {
+    const block = content[i]!;
     if (block.type === "tool_result") {
       flushNormalContent();
       const visualContent: CanonicalContentBlock[] = [];
-      while (i < message.content.length) {
-        const toolBlock = message.content[i];
+      while (i < content.length) {
+        const toolBlock = content[i]!;
         if (toolBlock.type === "tool_result") {
           messages.push(toOpenAIToolResultMessage(toolBlock));
           visualContent.push(...toolResultVisualContent(toolBlock));
@@ -264,9 +297,7 @@ function toOpenAIToolResultReferenceMessage(
   return {
     role: "tool",
     tool_call_id: block.toolCallId,
-    content: block.preview + (block.hasMore
-      ? `\n\n[Truncated: original ${block.originalBytes} bytes, file: ${block.path}]`
-      : ""),
+    content: formatToolResultReferenceText(block),
   };
 }
 
@@ -311,6 +342,20 @@ function toOpenAIContent(blocks: CanonicalContentBlock[]): string | unknown[] {
   }).filter(Boolean);
 }
 
+function toOpenAIReasoningContent(
+  thinkingBlocks: CanonicalThinkingBlock[],
+): string | undefined {
+  const contexts = thinkingBlocks
+    .map((block) => block.reasoningContent ?? block.text)
+    .filter((text) => text.length > 0);
+
+  if (contexts.length === 0 && thinkingBlocks.length > 0) {
+    return "";
+  }
+
+  return contexts.length > 0 ? contexts.join("\n") : undefined;
+}
+
 function toOpenAITool(tool: CanonicalToolSchema, googleOpenAICompatible: boolean): OpenAITool {
   return {
     type: "function",
@@ -348,38 +393,6 @@ function isGoogleOpenAICompatibleProvider(provider: ProviderConfig | undefined):
     return rawUrl.includes("generativelanguage.googleapis.com")
       && rawUrl.includes("/openai");
   }
-}
-
-/**
- * Azure/OpenAI-compatible endpoints can require `items` whenever a schema node
- * allows `array` (including union types like `type: ["string", "array"]`).
- * Normalize tool input schemas defensively to avoid provider-side 400s.
- */
-function normalizeOpenAISchema(schema: Record<string, unknown>): Record<string, unknown> {
-  return normalizeOpenAISchemaNode(schema) as Record<string, unknown>;
-}
-
-function normalizeOpenAISchemaNode(node: unknown): unknown {
-  if (Array.isArray(node)) {
-    return node.map(normalizeOpenAISchemaNode);
-  }
-  if (!isRecord(node)) {
-    return node;
-  }
-
-  const normalized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(node)) {
-    normalized[key] = normalizeOpenAISchemaNode(value);
-  }
-
-  const typeField = normalized.type;
-  const allowsArray = typeField === "array"
-    || (Array.isArray(typeField) && typeField.includes("array"));
-  if (allowsArray && !("items" in normalized)) {
-    normalized.items = {};
-  }
-
-  return normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

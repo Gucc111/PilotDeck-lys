@@ -1,5 +1,6 @@
 export type {
   ChannelAttachment,
+  GatewayOutboundAttachment,
   Gateway,
   GatewayCronController,
   GatewayChannelKey,
@@ -15,6 +16,7 @@ export type {
   ListSessionsInput,
   ListSessionsResult,
   NewSessionInput,
+  PrepareWeixinLoginResult,
   ReloadConfigResult,
   TurnUsage,
 } from "./types.js";

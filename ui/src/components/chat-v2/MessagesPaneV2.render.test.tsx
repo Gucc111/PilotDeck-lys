@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage, ChatRunMode } from '../chat/types/types';
 import MessagesPaneV2 from './MessagesPaneV2';
+import { getContextStatus } from './ComposerV2';
 
 beforeAll(() => {
   class ResizeObserverMock {
@@ -16,10 +17,29 @@ beforeAll(() => {
     return window.setTimeout(() => callback(performance.now()), 0);
   });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
   cleanup();
+});
+
+describe('getContextStatus', () => {
+  it('keeps the visible count and percentage on the same display-token basis', () => {
+    const status = getContextStatus({
+      displayUsed: 11_928,
+      budgetUsed: 12_080,
+      total: 12_000,
+      effectiveTotal: 12_000,
+      state: 'blocking',
+    });
+
+    expect(status.used).toBe(11_928);
+    expect(status.percentLabel).toBe('99%');
+    // The padded request budget still controls the policy severity.
+    expect(status.state).toBe('blocking');
+    expect(status.tone).toBe('red');
+  });
 });
 
 function makeMessage(index: number): ChatMessage {
@@ -414,6 +434,123 @@ describe('MessagesPaneV2 render behavior', () => {
     const completedButton = summary.closest('button');
     expect(completedButton?.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('ReadHidden.tsx')).toBeTruthy();
+  });
+
+  it('does not search hidden completed process detail content', async () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = [
+      {
+        id: 'u-1',
+        type: 'user',
+        content: '检查文件',
+        timestamp: now,
+      },
+      {
+        id: 'tool-read-1',
+        type: 'assistant',
+        content: '',
+        timestamp: now,
+        isToolUse: true,
+        toolName: 'Read',
+        toolId: 'tool-read-1',
+        toolInput: '{"file_path":"src/SearchHiddenNeedle.tsx"}',
+        toolResult: { content: 'ok', isError: false },
+      },
+      {
+        id: 'a-1',
+        type: 'assistant',
+        content: 'Done.',
+        timestamp: now,
+      },
+    ];
+
+    renderPane({ messages });
+
+    const summary = screen.getByText('Explored 1 file');
+    const processButton = summary.closest('button');
+    expect(processButton?.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('SearchHiddenNeedle.tsx')).toBeNull();
+
+    fireEvent.keyDown(document, { key: 'f', ctrlKey: true });
+    const search = screen.getByRole('search');
+    const input = search.querySelector('input[type="search"]') as HTMLInputElement | null;
+    if (!input) throw new Error('Expected chat search input');
+    fireEvent.change(input, { target: { value: 'SearchHiddenNeedle.tsx' } });
+
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Previous match' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: 'Next match' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    expect(processButton?.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('mark.chat-history-search-highlight-active')).toBeNull();
+  });
+
+  it('moves between mounted search results without resetting the conversation scroll position', async () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'u-search-1',
+        type: 'user',
+        content: 'First visible needle',
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: 'a-search-2',
+        type: 'assistant',
+        content: 'Second visible needle',
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    renderPane({ messages });
+
+    const messageList = screen.getByText('First visible needle').closest('[data-total-message-count]');
+    const scrollContainer = messageList?.parentElement as HTMLElement | null;
+    if (!scrollContainer) throw new Error('Expected conversation scroll container');
+
+    let currentScrollTop = 240;
+    const setScrollTop = vi.fn((value: number) => {
+      currentScrollTop = value;
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      get: () => currentScrollTop,
+      set: setScrollTop,
+    });
+    Object.defineProperty(scrollContainer, 'clientHeight', {
+      configurable: true,
+      value: 400,
+    });
+    scrollContainer.scrollTo = scrollTo;
+
+    fireEvent.keyDown(document, { key: 'f', ctrlKey: true });
+    const searchInput = screen.getByRole('search').querySelector('input[type="search"]');
+    if (!(searchInput instanceof HTMLInputElement)) throw new Error('Expected chat search input');
+    fireEvent.change(searchInput, { target: { value: 'needle' } });
+
+    await waitFor(() => {
+      expect(scrollTo).toHaveBeenCalled();
+      expect(document.querySelectorAll('mark.chat-history-search-highlight')).toHaveLength(2);
+      expect(document.querySelectorAll('mark.chat-history-search-highlight-active')).toHaveLength(1);
+    });
+    expect(
+      document.querySelector('mark.chat-history-search-highlight-active')?.closest('[data-message-key]')
+        ?.getAttribute('data-message-key'),
+    ).toContain('u-search-1');
+    scrollTo.mockClear();
+    setScrollTop.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next match' }));
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({
+      behavior: 'smooth',
+    })));
+    expect(document.querySelectorAll('mark.chat-history-search-highlight')).toHaveLength(2);
+    expect(
+      document.querySelector('mark.chat-history-search-highlight-active')?.closest('[data-message-key]')
+        ?.getAttribute('data-message-key'),
+    ).toContain('a-search-2');
+    expect(setScrollTop).not.toHaveBeenCalled();
   });
 
   it('keeps separated live process rows at the positions where they happened', () => {
