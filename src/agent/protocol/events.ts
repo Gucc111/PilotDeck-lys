@@ -38,6 +38,9 @@ export type AgentEvent =
       preTokens: number;
       postTokens?: number;
       messagesSummarized?: number;
+      cacheReset?: boolean;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
     }
   | { type: "context_budget"; sessionId: string; turnId: string; snapshot: TokenBudgetSnapshot }
   | { type: "warning"; sessionId: string; turnId: string; code: string; message: string; metadata?: Record<string, unknown> }

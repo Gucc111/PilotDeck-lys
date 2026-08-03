@@ -65,6 +65,46 @@ test("full compaction can disable protected turn preservation", async () => {
   assert.match(summaryText(result.summaryMessage), /END OF CONTEXT SUMMARY/);
 });
 
+test("rolling checkpoints keep the accepted prefix byte-identical", async () => {
+  let sequence = 0;
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(): AsyncIterable<CanonicalModelEvent> {
+        sequence += 1;
+        yield { type: "message_start", role: "assistant" };
+        yield { type: "text_delta", text: `## Objective\ncheckpoint-${sequence}` };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+  });
+  const first = await engine.run({
+    trigger: "auto",
+    messages: Array.from({ length: 16 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      content: [{ type: "text" as const, text: `Old work ${index} `.repeat(20) }],
+    })),
+    keepTailRatio: 0.2,
+  });
+  const firstMessages = buildPostCompactMessages(first);
+  const second = await engine.run({
+    trigger: "auto",
+    messages: [
+      ...firstMessages,
+      ...Array.from({ length: 16 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" as const : "assistant" as const,
+        content: [{ type: "text" as const, text: `New work ${index}` }],
+      })),
+    ],
+    keepTailRatio: 0.05,
+  });
+  const secondMessages = buildPostCompactMessages(second);
+
+  assert.deepEqual(secondMessages.slice(0, 2), firstMessages.slice(0, 2));
+  assert.match(summaryText(second.summaryMessage), /checkpoint-2/);
+});
+
 test("auto full compaction retries without protected turns when protected output still blocks", async () => {
   const summaryRequests: CanonicalModelRequest[] = [];
   const engine = new CompactionEngine({
@@ -94,7 +134,7 @@ test("auto full compaction retries without protected turns when protected output
 
   assert.equal(result.type, "compacted");
   assert.equal(summaryRequests.length, 2);
-  assert.equal(hasToolCall(summaryRequests[0]!.messages, "Task"), false);
+  assert.equal(hasToolCall(summaryRequests[0]!.messages, "Task"), true);
   assert.equal(hasToolCall(summaryRequests[1]!.messages, "Task"), true);
   assert.equal(hasThinking(summaryRequests[0]!.messages), true);
   assert.equal(hasThinking(summaryRequests[1]!.messages), true);
@@ -174,8 +214,8 @@ test("token-budget tail protection keeps the last turn group intact", async () =
   });
 
   assert.equal(summaryRequests.length, 1);
-  assert.equal(hasToolCall(summaryRequests[0]!.messages, "tail-tool"), false);
-  assert.equal(hasToolResult(summaryRequests[0]!.messages, "tail-tool"), false);
+  assert.equal(hasToolCall(summaryRequests[0]!.messages, "tail-tool"), true);
+  assert.equal(hasToolResult(summaryRequests[0]!.messages, "tail-tool"), true);
   assert.equal(hasToolCall(result.messagesToKeep, "tail-tool"), true);
   assert.equal(hasToolResult(result.messagesToKeep, "tail-tool"), true);
   assert.match(summaryText(result.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
@@ -231,6 +271,71 @@ test("full compaction keeps the initiating user request with a protected tool cy
     compacted[requestIndex + 2]?.content.some((block) => block.type === "tool_result" && block.toolCallId === "protected-1"),
     true,
   );
+});
+
+test("summary output truncated by the provider is treated as a failed compaction", async () => {
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(): AsyncIterable<CanonicalModelEvent> {
+        yield { type: "message_start", role: "assistant" };
+        yield { type: "text_delta", text: "## Objective\nIncomplete" };
+        yield { type: "message_end", finishReason: "length" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+  });
+
+  const result = await engine.run({
+    trigger: "auto",
+    messages: compactFixture(),
+    keepTailRatio: 0.01,
+  });
+
+  assert.match(result.error ?? "", /truncated at the token limit/);
+  assert.match(summaryText(result.summaryMessage), /## Files And Artifacts/);
+});
+
+test("protected turns remain in chronological order with later work", async () => {
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(): AsyncIterable<CanonicalModelEvent> {
+        yield { type: "message_start", role: "assistant" };
+        yield { type: "text_delta", text: "## Objective\nContinue.\n\n## Current State\nOlder work summarized.\n\n## Remaining\nContinue.\n\n## Files And Artifacts\nNone." };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+    protectedToolNames: ["Task"],
+  });
+
+  const result = await engine.run({
+    trigger: "auto",
+    keepTailRatio: 0.01,
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Older work" }] },
+      { role: "assistant", content: [{ type: "text", text: "Older response" }] },
+      { role: "user", content: [{ type: "text", text: "Run the protected task" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: "protected-order-1", name: "Task", input: { prompt: "inspect" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", toolCallId: "protected-order-1", content: [{ type: "text", text: "task complete" }] }],
+      },
+      { role: "user", content: [{ type: "text", text: "Later work depends on the task" }] },
+    ],
+  });
+
+  const keptText = result.messagesToKeep
+    .flatMap((message) => message.content)
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  assert.ok(keptText.indexOf("Run the protected task") >= 0);
+  assert.ok(keptText.indexOf("Run the protected task") < keptText.indexOf("Later work depends on the task"));
 });
 
 test("full compaction bounds oversized retained tool output", async () => {
@@ -298,7 +403,7 @@ test("auto full compaction summarizes older tool groups inside one user task", a
   assert.equal(result.tier, "full");
   assert.equal(summaryRequests.length, 1);
   assert.ok(findToolCall(summaryRequests[0]!.messages, "old-search-0"));
-  assert.equal(findToolCall(summaryRequests[0]!.messages, "tail-fetch"), undefined);
+  assert.ok(findToolCall(summaryRequests[0]!.messages, "tail-fetch"));
   assert.ok(findToolCall(result.messages, "tail-fetch"));
   assert.equal(findToolResult(result.messages, "old-search-0"), undefined);
   assert.match(summaryText(result.result?.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
@@ -347,7 +452,7 @@ test("blocking auto compaction continues to full summary when micro pruning only
   assert.match(summaryText(result.result?.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
 });
 
-test("summary failures fall back deterministically and cool down subsequent summary calls", async () => {
+test("summary failures preserve the original transcript and cool down retries", async () => {
   const summaryRequests: CanonicalModelRequest[] = [];
   const engine = new CompactionEngine({
     model: {
@@ -372,21 +477,15 @@ test("summary failures fall back deterministically and cool down subsequent summ
     budgetEvaluator: (candidate) => Promise.resolve(fakeSnapshot(candidate, tokenBudget)),
   });
 
-  assert.equal(first.type, "compacted");
-  assert.match(first.result?.error ?? "", /summary backend down/);
-  assert.match(summaryText(first.result?.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
-  assert.match(summaryText(first.result?.summaryMessage), /## Objective/);
-  assert.match(summaryText(first.result?.summaryMessage), /private summarized reasoning/);
-  assert.match(summaryText(first.result?.summaryMessage), /Task|read_skill/);
+  assert.equal(first.type, "skipped");
 
   const second = await runtime.tryAutoCompact({
     messages: compactFixture(),
     budgetEvaluator: (candidate) => Promise.resolve(fakeSnapshot(candidate, tokenBudget)),
   });
 
-  assert.equal(second.type, "compacted");
+  assert.equal(second.type, "skipped");
   assert.equal(summaryRequests.length, 1);
-  assert.match(summaryText(second.result?.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
 });
 
 test("summary input preserves thinking blocks from the summarized prefix", async () => {

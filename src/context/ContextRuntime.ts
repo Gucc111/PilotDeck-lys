@@ -66,6 +66,8 @@ export type AgentContextRuntime = {
     maxContextTokens?: number;
     reservedOutputTokens?: number;
     lastUsage?: CanonicalUsage;
+    /** On reactive overflow, allow the deterministic checkpoint fallback. */
+    allowFallbackOnFailure?: boolean;
     budgetEvaluator?: (messages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>;
   }): Promise<AutoCompactResult>;
 };
