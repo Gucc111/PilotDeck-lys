@@ -28,7 +28,7 @@ import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadError from './subcomponents/CodeEditorLoadError';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
 import CodeEditorSurface from './subcomponents/CodeEditorSurface';
-import FileSearchControls from './subcomponents/FileSearchControls';
+import FloatingFileSearchControls from './subcomponents/FloatingFileSearchControls';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -450,27 +450,21 @@ export default function CodeEditor({
               }}
             />
             {searchOpen ? (
-              <div
-                data-file-search-exclude
-                className="flex min-h-11 items-center justify-end border-b border-neutral-200 bg-white px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950"
-              >
-                <FileSearchControls
-                  query={searchQuery}
-                  onQueryChange={handleSearchQueryChange}
-                  matchIndex={searchMatchIndex}
-                  matchCount={searchMatchCount}
-                  onPrevious={() => moveSearch(-1)}
-                  onNext={() => moveSearch(1)}
-                  onClose={closeSearch}
-                  searchLabel={t('builtinOfficePreview.search')}
-                  placeholder={t('builtinOfficePreview.searchPlaceholder')}
-                  previousLabel={t('pdfToolbar.previousResult')}
-                  nextLabel={t('pdfToolbar.nextResult')}
-                  closeLabel={t('builtinOfficePreview.closeSearch')}
-                  noMatchesLabel={t('builtinOfficePreview.noMatches')}
-                  className="max-w-sm"
-                />
-              </div>
+              <FloatingFileSearchControls
+                query={searchQuery}
+                onQueryChange={handleSearchQueryChange}
+                matchIndex={searchMatchIndex}
+                matchCount={searchMatchCount}
+                onPrevious={() => moveSearch(-1)}
+                onNext={() => moveSearch(1)}
+                onClose={closeSearch}
+                searchLabel={t('builtinOfficePreview.search')}
+                placeholder={t('builtinOfficePreview.searchPlaceholder')}
+                previousLabel={t('pdfToolbar.previousResult')}
+                nextLabel={t('pdfToolbar.nextResult')}
+                closeLabel={t('builtinOfficePreview.closeSearch')}
+                noMatchesLabel={t('builtinOfficePreview.noMatches')}
+              />
             ) : null}
           </div>
 

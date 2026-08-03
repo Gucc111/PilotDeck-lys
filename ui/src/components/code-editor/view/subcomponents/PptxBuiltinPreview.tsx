@@ -217,17 +217,17 @@ export default function PptxBuiltinPreview({
         viewer.highlightSearchResult(match, match === selected
           ? {
             scrollIntoView: false,
-            borderColor: '#f97316',
-            backgroundColor: 'rgba(249, 115, 22, 0.28)',
-            borderWidth: 3,
-            boxShadow: '0 0 0 2px rgba(255,255,255,0.85)',
+            borderColor: 'var(--file-search-highlight-active-border)',
+            backgroundColor: 'var(--file-search-highlight-active-bg)',
+            borderWidth: 2,
+            boxShadow: '0 0 0 2px var(--file-search-highlight-active-ring)',
             padding: 2,
           }
           : {
             scrollIntoView: false,
-            borderColor: '#eab308',
-            backgroundColor: 'rgba(250, 204, 21, 0.22)',
-            borderWidth: 2,
+            borderColor: 'var(--file-search-highlight-border)',
+            backgroundColor: 'var(--file-search-highlight-bg)',
+            borderWidth: 1,
             padding: 1,
           })
       )));

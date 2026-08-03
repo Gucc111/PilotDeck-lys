@@ -38,7 +38,7 @@ import {
 } from '../../utils/pdfSearch';
 import { useFileSearchShortcut } from '../../hooks/useFileSearchShortcut';
 import ContentReferenceMenu from './ContentReferenceMenu';
-import FileSearchControls from './FileSearchControls';
+import FloatingFileSearchControls from './FloatingFileSearchControls';
 import RegionSelectionOverlay, { type CapturedRegion } from './RegionSelectionOverlay';
 import { floatingSelectionSingleActionClassName } from './floatingSelectionAction';
 
@@ -1503,7 +1503,8 @@ export default function PdfDocumentPreview({
       data-file-search-surface
       className="flex h-full w-full flex-col bg-neutral-100 dark:bg-neutral-900"
     >
-      <div className="scrollbar-hide flex min-h-11 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-neutral-200 bg-white px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+      <div className="relative z-20 min-w-0 shrink-0">
+        <div className="scrollbar-hide flex min-h-11 w-full min-w-0 items-center gap-1.5 overflow-x-auto border-b border-neutral-200 bg-white px-3 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
         {navigationMode !== 'none' ? (
           <>
             <ToolbarButton
@@ -1647,29 +1648,6 @@ export default function PdfDocumentPreview({
         >
           {renderToolbarIcon(Search)}
         </ToolbarButton>
-        {searchOpen ? (
-          <FileSearchControls
-            query={searchQuery}
-            onQueryChange={handleSearchQueryChange}
-            matchIndex={Math.max(0, searchResultIndex)}
-            matchCount={searchResults.length}
-            onPrevious={() => goToSearchResult(searchResultIndex - 1)}
-            onNext={() => goToSearchResult(searchResultIndex + 1)}
-            onClose={closeSearch}
-            onSubmit={(query) => {
-              void runSearch(query);
-            }}
-            statusText={searchStatus}
-            searching={searching}
-            searchLabel={t('pdfToolbar.search')}
-            placeholder={t('pdfToolbar.searchPlaceholder')}
-            previousLabel={t('pdfToolbar.previousResult')}
-            nextLabel={t('pdfToolbar.nextResult')}
-            closeLabel={t('pdfToolbar.closeSearch')}
-            noMatchesLabel={t('pdfToolbar.noResults')}
-            className="shrink-0"
-          />
-        ) : null}
         <ToolbarSeparator />
         <ContentReferenceMenu
           capabilities={referenceCapabilities}
@@ -1706,6 +1684,29 @@ export default function PdfDocumentPreview({
           >
             {renderToolbarIcon(Download)}
           </ToolbarLink>
+        ) : null}
+        </div>
+        {searchOpen ? (
+          <FloatingFileSearchControls
+            query={searchQuery}
+            onQueryChange={handleSearchQueryChange}
+            matchIndex={Math.max(0, searchResultIndex)}
+            matchCount={searchResults.length}
+            onPrevious={() => goToSearchResult(searchResultIndex - 1)}
+            onNext={() => goToSearchResult(searchResultIndex + 1)}
+            onClose={closeSearch}
+            onSubmit={(query) => {
+              void runSearch(query);
+            }}
+            statusText={searchStatus}
+            searching={searching}
+            searchLabel={t('pdfToolbar.search')}
+            placeholder={t('pdfToolbar.searchPlaceholder')}
+            previousLabel={t('pdfToolbar.previousResult')}
+            nextLabel={t('pdfToolbar.nextResult')}
+            closeLabel={t('pdfToolbar.closeSearch')}
+            noMatchesLabel={t('pdfToolbar.noResults')}
+          />
         ) : null}
       </div>
       <div className="flex min-h-0 flex-1">

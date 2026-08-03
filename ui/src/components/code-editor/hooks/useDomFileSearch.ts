@@ -145,12 +145,12 @@ export function useDomFileSearch({
     matchCount: matches.length,
     highlightStyles: `
       ::highlight(${allHighlightName}) {
-        background: rgba(250, 204, 21, 0.62);
+        background: var(--file-search-highlight-bg);
         color: inherit;
       }
       ::highlight(${activeHighlightName}) {
-        background: rgba(249, 115, 22, 0.88);
-        color: #111827;
+        background: var(--file-search-highlight-active-bg);
+        color: inherit;
       }
     `,
   };

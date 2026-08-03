@@ -16,7 +16,7 @@ import type {
   ReferenceCapabilities,
 } from '../../../../types/contentReference';
 import ContentReferenceMenu from './ContentReferenceMenu';
-import FileSearchControls from './FileSearchControls';
+import FloatingFileSearchControls from './FloatingFileSearchControls';
 
 type BuiltinOfficeToolbarProps = {
   navigationVisible?: boolean;
@@ -95,7 +95,8 @@ export default function BuiltinOfficeToolbar({
   const hasItemControls = Boolean(itemCount && itemCount > 0);
 
   return (
-    <div className="flex min-h-12 shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-200 bg-white px-3 dark:border-neutral-800 dark:bg-neutral-950">
+    <div className="relative z-20 min-w-0 shrink-0">
+      <div className="flex min-h-12 w-full min-w-0 items-center gap-1 overflow-x-auto border-b border-neutral-200 bg-white px-3 dark:border-neutral-800 dark:bg-neutral-950">
       {navigationAvailable && onToggleNavigation ? (
         <>
           <button
@@ -181,27 +182,6 @@ export default function BuiltinOfficeToolbar({
       >
         <Search className="h-4 w-4" strokeWidth={1.75} />
       </button>
-      {searchOpen ? (
-        <FileSearchControls
-          query={searchQuery}
-          onQueryChange={onSearchQueryChange}
-          matchIndex={searchMatchIndex}
-          matchCount={searchMatchCount}
-          onPrevious={onPreviousMatch}
-          onNext={onNextMatch}
-          onClose={() => {
-            onSearchOpenChange(false);
-            onSearchQueryChange('');
-          }}
-          searchLabel={t('builtinOfficePreview.search')}
-          placeholder={t('builtinOfficePreview.searchPlaceholder')}
-          previousLabel={t('pdfToolbar.previousResult')}
-          nextLabel={t('pdfToolbar.nextResult')}
-          closeLabel={t('builtinOfficePreview.closeSearch')}
-          noMatchesLabel={t('builtinOfficePreview.noMatches')}
-        />
-      ) : null}
-
       <span className="flex-1" />
       {referenceCapabilities && onSelectReferenceMode ? (
         <ContentReferenceMenu
@@ -247,6 +227,27 @@ export default function BuiltinOfficeToolbar({
         >
           <Download className="h-4 w-4" strokeWidth={1.75} />
         </a>
+      ) : null}
+      </div>
+      {searchOpen ? (
+        <FloatingFileSearchControls
+          query={searchQuery}
+          onQueryChange={onSearchQueryChange}
+          matchIndex={searchMatchIndex}
+          matchCount={searchMatchCount}
+          onPrevious={onPreviousMatch}
+          onNext={onNextMatch}
+          onClose={() => {
+            onSearchOpenChange(false);
+            onSearchQueryChange('');
+          }}
+          searchLabel={t('builtinOfficePreview.search')}
+          placeholder={t('builtinOfficePreview.searchPlaceholder')}
+          previousLabel={t('pdfToolbar.previousResult')}
+          nextLabel={t('pdfToolbar.nextResult')}
+          closeLabel={t('builtinOfficePreview.closeSearch')}
+          noMatchesLabel={t('builtinOfficePreview.noMatches')}
+        />
       ) : null}
     </div>
   );

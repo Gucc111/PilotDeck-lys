@@ -136,7 +136,7 @@ const FileSearchControls = forwardRef<HTMLInputElement, FileSearchControlsProps>
         role="search"
         aria-label={searchLabel}
         className={[
-          'flex h-8 min-w-56 max-w-md flex-1 items-center rounded-md border border-neutral-200 bg-white px-1.5',
+          'flex h-9 w-full min-w-0 items-center rounded-md border border-neutral-200 bg-white px-1.5',
           'dark:border-neutral-700 dark:bg-neutral-900',
           className,
         ].join(' ')}

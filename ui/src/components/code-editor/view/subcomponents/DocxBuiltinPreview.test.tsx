@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import DocxBuiltinPreview from './DocxBuiltinPreview';
 
@@ -28,6 +28,31 @@ afterEach(() => {
 });
 
 describe('DocxBuiltinPreview', () => {
+  it('opens file search as a floating overlay inside the preview surface', async () => {
+    render(
+      <DocxBuiltinPreview
+        blob={new Blob(['docx-data'])}
+        fileName="report.docx"
+        filePath="report.docx"
+        onError={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('docx-builtin-preview').textContent).toContain('Document section 4');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'builtinOfficePreview.search' }));
+
+    const search = screen.getByRole('search', { name: 'builtinOfficePreview.search' });
+    const overlay = search.closest('[data-file-search-overlay]');
+    expect(overlay).not.toBeNull();
+    expect(overlay?.classList.contains('absolute')).toBe(true);
+    expect(screen.getByTestId('docx-builtin-preview')
+      .closest('[data-file-search-surface]')
+      ?.contains(overlay)).toBe(true);
+  });
+
   it('does not expose rendered sections as Word page controls', async () => {
     render(
       <DocxBuiltinPreview

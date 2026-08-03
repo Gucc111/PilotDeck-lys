@@ -48,7 +48,7 @@ import {
 } from '../../../../types/contentReference';
 import { useFileSearchShortcut } from '../../hooks/useFileSearchShortcut';
 import ContentReferenceMenu from './ContentReferenceMenu';
-import FileSearchControls from './FileSearchControls';
+import FloatingFileSearchControls from './FloatingFileSearchControls';
 import RegionSelectionOverlay, { type CapturedRegion } from './RegionSelectionOverlay';
 import {
   floatingSelectionSingleActionClassName,
@@ -612,7 +612,7 @@ export default function SpreadsheetInteractivePreview({
       data-file-search-surface
       className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white"
     >
-      <div className="flex h-9 shrink-0 items-center border-b border-border bg-background text-sm">
+      <div className="relative z-20 flex h-9 shrink-0 items-center border-b border-border bg-background text-sm">
         <div
           aria-label={t('contentReference.spreadsheet.currentCell')}
           className="w-20 shrink-0 border-r border-border px-3 font-medium text-foreground"
@@ -655,10 +655,8 @@ export default function SpreadsheetInteractivePreview({
           onCancelMode={() => setReferenceMode(null)}
           compact
         />
-      </div>
-      {searchOpen ? (
-        <div className="flex min-h-11 shrink-0 items-center justify-end border-b border-border bg-background px-3 py-1.5">
-          <FileSearchControls
+        {searchOpen ? (
+          <FloatingFileSearchControls
             query={searchQuery}
             onQueryChange={setSearchQuery}
             matchIndex={searchMatchIndex}
@@ -672,10 +670,9 @@ export default function SpreadsheetInteractivePreview({
             nextLabel={t('pdfToolbar.nextResult')}
             closeLabel={t('builtinOfficePreview.closeSearch')}
             noMatchesLabel={t('builtinOfficePreview.noMatches')}
-            className="max-w-sm"
           />
-        </div>
-      ) : null}
+        ) : null}
+      </div>
       <div className="relative min-h-0 w-full flex-1 overflow-hidden bg-white">
         <div
           ref={containerRef}
