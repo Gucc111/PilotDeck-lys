@@ -2,6 +2,7 @@
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { FindShortcutProvider } from '../../contexts/FindShortcutContext';
 import type { ChatMessage, ChatRunMode } from '../chat/types/types';
 import MessagesPaneV2 from './MessagesPaneV2';
 import { getContextStatus } from './ComposerV2';
@@ -67,31 +68,33 @@ function createPaneElement({
   const scrollContainerRef = React.createRef<HTMLDivElement>();
 
   return (
-    <MessagesPaneV2
-      scrollContainerRef={scrollContainerRef}
-      onWheel={() => {}}
-      onTouchMove={() => {}}
-      isLoadingSessionMessages={false}
-      chatMessages={messages}
-      activityMessages={activityMessages}
-      visibleMessages={messages}
-      visibleMessageCount={messages.length}
-      isLoadingMoreMessages={false}
-      hasMoreMessages={false}
-      totalMessages={messages.length}
-      loadEarlierMessages={() => {}}
-      loadAllMessages={() => {}}
-      allMessagesLoaded
-      isLoadingAllMessages={false}
-      provider="pilotdeck"
-      selectedProject={null}
-      selectedSession={null}
-      createDiff={() => []}
-      setInput={() => {}}
-      isAssistantWorking={isAssistantWorking}
-      runMode={runMode}
-      planModeActive={planModeActive}
-    />
+    <FindShortcutProvider activeScope="chat">
+      <MessagesPaneV2
+        scrollContainerRef={scrollContainerRef}
+        onWheel={() => {}}
+        onTouchMove={() => {}}
+        isLoadingSessionMessages={false}
+        chatMessages={messages}
+        activityMessages={activityMessages}
+        visibleMessages={messages}
+        visibleMessageCount={messages.length}
+        isLoadingMoreMessages={false}
+        hasMoreMessages={false}
+        totalMessages={messages.length}
+        loadEarlierMessages={() => {}}
+        loadAllMessages={() => {}}
+        allMessagesLoaded
+        isLoadingAllMessages={false}
+        provider="pilotdeck"
+        selectedProject={null}
+        selectedSession={null}
+        createDiff={() => []}
+        setInput={() => {}}
+        isAssistantWorking={isAssistantWorking}
+        runMode={runMode}
+        planModeActive={planModeActive}
+      />
+    </FindShortcutProvider>
   );
 }
 

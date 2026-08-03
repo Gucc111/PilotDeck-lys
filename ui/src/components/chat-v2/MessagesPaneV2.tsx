@@ -986,6 +986,7 @@ function MessagesPaneV2({
       ) : null}
       <div
         ref={scrollContainerRef}
+        data-chat-search-surface
         onWheel={onWheel}
         onTouchMove={onTouchMove}
         className="h-full overflow-y-auto overflow-x-hidden bg-white dark:bg-neutral-950"

@@ -1,4 +1,5 @@
-import { useEffect, type RefObject } from 'react';
+import { useCallback, type RefObject } from 'react';
+import { useRegisterFindShortcutTarget } from '../../../contexts/FindShortcutContext';
 
 type UseFileSearchShortcutOptions = {
   containerRef: RefObject<HTMLElement>;
@@ -11,31 +12,21 @@ export function useFileSearchShortcut({
   enabled = true,
   onOpen,
 }: UseFileSearchShortcutOptions) {
-  useEffect(() => {
-    if (!enabled) return undefined;
+  const openFromShortcut = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    onOpen();
+    window.requestAnimationFrame(() => {
+      const input = container.querySelector<HTMLInputElement>('[data-file-search-input]');
+      input?.focus();
+      input?.select();
+    });
+  }, [containerRef, onOpen]);
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const isFindShortcut = (event.ctrlKey || event.metaKey)
-        && event.key.toLowerCase() === 'f';
-      if (!isFindShortcut) return;
-
-      const container = containerRef.current;
-      const target = event.target as Node | null;
-      if (!container || !target || !container.contains(target)) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      onOpen();
-      window.requestAnimationFrame(() => {
-        const input = container.querySelector<HTMLInputElement>('[data-file-search-input]');
-        input?.focus();
-        input?.select();
-      });
-    };
-
-    document.addEventListener('keydown', handleKeyDown, { capture: true });
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown, { capture: true });
-    };
-  }, [containerRef, enabled, onOpen]);
+  useRegisterFindShortcutTarget({
+    scope: 'file',
+    containerRef,
+    enabled,
+    onOpen: openFromShortcut,
+  });
 }

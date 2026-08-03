@@ -2,6 +2,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FindShortcutProvider } from '../../../contexts/FindShortcutContext';
 import { useFileSearchShortcut } from './useFileSearchShortcut';
 
 afterEach(() => {
@@ -29,12 +30,32 @@ describe('useFileSearchShortcut', () => {
       callback(performance.now());
       return 1;
     });
-    render(<ShortcutHarness />);
+    render(
+      <FindShortcutProvider activeScope="file">
+        <ShortcutHarness />
+      </FindShortcutProvider>,
+    );
 
     fireEvent.keyDown(screen.getByRole('button', { name: 'File content' }), {
       key: 'f',
       ctrlKey: true,
     });
+
+    expect(screen.queryByRole('textbox', { name: 'File search' })).not.toBeNull();
+  });
+
+  it('opens file search from the document while the file scope is active', () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(performance.now());
+      return 1;
+    });
+    render(
+      <FindShortcutProvider activeScope="file">
+        <ShortcutHarness />
+      </FindShortcutProvider>,
+    );
+
+    fireEvent.keyDown(document, { key: 'f', metaKey: true });
 
     expect(screen.queryByRole('textbox', { name: 'File search' })).not.toBeNull();
   });
