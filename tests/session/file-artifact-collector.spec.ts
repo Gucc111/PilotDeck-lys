@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { FileArtifactCollector } from "../../src/session/artifacts/FileArtifactCollector.js";
+import type { PilotDeckToolErrorCode } from "../../src/tool/index.js";
 
 function toolResult(toolName: string) {
   return {
@@ -13,6 +14,18 @@ function toolResult(toolName: string) {
     toolCallId: `${toolName}-1`,
     toolName,
     content: [{ type: "text" as const, text: "ok" }],
+    startedAt: "2026-07-21T10:00:00.000Z",
+    completedAt: "2026-07-21T10:00:00.100Z",
+  };
+}
+
+function failedToolResult(toolName: string, code: PilotDeckToolErrorCode) {
+  return {
+    type: "error" as const,
+    toolCallId: `${toolName}-1`,
+    toolName,
+    error: { code, message: "Tool did not execute." },
+    content: [{ type: "text" as const, text: "Tool did not execute." }],
     startedAt: "2026-07-21T10:00:00.000Z",
     completedAt: "2026-07-21T10:00:00.100Z",
   };
@@ -112,6 +125,41 @@ test("read-only tool results do not enable workspace-diff artifacts", async () =
     collector.observeToolResult(toolResult("read_file"));
 
     assert.deepEqual(await collector.finish("complete"), []);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("unexecuted mutating tool errors do not enable workspace-diff artifacts", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-denied-tool-"));
+  try {
+    await writeFile(join(projectRoot, "notes.txt"), "before");
+
+    const collector = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "notes.txt"), "changed outside a denied tool");
+    collector.observeToolResult(failedToolResult("bash", "permission_denied"));
+
+    assert.deepEqual(await collector.finish("complete"), []);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("mutating tool execution failures still enable workspace-diff artifacts", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-failed-tool-"));
+  try {
+    await writeFile(join(projectRoot, "notes.txt"), "before");
+
+    const collector = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "notes.txt"), "changed before a tool failure");
+    collector.observeToolResult(failedToolResult("bash", "tool_execution_failed"));
+
+    assert.deepEqual(
+      (await collector.finish("complete")).map((artifact) => artifact.path),
+      ["notes.txt"],
+    );
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

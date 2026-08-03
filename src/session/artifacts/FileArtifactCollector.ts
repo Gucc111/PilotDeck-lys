@@ -152,7 +152,7 @@ export class FileArtifactCollector {
   }
 
   observeToolResult(result: PilotDeckToolResult): void {
-    if (canToolMutateWorkspace(result.toolName)) {
+    if (canToolMutateWorkspace(result.toolName) && toolResultCouldHaveMutatedWorkspace(result)) {
       this.sawWorkspaceMutationCandidate = true;
     }
     if (result.type !== "success") return;
@@ -360,6 +360,29 @@ const READ_ONLY_TOOL_NAMES = new Set([
 
 function canToolMutateWorkspace(toolName: string): boolean {
   return !READ_ONLY_TOOL_NAMES.has(toolName.toLowerCase());
+}
+
+function toolResultCouldHaveMutatedWorkspace(result: PilotDeckToolResult): boolean {
+  if (result.type === "success") return true;
+
+  switch (result.error.code) {
+    case "tool_not_found":
+    case "invalid_tool_input":
+    case "permission_denied":
+    case "permission_cancelled":
+    case "permission_required":
+    case "path_not_allowed":
+    case "file_not_found":
+    case "file_conflict":
+    case "unsupported_tool":
+    case "setup_required":
+    case "plan_mode_violation":
+    case "ask_mode_violation":
+      return false;
+    default:
+      // Timeouts, aborts, and execution failures can occur after a tool writes files.
+      return true;
+  }
 }
 
 function cacheWorkspaceFingerprints(cwd: string, fingerprints: ReadonlyMap<string, FileFingerprint>): void {
