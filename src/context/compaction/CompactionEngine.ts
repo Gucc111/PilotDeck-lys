@@ -1,5 +1,6 @@
 import type {
   CanonicalContentBlock,
+  CanonicalFinishReason,
   CanonicalMessage,
   CanonicalModelEvent,
   CanonicalModelRequest,
@@ -61,7 +62,9 @@ export const COMPACT_SYSTEM_PROMPT_DEFAULT =
   "You are a conversation summarizer for a coding agent. Your summary will replace " +
   "the early conversation history, so it MUST preserve all information the agent " +
   "needs to continue working without repeating past steps.";
-export const COMPACT_MAX_OUTPUT_TOKENS = 20_000;
+// Keep room for the summary input inside small configured contexts such as
+// agent.maxContextTokens: 20_000.
+export const COMPACT_MAX_OUTPUT_TOKENS = 4_000;
 
 const SUMMARY_MARKDOWN_HEADINGS = [
   "Objective",
@@ -114,6 +117,12 @@ export type CompactionResult = {
   attachments: CanonicalMessage[];
   /** Hook output messages to follow the attachments. */
   hookResults: CanonicalMessage[];
+  /** Previously accepted checkpoint messages; kept byte-for-byte stable. */
+  stablePrefix?: CanonicalMessage[];
+  /** True when this pass rewrites an existing checkpoint prefix. */
+  cacheReset?: boolean;
+  /** Usage from the summary request, including provider cache accounting. */
+  summaryUsage?: CanonicalUsage;
   diagnostics: ContextDiagnostic[];
   error?: string;
 };
@@ -127,6 +136,10 @@ export type CompactionInput = {
   protectedToolNames?: Iterable<string> | null;
   /** Provider summarize prompt addition (e.g. "user wants you to focus on X"). */
   userInstruction?: string;
+  /** Per-pass summary output cap, used by emergency compaction. */
+  maxOutputTokens?: number;
+  /** Explicit cache reset marker for emergency checkpoint defragmentation. */
+  cacheReset?: boolean;
   /** Free-form attachments to fold into post-compact messages. */
   attachments?: CanonicalMessage[];
   /** Hook output messages to fold in after attachments (decision §3.1 #9 order). */
@@ -160,6 +173,7 @@ export class CompactionEngine {
   }
 
   async run(input: CompactionInput): Promise<CompactionResult> {
+    const checkpoint = splitCheckpointPrefix(input.messages);
     const preTokens = this.estimateMessages(input.messages);
     const tailRatio = clamp(input.keepTailRatio ?? DEFAULT_KEEP_TAIL_RATIO, 0, 1);
     const tailTokenBudget = Math.max(1, Math.floor(preTokens * tailRatio));
@@ -170,7 +184,7 @@ export class CompactionEngine {
       ? RELAXED_MIN_TAIL_MESSAGES
       : DEFAULT_MIN_TAIL_MESSAGES;
     const compactPlan = planFullCompactionMessages(
-      input.messages,
+      checkpoint.liveMessages,
       tailTokenBudget,
       protectedToolNames,
       minTailMessages,
@@ -201,9 +215,14 @@ export class CompactionEngine {
       // the intent, but no model call happens.
     } else {
       const summaryAnchors = input.protectedToolNames === null
-        ? buildCompactSummaryAnchors(messagesToSummarize, this.protectedToolNames)
+        ? buildCompactSummaryAnchors(checkpoint.liveMessages, this.protectedToolNames)
         : undefined;
-      const summaryInput = projectMessagesForSummary(messagesToSummarize);
+      // The summary sees the entire live segment, including the retained tail.
+      // This makes a later post-summary snip semantically safe.
+      const summaryInput = projectMessagesForSummary([
+        ...checkpoint.stablePrefix,
+        ...checkpoint.liveMessages,
+      ]);
       if (this.isSummaryFailureCooldownActive()) {
         summaryError = this.summaryFailureError ?? "context summary is in cooldown";
         summaryMessage = buildDeterministicFallbackSummary(messagesToSummarize, summaryError);
@@ -214,6 +233,7 @@ export class CompactionEngine {
             input.userInstruction,
             input.signal,
             summaryAnchors,
+            input.maxOutputTokens,
           );
           summaryMessage = wrapSummaryMessage(result.message);
           summaryUsage = result.usage;
@@ -265,6 +285,9 @@ export class CompactionEngine {
       summaryMessage,
       boundaryMarker,
       messagesToKeep,
+      stablePrefix: checkpoint.stablePrefix,
+      cacheReset: input.cacheReset ?? (checkpoint.stablePrefix.length > 0 && input.trigger !== "auto"),
+      summaryUsage,
       attachments: input.attachments ?? [],
       hookResults: input.hookResults ?? [],
       diagnostics,
@@ -284,6 +307,7 @@ export class CompactionEngine {
         preTokens,
         postTokens: result.postTokens,
         summaryUsage,
+        cacheReset: result.cacheReset === true,
       },
     });
     this.options.eventEmitter?.({
@@ -294,6 +318,9 @@ export class CompactionEngine {
       preTokens,
       postTokens: result.postTokens,
       messagesSummarized: messagesToSummarize.length,
+      cacheReset: result.cacheReset === true,
+      cacheReadTokens: summaryUsage?.cacheReadTokens,
+      cacheWriteTokens: summaryUsage?.cacheWriteTokens,
     });
 
     return result;
@@ -309,6 +336,7 @@ export class CompactionEngine {
     userInstruction: string | undefined,
     signal: AbortSignal | undefined,
     summaryAnchors: string | undefined,
+    maxOutputTokens: number | undefined,
   ): Promise<{ message: CanonicalMessage; usage?: CanonicalUsage }> {
     const trailingPrompt: CanonicalMessage = {
       role: "user",
@@ -324,7 +352,7 @@ export class CompactionEngine {
       model: this.options.model_,
       messages: [...messages, trailingPrompt],
       systemPrompt: this.options.systemPrompt ?? COMPACT_SUMMARY_SYSTEM_PROMPT_DEFAULT,
-      maxOutputTokens: this.options.maxOutputTokens ?? COMPACT_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: maxOutputTokens ?? this.options.maxOutputTokens ?? COMPACT_MAX_OUTPUT_TOKENS,
       stream: true,
       thinking: { enabled: false },
       cacheBreakpoints: [],
@@ -332,6 +360,7 @@ export class CompactionEngine {
 
     let text = "";
     let usage: CanonicalUsage | undefined;
+    let finishReason: CanonicalFinishReason | undefined;
     for await (const event of this.options.model.stream(request, signal)) {
       switch (event.type) {
         case "text_delta":
@@ -340,6 +369,9 @@ export class CompactionEngine {
         case "usage":
           usage = event.usage;
           break;
+        case "message_end":
+          finishReason = event.finishReason;
+          break;
         case "error":
           throw new Error(event.error.message);
         default:
@@ -347,10 +379,20 @@ export class CompactionEngine {
       }
     }
 
+    if (text.trim().length === 0) {
+      throw new Error("Summary model returned empty content");
+    }
+    if (finishReason === "length") {
+      throw new Error("Summary model output was truncated at the token limit");
+    }
+    if (finishReason === "content_filter") {
+      throw new Error("Summary model output was stopped by content filtering");
+    }
+
     return {
       message: {
         role: "assistant",
-        content: [{ type: "text", text: text.trim().length > 0 ? text.trim() : "(empty summary)" }],
+        content: [{ type: "text", text: text.trim() }],
       },
       usage,
     };
@@ -384,7 +426,7 @@ export class CompactionEngine {
  *   boundaryMarker → summary → keep → attachments → hookResults
  */
 export function buildPostCompactMessages(result: CompactionResult): CanonicalMessage[] {
-  const out: CanonicalMessage[] = [result.boundaryMarker];
+  const out: CanonicalMessage[] = [...(result.stablePrefix ?? []), result.boundaryMarker];
   if (result.summaryMessage) {
     out.push(result.summaryMessage);
   }
@@ -392,6 +434,34 @@ export function buildPostCompactMessages(result: CompactionResult): CanonicalMes
   out.push(...result.attachments);
   out.push(...result.hookResults);
   return ensureTrailingUserMessage(out);
+}
+
+function splitCheckpointPrefix(messages: CanonicalMessage[]): {
+  stablePrefix: CanonicalMessage[];
+  liveMessages: CanonicalMessage[];
+} {
+  let index = 0;
+  // A compact checkpoint is emitted as a boundary marker followed by the
+  // wrapped assistant summary. Keep every accepted pair immutable.
+  while (index + 1 < messages.length
+    && isCompactBoundaryMessage(messages[index]!)
+    && isWrappedSummaryMessage(messages[index + 1]!)) {
+    index += 2;
+  }
+  return {
+    stablePrefix: messages.slice(0, index),
+    liveMessages: messages.slice(index),
+  };
+}
+
+function isCompactBoundaryMessage(message: CanonicalMessage): boolean {
+  return message.role === "user"
+    && message.content.some((block) => block.type === "text" && block.text.startsWith("<compact-boundary"));
+}
+
+function isWrappedSummaryMessage(message: CanonicalMessage): boolean {
+  return message.role === "assistant"
+    && message.content.some((block) => block.type === "text" && block.text.startsWith(COMPACT_SUMMARY_PREFIX));
 }
 
 function planFullCompactionMessages(
@@ -492,6 +562,23 @@ function moveTailBoundaryBeforeProtectedRequest(
     return tailStartTurn;
   }
   const toolNamesByCallId = collectToolNamesByCallId(groups.flatMap((group) => group.messages));
+
+  // A protected turn in the prefix must stay in chronological order with the
+  // work that follows it. Move the boundary before the earliest protected
+  // turn, keeping its initiating user request when present. Otherwise the old
+  // implementation summarized later work and then appended the protected turn
+  // after that summary, reversing the causal order seen by the model.
+  for (let index = 0; index < tailStartTurn; index += 1) {
+    if (!hasProtectedContextMessage(groups[index]!.messages, toolNamesByCallId, { protectedToolNames })) {
+      continue;
+    }
+    const precedingGroup = groups[index - 1];
+    if (precedingGroup && isStandaloneUserRequestGroup(precedingGroup.messages)) {
+      return precedingGroup.index;
+    }
+    return index;
+  }
+
   const firstTailGroup = groups[tailStartTurn]!;
   const precedingGroup = groups[tailStartTurn - 1]!;
   if (
@@ -602,6 +689,33 @@ export function truncateHead(messages: CanonicalMessage[], keepRatio: number): C
   return messages.slice(-keep);
 }
 
+/** Emergency projection that keeps accepted checkpoint messages before the
+ * newest live suffix. Used only after summary and snip could not fit. */
+export function truncateHeadPreservingCheckpoint(
+  messages: CanonicalMessage[],
+  keepRatio: number,
+): CanonicalMessage[] {
+  const checkpoint = splitCheckpointPrefix(messages);
+  if (checkpoint.stablePrefix.length === 0) {
+    return ensureTrailingUserMessage(truncateTailPreservingToolPairs(messages, keepRatio));
+  }
+  return ensureTrailingUserMessage([
+    ...checkpoint.stablePrefix,
+    ...truncateTailPreservingToolPairs(checkpoint.liveMessages, keepRatio),
+  ]);
+}
+
+function truncateTailPreservingToolPairs(
+  messages: CanonicalMessage[],
+  keepRatio: number,
+): CanonicalMessage[] {
+  const liveTail = truncateHead(messages, keepRatio);
+  const resultIds = collectToolResultIds(liveTail);
+  const pairedCalls = stripUnpairedToolCalls(liveTail, resultIds);
+  const callIds = collectToolCallIds(pairedCalls);
+  return stripUnpairedToolResults(pairedCalls, callIds);
+}
+
 function clamp(value: number, min: number, max: number): number {
   if (Number.isNaN(value)) return min;
   return Math.max(min, Math.min(max, value));
@@ -613,6 +727,7 @@ function buildMarkdownSummarySystemPrompt(basePrompt: string): string {
     basePrompt.trim(),
     "Summarize the conversation so far as a concise Markdown checkpoint handoff for the next coding agent.",
     "This summary will replace earlier transcript messages. Preserve actionable state, visible results, and task-relevant conclusions from prior thinking blocks, not a chronological transcript or private monologue. Do not reproduce chain-of-thought verbatim, but do not drop factual reasoning that only appeared in thinking.",
+    "The input includes the recent live tail as well as older work. Summarize the full live segment so a later bounded snip may remove older live turns without losing their state.",
     "The runtime will wrap your answer in a reference-only prefix and end marker, so do not add those markers yourself.",
     "If the user message contains a `<compact-summary-anchors>` block, it contains bounded high-priority facts from protected tool turns that are being summarized instead of preserved verbatim. Absorb any task prompts, read skill paths, result paths, result previews, current state, and next actions from those anchors into the Markdown handoff.",
     "Prefer this section structure, using the headings exactly when they apply:",

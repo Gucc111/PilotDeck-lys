@@ -6,6 +6,7 @@ import {
   type CompactionEngine,
   type CompactionResult,
   buildPostCompactMessages,
+  truncateHeadPreservingCheckpoint,
 } from "./compaction/CompactionEngine.js";
 import type { CachedMicroCompactionEngine } from "./compaction/CachedMicroCompactionEngine.js";
 import type { MicroCompactionEngine } from "./compaction/MicroCompactionEngine.js";
@@ -30,7 +31,7 @@ import type {
   ModelContext,
 } from "./protocol/types.js";
 
-export type CompactionTier = "micro" | "snip" | "full";
+export type CompactionTier = "micro" | "snip" | "full" | "emergency";
 
 export type AutoCompactResult =
   | { type: "skipped"; snapshot: TokenBudgetSnapshot }
@@ -40,6 +41,8 @@ export type AutoCompactResult =
       tier: CompactionTier;
       snapshot: TokenBudgetSnapshot;
       result?: CompactionResult;
+      /** Set when every emergency tier ran but the request still cannot fit. */
+      error?: "context_overflow_after_emergency_compaction";
     };
 
 export type DefaultContextRuntimeOptions = {
@@ -91,10 +94,13 @@ const DEFAULT_MAX_CONTEXT_TOKENS = 8192;
 const DEFAULT_TRUNCATE_FIRST_RATIO = 0.5;
 const DEFAULT_TRUNCATE_SECOND_RATIO = 0.25;
 const DEFAULT_MEMORY_RETRIEVAL_TIMEOUT_MS = 30_000;
-const RELAXED_FULL_COMPACTION_KEEP_TAIL_RATIO = 0.05;
-const FULL_COMPACTION_BLOCKING_COOLDOWN_MS = 30_000;
-const FULL_COMPACTION_MIN_EFFECTIVE_SAVINGS_RATIO = 0.1;
-const FULL_COMPACTION_INEFFECTIVE_LIMIT = 2;
+// Keep the emergency tail at the lower end of the plan's 5%-10% range. This
+// matches the previous relaxed compaction behaviour and leaves enough room
+// for large, stable system/tool definitions in small model contexts.
+const EMERGENCY_KEEP_TAIL_RATIO = 0.05;
+const EMERGENCY_SUMMARY_MAX_OUTPUT_TOKENS = 1_536;
+const EMERGENCY_TOOL_RESULT_TOKENS = 256;
+const EMERGENCY_HEAD_KEEP_RATIO = 0.10;
 
 export class DefaultContextRuntime implements ContextRuntime {
   private readonly extension: ExtensionResolver;
@@ -117,8 +123,6 @@ export class DefaultContextRuntime implements ContextRuntime {
   private readonly truncateSecondKeepRatio: number;
   private readonly memoryRetrievalTimeoutMs: number;
   private readonly now: () => Date;
-  private fullCompactionCooldownUntil = 0;
-  private consecutiveIneffectiveFullCompactions = 0;
 
   constructor(options: DefaultContextRuntimeOptions = {}) {
     this.extension = options.extension ?? new NullExtensionResolver();
@@ -241,6 +245,7 @@ export class DefaultContextRuntime implements ContextRuntime {
 
     const microcompactResult = this.microcompactEngine?.apply({
       messages: projection.messages,
+      provider: input.provider,
     });
 
     return {
@@ -311,6 +316,7 @@ export class DefaultContextRuntime implements ContextRuntime {
     maxContextTokens?: number;
     reservedOutputTokens?: number;
     lastUsage?: CanonicalUsage;
+    allowFallbackOnFailure?: boolean;
     budgetEvaluator?: (messages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>;
   }): Promise<AutoCompactResult> {
     const sessionId = input.sessionId ?? "";
@@ -348,6 +354,7 @@ export class DefaultContextRuntime implements ContextRuntime {
             lastUsage,
           }));
     const initialSnapshot = await evaluateBudget(messages, input.lastUsage);
+    let currentSnapshot = initialSnapshot;
     const decision = this.autoCompactionPolicy.evaluateSnapshot(initialSnapshot);
     if (decision.type !== "trigger") {
       log("policy_skip", {
@@ -363,186 +370,218 @@ export class DefaultContextRuntime implements ContextRuntime {
       reservedOutputTokens: input.reservedOutputTokens,
     });
 
-    // Tier 1: MicroCompaction — truncate old tool_result content.
+    // 80% pressure: deterministic, whitelist-only tool-result projection.
     if (this.microCompaction) {
-      const r = this.microCompaction.apply({ messages });
-      if (r.rewritten > 0) {
-        messages = r.messages;
-        const snap = await evaluateBudget(messages);
-        log("micro_compaction", {
-          rewritten: r.rewritten,
-          snapshot: describeTokenBudgetSnapshot(snap),
-          stopAfterPrePrune: shouldStopAfterPrePrune(decision.reason, snap),
-        });
-        if (shouldStopAfterPrePrune(decision.reason, snap)) {
-          log("micro_compaction_stop", {
-            snapshot: describeTokenBudgetSnapshot(snap),
-          });
-          return {
-            type: "compacted",
-            messages: ensureTrailingUserMessage(messages),
-            tier: "micro",
-            snapshot: snap,
-          };
-        }
-      } else {
-        log("micro_compaction_noop", {
-          messages: messages.length,
-        });
-      }
-    }
-
-    if (decision.reason === "warning_threshold") {
-      log("warning_threshold_skip", {
-        snapshot: describeTokenBudgetSnapshot(decision.snapshot),
+      const micro = this.microCompaction.apply({ messages, trimToTokens: 768 });
+      messages = micro.messages;
+      const microSnapshot = await evaluateBudget(messages);
+      currentSnapshot = microSnapshot;
+      log("pre_summary_prune", {
+        rewritten: micro.rewritten,
+        rewrittenBytes: micro.rewrittenBytes,
+        snapshot: describeTokenBudgetSnapshot(microSnapshot),
       });
-      return { type: "skipped", snapshot: decision.snapshot };
-    }
-
-    // Tier 2: SnipEngine — prune middle turns, keep head + tail.
-    if (this.snipEngine) {
-      const r = this.snipEngine.snip(messages);
-      if (r.applied) {
-        messages = r.messages;
-        const snap = await evaluateBudget(messages);
-        log("snip_compaction", {
-          snapshot: describeTokenBudgetSnapshot(snap),
-          stopAfterPrePrune: shouldStopAfterPrePrune(decision.reason, snap),
-        });
-        if (shouldStopAfterPrePrune(decision.reason, snap)) {
-          log("snip_compaction_stop", {
-            snapshot: describeTokenBudgetSnapshot(snap),
-          });
-          return {
-            type: "compacted",
-            messages: ensureTrailingUserMessage(messages),
-            tier: "snip",
-            snapshot: snap,
-          };
+      if (microSnapshot.ratio < 0.90) {
+        if (micro.rewritten === 0) {
+          return { type: "skipped", snapshot: microSnapshot };
         }
-      } else {
-        log("snip_compaction_noop", {
-          messages: messages.length,
-        });
+        return {
+          type: "compacted",
+          messages: ensureTrailingUserMessage(messages),
+          tier: "micro",
+          snapshot: microSnapshot,
+        };
       }
     }
 
-    // Tier 3: CompactionEngine — full summarization via model call.
-    if (this.compactionEngine) {
-      const nowMs = this.now().getTime();
-      if (this.fullCompactionCooldownUntil > nowMs) {
-        log("full_compaction_skipped_cooldown", {
-          cooldownRemainingMs: this.fullCompactionCooldownUntil - nowMs,
-          consecutiveIneffectiveFullCompactions: this.consecutiveIneffectiveFullCompactions,
-          snapshot: describeTokenBudgetSnapshot(decision.snapshot),
-        });
-        return { type: "skipped", snapshot: decision.snapshot };
+    // A warning-level context is usable after the deterministic phase. This
+    // guard also preserves the 80%-90% no-summary contract when a caller did
+    // not configure a micro-compaction engine.
+    if (currentSnapshot.ratio < 0.90) {
+      return { type: "skipped", snapshot: currentSnapshot };
+    }
+
+    if (!this.compactionEngine) {
+      log("full_compaction_unavailable", { snapshot: describeTokenBudgetSnapshot(currentSnapshot) });
+      return { type: "skipped", snapshot: currentSnapshot };
+    }
+
+    log("full_compaction_started", {
+      messages: messages.length,
+      snapshot: describeTokenBudgetSnapshot(currentSnapshot),
+    });
+    const result = await this.compactionEngine.run({
+      trigger: "auto",
+      messages,
+      signal: input.abortSignal,
+      sessionId,
+      turnId,
+    });
+    if (result.error) {
+      log("full_compaction_no_summary", { error: result.error, preTokens: result.preTokens });
+      if (!input.allowFallbackOnFailure) {
+        return { type: "skipped", snapshot: currentSnapshot };
       }
-      log("full_compaction_started", {
-        messages: messages.length,
-        snapshot: describeTokenBudgetSnapshot(decision.snapshot),
+    } else if (!result.summaryMessage) {
+      // A protected early turn can legitimately leave the normal summary
+      // prefix empty. That is not a successful compaction: keep going through
+      // post-summary snip and the emergency tiers instead of sending the
+      // unchanged oversized transcript to the model.
+      log("full_compaction_no_summary", {
+        reason: "no_summarizable_live_turns",
+        preTokens: result.preTokens,
       });
-      const result = await this.compactionEngine.run({
-        trigger: "auto",
-        messages,
-        signal: input.abortSignal,
+    }
+
+    let finalResult = result;
+    let postMessages = ensureTrailingUserMessage(buildPostCompactMessages(result));
+    let snapshot = await evaluateBudget(postMessages);
+    if (snapshot.ratio >= 0.90 && this.snipEngine) {
+      const snip = this.snipEngine.snip(postMessages, {
+        targetTokens: Math.max(1, Math.floor((snapshot.effectiveContextTokens ?? snapshot.maxContextTokens) * 0.80)),
+      });
+      postMessages = snip.messages;
+      snapshot = await evaluateBudget(postMessages);
+      log("post_summary_snip", {
+        applied: snip.applied,
+        turnsSnipped: snip.turnsSnipped,
+        snapshot: describeTokenBudgetSnapshot(snapshot),
+      });
+    }
+
+    if (snapshot.ratio >= 0.90) {
+      const emergency = await this.runEmergencyCompaction({
+        messages: postMessages,
+        input,
+        evaluateBudget,
         sessionId,
         turnId,
+        log,
       });
-      if (!result.summaryMessage) {
-        log("full_compaction_no_summary", {
-          error: result.error,
-          preTokens: result.preTokens,
-        });
-        return { type: "skipped", snapshot: decision.snapshot };
-      }
-      let postCompactMessages = ensureTrailingUserMessage(buildPostCompactMessages(result));
-      let snapshot = await evaluateBudget(postCompactMessages);
-      let finalResult = result;
-      if (snapshot.state === "blocking") {
-        log("full_compaction_relaxed_retry", {
-          snapshot: describeTokenBudgetSnapshot(snapshot),
-          keepTailRatio: RELAXED_FULL_COMPACTION_KEEP_TAIL_RATIO,
-        });
-        const relaxedResult = await this.compactionEngine.run({
-          trigger: "auto",
-          messages,
-          signal: input.abortSignal,
-          keepTailRatio: RELAXED_FULL_COMPACTION_KEEP_TAIL_RATIO,
-          protectedToolNames: null,
-          sessionId,
-          turnId,
-        });
-        if (!relaxedResult.summaryMessage) {
-          log("full_compaction_relaxed_no_summary", {
-            error: relaxedResult.error,
-            preTokens: relaxedResult.preTokens,
-          });
-          return { type: "skipped", snapshot };
-        }
-        const relaxedMessages = ensureTrailingUserMessage(buildPostCompactMessages(relaxedResult));
-        const relaxedSnapshot = await evaluateBudget(relaxedMessages);
-        log("full_compaction_relaxed_result", {
-          previousSnapshot: describeTokenBudgetSnapshot(snapshot),
-          relaxedSnapshot: describeTokenBudgetSnapshot(relaxedSnapshot),
-        });
-        if (relaxedSnapshot.tokens <= snapshot.tokens) {
-          finalResult = relaxedResult;
-          postCompactMessages = relaxedMessages;
-          snapshot = relaxedSnapshot;
+      if (emergency) {
+        finalResult = emergency.result ?? finalResult;
+        postMessages = emergency.messages;
+        snapshot = emergency.snapshot;
+        if (emergency.diagnostics) {
+          finalResult.diagnostics.push(...emergency.diagnostics);
         }
       }
-      if (snapshot.state === "blocking") {
-        // Best-effort compaction still helps later retries, so keep the most
-        // compact transcript we produced instead of discarding it.
-        this.fullCompactionCooldownUntil = nowMs + FULL_COMPACTION_BLOCKING_COOLDOWN_MS;
-        this.consecutiveIneffectiveFullCompactions = Math.max(this.consecutiveIneffectiveFullCompactions + 1, FULL_COMPACTION_INEFFECTIVE_LIMIT);
-        log("full_compaction_still_blocking", {
-          snapshot: describeTokenBudgetSnapshot(snapshot),
-          cooldownUntilMs: this.fullCompactionCooldownUntil,
-          consecutiveIneffectiveFullCompactions: this.consecutiveIneffectiveFullCompactions,
-        });
-      }
-      const initialTokens = Math.max(1, decision.snapshot.tokens);
-      const savingsRatio = Math.max(0, (initialTokens - snapshot.tokens) / initialTokens);
-      if (savingsRatio < FULL_COMPACTION_MIN_EFFECTIVE_SAVINGS_RATIO) {
-        this.consecutiveIneffectiveFullCompactions += 1;
-        log("full_compaction_ineffective", {
-          savingsRatio,
-          consecutiveIneffectiveFullCompactions: this.consecutiveIneffectiveFullCompactions,
-        });
-      } else {
-        this.consecutiveIneffectiveFullCompactions = 0;
-        log("full_compaction_effective", {
-          savingsRatio,
-        });
-      }
-      if (this.consecutiveIneffectiveFullCompactions >= FULL_COMPACTION_INEFFECTIVE_LIMIT) {
-        this.fullCompactionCooldownUntil = nowMs + FULL_COMPACTION_BLOCKING_COOLDOWN_MS;
-        log("full_compaction_cooldown_set", {
-          cooldownUntilMs: this.fullCompactionCooldownUntil,
-          consecutiveIneffectiveFullCompactions: this.consecutiveIneffectiveFullCompactions,
-        });
-      }
-      log("full_compaction_completed", {
-        snapshot: describeTokenBudgetSnapshot(snapshot),
-        summarySucceeded: finalResult.error === undefined,
-        preTokens: finalResult.preTokens,
-        postTokens: finalResult.postTokens,
-      });
-      return {
-        type: "compacted",
-        messages: postCompactMessages,
-        tier: "full",
-        snapshot,
-        result: finalResult,
-      };
     }
 
-    log("full_compaction_unavailable", {
-      snapshot: describeTokenBudgetSnapshot(decision.snapshot),
+    log("full_compaction_completed", {
+      snapshot: describeTokenBudgetSnapshot(snapshot),
+      summarySucceeded: finalResult.error === undefined,
+      preTokens: finalResult.preTokens,
+      postTokens: finalResult.postTokens,
     });
-    return { type: "skipped", snapshot: decision.snapshot };
+    // 90% is the protection threshold that triggers emergency work, not a
+    // hard provider overflow. If the final prompt is still below the actual
+    // effective input budget, it remains sendable and should not be converted
+    // into a fatal context error merely because static tool definitions consume
+    // the remaining safety margin.
+    const overflowAfterEmergency = snapshot.ratio >= 1;
+    if (overflowAfterEmergency) {
+      const diagnostic: ContextDiagnostic = {
+        code: "context_overflow_after_emergency_compaction",
+        severity: "error",
+        message:
+          `Context remains over the effective input budget after emergency compaction ` +
+          `(tokens=${snapshot.tokens}, max=${snapshot.maxContextTokens}, ratio=${snapshot.ratio.toFixed(3)}). ` +
+          "The stable checkpoint, current request, tool protocol, and required tail are the remaining sources.",
+      };
+      finalResult.diagnostics.push(diagnostic);
+      log("context_overflow_after_emergency_compaction", {
+        snapshot: describeTokenBudgetSnapshot(snapshot),
+        diagnostic: diagnostic.message,
+      });
+    }
+    return {
+      type: "compacted",
+      messages: postMessages,
+      tier: snapshot.ratio >= 0.90 ? "emergency" : "full",
+      snapshot,
+      result: finalResult,
+      ...(overflowAfterEmergency ? { error: "context_overflow_after_emergency_compaction" as const } : {}),
+    };
+  }
+
+  private async runEmergencyCompaction(options: {
+    messages: CanonicalMessage[];
+    input: { abortSignal?: AbortSignal; allowFallbackOnFailure?: boolean };
+    evaluateBudget: (messages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>;
+    sessionId: string;
+    turnId: string;
+    log: (stage: string, details?: Record<string, unknown>) => void;
+  }): Promise<{
+    messages: CanonicalMessage[];
+    snapshot: TokenBudgetSnapshot;
+    result?: CompactionResult;
+    diagnostics?: ContextDiagnostic[];
+  } | undefined> {
+    let messages = options.messages;
+    let snapshot = await options.evaluateBudget(messages);
+    if (snapshot.ratio < 0.90) return { messages, snapshot };
+
+    // Emergency summary is the only normal path allowed to rewrite the
+    // checkpoint prefix. It is intentionally short and marked as a cache reset.
+    if (this.compactionEngine) {
+      const emergencyResult = await this.compactionEngine.run({
+        trigger: "reactive",
+        messages,
+        keepTailRatio: EMERGENCY_KEEP_TAIL_RATIO,
+        protectedToolNames: null,
+        maxOutputTokens: EMERGENCY_SUMMARY_MAX_OUTPUT_TOKENS,
+        cacheReset: true,
+        signal: options.input.abortSignal,
+        sessionId: options.sessionId,
+        turnId: options.turnId,
+      });
+      if (emergencyResult.summaryMessage && emergencyResult.error === undefined) {
+        messages = ensureTrailingUserMessage(buildPostCompactMessages({
+          ...emergencyResult,
+          cacheReset: true,
+          stablePrefix: [],
+        }));
+        snapshot = await options.evaluateBudget(messages);
+        options.log("emergency_summary", {
+          snapshot: describeTokenBudgetSnapshot(snapshot),
+          cacheReset: true,
+        });
+        if (snapshot.ratio < 0.90) return { messages, snapshot, result: emergencyResult };
+      }
+    }
+
+    const projected = this.microCompaction?.apply({
+      messages,
+      trimToTokens: EMERGENCY_TOOL_RESULT_TOKENS,
+      keepLatest: 1,
+      protectedToolNames: null,
+    });
+    if (projected) {
+      messages = projected.messages;
+      snapshot = await options.evaluateBudget(messages);
+      options.log("emergency_tool_projection", {
+        rewritten: projected.rewritten,
+        snapshot: describeTokenBudgetSnapshot(snapshot),
+      });
+      if (snapshot.ratio < 0.90) return { messages, snapshot };
+    }
+
+    messages = truncateHeadPreservingCheckpoint(messages, EMERGENCY_HEAD_KEEP_RATIO);
+    snapshot = await options.evaluateBudget(messages);
+    const diagnostics: ContextDiagnostic[] = [{
+      code: "context_hard_truncate",
+      severity: "error",
+      message:
+        `Emergency head truncation kept approximately ${Math.round(EMERGENCY_HEAD_KEEP_RATIO * 100)}% ` +
+        `of the live history (tokens=${snapshot.tokens}, max=${snapshot.maxContextTokens}). ` +
+        "Earlier live turns may be unavailable outside the durable transcript.",
+    }];
+    options.log("emergency_head_truncate", {
+      snapshot: describeTokenBudgetSnapshot(snapshot),
+      keepRatio: EMERGENCY_HEAD_KEEP_RATIO,
+    });
+    return { messages, snapshot, diagnostics };
   }
 
   async recoverFromModelError(input: ContextRecoveryInput): Promise<ContextRecoveryDecision> {
@@ -622,16 +661,6 @@ function extractRecentUserText(messages: CanonicalMessage[]): string | undefined
     }
   }
   return undefined;
-}
-
-function shouldStopAfterPrePrune(
-  triggerReason: "warning_threshold" | "blocking_threshold",
-  snapshot: TokenBudgetSnapshot,
-): boolean {
-  if (snapshot.state === "ok") {
-    return true;
-  }
-  return triggerReason === "warning_threshold" && snapshot.state !== "blocking";
 }
 
 function logAutoCompactEvent(

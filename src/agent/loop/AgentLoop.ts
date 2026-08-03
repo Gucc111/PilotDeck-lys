@@ -290,6 +290,34 @@ export class AgentLoop {
       permissionMode: this.config.permissionMode,
     });
 
+    const contextOverflowAfterEmergency = async (
+      compact: Extract<Awaited<ReturnType<NonNullable<AgentContextRuntime["tryAutoCompact"]>>>, { type: "compacted" }>,
+    ): Promise<{ error: ReturnType<typeof agentError>; result: AgentTurnResult }> => {
+      const error = agentError(
+        "agent_context_recovery_failed",
+        compact.error ?? "context_overflow_after_emergency_compaction",
+        {
+          code: compact.error,
+          snapshot: compact.snapshot,
+          diagnostics: compact.result?.diagnostics,
+        },
+        "The context is still too large after emergency compaction. Start a new session or reduce the request and retry.",
+      );
+      await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
+      const result = this.createTurnResult(input, {
+        type: "error",
+        stopReason: "prompt_too_long",
+        usage,
+        permissionDenials,
+        turns: turnCount,
+        startedAt,
+        finalMessage,
+        structuredOutput,
+        errors: [error],
+      });
+      return { error, result };
+    };
+
     const stickyInfo = this.dependencies.router.invalidateSticky?.(input.sessionId);
     let previousTier: string | undefined = stickyInfo?.previousTier;
 
@@ -393,6 +421,15 @@ export class AgentLoop {
               turnId: input.turnId,
               reason: "auto_compact",
             };
+            if (compact.error) {
+              const failure = await contextOverflowAfterEmergency(compact);
+              yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.error.message };
+              yield await emitStatus(createModelRequestFailedStatus({ error: failure.error }));
+              yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure.error };
+              await captureTurn(true);
+              yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: failure.result };
+              return { result: failure.result, messages };
+            }
           }
           pendingContextBudget = compact.snapshot;
         } catch (error: unknown) {
@@ -486,6 +523,21 @@ export class AgentLoop {
                 turnId: input.turnId,
                 reason: "auto_compact",
               };
+              if (recompact.error) {
+                yield {
+                  type: "context_budget",
+                  sessionId: input.sessionId,
+                  turnId: input.turnId,
+                  snapshot: recompact.snapshot,
+                };
+                const failure = await contextOverflowAfterEmergency(recompact);
+                yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.error.message };
+                yield await emitStatus(createModelRequestFailedStatus({ error: failure.error }));
+                yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure.error };
+                await captureTurn(true);
+                yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: failure.result };
+                return { result: failure.result, messages };
+              }
             }
             yield {
               type: "context_budget",
@@ -1025,11 +1077,21 @@ export class AgentLoop {
                 maxContextTokens: this.currentMaxContextTokens(target.provider, target.model),
                 reservedOutputTokens: this.getReservedOutputTokens(target.provider, target.model),
                 lastUsage: lastModelUsage,
+                allowFallbackOnFailure: true,
               });
               if (compact.type === "compacted") {
                 const preCompactMessages = messages;
                 messages = compact.messages;
                 await this.persistCompactSnapshot(input, compact, preCompactMessages);
+                if (compact.error) {
+                  const failure = await contextOverflowAfterEmergency(compact);
+                  yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.error.message };
+                  yield await emitStatus(createModelRequestFailedStatus({ error: failure.error }));
+                  yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure.error };
+                  await captureTurn(true);
+                  yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: failure.result };
+                  return { result: failure.result, messages };
+                }
               } else {
                 messages = truncateHeadKeepRatio(messages, 0.5);
               }
@@ -1947,6 +2009,18 @@ export class AgentLoop {
         extra: {
           tier: compact.tier,
           summarySucceeded: compact.result.error === undefined,
+          ...(compact.result.cacheReset ? { cacheReset: true } : {}),
+          ...(compact.result.stablePrefix && compact.result.stablePrefix.length > 0
+            ? { checkpointVersion: Math.floor(compact.result.stablePrefix.length / 2) + 1 }
+            : {}),
+          ...(compact.error
+            ? {
+                finalBudgetTokens: compact.snapshot.maxContextTokens,
+                finalUsedTokens: compact.snapshot.tokens,
+                finalBudgetRatio: compact.snapshot.ratio,
+              }
+            : {}),
+          ...(compact.error ? { error: compact.error } : {}),
         },
       },
     };
@@ -3011,7 +3085,11 @@ export function modelFailureAction(error: CanonicalModelError | undefined): {
     const hint = `Top up billing/quota on the provider API side, or switch to another provider/model in Settings.`;
     return modelFailureActionResult(hint, "provider", "billing");
   }
-  if (error.code === "prompt_too_long" || error.code === "context_overflow") {
+  if (
+    error.code === "prompt_too_long"
+    || error.code === "context_overflow"
+    || error.code === "context_overflow_after_emergency_compaction"
+  ) {
     const hint = "Run /compact, start a new session, remove large attachments, or switch to a larger-context model in Settings.";
     return modelFailureActionResult(hint, "prompt", "contextOverflow");
   }

@@ -42,7 +42,7 @@ export type TokenBudgetManagerOptions = {
   multimediaTokens?: number;
   /** Auto-compact / warning threshold (default 0.8). */
   warningRatio?: number;
-  /** Hard blocking threshold (default 0.95). */
+  /** Hard blocking threshold (default 0.90). */
   blockingRatio?: number;
   /** Per-message overhead for role/wrapper boilerplate (default 4 tokens). */
   perMessageOverhead?: number;
@@ -54,7 +54,7 @@ export type TokenBudgetManagerOptions = {
  */
 export const IMAGE_MAX_TOKEN_SIZE = 2_000;
 const DEFAULT_WARNING_RATIO = 0.8;
-const DEFAULT_BLOCKING_RATIO = 0.95;
+const DEFAULT_BLOCKING_RATIO = 0.90;
 const DEFAULT_PER_MESSAGE_OVERHEAD = 4;
 
 /**
