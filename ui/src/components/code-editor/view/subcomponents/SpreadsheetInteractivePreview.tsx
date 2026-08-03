@@ -58,6 +58,10 @@ import {
   shouldShowSpreadsheetSelectionPopup,
   type SpreadsheetSelectionOrigin,
 } from './spreadsheetContextSelectionIntent';
+import {
+  SPREADSHEET_UNIVER_SHEETS_UI_CONFIG,
+  SPREADSHEET_UNIVER_UI_CONFIG,
+} from './spreadsheetUniverConfig';
 
 import '@univerjs/design/lib/index.css';
 import '@univerjs/ui/lib/index.css';
@@ -232,23 +236,15 @@ export default function SpreadsheetInteractivePreview({
       univer.registerPlugin(UniverFormulaEnginePlugin);
       univer.registerPlugin(UniverUIPlugin, {
         container,
-        header: false,
-        toolbar: false,
-        footer: false,
-        contextMenu: false,
-        headerMenu: false,
-        disableAutoFocus: true,
+        ...SPREADSHEET_UNIVER_UI_CONFIG,
       });
       univer.registerPlugin(UniverDocsPlugin);
       univer.registerPlugin(UniverDocsUIPlugin);
       univer.registerPlugin(UniverSheetsPlugin);
-      univer.registerPlugin(UniverSheetsUIPlugin, {
-        formulaBar: false,
-        footer: false,
-        disableAutoFocus: true,
-        disableEdit: true,
-        protectedRangeShadow: false,
-      });
+      univer.registerPlugin(
+        UniverSheetsUIPlugin,
+        SPREADSHEET_UNIVER_SHEETS_UI_CONFIG,
+      );
       univer.registerPlugin(UniverSheetsFormulaPlugin);
       univer.registerPlugin(UniverSheetsFormulaUIPlugin);
       univer.registerPlugin(UniverSheetsNumfmtPlugin);
