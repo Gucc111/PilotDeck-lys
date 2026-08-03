@@ -892,11 +892,16 @@ function injectFileArtifactMessages(
   projectKey?: string,
 ): void {
   const lastBoundaryIndex = findLastCompactBoundaryIndex(entries);
+  const toolResultTurnIds = findToolResultTurnIds(entries);
   const artifactMessages: WebMessage[] = [];
   for (let index = 0; index < entries.length; index += 1) {
     if (lastBoundaryIndex !== -1 && index < lastBoundaryIndex) continue;
     const entry = entries[index];
     if (entry.type !== "file_artifacts" || entry.artifacts.length === 0) continue;
+    const artifacts = entry.artifacts.filter(
+      (artifact) => artifact.source !== "workspace_diff" || toolResultTurnIds.has(entry.turnId),
+    );
+    if (artifacts.length === 0) continue;
     artifactMessages.push({
       id: entry.entryId ?? `${sessionKey}-file-artifacts-${entry.turnId}-${entry.sequence}`,
       sessionKey,
@@ -905,7 +910,7 @@ function injectFileArtifactMessages(
       provider: "pilotdeck",
       role: "assistant",
       kind: "file_artifacts",
-      artifacts: entry.artifacts,
+      artifacts,
       payload: { turnId: entry.turnId },
       source: "history",
       ...(entry.entryId ? { entryId: entry.entryId } : {}),
@@ -923,6 +928,22 @@ function injectFileArtifactMessages(
     }
     allMessages.splice(insertAt, 0, artifactMessage);
   }
+}
+
+function findToolResultTurnIds(entries: AgentTranscriptEntry[]): Set<string> {
+  const turnIds = new Set<string>();
+  for (const entry of entries) {
+    if (
+      (entry.type !== "assistant_message" &&
+        entry.type !== "tool_result_message" &&
+        entry.type !== "durable_message") ||
+      !entry.message.content.some((block) => block.type === "tool_result")
+    ) {
+      continue;
+    }
+    turnIds.add(entry.turnId);
+  }
+  return turnIds;
 }
 
 /**
