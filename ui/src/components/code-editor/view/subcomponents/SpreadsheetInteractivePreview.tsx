@@ -53,6 +53,11 @@ import RegionSelectionOverlay, { type CapturedRegion } from './RegionSelectionOv
 import {
   floatingSelectionSingleActionClassName,
 } from './floatingSelectionAction';
+import {
+  createSpreadsheetContextSelectionIntent,
+  shouldShowSpreadsheetSelectionPopup,
+  type SpreadsheetSelectionOrigin,
+} from './spreadsheetContextSelectionIntent';
 
 import '@univerjs/design/lib/index.css';
 import '@univerjs/ui/lib/index.css';
@@ -80,7 +85,9 @@ type UniverRuntime = {
   disposeSelectionListener?: () => void;
   disposeSelectionMoveStartListener?: () => void;
   disposeSelectionMoveEndListener?: () => void;
-  disposeCellClickListener?: () => void;
+  disposeCellPointerDownListener?: () => void;
+  disposeCellPointerUpListener?: () => void;
+  disposeContextSelectionIntent?: () => void;
   disposePopupComponent?: () => void;
   disposeSelectionPopup?: () => void;
 };
@@ -181,8 +188,6 @@ export default function SpreadsheetInteractivePreview({
   const selectionDraftRef = useRef<SpreadsheetSelectionDraft | null>(null);
   const addCellReferenceRef = useRef<() => void>(() => undefined);
   const referenceModeRef = useRef<ContentReferenceSelectionMode | null>(referenceMode);
-  const selectionMovingRef = useRef(false);
-  const userInteractedRef = useRef(false);
   const onActiveSheetChangeRef = useRef(onActiveSheetChange);
   const onErrorRef = useRef(onError);
   const activeSheetIndexRef = useRef(activeSheetIndex);
@@ -192,7 +197,10 @@ export default function SpreadsheetInteractivePreview({
   activeSheetIndexRef.current = activeSheetIndex;
   zoomRef.current = zoom;
   referenceModeRef.current = referenceMode;
-  const openSearch = useCallback(() => setSearchOpen(true), []);
+  const openSearch = useCallback(() => {
+    runtimeRef.current?.disposeSelectionPopup?.();
+    setSearchOpen(true);
+  }, []);
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
     setSearchQuery('');
@@ -249,6 +257,9 @@ export default function SpreadsheetInteractivePreview({
       const api = FUniver.newAPI(univer);
       api.createWorkbook({ ...workbook, locale: univerLocale });
       const fWorkbook = api.getActiveWorkbook();
+      const contextSelectionIntent = createSpreadsheetContextSelectionIntent<
+        ReturnType<NonNullable<typeof fWorkbook>['getActiveSheet']>
+      >();
       let selectionPopup: { dispose: () => void } | null = null;
       const disposeSelectionPopup = () => {
         selectionPopup?.dispose();
@@ -289,7 +300,7 @@ export default function SpreadsheetInteractivePreview({
           startColumn: number;
           endColumn: number;
         }>,
-        showPopup: boolean,
+        origin: SpreadsheetSelectionOrigin,
       ) => {
         const selection = selections[0];
         if (!selection) {
@@ -364,7 +375,10 @@ export default function SpreadsheetInteractivePreview({
         selectionDraftRef.current = nextDraft;
         setSelectionDraft(nextDraft);
 
-        if (!showPopup || referenceModeRef.current === 'region') return;
+        if (!shouldShowSpreadsheetSelectionPopup(
+          origin,
+          referenceModeRef.current === 'region',
+        )) return;
         disposeSelectionPopup();
         selectionPopup = worksheet.getRange(selection).attachRangePopup({
           componentKey: popupComponentKey,
@@ -374,14 +388,22 @@ export default function SpreadsheetInteractivePreview({
       };
       const syncCurrentSelection = (
         worksheet: ReturnType<NonNullable<typeof fWorkbook>['getActiveSheet']>,
-        showPopup: boolean,
+        origin: SpreadsheetSelectionOrigin,
       ) => {
         const selections = worksheet
           .getSelection()
           ?.getActiveRangeList()
           .map((range) => range.getRange()) || [];
-        syncSelection(worksheet, selections, showPopup);
+        syncSelection(worksheet, selections, origin);
       };
+      const handleSheetPointerDown = (event: PointerEvent) => {
+        contextSelectionIntent.recordPointerDown(event.button, event.ctrlKey);
+      };
+      const handleSheetContextMenu = (event: MouseEvent) => {
+        event.preventDefault();
+      };
+      container.addEventListener('pointerdown', handleSheetPointerDown, true);
+      container.addEventListener('contextmenu', handleSheetContextMenu);
       if (fWorkbook) {
         fWorkbook.setActiveSheet(`sheet-${activeSheetIndexRef.current}`);
         fWorkbook.getActiveSheet().zoom(zoomRef.current);
@@ -402,36 +424,39 @@ export default function SpreadsheetInteractivePreview({
       const selectionListener = api.addEvent(
         api.Event.SelectionChanged,
         ({ worksheet, selections }) => {
-          syncSelection(
-            worksheet,
-            selections,
-            userInteractedRef.current && !selectionMovingRef.current,
-          );
+          disposeSelectionPopup();
+          syncSelection(worksheet, selections, 'passive');
         },
       );
       const selectionMoveStartListener = api.addEvent(
         api.Event.SelectionMoveStart,
         () => {
-          userInteractedRef.current = true;
-          selectionMovingRef.current = true;
           disposeSelectionPopup();
         },
       );
       const selectionMoveEndListener = api.addEvent(
         api.Event.SelectionMoveEnd,
         ({ worksheet, selections }) => {
-          userInteractedRef.current = true;
-          selectionMovingRef.current = false;
-          syncSelection(worksheet, selections, true);
+          disposeSelectionPopup();
+          syncSelection(worksheet, selections, 'passive');
         },
       );
-      const cellClickListener = api.addEvent(
-        api.Event.CellClicked,
+      const cellPointerDownListener = api.addEvent(
+        api.Event.CellPointerDown,
         ({ worksheet }) => {
-          userInteractedRef.current = true;
+          if (contextSelectionIntent.recordCellPointerDown(worksheet)) {
+            disposeSelectionPopup();
+          }
+        },
+      );
+      const cellPointerUpListener = api.addEvent(
+        api.Event.CellPointerUp,
+        () => {
+          const worksheet = contextSelectionIntent.consumeContextAction();
+          if (!worksheet) return;
           window.requestAnimationFrame(() => {
             if (disposed) return;
-            syncCurrentSelection(worksheet, true);
+            syncCurrentSelection(worksheet, 'context-action');
           });
         },
       );
@@ -442,7 +467,13 @@ export default function SpreadsheetInteractivePreview({
         disposeSelectionListener: () => selectionListener.dispose(),
         disposeSelectionMoveStartListener: () => selectionMoveStartListener.dispose(),
         disposeSelectionMoveEndListener: () => selectionMoveEndListener.dispose(),
-        disposeCellClickListener: () => cellClickListener.dispose(),
+        disposeCellPointerDownListener: () => cellPointerDownListener.dispose(),
+        disposeCellPointerUpListener: () => cellPointerUpListener.dispose(),
+        disposeContextSelectionIntent: () => {
+          container.removeEventListener('pointerdown', handleSheetPointerDown, true);
+          container.removeEventListener('contextmenu', handleSheetContextMenu);
+          contextSelectionIntent.reset();
+        },
         disposePopupComponent: () => popupComponent.dispose(),
         disposeSelectionPopup,
       };
@@ -460,7 +491,9 @@ export default function SpreadsheetInteractivePreview({
       runtime?.disposeSelectionListener?.();
       runtime?.disposeSelectionMoveStartListener?.();
       runtime?.disposeSelectionMoveEndListener?.();
-      runtime?.disposeCellClickListener?.();
+      runtime?.disposeCellPointerDownListener?.();
+      runtime?.disposeCellPointerUpListener?.();
+      runtime?.disposeContextSelectionIntent?.();
       runtime?.disposePopupComponent?.();
       runtime?.univer.dispose();
     };
@@ -515,6 +548,7 @@ export default function SpreadsheetInteractivePreview({
     const fWorkbook = runtimeRef.current?.api.getActiveWorkbook();
     const worksheet = fWorkbook?.getSheetBySheetId(match.sheetId);
     if (!fWorkbook || !worksheet) return;
+    runtimeRef.current?.disposeSelectionPopup?.();
     fWorkbook.setActiveSheet(worksheet);
     worksheet.getRange(match.row, match.column).activate();
     onActiveSheetChangeRef.current(match.sheetIndex);
