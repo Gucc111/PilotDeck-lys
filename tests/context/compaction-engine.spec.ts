@@ -182,6 +182,36 @@ test("token-budget tail protection keeps the last turn group intact", async () =
   assert.match(summaryText(result.summaryMessage), /END OF CONTEXT SUMMARY/);
 });
 
+test("full compaction bounds oversized retained tool output", async () => {
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(): AsyncIterable<CanonicalModelEvent> {
+        yield { type: "message_start", role: "assistant" };
+        yield { type: "text_delta", text: "## Objective\nContinue.\n\n## Current State\nTail output was bounded.\n\n## Remaining\nProceed.\n\n## Files And Artifacts\nNone." };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+  });
+  const messages = tokenTailFixture();
+  const tailResult = findToolResult(messages, "tail-tool");
+  assert.ok(tailResult);
+  tailResult.content = [{ type: "text", text: "oversized tail output ".repeat(12_000) }];
+
+  const result = await engine.run({
+    trigger: "auto",
+    messages,
+    keepTailRatio: 0.01,
+  });
+
+  const retainedTailResult = findToolResult(result.messagesToKeep, "tail-tool");
+  assert.ok(retainedTailResult);
+  assert.match(toolResultText(retainedTailResult), /Full output remains in the durable session transcript/);
+  assert.ok(toolResultText(retainedTailResult).length < 2_500);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "compact_retained_tool_output_truncated"));
+});
+
 test("auto full compaction summarizes older tool groups inside one user task", async () => {
   const summaryRequests: CanonicalModelRequest[] = [];
   const events: Array<{ type: string }> = [];

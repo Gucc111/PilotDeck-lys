@@ -177,7 +177,10 @@ export class CompactionEngine {
       (turnMessages) => this.estimateMessages(turnMessages),
     );
     const messagesToSummarize = compactPlan.messagesToSummarize;
-    const messagesToKeep = compactPlan.messagesToKeep;
+    const retainedTailExceededBudget = this.estimateMessages(compactPlan.messagesToKeep) > tailTokenBudget;
+    const messagesToKeep = retainedTailExceededBudget
+      ? projectOversizedRetainedToolResults(compactPlan.messagesToKeep, collectToolNamesByCallId(input.messages))
+      : compactPlan.messagesToKeep;
 
     await this.options.lifecycle?.dispatch({
       event: "PreCompact",
@@ -232,7 +235,7 @@ export class CompactionEngine {
       summarySucceeded: summaryError === undefined,
     });
 
-    const diagnostics = summaryError
+    const diagnostics: ContextDiagnostic[] = summaryError
       ? [
           {
             code: "compact_summary_failed",
@@ -248,6 +251,13 @@ export class CompactionEngine {
       : summaryMessage
         ? validateSummaryMarkdownStructure(summaryMessage)
         : [];
+    if (retainedTailExceededBudget && messagesToKeep !== compactPlan.messagesToKeep) {
+      diagnostics.push({
+        code: "compact_retained_tool_output_truncated",
+        severity: "warning",
+        message: "Oversized retained tool output was replaced with a bounded preview so the compacted context can fit the tail budget.",
+      });
+    }
 
     const result: CompactionResult = {
       trigger: input.trigger,
@@ -604,6 +614,49 @@ function projectMessagesForSummary(messages: CanonicalMessage[]): CanonicalMessa
       return { ...message, content };
     })
     .filter((message) => message.content.length > 0);
+}
+
+/**
+ * The tail normally stays verbatim so the agent can immediately continue its
+ * most recent work. A single raw tool result can nevertheless be larger than
+ * the entire tail allowance (for example, an unbounded page fetch). In that
+ * case keeping it verbatim makes full compaction unable to recover at all.
+ *
+ * This only affects the in-context replacement transcript. The durable tool
+ * result remains available in the session history; the paired call id is also
+ * retained so providers continue to receive a valid tool-call sequence.
+ */
+function projectOversizedRetainedToolResults(
+  messages: CanonicalMessage[],
+  toolNamesByCallId: ReadonlyMap<string, string>,
+): CanonicalMessage[] {
+  let changed = false;
+  const projected = messages.map((message) => {
+    const content = message.content.map((block) => {
+      if (block.type !== "tool_result") {
+        return block;
+      }
+      const flattened = flattenToolResultContentText(block.content).trim();
+      if (flattened.length <= COMPACT_SUMMARY_INPUT_TOOL_RESULT_MAX_CHARS) {
+        return block;
+      }
+      changed = true;
+      const toolName = toolNamesByCallId.get(block.toolCallId) ?? "unknown";
+      return {
+        type: "tool_result" as const,
+        toolCallId: block.toolCallId,
+        ...(block.isError === true ? { isError: true } : {}),
+        content: [
+          {
+            type: "text" as const,
+            text: `${summarizeToolResultForSummary(toolName, block.toolCallId, flattened, block.isError === true)}\n[Full output remains in the durable session transcript.]`,
+          },
+        ],
+      };
+    });
+    return changed ? { ...message, content } : message;
+  });
+  return changed ? projected : messages;
 }
 
 function pruneToolCallForSummary(block: CanonicalToolCallBlock): CanonicalToolCallBlock {

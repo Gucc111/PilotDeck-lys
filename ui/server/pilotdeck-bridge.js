@@ -2237,16 +2237,32 @@ export function getRouterStatsSummary() {
 }
 
 /**
- * Register a notification handler that forwards Always-On turn events
- * to all connected browser WebSocket clients as NormalizedMessage frames.
+ * Register a notification handler that forwards Always-On turn events as
+ * NormalizedMessage frames. The UI server can provide a session-scoped
+ * delivery callback so an event is sent only to tabs watching that session.
  *
  * Called once from `index.js` after the WebSocket server is ready, passing
  * the shared `connectedClients` set.
  *
  * @param {Set<import('ws').WebSocket>} clients
+ * @param {(sessionId: string, frame: object) => void} [forwardToSessionWatchers]
  */
-export function registerAlwaysOnNotificationForwarding(clients) {
+export function registerAlwaysOnNotificationForwarding(clients, forwardToSessionWatchers) {
     const knownSessions = new Set();
+
+    const forwardFrame = (sessionId, frame) => {
+        if (typeof forwardToSessionWatchers === 'function') {
+            forwardToSessionWatchers(sessionId, frame);
+            return;
+        }
+
+        // Compatibility fallback for embedders that have not supplied a
+        // watcher registry yet. The main UI server always uses the scoped path.
+        const msg = JSON.stringify(frame);
+        for (const client of clients) {
+            if (client.readyState === 1) client.send(msg);
+        }
+    };
 
     ensureGateway().then((gw) => {
         gw.onNotification((name, payload) => {
@@ -2266,10 +2282,7 @@ export function registerAlwaysOnNotificationForwarding(clients) {
                     sessionKey,
                     channelKey,
                 });
-                const createdMsg = JSON.stringify(createdFrame);
-                for (const client of clients) {
-                    if (client.readyState === 1) client.send(createdMsg);
-                }
+                forwardFrame(sessionKey, createdFrame);
             }
 
             if (event.type === 'context_budget') {
@@ -2302,10 +2315,7 @@ export function registerAlwaysOnNotificationForwarding(clients) {
                 aoState.tokenBudget = compactTokenBudget;
             }
             for (const frame of gatewayEventToFrames(eventForFrames, sessionKey, provider)) {
-                const msg = JSON.stringify(frame);
-                for (const client of clients) {
-                    if (client.readyState === 1) client.send(msg);
-                }
+                forwardFrame(sessionKey, frame);
             }
 
             if (event.type === 'turn_completed') {

@@ -259,7 +259,12 @@ export function getContextStatus(tokenBudget?: Record<string, unknown> | null): 
     };
   }
 
-  const percent = Math.max(0, Math.round((budgetUsed / displayTotal) * 100));
+  // The visible count and percent must describe the same quantity. `budgetUsed`
+  // includes the conservative request padding used by the compaction policy;
+  // using it for the badge while showing `displayUsed` below produced confusing
+  // combinations such as “100%+” beside “11,928 / 12,000”. Policy state still
+  // uses the padded budget and can correctly remain blocking.
+  const percent = Math.max(0, Math.round((used / displayTotal) * 100));
   const snapshotState = typeof tokenBudget?.state === 'string' ? tokenBudget.state : null;
   const tone = snapshotState === 'blocking'
     ? 'red'
