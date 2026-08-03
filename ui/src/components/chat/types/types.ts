@@ -113,6 +113,8 @@ export interface ChatMessage {
   runId?: string;
   compactTrigger?: string;
   preTokens?: number;
+  postTokens?: number;
+  messagesSummarized?: number;
   compactLevel?: number;
   compactStage?: string;
   compactStageLabel?: string;

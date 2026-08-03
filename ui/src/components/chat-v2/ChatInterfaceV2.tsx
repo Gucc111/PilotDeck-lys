@@ -553,6 +553,11 @@ function ChatInterfaceV2({
       chromeless={isWelcomeMode && !compact}
     />
   );
+  const composerSlot = (
+    <div data-chat-composer-slot className="min-h-0 shrink-0">
+      {composer}
+    </div>
+  );
 
   if (isWelcomeMode) {
     const projectName = selectedProject?.displayName || selectedProject?.name || '';
@@ -572,7 +577,7 @@ function ChatInterfaceV2({
               })}
             </p>
           </div>
-          {composer}
+          {composerSlot}
         </div>
       );
     }
@@ -590,7 +595,7 @@ function ChatInterfaceV2({
                     defaultValue: 'Pick a project from the sidebar to get started',
                   })}
             </h1>
-            {composer}
+            {composerSlot}
           </div>
         </div>
       </div>
@@ -598,7 +603,7 @@ function ChatInterfaceV2({
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-white dark:bg-neutral-950">
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white dark:bg-neutral-950">
       <MessagesPaneV2
         scrollContainerRef={scrollContainerRef}
         onWheel={handleScroll}
@@ -637,7 +642,7 @@ function ChatInterfaceV2({
         onFork={sessionIsReadOnly ? undefined : handleFork}
         forkDisabled={isForkPending}
       />
-      {composer}
+      {composerSlot}
     </div>
   );
 }
