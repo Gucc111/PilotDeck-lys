@@ -108,7 +108,52 @@ function renderPane(options: {
   return render(createPaneElement(options));
 }
 
+function SessionPaneHarness({
+  sessionId,
+  messages,
+}: {
+  sessionId: string;
+  messages: ChatMessage[];
+}) {
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+  return (
+    <FindShortcutProvider activeScope="chat">
+      <MessagesPaneV2
+        scrollContainerRef={scrollContainerRef}
+        onWheel={() => {}}
+        onTouchMove={() => {}}
+        isLoadingSessionMessages={false}
+        chatMessages={messages}
+        visibleMessages={messages}
+        visibleMessageCount={messages.length}
+        isLoadingMoreMessages={false}
+        hasMoreMessages={false}
+        totalMessages={messages.length}
+        loadEarlierMessages={() => {}}
+        loadAllMessages={() => {}}
+        allMessagesLoaded
+        isLoadingAllMessages={false}
+        provider="pilotdeck"
+        selectedProject={{ name: 'project', displayName: 'Project', fullPath: '/project' }}
+        selectedSession={{ id: sessionId }}
+        createDiff={() => []}
+        setInput={() => {}}
+      />
+    </FindShortcutProvider>
+  );
+}
+
 describe('MessagesPaneV2 render behavior', () => {
+  it('renders the default 100-message window without virtualization', () => {
+    const messages = Array.from({ length: 100 }, (_, index) => makeMessage(index));
+
+    renderPane({ messages });
+
+    const container = screen.getByText('Message 0').closest('[data-total-message-count]');
+    expect(container?.getAttribute('data-virtualized-messages')).toBeNull();
+    expect(container?.getAttribute('data-rendered-message-count')).toBe('100');
+  });
+
   it('renders only the viewport window for large conversations', () => {
     const messages = Array.from({ length: 220 }, (_, index) => makeMessage(index));
 
@@ -118,6 +163,40 @@ describe('MessagesPaneV2 render behavior', () => {
     expect(container?.getAttribute('data-virtualized-messages')).toBe('true');
     expect(container?.getAttribute('data-total-message-count')).toBe('220');
     expect(Number(container?.getAttribute('data-rendered-message-count'))).toBeLessThan(220);
+  });
+
+  it('resynchronizes a virtual window when the mounted pane changes sessions', async () => {
+    const sessionAMessages = Array.from({ length: 220 }, (_, index) => ({
+      ...makeMessage(index),
+      content: `Session A message ${index}`,
+    }));
+    const sessionBMessages = Array.from({ length: 220 }, (_, index) => ({
+      ...makeMessage(index),
+      content: `Session B message ${index}`,
+    }));
+    const view = render(
+      <SessionPaneHarness sessionId="session-a" messages={sessionAMessages} />,
+    );
+    const scrollSurface = view.container.querySelector<HTMLElement>('[data-chat-search-surface]');
+    expect(scrollSurface).not.toBeNull();
+    Object.defineProperty(scrollSurface, 'clientHeight', { configurable: true, value: 800 });
+
+    scrollSurface!.scrollTop = 5000;
+    fireEvent.scroll(scrollSurface!);
+    await waitFor(() => {
+      expect(screen.queryByText('Session A message 0')).toBeNull();
+    });
+
+    // Simulate the browser clamping the reused element without dispatching a
+    // scroll event while React replaces the conversation contents.
+    scrollSurface!.scrollTop = 0;
+    view.rerender(
+      <SessionPaneHarness sessionId="session-b" messages={sessionBMessages} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Session B message 0')).toBeTruthy();
+    });
   });
 
   it('renders live processing time above the active assistant turn with activity status', () => {

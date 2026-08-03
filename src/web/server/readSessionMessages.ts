@@ -61,6 +61,8 @@ export async function readWebSessionMessages(
   const webReplay = extractWebVisibleMessages(entries);
   const entryTimestamps = webReplay.timestamps;
   const entryIds = webReplay.entryIds;
+  const entryTurnIds = webReplay.turnIds;
+  const entrySequences = webReplay.sequences;
   const incompleteTurnIds = extractIncompleteTurnIds(entries);
 
   const flattenedPerMessage: WebMessage[][] = webReplay.messages
@@ -73,7 +75,11 @@ export async function readWebSessionMessages(
         entryTimestamp: entryTimestamps[index],
         entryId: entryIds[index],
         forkUnsupportedContent: webReplay.forkUnsupportedContents[index],
-      }),
+      }).map((webMessage) => ({
+        ...webMessage,
+        turnId: entryTurnIds[index],
+        sequence: entrySequences[index],
+      })),
     );
 
   const allMessages: WebMessage[] = flattenedPerMessage.flat();
@@ -772,12 +778,16 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
   messages: CanonicalMessage[];
   timestamps: string[];
   entryIds: Array<string | undefined>;
+  turnIds: string[];
+  sequences: number[];
   forkUnsupportedContents: boolean[];
   compactBoundaries: CompactBoundaryInfo[];
 } {
   const messages: CanonicalMessage[] = [];
   const timestamps: string[] = [];
   const entryIds: Array<string | undefined> = [];
+  const turnIds: string[] = [];
+  const sequences: number[] = [];
   const forkUnsupportedContents: boolean[] = [];
   const compactBoundaries: CompactBoundaryInfo[] = [];
 
@@ -800,6 +810,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
             messages.push(cloneMessage(message));
             timestamps.push(entry.createdAt);
             entryIds.push(entry.entryId);
+            turnIds.push(entry.turnId);
+            sequences.push(entry.sequence);
             forkUnsupportedContents.push(entryForkUnsupported);
           }
         }
@@ -816,6 +828,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
         messages.push(cloneMessage(entry.message));
         timestamps.push(entry.createdAt);
         entryIds.push(entry.entryId);
+        turnIds.push(entry.turnId);
+        sequences.push(entry.sequence);
         forkUnsupportedContents.push(false);
         break;
       case "control_boundary": {
@@ -831,7 +845,15 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
     }
   }
 
-  return { messages, timestamps, entryIds, forkUnsupportedContents, compactBoundaries };
+  return {
+    messages,
+    timestamps,
+    entryIds,
+    turnIds,
+    sequences,
+    forkUnsupportedContents,
+    compactBoundaries,
+  };
 }
 
 function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
@@ -945,6 +967,8 @@ function injectFileArtifactMessages(
       provider: "pilotdeck",
       role: "assistant",
       kind: "file_artifacts",
+      turnId: entry.turnId,
+      sequence: entry.sequence,
       artifacts,
       payload: { turnId: entry.turnId },
       source: "history",

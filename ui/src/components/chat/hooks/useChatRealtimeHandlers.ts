@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { ClaudeWorkStatus, CompactProgress, PendingPermissionRequest, PilotDeckWorkStatus } from '../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
-import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import {
+  getUnpersistedRealtimeTurnMessages,
+  type SessionStore,
+  type NormalizedMessage,
+} from '../../../stores/useSessionStore';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 
 type PendingViewSession = {
@@ -703,18 +707,30 @@ export function useChatRealtimeHandlers({
           }));
 
           // Auto-refresh from server to align with canonical message order.
-          // During streaming, messages may arrive out of order (e.g. content
-          // stream created before tool_use). The server has the authoritative
-          // copy with correct ordering. Retry if server hasn't committed yet.
+          // `turn_completed` is delivered before the transcript generator has
+          // necessarily committed every current-turn entry. A non-empty history
+          // is therefore not proof that this turn is durable (long sessions are
+          // always non-empty). Retry while any renderable realtime row from this
+          // run is still absent from the server projection.
           const doRefresh = (attempt: number) => {
             sessionStore.refreshFromServer(sid, { provider, projectName: selectedProject?.name, projectPath: selectedProject?.fullPath || selectedProject?.path || '' }).then(() => {
               const slot = sessionStore.getSessionSlot?.(sid);
-              if (slot && slot.serverMessages.length === 0 && attempt < 5) {
-                setTimeout(() => doRefresh(attempt + 1), 1500 * attempt);
+              const pendingCurrentTurn = slot
+                ? getUnpersistedRealtimeTurnMessages(
+                    slot.realtimeMessages,
+                    slot.serverMessages,
+                    msgRunId,
+                  )
+                : [];
+              const needsRetry = msgRunId
+                ? pendingCurrentTurn.length > 0
+                : Boolean(slot && slot.serverMessages.length === 0);
+              if (needsRetry && attempt < 5) {
+                setTimeout(() => doRefresh(attempt + 1), 500 * attempt);
               }
             });
           };
-          doRefresh(1);
+          setTimeout(() => doRefresh(1), 150);
         }
 
         // Handle aborted case

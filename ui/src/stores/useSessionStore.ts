@@ -132,6 +132,8 @@ export interface NormalizedMessage {
   compactStageLabel?: string;
   compactMetadata?: unknown;
   runId?: string;
+  /** Stable transcript turn identity; history maps this to runId as well. */
+  turnId?: string;
   activityId?: string;
   phase?: string;
   state?: string;
@@ -189,6 +191,8 @@ export interface SessionSlot {
   hasMore: boolean;
   offset: number;
   tokenUsage: unknown;
+  /** Monotonic guard preventing an older full-history response from winning. */
+  _serverRequestGeneration: number;
 }
 
 const EMPTY: NormalizedMessage[] = [];
@@ -210,6 +214,7 @@ function createEmptySlot(): SessionSlot {
     hasMore: false,
     offset: 0,
     tokenUsage: null,
+    _serverRequestGeneration: 0,
   };
 }
 
@@ -221,6 +226,22 @@ function parseTimestampMs(value?: string): number | null {
   if (!value) return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getMessageTurnId(message: NormalizedMessage): string | null {
+  const value = message.turnId || message.runId;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function getSameTurnServerCandidates(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): NormalizedMessage[] {
+  const realtimeTurnId = getMessageTurnId(realtimeMessage);
+  if (!realtimeTurnId) {
+    return serverMessages.filter((message) => !getMessageTurnId(message));
+  }
+  return serverMessages.filter((message) => getMessageTurnId(message) === realtimeTurnId);
 }
 
 function isConfirmedUserMessageDuplicate(
@@ -367,6 +388,99 @@ function hasSameTurnServerFinalMessage(
   });
 }
 
+function areArtifactSetsEquivalent(
+  realtimeMessage: NormalizedMessage,
+  candidates: NormalizedMessage[],
+): boolean {
+  const realtimeArtifacts = realtimeMessage.artifacts ?? [];
+  if (realtimeArtifacts.length === 0) return false;
+  const serverArtifacts = candidates.flatMap((message) => message.artifacts ?? []);
+  return realtimeArtifacts.every((artifact) => serverArtifacts.some((candidate) => (
+    candidate.path === artifact.path
+    && candidate.operation === artifact.operation
+    && (!artifact.sha256 || !candidate.sha256 || candidate.sha256 === artifact.sha256)
+  )));
+}
+
+/**
+ * Whether a live row is already represented by the persisted projection.
+ * Identity is scoped to a turn whenever available; this avoids both duplicate
+ * live/history rows and false cross-turn content deduplication.
+ */
+export function isRealtimeMessageRepresentedOnServer(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): boolean {
+  if (serverMessages.some((message) => message.id === realtimeMessage.id)) return true;
+  if (isConfirmedUserMessageDuplicate(realtimeMessage, serverMessages)) return true;
+  if (isLocalInterruptDuplicate(realtimeMessage, serverMessages)) return true;
+
+  const candidates = getSameTurnServerCandidates(realtimeMessage, serverMessages);
+  switch (realtimeMessage.kind) {
+    case 'text':
+    case 'thinking': {
+      const content = normalizeRealtimeText(realtimeMessage.content);
+      if (!content) return false;
+      if (candidates.some((message) => (
+        message.kind === realtimeMessage.kind
+        && message.role === realtimeMessage.role
+        && normalizeRealtimeText(message.content) === content
+      ))) return true;
+      // Once the live row has a turn identity, never fall back to global text
+      // equality: two consecutive turns may legitimately produce the same text.
+      if (getMessageTurnId(realtimeMessage)) return false;
+      return hasSameTurnServerFinalMessage(realtimeMessage, serverMessages)
+        || hasEquivalentServerMessage(realtimeMessage, serverMessages);
+    }
+    case 'tool_use':
+      return Boolean(realtimeMessage.toolId && candidates.some((message) => (
+        message.kind === 'tool_use' && message.toolId === realtimeMessage.toolId
+      )));
+    case 'tool_result':
+      return Boolean(realtimeMessage.toolId && candidates.some((message) => (
+        message.kind === 'tool_result' && message.toolId === realtimeMessage.toolId
+      )));
+    case 'file_artifacts':
+      return areArtifactSetsEquivalent(realtimeMessage, candidates);
+    case 'error':
+    case 'interrupted':
+    case 'interactive_prompt':
+    case 'task_notification':
+      return candidates.some((message) => (
+        message.kind === realtimeMessage.kind
+        && normalizeRealtimeText(message.content || message.summary) ===
+          normalizeRealtimeText(realtimeMessage.content || realtimeMessage.summary)
+      ));
+    default:
+      return false;
+  }
+}
+
+const PERSISTED_RENDERABLE_KINDS = new Set<MessageKind>([
+  'text',
+  'thinking',
+  'tool_use',
+  'tool_result',
+  'file_artifacts',
+  'error',
+  'interrupted',
+  'interactive_prompt',
+  'task_notification',
+]);
+
+export function getUnpersistedRealtimeTurnMessages(
+  realtimeMessages: NormalizedMessage[],
+  serverMessages: NormalizedMessage[],
+  turnId?: string,
+): NormalizedMessage[] {
+  if (!turnId) return [];
+  return realtimeMessages.filter((message) => (
+    getMessageTurnId(message) === turnId
+    && PERSISTED_RENDERABLE_KINDS.has(message.kind)
+    && !isRealtimeMessageRepresentedOnServer(message, serverMessages)
+  ));
+}
+
 export function shouldKeepRealtimeAfterServerRefresh(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
@@ -374,18 +488,8 @@ export function shouldKeepRealtimeAfterServerRefresh(
   if (realtimeMessage.id.startsWith('__streaming_')) {
     return true;
   }
-
-  if (
-    realtimeMessage.isFinal === true
-    && (realtimeMessage.kind === 'text' || realtimeMessage.kind === 'thinking')
-  ) {
-    if (hasSameTurnServerFinalMessage(realtimeMessage, serverMessages)) {
-      return false;
-    }
-    return !hasEquivalentServerMessage(realtimeMessage, serverMessages);
-  }
-
-  return false;
+  if (!PERSISTED_RENDERABLE_KINDS.has(realtimeMessage.kind)) return false;
+  return !isRealtimeMessageRepresentedOnServer(realtimeMessage, serverMessages);
 }
 
 /**
@@ -398,20 +502,8 @@ export function computeMerged(server: NormalizedMessage[], realtime: NormalizedM
     return server;
   }
   if (server.length === 0) return realtime;
-  const serverIds = new Set(server.map(m => m.id));
-  const serverToolIds = new Set(
-    server.filter(m => m.kind === 'tool_use' && m.toolId).map(m => m.toolId!)
-  );
   const extra = realtime.filter((message) => {
-    if (serverIds.has(message.id)) return false;
-    if (isConfirmedUserMessageDuplicate(message, server)) return false;
-    if (isLocalInterruptDuplicate(message, server)) return false;
-    if (hasSameTurnServerFinalMessage(message, server)) return false;
-    // Dedup tool_use by toolId (invocation ID) — the message envelope ID
-    // may differ between WebSocket replay and server-persisted copy, but
-    // the underlying tool invocation is the same.
-    if (message.kind === 'tool_use' && message.toolId && serverToolIds.has(message.toolId)) return false;
-    return true;
+    return !isRealtimeMessageRepresentedOnServer(message, server);
   });
   if (extra.length === 0) return server;
 
@@ -698,6 +790,8 @@ export function useSessionStore() {
     } = {},
   ) => {
     const slot = getSlot(sessionId);
+    const requestGeneration = slot._serverRequestGeneration + 1;
+    slot._serverRequestGeneration = requestGeneration;
     slot.status = 'loading';
     notify(sessionId);
 
@@ -733,6 +827,7 @@ export function useSessionStore() {
       }
 
       const data = await response.json();
+      if (slot._serverRequestGeneration !== requestGeneration) return slot;
       const messages: NormalizedMessage[] = data.messages || [];
 
       slot.serverMessages = messages;
@@ -772,6 +867,7 @@ export function useSessionStore() {
       notify(sessionId);
       return slot;
     } catch (error) {
+      if (slot._serverRequestGeneration !== requestGeneration) return slot;
       console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
       slot.status = 'error';
       slot.lastError = error instanceof Error ? error.message : 'Unknown error';
@@ -1097,6 +1193,8 @@ export function useSessionStore() {
     } = {},
   ) => {
     const slot = getSlot(sessionId);
+    const requestGeneration = slot._serverRequestGeneration + 1;
+    slot._serverRequestGeneration = requestGeneration;
     try {
       const params = new URLSearchParams();
       if (opts.provider) params.append('provider', opts.provider);
@@ -1122,6 +1220,7 @@ export function useSessionStore() {
         throw new Error(statusError.message);
       }
       const data = await response.json();
+      if (slot._serverRequestGeneration !== requestGeneration) return;
 
       const incomingMessages = data.messages || [];
       // Don't overwrite existing server messages with empty response
@@ -1145,6 +1244,7 @@ export function useSessionStore() {
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     } catch (error) {
+      if (slot._serverRequestGeneration !== requestGeneration) return;
       console.error(`[SessionStore] refresh failed for ${sessionId}:`, error);
     }
   }, [getSlot, notify]);
