@@ -1027,7 +1027,9 @@ export class AgentLoop {
                 lastUsage: lastModelUsage,
               });
               if (compact.type === "compacted") {
+                const preCompactMessages = messages;
                 messages = compact.messages;
+                await this.persistCompactSnapshot(input, compact, preCompactMessages);
               } else {
                 messages = truncateHeadKeepRatio(messages, 0.5);
               }

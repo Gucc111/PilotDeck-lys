@@ -439,3 +439,127 @@ test("agent loop records a compact boundary when auto compaction fires", async (
   assert.equal(persistedCompacts[0]!.messages.length, 1);
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
 });
+
+test("agent loop persists a full compaction after recovering from a context error", async () => {
+  const persistedCompacts: Array<{ boundary: unknown; messages: CanonicalMessage[] }> = [];
+  const tokenBudget = new TokenBudgetManager();
+  let compactCalls = 0;
+  let executeCalls = 0;
+
+  const context: AgentRuntimeDependencies["context"] = {
+    prepareForModel: async (input) => ({
+      messages: input.messages,
+      systemPrompt: undefined,
+      systemPromptParts: [],
+      tools: input.tools,
+      diagnostics: [],
+      boundaries: [],
+    }),
+    applyToolResults: async (input) => ({ messages: input.messages, diagnostics: [] }),
+    recoverFromModelError: async () => ({ type: "compact_and_retry", reason: "provider-context-limit" }),
+    captureTurn: async () => undefined,
+    tryAutoCompact: async () => {
+      compactCalls += 1;
+      if (compactCalls !== 2) {
+        return { type: "skipped", snapshot: tokenBudget.snapshotFromTokens(90, 100) };
+      }
+      return {
+        type: "compacted",
+        tier: "full",
+        messages: [{ role: "user", content: [{ type: "text", text: "compacted tail" }] }],
+        snapshot: tokenBudget.snapshotFromTokens(20, 100),
+        result: {
+          trigger: "reactive",
+          preTokens: 90,
+          postTokens: 20,
+          summaryMessage: { role: "assistant", content: [{ type: "text", text: "summary" }] },
+          boundaryMarker: { role: "user", content: [{ type: "text", text: "boundary" }] },
+          messagesToKeep: [{ role: "user", content: [{ type: "text", text: "compacted tail" }] }],
+          attachments: [],
+          hookResults: [],
+          diagnostics: [],
+        },
+      };
+    },
+  };
+
+  const router: AgentRouterRuntime = {
+    invalidateSticky: () => ({ orchestrating: false }),
+    decide: async ({ request }) => ({
+      provider: request.provider,
+      model: request.model,
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: async function* (): AsyncIterable<CanonicalModelEvent> {
+      executeCalls += 1;
+      if (executeCalls === 1) {
+        yield {
+          type: "error",
+          error: {
+            provider: "openai",
+            protocol: "openai",
+            code: "context_overflow",
+            message: "context length exceeded",
+            retryable: false,
+            recoverableViaCompact: true,
+          },
+        };
+        return;
+      }
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "recovered" };
+      yield { type: "message_end", finishReason: "stop" };
+    },
+    stream: async function* (): AsyncIterable<CanonicalModelEvent> {
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "unused" };
+      yield { type: "message_end", finishReason: "stop" };
+    },
+    materializeRequest: (decision, request) => ({ ...request, provider: decision.provider, model: decision.model }),
+    observeUsage: () => undefined,
+  };
+
+  const loop = new AgentLoop({
+    provider: "openai",
+    model: "model-a",
+    cwd: "/workspace/project",
+    maxContextTokens: 100,
+    permissionMode: "bypassPermissions",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "bypassPermissions",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
+    context,
+    tokenAccounting: {
+      evaluateRequestBudget: async () => tokenBudget.snapshotFromTokens(20, 100),
+    } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+  });
+
+  for await (const _event of loop.run({
+    sessionId: "session-reactive-compact",
+    turnId: "turn-reactive-compact",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "large earlier request" }] },
+      { role: "assistant", content: [{ type: "text", text: "large earlier response" }] },
+    ],
+    onCompactPersisted: ({ boundary, messages }) => {
+      persistedCompacts.push({ boundary, messages });
+    },
+  })) {
+    // Drain the recovered turn.
+  }
+
+  assert.equal(executeCalls, 2);
+  assert.equal(persistedCompacts.length, 1);
+  assert.equal((persistedCompacts[0]!.boundary as { kind?: string }).kind, "compact");
+  assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
+});

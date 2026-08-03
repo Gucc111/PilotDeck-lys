@@ -182,6 +182,57 @@ test("token-budget tail protection keeps the last turn group intact", async () =
   assert.match(summaryText(result.summaryMessage), /END OF CONTEXT SUMMARY/);
 });
 
+test("full compaction keeps the initiating user request with a protected tool cycle", async () => {
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(): AsyncIterable<CanonicalModelEvent> {
+        yield { type: "message_start", role: "assistant" };
+        yield { type: "text_delta", text: "## Objective\nContinue.\n\n## Current State\nCompacted.\n\n## Remaining\nContinue.\n\n## Files And Artifacts\nNone." };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+    protectedToolNames: ["Task"],
+  });
+
+  const result = await engine.run({
+    trigger: "auto",
+    keepTailRatio: 0.01,
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Older work" }] },
+      { role: "assistant", content: [{ type: "text", text: "Older response" }] },
+      { role: "user", content: [{ type: "text", text: "Inspect this project" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: "protected-1", name: "Task", input: { prompt: "inspect" } }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          toolCallId: "protected-1",
+          content: [{ type: "text", text: "inspection complete" }],
+        }],
+      },
+      { role: "user", content: [{ type: "text", text: "Latest tail" }] },
+    ],
+  });
+
+  const compacted = buildPostCompactMessages(result);
+  const requestIndex = compacted.findIndex((message) => summaryText(message) === "Inspect this project");
+  assert.ok(requestIndex >= 0);
+  assert.equal(compacted[requestIndex + 1]?.role, "assistant");
+  assert.equal(
+    compacted[requestIndex + 1]?.content.some((block) => block.type === "tool_call" && block.id === "protected-1"),
+    true,
+  );
+  assert.equal(
+    compacted[requestIndex + 2]?.content.some((block) => block.type === "tool_result" && block.toolCallId === "protected-1"),
+    true,
+  );
+});
+
 test("full compaction bounds oversized retained tool output", async () => {
   const engine = new CompactionEngine({
     model: {

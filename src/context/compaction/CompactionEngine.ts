@@ -402,7 +402,11 @@ function planFullCompactionMessages(
   estimateTurnTokens: (turnMessages: CanonicalMessage[]) => number,
 ): { messagesToSummarize: CanonicalMessage[]; messagesToKeep: CanonicalMessage[] } {
   const turns = splitMessagesIntoCompactionGroups(messages);
-  const tailStartTurn = findTailStartTurn(turns, tailTokenBudget, minTailMessages, estimateTurnTokens);
+  const tailStartTurn = moveTailBoundaryBeforeProtectedRequest(
+    turns,
+    findTailStartTurn(turns, tailTokenBudget, minTailMessages, estimateTurnTokens),
+    protectedToolNames,
+  );
   const prefixTurns = turns.slice(0, tailStartTurn);
   const prefix = prefixTurns.flatMap((turn) => turn.messages);
   const tail = turns.slice(tailStartTurn).flatMap((turn) => turn.messages);
@@ -463,16 +467,59 @@ function collectProtectedGroupIndexes(
   const toolNamesByCallId = collectToolNamesByCallId(groups.flatMap((group) => group.messages));
   const protectedIndexes = new Set<number>();
   for (const group of groups) {
-    if (group.messages.some((message) =>
-      isProtectedContextMessage(message, {
-        ...options,
-        toolNamesByCallId,
-      })
-    )) {
+    if (hasProtectedContextMessage(group.messages, toolNamesByCallId, options)) {
       protectedIndexes.add(group.index);
+      // Compaction groups deliberately split tool cycles inside one user task
+      // so older cycles can still be summarized. When a protected cycle is
+      // retained, however, its initiating request must stay with it. Without
+      // this, the generated summary can be immediately followed by an
+      // assistant tool call, which violates providers' role ordering rules.
+      const previous = groups[group.index - 1];
+      if (previous && isStandaloneUserRequestGroup(previous.messages)) {
+        protectedIndexes.add(previous.index);
+      }
     }
   }
   return protectedIndexes;
+}
+
+function moveTailBoundaryBeforeProtectedRequest(
+  groups: Array<{ index: number; messages: CanonicalMessage[] }>,
+  tailStartTurn: number,
+  protectedToolNames: Iterable<string>,
+): number {
+  if (tailStartTurn <= 0 || tailStartTurn >= groups.length) {
+    return tailStartTurn;
+  }
+  const toolNamesByCallId = collectToolNamesByCallId(groups.flatMap((group) => group.messages));
+  const firstTailGroup = groups[tailStartTurn]!;
+  const precedingGroup = groups[tailStartTurn - 1]!;
+  if (
+    hasProtectedContextMessage(firstTailGroup.messages, toolNamesByCallId, { protectedToolNames })
+    && isStandaloneUserRequestGroup(precedingGroup.messages)
+  ) {
+    return precedingGroup.index;
+  }
+  return tailStartTurn;
+}
+
+function hasProtectedContextMessage(
+  messages: CanonicalMessage[],
+  toolNamesByCallId: ReadonlyMap<string, string>,
+  options: { protectedToolNames?: Iterable<string> } = {},
+): boolean {
+  return messages.some((message) =>
+    isProtectedContextMessage(message, {
+      ...options,
+      toolNamesByCallId,
+    })
+  );
+}
+
+function isStandaloneUserRequestGroup(messages: CanonicalMessage[]): boolean {
+  return messages.length === 1
+    && messages[0]!.role === "user"
+    && !isToolResultOnlyMessage(messages[0]!);
 }
 
 function isToolResultOnlyMessage(message: CanonicalMessage): boolean {
