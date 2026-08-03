@@ -276,6 +276,24 @@ test("pre-summary tool projection is idempotent", () => {
   assert.equal(second.rewritten, 0);
 });
 
+test("per-call protected-tool overrides replace the constructor set", () => {
+  const engine = new MicroCompactionEngine({
+    keepLatest: 1,
+    protectedToolNames: ["read_file"],
+  });
+  const messages = largeToolResultFixture();
+
+  const constructorProtected = engine.apply({ messages, trimToTokens: 64 });
+  assert.equal(constructorProtected.rewritten, 0);
+
+  const perCallOverride = engine.apply({
+    messages,
+    trimToTokens: 64,
+    protectedToolNames: [],
+  });
+  assert.ok(perCallOverride.rewritten > 0);
+});
+
 test("emergency compaction reports an explicit overflow instead of permitting another model retry", async () => {
   const tokenBudget = new TokenBudgetManager();
   let summaryCalls = 0;

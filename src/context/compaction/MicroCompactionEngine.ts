@@ -69,7 +69,9 @@ export class MicroCompactionEngine {
     const toolNamesByCallId = collectToolNamesByCallId(input.messages);
     const protectedToolNames = input.protectedToolNames === null
       ? new Set<string>()
-      : this.protectedToolNames;
+      : input.protectedToolNames === undefined
+        ? this.protectedToolNames
+        : protectedToolNameSet(input.protectedToolNames);
     const compactableCallIds = this.collectCompactableToolCallIds(input.messages);
     const toolResultIndices = this.collectCompactableToolResultIndices(input.messages, compactableCallIds);
 
