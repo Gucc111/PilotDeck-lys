@@ -193,8 +193,12 @@ export interface SessionSlot {
   hasMore: boolean;
   offset: number;
   tokenUsage: unknown;
-  /** Monotonic guard preventing an older full-history response from winning. */
+  /** Monotonic id assigned when a server-history request starts. */
   _serverRequestGeneration: number;
+  /** Latest server-history response that was successfully applied. */
+  _serverAppliedGeneration: number;
+  /** Explicit full-history load currently responsible for `status=loading`. */
+  _serverLoadingGeneration: number | null;
 }
 
 const EMPTY: NormalizedMessage[] = [];
@@ -217,6 +221,8 @@ function createEmptySlot(): SessionSlot {
     offset: 0,
     tokenUsage: null,
     _serverRequestGeneration: 0,
+    _serverAppliedGeneration: 0,
+    _serverLoadingGeneration: null,
   };
 }
 
@@ -810,6 +816,7 @@ export function useSessionStore() {
     const slot = getSlot(sessionId);
     const requestGeneration = slot._serverRequestGeneration + 1;
     slot._serverRequestGeneration = requestGeneration;
+    slot._serverLoadingGeneration = requestGeneration;
     slot.status = 'loading';
     notify(sessionId);
 
@@ -845,7 +852,8 @@ export function useSessionStore() {
       }
 
       const data = await response.json();
-      if (slot._serverRequestGeneration !== requestGeneration) return slot;
+      if (requestGeneration < slot._serverAppliedGeneration) return slot;
+      slot._serverAppliedGeneration = requestGeneration;
       const messages: NormalizedMessage[] = data.messages || [];
 
       slot.serverMessages = messages;
@@ -853,8 +861,16 @@ export function useSessionStore() {
       slot.hasMore = Boolean(data.hasMore);
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
-      slot.status = 'idle';
-      slot.lastError = null;
+      if (slot._serverLoadingGeneration === requestGeneration) {
+        slot._serverLoadingGeneration = null;
+      }
+      if (
+        slot._serverLoadingGeneration === null
+        && (slot.status === 'loading' || slot.status === 'error')
+      ) {
+        slot.status = 'idle';
+        slot.lastError = null;
+      }
 
       // Prune realtime messages covered by server data.  Use the later of
       // fetchStartedAt and the latest server message timestamp as watermark
@@ -885,7 +901,8 @@ export function useSessionStore() {
       notify(sessionId);
       return slot;
     } catch (error) {
-      if (slot._serverRequestGeneration !== requestGeneration) return slot;
+      if (slot._serverLoadingGeneration !== requestGeneration) return slot;
+      slot._serverLoadingGeneration = null;
       console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
       slot.status = 'error';
       slot.lastError = error instanceof Error ? error.message : 'Unknown error';
@@ -1238,9 +1255,20 @@ export function useSessionStore() {
         throw new Error(statusError.message);
       }
       const data = await response.json();
-      if (slot._serverRequestGeneration !== requestGeneration) return;
-
       const incomingMessages = data.messages || [];
+      if (requestGeneration < slot._serverAppliedGeneration) return;
+      // A just-opened session may still have its authoritative full-history
+      // request in flight. An empty background refresh is commonly the
+      // transcript-commit race described below, so it must not supersede that
+      // load merely because the refresh started later.
+      if (
+        incomingMessages.length === 0
+        && slot._serverLoadingGeneration !== null
+        && requestGeneration > slot._serverLoadingGeneration
+      ) {
+        return;
+      }
+      slot._serverAppliedGeneration = requestGeneration;
       // Don't overwrite existing server messages with empty response
       // (race condition: server hasn't committed yet after stop/complete).
       if (incomingMessages.length > 0 || slot.serverMessages.length === 0) {
@@ -1260,9 +1288,21 @@ export function useSessionStore() {
         );
       }
       recomputeMergedIfNeeded(slot);
+      const supersedesLoading = slot._serverLoadingGeneration !== null
+        && requestGeneration > slot._serverLoadingGeneration;
+      if (supersedesLoading) {
+        slot._serverLoadingGeneration = null;
+      }
+      if (
+        slot._serverLoadingGeneration === null
+        && (slot.status === 'loading' || slot.status === 'error')
+      ) {
+        slot.status = 'idle';
+        slot.lastError = null;
+      }
       notify(sessionId);
     } catch (error) {
-      if (slot._serverRequestGeneration !== requestGeneration) return;
+      if (requestGeneration < slot._serverAppliedGeneration) return;
       console.error(`[SessionStore] refresh failed for ${sessionId}:`, error);
     }
   }, [getSlot, notify]);

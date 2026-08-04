@@ -24,5 +24,23 @@ describe('findTextSearchMatches', () => {
     expect(findTextSearchMatches('İstanbul', 'i')).toEqual([
       { from: 0, to: 1 },
     ]);
+    expect(findTextSearchMatches('Straße', 'SS')).toEqual([
+      { from: 4, to: 5 },
+    ]);
+  });
+
+  it('keeps sparse source offsets correct after long ordinary-text prefixes', () => {
+    const prefix = 'a'.repeat(250_000);
+    const text = `${prefix}İstanbul and Straße`;
+
+    expect(findTextSearchMatches(text, 'i̇stanbul')).toEqual([
+      { from: prefix.length, to: prefix.length + 'İstanbul'.length },
+    ]);
+    expect(findTextSearchMatches(text, 'strasse')).toEqual([
+      {
+        from: prefix.length + 'İstanbul and '.length,
+        to: text.length,
+      },
+    ]);
   });
 });
