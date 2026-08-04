@@ -12,6 +12,7 @@ import {
   getUnpersistedRealtimeTurnMessages,
   isRealtimeMessageRepresentedOnServer,
   patchMergedStreamingMessage,
+  shouldKeepRealtimeAfterServerRefresh,
   upsertRealtimeMessages,
   type NormalizedMessage,
   type SessionSlot,
@@ -274,6 +275,44 @@ describe('turn-scoped server reconciliation', () => {
       server,
       'run-current',
     )).toEqual([]);
+  });
+
+  it('keeps a live compact boundary until history persists it, then dedupes it', () => {
+    const liveBoundary: NormalizedMessage = {
+      id: 'live-compact',
+      sessionId: 'web:s_test',
+      timestamp: '2026-05-28T00:00:02.000Z',
+      provider: PROVIDER,
+      kind: 'compact_boundary',
+      runId: 'run-current',
+      trigger: 'auto',
+      preTokens: 120,
+      postTokens: 40,
+      messagesSummarized: 2,
+      compactStage: 'summary',
+    };
+    const staleServer = [
+      textMessage('previous-answer', 'Previous.', '2026-05-28T00:00:00.000Z', {
+        runId: 'run-previous',
+      }),
+    ];
+    const persistedBoundary: NormalizedMessage = {
+      ...liveBoundary,
+      id: 'persisted-compact',
+      turnId: 'run-current',
+    };
+
+    expect(shouldKeepRealtimeAfterServerRefresh(liveBoundary, staleServer)).toBe(true);
+    expect(computeMerged(staleServer, [liveBoundary]).map((message) => message.id)).toEqual([
+      'previous-answer',
+      'live-compact',
+    ]);
+
+    expect(isRealtimeMessageRepresentedOnServer(liveBoundary, [persistedBoundary])).toBe(true);
+    expect(shouldKeepRealtimeAfterServerRefresh(liveBoundary, [persistedBoundary])).toBe(false);
+    expect(computeMerged([persistedBoundary], [liveBoundary]).map((message) => message.id)).toEqual([
+      'persisted-compact',
+    ]);
   });
 });
 

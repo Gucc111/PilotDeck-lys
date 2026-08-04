@@ -283,6 +283,7 @@ function convertSingleMessage(
         type: 'system',
         content: 'Context compacted',
         timestamp: msg.timestamp,
+        ...turnIdentity,
         isCompactBoundary: true,
         compactTrigger: msg.trigger,
         preTokens: msg.preTokens,

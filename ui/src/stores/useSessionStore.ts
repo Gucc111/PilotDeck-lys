@@ -127,6 +127,8 @@ export interface NormalizedMessage {
   taskResult?: string;
   trigger?: string;
   preTokens?: number;
+  postTokens?: number;
+  messagesSummarized?: number;
   compactLevel?: number;
   compactStage?: string;
   compactStageLabel?: string;
@@ -402,6 +404,19 @@ function areArtifactSetsEquivalent(
   )));
 }
 
+function hasEquivalentCompactBoundary(
+  realtimeMessage: NormalizedMessage,
+  candidates: NormalizedMessage[],
+): boolean {
+  return candidates.some((candidate) => (
+    candidate.kind === 'compact_boundary'
+    && candidate.trigger === realtimeMessage.trigger
+    && candidate.preTokens === realtimeMessage.preTokens
+    && candidate.postTokens === realtimeMessage.postTokens
+    && candidate.messagesSummarized === realtimeMessage.messagesSummarized
+  ));
+}
+
 /**
  * Whether a live row is already represented by the persisted projection.
  * Identity is scoped to a turn whenever available; this avoids both duplicate
@@ -442,6 +457,8 @@ export function isRealtimeMessageRepresentedOnServer(
       )));
     case 'file_artifacts':
       return areArtifactSetsEquivalent(realtimeMessage, candidates);
+    case 'compact_boundary':
+      return hasEquivalentCompactBoundary(realtimeMessage, candidates);
     case 'error':
     case 'interrupted':
     case 'interactive_prompt':
@@ -462,6 +479,7 @@ const PERSISTED_RENDERABLE_KINDS = new Set<MessageKind>([
   'tool_use',
   'tool_result',
   'file_artifacts',
+  'compact_boundary',
   'error',
   'interrupted',
   'interactive_prompt',
@@ -951,7 +969,7 @@ export function useSessionStore() {
     // Skip expensive merged recomputation and React re-render for message
     // kinds that are invisible in the UI (they return null from conversion).
     // The next visible message will trigger the recompute anyway.
-    const INVISIBLE_KINDS = new Set(['status', 'session_created', 'permission_cancelled', 'compact_boundary']);
+    const INVISIBLE_KINDS = new Set(['status', 'session_created', 'permission_cancelled']);
     if (!INVISIBLE_KINDS.has(msg.kind)) {
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
