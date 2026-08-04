@@ -4,6 +4,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
+import { findTextSearchMatches } from '../utils/fileSearch';
 
 type DomSearchMatch = {
   range: Range;
@@ -34,8 +35,7 @@ function getHighlightConstructor() {
 }
 
 export function findDomTextMatches(root: HTMLElement, query: string): DomSearchMatch[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  if (!normalizedQuery) return [];
+  if (!query.trim()) return [];
 
   const matches: DomSearchMatch[] = [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -53,19 +53,14 @@ export function findDomTextMatches(root: HTMLElement, query: string): DomSearchM
   let node = walker.nextNode();
   while (node) {
     const text = node.textContent || '';
-    const normalizedText = text.toLocaleLowerCase();
-    let searchOffset = 0;
-    while (searchOffset <= normalizedText.length - normalizedQuery.length) {
-      const index = normalizedText.indexOf(normalizedQuery, searchOffset);
-      if (index < 0) break;
+    for (const match of findTextSearchMatches(text, query)) {
       const range = document.createRange();
-      range.setStart(node, index);
-      range.setEnd(node, index + normalizedQuery.length);
+      range.setStart(node, match.from);
+      range.setEnd(node, match.to);
       matches.push({
         range,
         element: node.parentElement || root,
       });
-      searchOffset = index + Math.max(1, normalizedQuery.length);
     }
     node = walker.nextNode();
   }

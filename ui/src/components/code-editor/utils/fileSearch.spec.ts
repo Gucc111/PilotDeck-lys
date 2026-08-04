@@ -16,4 +16,13 @@ describe('findTextSearchMatches', () => {
     ]);
     expect(findTextSearchMatches('searchable', '   ')).toEqual([]);
   });
+
+  it('preserves source offsets when case folding changes string length', () => {
+    expect(findTextSearchMatches('İstanbul', 'İ')).toEqual([
+      { from: 0, to: 1 },
+    ]);
+    expect(findTextSearchMatches('İstanbul', 'i')).toEqual([
+      { from: 0, to: 1 },
+    ]);
+  });
 });

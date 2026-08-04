@@ -1207,7 +1207,7 @@ from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument("--package-dir", required=True)
 a = p.parse_args()
-active = Path(a.package_dir) / "word" / "activeX"
+active = Path(a.package_dir) / "word" / "aCtIvEx"
 active.mkdir()
 (active / "activeX1.bin").write_bytes(b"untrusted-control")
 """,

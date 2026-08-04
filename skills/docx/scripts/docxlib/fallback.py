@@ -76,6 +76,21 @@ def _matches(path: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
 
+def _matches_forbidden_part(path: str) -> bool:
+    """Match security-sensitive OPC parts independently of path casing.
+
+    OPC part names are normally case-sensitive, but the safety checks used by
+    the rest of the DOCX pipeline intentionally recognize active-content and
+    signature paths case-insensitively. A fallback allowlist must not be able
+    to weaken that policy by adding a case-variant package part.
+    """
+    normalized = path.replace("\\", "/").casefold()
+    return any(
+        fnmatch.fnmatchcase(normalized, pattern.casefold())
+        for pattern in FORBIDDEN_PATCH_PARTS
+    )
+
+
 def _require_scoped_script(script: Path) -> None:
     work_dir = os.environ.get("PILOTDECK_WORK_DIR", "").strip()
     if not work_dir:
@@ -191,7 +206,7 @@ def fallback_patch(
             if before.get(path) != after.get(path)
         )
         disallowed = sorted(path for path in changed if not _matches(path, patterns))
-        forbidden = sorted(path for path in changed if _matches(path, FORBIDDEN_PATCH_PARTS))
+        forbidden = sorted(path for path in changed if _matches_forbidden_part(path))
         manifest: dict[str, Any] = {
             "protocol_version": 1,
             "mode": "targeted-ooxml-patch",

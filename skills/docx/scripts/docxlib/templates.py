@@ -77,4 +77,3 @@ def resolve_document_style(
     if policy["mode"] == "user":
         style.update(overrides)
     return policy, style
-

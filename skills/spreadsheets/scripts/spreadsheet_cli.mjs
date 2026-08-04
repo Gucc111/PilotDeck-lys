@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -119,7 +120,7 @@ async function ensureParent(filePath) {
 
 function pilotDeckWorkDir() {
   const configured = String(process.env.PILOTDECK_WORK_DIR ?? "").trim();
-  return configured ? path.resolve(configured) : null;
+  return configured ? resolveThroughExistingAncestor(configured) : null;
 }
 
 function isInsidePath(candidate, parent) {
@@ -127,8 +128,29 @@ function isInsidePath(candidate, parent) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function resolveThroughExistingAncestor(filePath) {
+  let current = path.resolve(filePath);
+  const suffix = [];
+
+  while (!existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    suffix.unshift(path.basename(current));
+    current = parent;
+  }
+
+  const canonicalBase = existsSync(current)
+    ? realpathSync.native(current)
+    : current;
+  return path.resolve(canonicalBase, ...suffix);
+}
+
+function pathsReferToSameLocation(left, right) {
+  return resolveThroughExistingAncestor(left) === resolveThroughExistingAncestor(right);
+}
+
 function assertInternalArtifactPath(filePath, purpose) {
-  const resolved = path.resolve(filePath);
+  const resolved = resolveThroughExistingAncestor(filePath);
   const workDir = pilotDeckWorkDir();
   if (workDir && !isInsidePath(resolved, workDir)) {
     throw new Error(
@@ -140,7 +162,7 @@ function assertInternalArtifactPath(filePath, purpose) {
 }
 
 function assertDeliveryOutputPath(filePath) {
-  const resolved = path.resolve(filePath);
+  const resolved = resolveThroughExistingAncestor(filePath);
   const workDir = pilotDeckWorkDir();
   if (workDir && isInsidePath(resolved, workDir)) {
     throw new Error("The final spreadsheet deliverable must be outside PILOTDECK_WORK_DIR");
@@ -1569,7 +1591,7 @@ async function convertLegacyXls(inputPath, outputPath) {
   if (workbookExtension(inputPath) !== ".xls" || workbookExtension(outputPath) !== ".xlsx") {
     throw new Error("Legacy conversion requires .xls input and .xlsx output");
   }
-  if (path.resolve(inputPath) === path.resolve(outputPath)) throw new Error("Refusing to overwrite the legacy source workbook");
+  if (pathsReferToSameLocation(inputPath, outputPath)) throw new Error("Refusing to overwrite the legacy source workbook");
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pilotdeck-spreadsheet-xls-"));
   try {
     const sourceDir = path.join(tempRoot, "source");
@@ -1759,14 +1781,17 @@ async function replaceFileAtomically(sourcePath, outputPath) {
 }
 
 async function commandBuild(options) {
-  const builderPath = requireOption(options, "builder");
+  const builderPath = assertInternalArtifactPath(
+    requireOption(options, "builder"),
+    "Spreadsheet builder",
+  );
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet candidate");
   const inputPath = options.input ? String(options.input) : null;
   const outputExtension = assertSupportedOutput(outputPath);
 
   if (inputPath) {
     assertSupportedInput(inputPath);
-    if (path.resolve(inputPath) === path.resolve(outputPath)) {
+    if (pathsReferToSameLocation(inputPath, outputPath)) {
       throw new Error("Refusing to overwrite the input spreadsheet. Choose a distinct --out path.");
     }
     if (workbookExtension(inputPath) === ".xlsx") {
@@ -1788,7 +1813,12 @@ async function commandBuild(options) {
   const facts = collectWorkbookFacts(workbook);
   const requirements = await runStage(
     "requirements_validation",
-    () => resolveRequirements(options.requirements ? String(options.requirements) : null, builderRequirements),
+    () => resolveRequirements(
+      options.requirements
+        ? assertInternalArtifactPath(String(options.requirements), "Spreadsheet requirements")
+        : null,
+      builderRequirements,
+    ),
   );
 
   if (outputExtension === ".xlsx" && workbookRequiresRequirements(workbook, nativeCharts, facts) && !requirements) {
@@ -1870,7 +1900,11 @@ async function commandAudit(options) {
   const extension = assertSupportedInput(inputPath);
   const requirements = await runStage(
     "requirements_validation",
-    () => resolveRequirements(options.requirements ? String(options.requirements) : null),
+    () => resolveRequirements(
+      options.requirements
+        ? assertInternalArtifactPath(String(options.requirements), "Spreadsheet requirements")
+        : null,
+    ),
   );
   const report = await runStage(
     "audit",
@@ -1893,7 +1927,7 @@ async function commandRecalculate(options) {
   if (workbookExtension(inputPath) !== ".xlsx" || workbookExtension(outputPath) !== ".xlsx") {
     throw new Error("recalculate accepts .xlsx input and output only");
   }
-  if (path.resolve(inputPath) === path.resolve(outputPath)) throw new Error("Refusing to overwrite the input workbook");
+  if (pathsReferToSameLocation(inputPath, outputPath)) throw new Error("Refusing to overwrite the input workbook");
   const packageInfo = await inspectPackage(inputPath);
   if (packageInfo.unsafeForRoundTrip && !options["allow-risky-roundtrip"]) {
     const names = packageInfo.roundTripRisks.map((risk) => `${risk.feature}(${risk.count})`).join(", ");
@@ -2126,11 +2160,14 @@ async function commandDeliver(options) {
   assertInternalArtifactPath(inputPath, "Spreadsheet candidate");
   const outputPath = assertDeliveryOutputPath(requireOption(options, "out"));
   const qaDir = assertInternalArtifactPath(requireOption(options, "qa-dir"), "Spreadsheet QA directory");
-  const requirementsPath = requireOption(options, "requirements");
+  const requirementsPath = assertInternalArtifactPath(
+    requireOption(options, "requirements"),
+    "Spreadsheet requirements",
+  );
   if (workbookExtension(inputPath) !== ".xlsx" || workbookExtension(outputPath) !== ".xlsx") {
     throw new Error("deliver currently seals .xlsx candidates only");
   }
-  if (path.resolve(inputPath) === path.resolve(outputPath)) throw new Error("Deliverable must be distinct from the candidate workbook");
+  if (pathsReferToSameLocation(inputPath, outputPath)) throw new Error("Deliverable must be distinct from the candidate workbook");
   if (await pathExists(outputPath)) throw new Error(`Refusing to overwrite existing deliverable: ${outputPath}`);
   const requirements = await runStage("requirements_validation", () => resolveRequirements(requirementsPath));
   const audit = await runStage("audit", () => auditXlsx(inputPath, requirements));
@@ -2706,9 +2743,18 @@ async function commandSelfTest(options) {
 
   const previousWorkDir = process.env.PILOTDECK_WORK_DIR;
   const boundaryRoot = path.join(outputDir, "work-boundary");
+  const boundaryOutside = path.join(outputDir, "work-boundary-outside");
   await fs.mkdir(boundaryRoot, { recursive: true });
+  await fs.mkdir(boundaryOutside, { recursive: true });
+  const boundaryLink = path.join(boundaryRoot, "escape-link");
+  await fs.symlink(
+    boundaryOutside,
+    boundaryLink,
+    process.platform === "win32" ? "junction" : "dir",
+  );
   process.env.PILOTDECK_WORK_DIR = boundaryRoot;
   let boundaryRejected = false;
+  let symlinkBoundaryRejected = false;
   try {
     assertInternalArtifactPath(
       path.join(outputDir, "leaked-inspection.json"),
@@ -2717,11 +2763,21 @@ async function commandSelfTest(options) {
   } catch (error) {
     boundaryRejected = error instanceof Error
       && error.message.includes("PILOTDECK_WORK_DIR");
+  }
+  try {
+    assertInternalArtifactPath(
+      path.join(boundaryLink, "leaked-through-symlink.json"),
+      "Spreadsheet JSON report",
+    );
+  } catch (error) {
+    symlinkBoundaryRejected = error instanceof Error
+      && error.message.includes("PILOTDECK_WORK_DIR");
   } finally {
     if (previousWorkDir === undefined) delete process.env.PILOTDECK_WORK_DIR;
     else process.env.PILOTDECK_WORK_DIR = previousWorkDir;
   }
   if (!boundaryRejected) throw new Error("Work-directory boundary did not reject a leaked spreadsheet artifact");
+  if (!symlinkBoundaryRejected) throw new Error("Work-directory boundary allowed a symlink escape");
   steps.push({ name: "work-directory-boundary", status: "ok" });
 
   const report = {
