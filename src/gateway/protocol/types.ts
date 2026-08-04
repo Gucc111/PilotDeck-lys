@@ -12,6 +12,8 @@ import type {
   CronRunNowResult,
   CronStopInput,
   CronStopResult,
+  CronUpdateInput,
+  CronUpdateResult,
 } from "../../cron/protocol/types.js";
 import type { CanonicalUsage } from "../../model/index.js";
 import type { TelemetryExecutionKind, TelemetryModule } from "../../telemetry/index.js";
@@ -329,6 +331,7 @@ export type GatewayServerInfo = {
 export type GatewayCronController = {
   createTask(input: CronCreateInput): Promise<CronCreateResult>;
   listTasks(input: CronListInput): Promise<CronListResult>;
+  updateTask(input: CronUpdateInput): Promise<CronUpdateResult>;
   deleteTask(input: CronDeleteInput): Promise<CronDeleteResult>;
   stopTask(input: CronStopInput): Promise<CronStopResult>;
   runTaskNow(input: CronRunNowInput): Promise<CronRunNowResult>;
@@ -391,6 +394,7 @@ export interface Gateway {
   getActiveTurnSnapshot?(input: GatewayActiveTurnSnapshotInput): Promise<GatewayActiveTurnSnapshot>;
   cronCreate(input: CronCreateInput): Promise<CronCreateResult>;
   cronList(input: CronListInput): Promise<CronListResult>;
+  cronUpdate(input: CronUpdateInput): Promise<CronUpdateResult>;
   cronDelete(input: CronDeleteInput): Promise<CronDeleteResult>;
   cronStop(input: CronStopInput): Promise<CronStopResult>;
   cronRunNow(input: CronRunNowInput): Promise<CronRunNowResult>;

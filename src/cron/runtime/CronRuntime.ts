@@ -20,6 +20,8 @@ import type {
   CronStopResult,
   CronTask,
   CronResultDeliveryHandler,
+  CronUpdateInput,
+  CronUpdateResult,
 } from "../protocol/types.js";
 import { resolveCronPaths, type CronPaths } from "../storage/CronPaths.js";
 import { CronTaskStore } from "../storage/CronTaskStore.js";
@@ -234,6 +236,7 @@ export class CronRuntime {
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       nextRunAt: nextRunAt.toISOString(),
+      revision: 0,
       scheduleComputationVersion: schedule.type === "cron" ? 2 : undefined,
     };
     this.registerTaskSession(task);
@@ -265,6 +268,69 @@ export class CronRuntime {
       result.recentRuns = await this.store.listRuns(input.limit ?? 50);
     }
     return result;
+  }
+
+  async updateTask(input: CronUpdateInput): Promise<CronUpdateResult> {
+    if (!this.config.enabled) {
+      throw new Error("Cron is disabled. Enable it in pilotdeck.yaml to update tasks.");
+    }
+    if (typeof input.projectKey !== "string" || !input.projectKey.trim() || !this.matchesProject(input.projectKey)) {
+      return { updated: false, reason: "not_found" };
+    }
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+      throw new Error("Cron task expectedRevision must be a non-negative integer.");
+    }
+    if (typeof input.message !== "string" || !input.message.trim()) {
+      throw new Error("Cron task message is required.");
+    }
+    if (input.timezone !== undefined && (typeof input.timezone !== "string" || !isValidCronTimezone(input.timezone))) {
+      throw new Error(`Invalid Cron timezone: ${input.timezone}`);
+    }
+
+    const now = this.now();
+    const schedule = normalizeSchedule(input, this.config.timezone, now);
+    const timezone = schedule.type === "cron"
+      ? schedule.timezone
+      : input.timezone ?? this.config.timezone;
+    const nextRunAt = computeNextRunAt(schedule, now, timezone);
+    if (!nextRunAt) {
+      throw new Error("Cron schedule does not produce a valid future run time.");
+    }
+    if (schedule.type === "once" && nextRunAt.getTime() < now.getTime()) {
+      throw new Error("One-time Cron tasks must be scheduled in the future.");
+    }
+
+    let reason: Extract<CronUpdateResult, { updated: false }>["reason"] | undefined;
+    const updated = await this.store.updateTask(input.taskId, (current) => {
+      const currentProjectKey = current.projectKey?.trim() ? resolve(current.projectKey) : this.projectKey;
+      if (currentProjectKey !== this.projectKey || currentProjectKey !== resolve(input.projectKey)) {
+        reason = "not_found";
+        return current;
+      }
+      if (current.status === "running") {
+        reason = "running";
+        return current;
+      }
+      if ((current.revision ?? 0) !== input.expectedRevision) {
+        reason = "conflict";
+        return current;
+      }
+      return {
+        ...current,
+        message: input.message,
+        schedule,
+        timezone,
+        nextRunAt: nextRunAt.toISOString(),
+        updatedAt: now.toISOString(),
+        revision: (current.revision ?? 0) + 1,
+        scheduleComputationVersion: schedule.type === "cron" ? 2 : undefined,
+      };
+    });
+
+    if (!updated) return { updated: false, reason: "not_found" };
+    if (reason) return { updated: false, reason };
+    this.scheduler?.poke();
+    return { updated: true, task: updated };
   }
 
   async deleteTask(input: CronDeleteInput): Promise<CronDeleteResult> {
@@ -352,6 +418,10 @@ export class CronRuntime {
     return undefined;
   }
 
+  private matchesProject(projectKey: string): boolean {
+    return resolve(projectKey) === this.projectKey;
+  }
+
   private async migrateLegacyTaskSessions(): Promise<void> {
     const tasks = await this.store.listTasks();
     let migratedCount = 0;
@@ -369,6 +439,7 @@ export class CronRuntime {
         ...task,
         sessionKey: nextSessionKey,
         channelKey: "cron",
+        revision: (task.revision ?? 0) + 1,
         updatedAt: this.now().toISOString(),
       });
     }
@@ -462,6 +533,7 @@ export class CronRuntime {
         timezone,
         status: "scheduled",
         nextRunAt: computeNextRunAt(schedule, now, timezone)?.toISOString(),
+        revision: (task.revision ?? 0) + 1,
         scheduleComputationVersion: 2,
         updatedAt: now.toISOString(),
       });
@@ -477,7 +549,10 @@ export function createCronRuntime(options: CreateCronRuntimeOptions): CronRuntim
   return new CronRuntime(options);
 }
 
-function normalizeSchedule(input: CronCreateInput, configTimezone: string, now: Date): CronTask["schedule"] {
+type CronScheduleInput = Pick<CronCreateInput, "schedule" | "timezone">
+  | Pick<CronUpdateInput, "schedule" | "timezone">;
+
+function normalizeSchedule(input: CronScheduleInput, configTimezone: string, now: Date): CronTask["schedule"] {
   if (input.schedule.type === "once") {
     return { type: "once", runAt: input.schedule.runAt };
   }

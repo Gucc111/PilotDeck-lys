@@ -20,6 +20,8 @@ import type {
   CronStopInput,
   CronStopResult,
   CronTask,
+  CronUpdateInput,
+  CronUpdateResult,
 } from "../protocol/types.js";
 import { resolveCronPaths } from "../storage/CronPaths.js";
 import { createCronCreateTool } from "../tool/CronCreateTool.js";
@@ -129,6 +131,12 @@ export class CronManager {
         .slice(0, input.limit ?? 50);
     }
     return result;
+  }
+
+  async updateTask(input: CronUpdateInput): Promise<CronUpdateResult> {
+    const runtime = await this.resolveTaskRuntime(input.taskId, input.projectKey);
+    if (!runtime) return { updated: false, reason: "not_found" };
+    return runtime.updateTask(input);
   }
 
   async deleteTask(input: CronDeleteInput): Promise<CronDeleteResult> {

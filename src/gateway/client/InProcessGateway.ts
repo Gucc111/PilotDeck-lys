@@ -59,6 +59,8 @@ import type {
   CronRunNowResult,
   CronStopInput,
   CronStopResult,
+  CronUpdateInput,
+  CronUpdateResult,
 } from "../../cron/protocol/types.js";
 import { permissionEntryToRule, permissionSettingsToRuleSet, readPermissionSettings } from "../../permission/index.js";
 import type { PermissionRule } from "../../permission/index.js";
@@ -655,6 +657,10 @@ export class InProcessGateway implements Gateway {
 
   async cronList(input: CronListInput): Promise<CronListResult> {
     return this.requireCron().listTasks(input);
+  }
+
+  async cronUpdate(input: CronUpdateInput): Promise<CronUpdateResult> {
+    return this.requireCron().updateTask(input);
   }
 
   async cronDelete(input: CronDeleteInput): Promise<CronDeleteResult> {

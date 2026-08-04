@@ -783,6 +783,9 @@ function createFallbackGateway(): Gateway {
     cronList: async () => {
       throw new Error("Cron runtime is not configured.");
     },
+    cronUpdate: async () => {
+      throw new Error("Cron runtime is not configured.");
+    },
     cronDelete: async () => {
       throw new Error("Cron runtime is not configured.");
     },

@@ -85,6 +85,7 @@ import skillsRoutes from './routes/skills.js';
 import settingsRoutes from './routes/settings.js';
 import configRoutes from './routes/config.js';
 import gatewayRoutes from './routes/gateway.js';
+import { createCronUpdateHandler } from './routes/cron-jobs.js';
 import {
     OFFICE_PREVIEW_SERVICE_BUILTIN,
     OFFICE_PREVIEW_SERVICE_LIBREOFFICE,
@@ -634,6 +635,8 @@ app.post('/api/always-on/cron-jobs', authenticateToken, async (req, res) => {
         res.status(500).json({ error: error?.message || 'cron create failed' });
     }
 });
+
+app.patch('/api/always-on/cron-jobs/:taskId', authenticateToken, createCronUpdateHandler({ getGateway: getPilotDeckGateway }));
 
 app.post('/api/always-on/cron-jobs/:taskId/run-now', authenticateToken, async (req, res) => {
     try {
