@@ -111,9 +111,10 @@ helpers.autoFitColumns(sheet, { min: 10, max: 30 });
 helpers.autoFitRows(sheet);
 helpers.applyChineseTypography(sheet, {
   platform: "cross-platform",
-  titleRanges: ["A1:H1"],
 });
 ```
+
+The default header is neutral light gray with dark text and a thin bottom border. Passing a colored `fill` is allowed only when the prepared style policy or explicit user request authorizes that color. Do not create a merged title row for ordinary data, tracker, or model workbooks.
 
 Do not use `autoFitColumns` to restyle an established workbook unless the requested edit needs it.
 
@@ -179,6 +180,20 @@ helpers.addNativeChart(workbook, {
 
 Supported types are `line`, `column`, and `bar`. Add the chart to `requirements.json`; the audit must confirm its native OOXML part and source ranges.
 
+## Raster images
+
+Insert only local raster images through the async helper:
+
+```js
+await helpers.addImage(workbook, {
+  sheet: "Summary",
+  path: "/absolute/path/to/illustration.png",
+  anchor: { from: "F3", to: "N18" },
+});
+```
+
+The helper rejects missing, remote, unsupported, fully transparent, and blank-white assets; normalizes PNG/JPEG/WebP/TIFF input to flattened PNG; preserves the source; and records the source hash and anchor. Add `{ "sheet": "Summary", "minCount": 1 }` to `requiredImages`. Images never satisfy `requiredNativeCharts`.
+
 ## Comments and sources
 
 ExcelJS supports legacy cell notes:
@@ -211,12 +226,15 @@ Keep every builder, candidate, conversion, render, and report under the turn wor
 WORKSPACE="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}/spreadsheets"
 FINAL_XLSX="$PWD/<requested-output>.xlsx"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/qa"
-bash "$SHEET" scaffold --out "$WORKSPACE/tmp/workbook.mjs" --requirements-out "$WORKSPACE/tmp/requirements.json"
-bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --requirements "$WORKSPACE/tmp/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
-bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --input "$INPUT_XLSX" --requirements "$WORKSPACE/tmp/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
+bash "$SHEET" prepare --final-out "$FINAL_XLSX" --workbook-type data
+bash "$SHEET" scaffold --out "$WORKSPACE/tmp/workbook.mjs"
+bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
+bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --input "$INPUT_XLSX" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
 bash "$SHEET" convert-legacy --input "$INPUT_XLS" --out "$WORKSPACE/tmp/converted.xlsx"
 bash "$SHEET" inspect --input "$INPUT_XLSX" --sheet Summary --range A1:H20 --styles --out "$WORKSPACE/tmp/inspection.json"
-bash "$SHEET" audit --input "$WORKSPACE/tmp/candidate.xlsx" --requirements "$WORKSPACE/tmp/requirements.json" --out "$WORKSPACE/qa/audit.json"
-bash "$SHEET" render --input "$WORKSPACE/tmp/candidate.xlsx" --out-dir "$WORKSPACE/qa/render" --per-sheet
-bash "$SHEET" deliver --input "$WORKSPACE/tmp/candidate.xlsx" --out "$FINAL_XLSX" --qa-dir "$WORKSPACE/qa/final" --requirements "$WORKSPACE/tmp/requirements.json"
+bash "$SHEET" audit --input "$WORKSPACE/tmp/candidate.xlsx" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/qa/audit.json"
+bash "$SHEET" qa-init --input "$WORKSPACE/tmp/candidate.xlsx" --requirements "$WORKSPACE/qa/requirements.json" --report "$WORKSPACE/qa/visual-review.json"
+bash "$SHEET" qa-record --report "$WORKSPACE/qa/visual-review.json" --sheet Summary --page 1 --status passed --notes "Inspected the current page at full resolution."
+bash "$SHEET" qa-finalize --report "$WORKSPACE/qa/visual-review.json"
+bash "$SHEET" deliver --input "$WORKSPACE/tmp/candidate.xlsx" --out "$FINAL_XLSX" --requirements "$WORKSPACE/qa/requirements.json" --qa-report "$WORKSPACE/qa/visual-review.json"
 ```

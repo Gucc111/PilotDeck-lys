@@ -2,12 +2,23 @@
 
 Create a task-specific `requirements.json` for every non-trivial workbook. Requirements turn user-visible promises into checks that cannot be satisfied by a look-alike image or an unrelated worksheet object.
 
+Run `prepare` first. It creates the canonical file and freezes its `task` section. Add workbook checks without rewriting that policy.
+
 ## Schema
 
 Use only fields that the task needs:
 
 ```json
 {
+  "task": {
+    "protocol": "pilotdeck-spreadsheet-task/v1",
+    "workbookType": "data",
+    "styleMode": "neutral-built-in",
+    "finalOutput": "/absolute/path/final.xlsx",
+    "visualReview": { "mode": "all-pages" },
+    "allowDecorativeTitle": false,
+    "allowedAccentColors": []
+  },
   "sourceBacked": true,
   "sourceFiles": [
     {
@@ -62,6 +73,9 @@ Use only fields that the task needs:
   "requiredDataValidations": [
     { "sheet": "行动项", "cell": "F4" }
   ],
+  "requiredImages": [
+    { "sheet": "指标总览", "minCount": 1 }
+  ],
   "maxPagesPerSheet": [
     { "sheet": "指标总览", "max": 1 }
   ],
@@ -74,6 +88,17 @@ Use only fields that the task needs:
   ]
 }
 ```
+
+## Prepared task policy
+
+- `workbookType` is `data`, `tracker`, `model`, `dashboard`, `report`, or `template`.
+- `styleMode` is `neutral-built-in`, `preserve-source`, or `user-template`.
+- `preserve-source` includes the resolved latest input path and SHA-256.
+- `user-template` includes the exact template path and SHA-256.
+- `visualReview.mode` is `all-pages`, `selected-sheets`, or explicitly authorized `structural-only` for a data workbook.
+- `finalOutput` is the exact new `.xlsx` path authorized for delivery. Source replacement is currently blocked.
+
+Do not add decorative-title or accent-color permission because the builder already used them. Those fields reflect the current user's requirements, not a post-build exception.
 
 ## Source-backed workbooks
 
@@ -100,22 +125,41 @@ Build to a scratch candidate, not the final destination:
 ```bash
 bash "$SHEET" build \
   --builder "$WORKSPACE/tmp/workbook.mjs" \
-  --requirements "$WORKSPACE/tmp/requirements.json" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
   --out "$WORKSPACE/tmp/candidate.xlsx"
 ```
 
-Inspect and, when necessary, revise the candidate. Then seal it:
+Initialize QA, inspect each returned page, and record it before finalizing:
+
+```bash
+bash "$SHEET" qa-init \
+  --input "$WORKSPACE/tmp/candidate.xlsx" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --report "$WORKSPACE/qa/visual-review.json"
+
+bash "$SHEET" qa-record \
+  --report "$WORKSPACE/qa/visual-review.json" \
+  --sheet "指标总览" --page 1 --status passed \
+  --notes "Checked visible facts, formats, chart labels, and page bounds."
+
+bash "$SHEET" qa-finalize \
+  --report "$WORKSPACE/qa/visual-review.json"
+```
+
+`qa-init` binds the candidate SHA-256, requirements SHA-256, structural/calculation audit, render coverage, and normalized decoded-pixel digest for every required page. `qa-record` preserves those digests and adds one page-specific review. Any candidate, requirements, or page-image mutation makes the review stale.
+
+Then seal that exact candidate:
 
 ```bash
 bash "$SHEET" deliver \
   --input "$WORKSPACE/tmp/candidate.xlsx" \
   --out "$FINAL_XLSX" \
-  --qa-dir "$WORKSPACE/qa/render" \
-  --requirements "$WORKSPACE/tmp/requirements.json" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --qa-report "$WORKSPACE/qa/visual-review.json" \
   --report "$WORKSPACE/qa/delivery.json"
 ```
 
-`deliver` requires `requirements.json`, performs structural/formula/type coverage checks, renders each worksheet separately, rejects blank print pages and page-budget failures, rejects unresolved warnings, verifies the copied file hash, reopens the final artifact, and reports its SHA-256.
+`deliver` requires finalized SHA-bound QA, rechecks structural/formula/type/style coverage and source hashes, verifies the exact prepared output path, atomically copies the candidate, reopens the final artifact, records lineage, and reports its SHA-256.
 
 Warnings block delivery until they are fixed or explicitly dispositioned. Formula errors, invalid dates, missing required objects, blank print pages, failed coverage, and hash mismatches are hard failures. A failed build does not update the requested candidate; never recover by copying a raw or debug workbook to the final path.
 

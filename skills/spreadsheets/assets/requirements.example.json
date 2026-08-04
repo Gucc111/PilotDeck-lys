@@ -6,13 +6,13 @@
   "requiredFormulaRanges": [
     {
       "sheet": "Summary",
-      "range": "D4:D6"
+      "range": "D2:D4"
     }
   ],
   "expectedRanges": [
     {
       "sheet": "Summary",
-      "range": "A4:C6",
+      "range": "A2:C4",
       "values": [
         ["1月", 100000, 70000],
         ["2月", 120000, 78000],
@@ -23,12 +23,12 @@
   "requiredCellTypes": [
     {
       "sheet": "Summary",
-      "range": "A4:A6",
+      "range": "A2:A4",
       "type": "string"
     },
     {
       "sheet": "Summary",
-      "range": "B4:D6",
+      "range": "B2:D4",
       "type": "number"
     }
   ],
@@ -39,9 +39,9 @@
       "minCount": 1,
       "minPoints": 3,
       "sourceRanges": [
-        "A4:A6",
-        "B4:B6",
-        "C4:C6"
+        "A2:A4",
+        "B2:B4",
+        "C2:C4"
       ]
     }
   ],
@@ -54,15 +54,16 @@
   "requiredConditionalFormatting": [
     {
       "sheet": "Summary",
-      "range": "D4:D6"
+      "range": "D2:D4"
     }
   ],
   "requiredDataValidations": [
     {
       "sheet": "Summary",
-      "cell": "E4"
+      "cell": "E2"
     }
   ],
+  "requiredImages": [],
   "maxPagesPerSheet": [
     {
       "sheet": "Summary",

@@ -28,6 +28,8 @@ Review `package.unsafeForRoundTrip` and `package.roundTripRisks`. If risks are p
 3. Prefer read-only analysis, a new companion workbook, or a narrowly designed future OOXML operation.
 4. Use `--allow-risky-roundtrip` only after explicit user approval and only when losing or rewriting the listed objects is acceptable.
 
+If the standard helper cannot express a required object, follow [capabilities-and-fallbacks.md](capabilities-and-fallbacks.md). Do not switch libraries or write package XML outside `fallback-patch`.
+
 ## Native chart support
 
 Net-new workbooks support editable native `line`, `column`, and `bar` charts. The runtime recalculates formulas first and injects the chart OOXML afterward, so LibreOffice cannot erase the newly created chart during recalculation.
@@ -61,11 +63,11 @@ helpers.addNativeChart(workbook, {
 
 The native-chart helper owns the DrawingML anchor and relationship XML. Do not hand-edit it in a builder. `audit` rejects malformed anchors, nested or misplaced `clientData`, unresolved worksheet-to-drawing links, unresolved chart relationships, and missing chart parts. A chart is structurally deliverable only when `package.compatibility.status` is `ok` in addition to meeting the chart requirements.
 
-Other chart types remain unsupported. If a requested type is unavailable, choose the closest supported native type only when it preserves the intended analytical takeaway, and state the substitution.
+Other chart types remain controlled fallbacks. Query `capabilities`; use `fallback-patch` only with a narrow chart/drawing/relationship allowlist and full QA. Choose a supported substitute only when it preserves the intended analytical takeaway and the user accepts the substitution.
 
 ## Images and drawings
 
-ExcelJS can create images, but existing drawing packages can contain unsupported shapes or chart relationships. For an existing workbook, treat any drawing risk as a reason to stop. For a net-new workbook, use images only when they improve comprehension and verify their placement in the rendered pages.
+Use `await helpers.addImage(...)` for a net-new local raster illustration. It normalizes PNG/JPEG/WebP/TIFF input, rejects blank assets, and records the source hash and anchor. Add `requiredImages` and verify placement in the rendered pages. Existing drawing packages can contain unsupported shapes or chart relationships; treat any existing drawing risk as a reason to stop or create a companion workbook.
 
 ## Legacy and macro-enabled formats
 

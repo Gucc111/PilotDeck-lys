@@ -10,13 +10,25 @@
 
 ## Baseline for a new workbook
 
-- Use a clear title, section hierarchy, and visible summary area.
-- Distinguish headers from input and output cells.
-- Use restrained fills and borders; do not box every populated cell.
-- Use whitespace and slightly taller section rows to separate logical blocks.
-- Hide gridlines only when explicit styling provides sufficient structure.
+- When no template or concrete style is supplied, use `neutral-built-in` and select the correct workbook type during `prepare`.
+- For `data`, `tracker`, and `model`, start the usable table at the top of the sheet. Do not add a merged banner, oversized title, KPI cards, decorative blank rows, or a dashboard shell.
+- Use bold dark text, white or light-gray header fill, and a thin neutral bottom border. Do not make ordinary headers blue or activate a colored theme from generic words such as “professional”.
+- Use `TableStyleLight1`. Other built-in table themes are not part of the neutral default.
+- Keep the body white. Use color only for requested branding or semantic input/status/warning meaning.
+- Keep gridlines visible for ordinary data sheets. Hide them only when a dashboard/report layout supplies an equally clear structure.
 - Freeze header rows or identifier columns for large sheets.
 - Apply formatting only to populated or intentionally reserved ranges.
+
+## Style modes and workbook types
+
+- `preserve-source`: inspect and preserve the source's visual language. Do not apply the neutral template over an existing workbook.
+- `user-template`: use only the frozen template or explicit user tokens. Generic genres are not style sources.
+- `neutral-built-in`: enforce the neutral rules during audit and delivery.
+- `data`: compact grid/table, filters, frozen headers, no decorative title.
+- `tracker`: data rules plus restrained semantic status colors.
+- `model`: separate inputs, formulas, and outputs with minimal semantic formatting.
+- `dashboard` or `report`: titles, KPI blocks, hidden gridlines, and accent colors are allowed only when that archetype is explicitly selected.
+- `template`: preserve the template structure and formatting.
 
 ## Typography and alignment
 

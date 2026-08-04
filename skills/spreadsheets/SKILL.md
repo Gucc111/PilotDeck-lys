@@ -1,6 +1,6 @@
 ---
 name: spreadsheets
-description: Create, edit, inspect, analyze, recalculate, render, and validate standalone spreadsheet files in .xlsx, .xls, .csv, and .tsv formats. Use whenever the requested input or deliverable is a workspace spreadsheet, including formula-driven workbooks, native charts, formatted tables, data cleanup, workbook questions, legacy XLS conversion, Chinese or bilingual workbooks, and visual spreadsheet QA. Do not use for Google Sheets, macro-enabled .xlsm files, or live control of Microsoft Excel.
+description: Create, edit, inspect, analyze, recalculate, render, and validate standalone spreadsheet files in .xlsx, .xls, .csv, and .tsv formats through a capability-declared workflow with controlled OOXML fallback, neutral built-in styling, native charts, raster images, source integrity, and SHA-bound visual QA. Use whenever the requested input or deliverable is a workspace spreadsheet, including formula-driven workbooks, formatted tables, data cleanup, workbook questions, legacy XLS conversion, Chinese or bilingual workbooks, and spreadsheet visual QA. Do not use for Google Sheets, macro-enabled .xlsm files, or live control of Microsoft Excel.
 ---
 
 # Spreadsheets
@@ -10,21 +10,27 @@ Work with standalone spreadsheet files through a reproducible JavaScript `.mjs` 
 ## Hard requirements
 
 - Use JavaScript ES modules and the bundled scripts. Do not use `openpyxl`, `xlsxwriter`, `pandas.ExcelWriter`, Google Sheets APIs, or Codex-private runtime paths.
+- Run `capabilities` before the first spreadsheet operation in a session. Query `schema` instead of guessing helper or requirements fields.
+- For a modifying XLSX task, run `prepare` before the first build. Use its canonical paths and do not change the frozen task policy merely to make a gate pass.
+- Treat only `status: ok` as success. `partial`, `unsupported`, and `blocked` require the declared fallback or an honest limitation report.
 - Preserve every input file. Write edits to a distinct output unless the user explicitly requests replacement.
 - Keep important calculations in worksheet formulas. Do not replace inspectable formulas with hardcoded results.
 - Inspect and render an existing workbook before modifying it. Match its formatting and conventions unless the user requests a redesign.
 - Run compatibility preflight before editing an existing XLSX. Do not bypass a risky round trip without explicit user approval.
 - Recalculate formula-driven XLSX files through LibreOffice and scan the saved results for formula errors.
 - Use native Excel chart objects for requested charts. A raster image or SVG does not satisfy a chart requirement.
+- Use `await helpers.addImage(...)` for local raster illustrations. Do not fetch remote images or use an image to impersonate a chart.
 - Create `requirements.json` for every non-trivial workbook and require `coverage.status=passed`.
 - For source-backed workbooks, freeze source file hashes and a compact fact matrix before building. Do not rely on remembered values or reconstruct missing facts from context.
 - Treat Chinese as first-class content when the user does not specify a language. Apply the cross-platform typography policy and verify glyphs after recalculation.
 - Render every final worksheet page and inspect the individual PNG files at full size. A montage is only an overview.
 - Fix formula errors, clipped content, broken tables, unreadable formats, unexpected blank sheets, and poor page layout before delivery.
 - Build to a scratch candidate and use `deliver` to seal the final XLSX. Do not manually copy an unaudited candidate to the final path.
+- Use `qa-init`, record every required page with `qa-record`, and run `qa-finalize`. Any candidate, requirements, or render change invalidates the review.
 - A failed `build`, `audit`, or `deliver` means the workbook is not deliverable. Do not copy a raw/debug workbook, remove requested features, append `|| true`, or claim success after a gate fails.
 - Use the bundled helpers for conditional formatting and native charts. Do not replace them with unsupported ExcelJS chart APIs or unvalidated low-level conditional-formatting objects.
 - Resolve every audit warning or add a task-specific `warningDispositions` entry with a concrete rationale. Undisposed warnings block `deliver`.
+- If a standard helper is insufficient, follow the controlled fallback ladder. Never run an untracked package-mutating script or deliver its output directly.
 
 ## Read the relevant references
 
@@ -35,6 +41,7 @@ Work with standalone spreadsheet files through a reproducible JavaScript `.mjs` 
 - Read [charts-and-compatibility.md](references/charts-and-compatibility.md) before editing an existing XLSX or handling charts and advanced Excel objects.
 - Read [requirements-and-delivery.md](references/requirements-and-delivery.md) for every non-trivial workbook.
 - Read [qa-checklist.md](references/qa-checklist.md) before delivery.
+- Read [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md) before declaring a feature unavailable or writing package-level code.
 
 ## Prepare the runtime
 
@@ -43,13 +50,13 @@ Resolve the directory containing this file as `SPREADSHEET_SKILL_ROOT`, then run
 ```bash
 SHEET="$SPREADSHEET_SKILL_ROOT/scripts/spreadsheet.sh"
 bash "$SHEET" check || bash "$SHEET" fix
+bash "$SHEET" capabilities
 ```
 
-Use the turn-scoped PilotDeck work directory for every intermediate. The host sets `PILOTDECK_WORK_DIR`; the fallback keeps manual runs internal to the project:
+Use the turn-scoped PilotDeck work directory for every intermediate. The host must set `PILOTDECK_WORK_DIR`:
 
 ```bash
-WORKSPACE="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}/spreadsheets"
-mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/qa"
+WORKSPACE="${PILOTDECK_WORK_DIR:?PILOTDECK_WORK_DIR is required}/spreadsheets"
 ```
 
 Keep builders, converted inputs, source notes, inspections, candidates, renders, recalculation files, and QA reports in `WORKSPACE`. Put only requested deliverables in the project or user-selected output directory. Never create `.pilotdeck_build.mjs`, QA directories, or other intermediates beside the user's files.
@@ -69,6 +76,14 @@ Choose one route:
 3. Existing XLSX edit: inspect and render first, review compatibility risks, then make the smallest scoped edit.
 4. Legacy XLS: convert to a temporary XLSX, inspect and render the conversion, then use the XLSX workflow and deliver `.xlsx`.
 5. CSV or TSV task: preserve delimiter, encoding, identifiers, and text semantics. Convert to XLSX only when formulas, formatting, tables, images, or other workbook features are requested.
+
+Before an existing-workbook route, resolve the latest session version:
+
+```bash
+bash "$SHEET" resolve-latest --input "$INPUT_XLSX"
+```
+
+Use the returned `resolved` path. Use `--use-exact-input` only when the current user explicitly asks to restart from an older/original version.
 
 Do not accept `.xlsm`, Google Sheets, or a live Excel session through this skill. Never rename `.xls` to `.xlsx`.
 
@@ -113,15 +128,24 @@ bash "$SHEET" render \
 
 ## Create or edit a workbook
 
-Create requirements and one executable builder:
+Prepare the task first. Generic words such as “professional”, “formal”, or “business” do not authorize a colored theme:
+
+```bash
+bash "$SHEET" prepare \
+  --final-out "$FINAL_XLSX" \
+  --workbook-type data
+```
+
+For an existing workbook, add `--input "$INPUT_XLSX"`; the default style mode becomes `preserve-source`. Use `--style-mode user-template --style-source "$TEMPLATE_XLSX"` only for a concrete user-supplied style source. For a dashboard/report, select that workbook type explicitly. Use `selected-sheets` visual review only for bounded data workbooks and name every sheet.
+
+`prepare` creates the canonical requirements and returns builder, candidate, render, QA, and delivery-report paths. Complete the declarative checks in that requirements file, then create one executable builder:
 
 ```bash
 bash "$SHEET" scaffold \
-  --out "$WORKSPACE/tmp/workbook.mjs" \
-  --requirements-out "$WORKSPACE/tmp/requirements.json"
+  --out "$WORKSPACE/tmp/workbook.mjs"
 ```
 
-Write `$WORKSPACE/tmp/requirements.json` from the user's requested sheets, formulas, native charts, validations, conditional formatting, expected cells/ranges, and print-page constraints. A sheet list plus a formula count is not sufficient coverage.
+Write `$WORKSPACE/qa/requirements.json` from the user's requested sheets, formulas, native charts, images, validations, conditional formatting, expected cells/ranges, and relevant print-page constraints. Keep the prepared `task` policy unchanged. A sheet list plus a formula count is not sufficient coverage.
 
 For a task based on input files:
 
@@ -135,7 +159,7 @@ Patch and rerun that builder instead of creating duplicate scripts. Build a net-
 ```bash
 bash "$SHEET" build \
   --builder "$WORKSPACE/tmp/workbook.mjs" \
-  --requirements "$WORKSPACE/tmp/requirements.json" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
   --out "$WORKSPACE/tmp/candidate.xlsx"
 ```
 
@@ -145,11 +169,19 @@ Edit an existing safe workbook:
 bash "$SHEET" build \
   --builder "$WORKSPACE/tmp/workbook.mjs" \
   --input "$INPUT_XLSX" \
-  --requirements "$WORKSPACE/tmp/requirements.json" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
   --out "$WORKSPACE/tmp/candidate.xlsx"
 ```
 
 `build` preserves the input, validates builder structures and requirements, blocks unsafe round trips, recalculates formula-driven XLSX files, and performs a compact formula audit. It stages output and updates the requested candidate only after audit passes, so a failed build must be fixed and rerun. Fix the reported `stage`, worksheet, range, and field instead of disabling requested features or switching to a second builder. Never add `--allow-risky-roundtrip` unless the user has explicitly accepted the listed compatibility risks.
+
+## Built-in style policy
+
+- `neutral-built-in`: use white/light-gray headers, neutral borders, ordinary body text, and no decorative merged title for data, tracker, or model workbooks.
+- `preserve-source`: keep the source workbook's fills, fonts, widths, heights, tables, and visual conventions; make the smallest scoped change.
+- `user-template`: derive formatting only from the frozen template or concrete user instructions.
+- Use colors only for requested branding or semantic states. Do not turn ordinary headers blue, add KPI cards, or create a dashboard layout unless the workbook type or user request requires it.
+- Use `helpers.styleHeader` and `TableStyleLight1`. The audit blocks unrequested chromatic fills, other table themes, and oversized top-of-sheet titles in neutral data/tracker/model workbooks.
 
 ## Formula and data rules
 
@@ -164,28 +196,39 @@ bash "$SHEET" build \
 - Preserve identifiers longer than 15 digits as text. Detect UTF-8/UTF-8 BOM/GBK/GB18030 and default new delimited exports to UTF-8 BOM.
 - Preserve source facts exactly when translating labels or reorganizing tables. Never substitute plausible KPIs, channels, action items, owners, dates, or statuses.
 
-## Validate and render
+## Validate and review
 
 Run the final structural audit:
 
 ```bash
 bash "$SHEET" audit \
   --input "$WORKSPACE/tmp/candidate.xlsx" \
-  --requirements "$WORKSPACE/tmp/requirements.json" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
   --out "$WORKSPACE/qa/audit.json"
 ```
 
-Render the final workbook:
+Initialize the SHA-bound review:
 
 ```bash
-bash "$SHEET" render \
+bash "$SHEET" qa-init \
   --input "$WORKSPACE/tmp/candidate.xlsx" \
-  --out-dir "$WORKSPACE/qa/render" \
-  --montage "$WORKSPACE/qa/montage.png" \
-  --per-sheet
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --report "$WORKSPACE/qa/visual-review.json"
 ```
 
-Inspect every `page-N.png` at full resolution. Revise the builder, rebuild, and rerun audit/render until hard failures are gone and every warning is fixed or explicitly dispositioned in `requirements.json`. Stop after the workbook is correct, legible, and usable; do not spend extra loops on decorative polish.
+Inspect every page returned by `qa-init` at full resolution. Immediately record that exact sheet/page with a specific note:
+
+```bash
+bash "$SHEET" qa-record \
+  --report "$WORKSPACE/qa/visual-review.json" \
+  --sheet "Summary" --page 1 --status passed \
+  --notes "Headers, values, chart labels, units, and page bounds are visible."
+
+bash "$SHEET" qa-finalize \
+  --report "$WORKSPACE/qa/visual-review.json"
+```
+
+Revise the builder and rerun `qa-init --overwrite` whenever the candidate changes. Do not hand-edit the QA report or copy image hashes.
 
 After modifying this skill or its runtime, run:
 
@@ -201,8 +244,8 @@ Seal an XLSX only after inspecting the candidate pages:
 bash "$SHEET" deliver \
   --input "$WORKSPACE/tmp/candidate.xlsx" \
   --out "$FINAL_XLSX" \
-  --qa-dir "$WORKSPACE/qa/final-render" \
-  --requirements "$WORKSPACE/tmp/requirements.json" \
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --qa-report "$WORKSPACE/qa/visual-review.json" \
   --report "$WORKSPACE/qa/delivery.json"
 ```
 
