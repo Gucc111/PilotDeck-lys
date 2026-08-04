@@ -27,6 +27,10 @@ test("history replay restores structured agent file artifacts", async () => {
         raw: { toolName: "bash" },
       }],
     });
+    await storage.transcript.recordDurableMessage(sessionKey, "turn-1", {
+      role: "assistant",
+      content: [{ type: "text", text: "Finished." }],
+    });
     await storage.transcript.recordFileArtifacts(sessionKey, "turn-1", [{
       id: "artifact-1",
       name: "report.xlsx",
@@ -42,9 +46,13 @@ test("history replay restores structured agent file artifacts", async () => {
 
     const replay = await readWebSessionMessages({ sessionKey }, { projectRoot, pilotHome });
     const message = replay.messages.find((item) => item.kind === "file_artifacts");
+    const assistantMessage = replay.messages.find((item) => item.kind === "text" && item.role === "assistant");
 
     assert.ok(message);
+    assert.ok(assistantMessage);
     assert.equal(message.role, "assistant");
+    assert.equal(message.turnId, "turn-1");
+    assert.equal(assistantMessage.turnId, "turn-1");
     assert.equal(message.artifacts?.[0]?.path, "report.xlsx");
     assert.equal(message.artifacts?.[0]?.operation, "created");
   } finally {

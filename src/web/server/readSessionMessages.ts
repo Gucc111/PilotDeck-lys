@@ -61,6 +61,8 @@ export async function readWebSessionMessages(
   const webReplay = extractWebVisibleMessages(entries);
   const entryTimestamps = webReplay.timestamps;
   const entryIds = webReplay.entryIds;
+  const entryTurnIds = webReplay.turnIds;
+  const entrySequences = webReplay.sequences;
   const incompleteTurnIds = extractIncompleteTurnIds(entries);
 
   const flattenedPerMessage: WebMessage[][] = webReplay.messages
@@ -73,11 +75,21 @@ export async function readWebSessionMessages(
         entryTimestamp: entryTimestamps[index],
         entryId: entryIds[index],
         forkUnsupportedContent: webReplay.forkUnsupportedContents[index],
-      }),
+      }).map((webMessage) => ({
+        ...webMessage,
+        turnId: entryTurnIds[index],
+        sequence: entrySequences[index],
+      })),
     );
 
   const allMessages: WebMessage[] = flattenedPerMessage.flat();
 
+  injectCompactBoundaryMessages(
+    webReplay.compactBoundaries,
+    allMessages,
+    input.sessionKey,
+    input.projectKey,
+  );
   attachSubagentIds(entries, allMessages);
   if (resolve(effectiveProjectRoot) !== resolve(options.pilotHome)) {
     injectFileArtifactMessages(entries, allMessages, input.sessionKey, input.projectKey);
@@ -355,9 +367,20 @@ export async function readSubagentWebMessages(
         projectKey: input.projectKey,
         now: options.now,
         entryTimestamp: webReplay.timestamps[index],
-      }),
+        entryId: webReplay.entryIds[index],
+      }).map((webMessage) => ({
+        ...webMessage,
+        turnId: webReplay.turnIds[index],
+        sequence: webReplay.sequences[index],
+      })),
     );
   const allMessages: WebMessage[] = flattenedPerMessage.flat();
+  injectCompactBoundaryMessages(
+    webReplay.compactBoundaries,
+    allMessages,
+    `${input.sessionKey}::sub::${input.subagentId}`,
+    input.projectKey,
+  );
 
   return { messages: allMessages, total: allMessages.length };
 }
@@ -735,8 +758,10 @@ function toWebMessageImage(block: CanonicalImageBlock): NonNullable<WebMessage["
  * back to the model.
  */
 type CompactBoundaryInfo = {
-  insertAfterMessageIndex: number;
   timestamp: string;
+  turnId: string;
+  sequence: number;
+  entryId?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -772,12 +797,16 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
   messages: CanonicalMessage[];
   timestamps: string[];
   entryIds: Array<string | undefined>;
+  turnIds: string[];
+  sequences: number[];
   forkUnsupportedContents: boolean[];
   compactBoundaries: CompactBoundaryInfo[];
 } {
   const messages: CanonicalMessage[] = [];
   const timestamps: string[] = [];
   const entryIds: Array<string | undefined> = [];
+  const turnIds: string[] = [];
+  const sequences: number[] = [];
   const forkUnsupportedContents: boolean[] = [];
   const compactBoundaries: CompactBoundaryInfo[] = [];
 
@@ -800,6 +829,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
             messages.push(cloneMessage(message));
             timestamps.push(entry.createdAt);
             entryIds.push(entry.entryId);
+            turnIds.push(entry.turnId);
+            sequences.push(entry.sequence);
             forkUnsupportedContents.push(entryForkUnsupported);
           }
         }
@@ -816,13 +847,17 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
         messages.push(cloneMessage(entry.message));
         timestamps.push(entry.createdAt);
         entryIds.push(entry.entryId);
+        turnIds.push(entry.turnId);
+        sequences.push(entry.sequence);
         forkUnsupportedContents.push(false);
         break;
       case "control_boundary": {
         if (entry.boundary && entry.boundary.kind === "compact") {
           compactBoundaries.push({
-            insertAfterMessageIndex: messages.length - 1,
             timestamp: entry.createdAt,
+            turnId: entry.turnId,
+            sequence: entry.sequence,
+            entryId: entry.entryId,
             metadata: compactBoundaryMetadata(entry),
           });
         }
@@ -831,16 +866,30 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
     }
   }
 
-  return { messages, timestamps, entryIds, forkUnsupportedContents, compactBoundaries };
+  return {
+    messages,
+    timestamps,
+    entryIds,
+    turnIds,
+    sequences,
+    forkUnsupportedContents,
+    compactBoundaries,
+  };
 }
 
 function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
   messages: CanonicalMessage[];
   timestamps: string[];
+  entryIds: Array<string | undefined>;
+  turnIds: string[];
+  sequences: number[];
   compactBoundaries: CompactBoundaryInfo[];
 } {
   const messages: CanonicalMessage[] = [];
   const timestamps: string[] = [];
+  const entryIds: Array<string | undefined> = [];
+  const turnIds: string[] = [];
+  const sequences: number[] = [];
   const compactBoundaries: CompactBoundaryInfo[] = [];
   let sawExecutionMessage = false;
 
@@ -861,6 +910,9 @@ function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
         }
         messages.push(cloneMessage(entry.message));
         timestamps.push(entry.createdAt);
+        entryIds.push(entry.entryId);
+        turnIds.push(entry.turnId);
+        sequences.push(entry.sequence);
         break;
       case "control_boundary": {
         if (
@@ -869,8 +921,10 @@ function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
           entry.boundary.kind === "compact"
         ) {
           compactBoundaries.push({
-            insertAfterMessageIndex: messages.length - 1,
             timestamp: entry.createdAt,
+            turnId: entry.turnId,
+            sequence: entry.sequence,
+            entryId: entry.entryId,
             metadata: compactBoundaryMetadata(entry),
           });
         }
@@ -879,11 +933,60 @@ function extractSubagentExecutionMessages(entries: AgentTranscriptEntry[]): {
     }
   }
 
-  return { messages, timestamps, compactBoundaries };
+  return { messages, timestamps, entryIds, turnIds, sequences, compactBoundaries };
 }
 
 function cloneMessage(message: CanonicalMessage): CanonicalMessage {
   return JSON.parse(JSON.stringify(message)) as CanonicalMessage;
+}
+
+function injectCompactBoundaryMessages(
+  boundaries: CompactBoundaryInfo[],
+  allMessages: WebMessage[],
+  sessionKey: string,
+  projectKey?: string,
+): void {
+  for (const boundary of boundaries) {
+    const message: WebMessage = {
+      id: boundary.entryId ?? `${sessionKey}-compact-${boundary.turnId}-${boundary.sequence}`,
+      sessionKey,
+      projectKey,
+      createdAt: boundary.timestamp,
+      provider: "pilotdeck",
+      role: "system",
+      kind: "compact_boundary",
+      turnId: boundary.turnId,
+      sequence: boundary.sequence,
+      text: "Context compacted",
+      payload: boundary.metadata ?? {},
+      source: "history",
+      ...(boundary.entryId ? { entryId: boundary.entryId } : {}),
+    };
+    insertWebMessageByTranscriptOrder(allMessages, message);
+  }
+}
+
+function insertWebMessageByTranscriptOrder(
+  allMessages: WebMessage[],
+  message: WebMessage,
+): void {
+  if (Number.isFinite(message.sequence)) {
+    const insertAt = allMessages.findIndex((candidate) =>
+      Number.isFinite(candidate.sequence) && candidate.sequence! > message.sequence!,
+    );
+    allMessages.splice(insertAt === -1 ? allMessages.length : insertAt, 0, message);
+    return;
+  }
+
+  let insertAt = allMessages.length;
+  for (let index = allMessages.length - 1; index >= 0; index -= 1) {
+    if (allMessages[index].createdAt <= message.createdAt) {
+      insertAt = index + 1;
+      break;
+    }
+    if (index === 0) insertAt = 0;
+  }
+  allMessages.splice(insertAt, 0, message);
 }
 
 /**
@@ -945,6 +1048,8 @@ function injectFileArtifactMessages(
       provider: "pilotdeck",
       role: "assistant",
       kind: "file_artifacts",
+      turnId: entry.turnId,
+      sequence: entry.sequence,
       artifacts,
       payload: { turnId: entry.turnId },
       source: "history",
@@ -953,15 +1058,7 @@ function injectFileArtifactMessages(
   }
 
   for (const artifactMessage of artifactMessages) {
-    let insertAt = allMessages.length;
-    for (let index = allMessages.length - 1; index >= 0; index -= 1) {
-      if (allMessages[index].createdAt <= artifactMessage.createdAt) {
-        insertAt = index + 1;
-        break;
-      }
-      if (index === 0) insertAt = 0;
-    }
-    allMessages.splice(insertAt, 0, artifactMessage);
+    insertWebMessageByTranscriptOrder(allMessages, artifactMessage);
   }
 }
 
@@ -1006,6 +1103,8 @@ function injectErrorTurnMessages(
       provider: "pilotdeck",
       role: "error",
       kind: "error",
+      turnId: entry.turnId,
+      sequence: entry.sequence,
       text,
       payload: { code: entry.result.stopReason, recoverable: false },
       source: "history",
@@ -1014,15 +1113,7 @@ function injectErrorTurnMessages(
   if (errorMessages.length === 0) return;
 
   for (const errMsg of errorMessages) {
-    let insertAt = allMessages.length;
-    for (let i = allMessages.length - 1; i >= 0; i--) {
-      if (allMessages[i].createdAt <= errMsg.createdAt) {
-        insertAt = i + 1;
-        break;
-      }
-      if (i === 0) insertAt = 0;
-    }
-    allMessages.splice(insertAt, 0, errMsg);
+    insertWebMessageByTranscriptOrder(allMessages, errMsg);
   }
 }
 
@@ -1043,6 +1134,8 @@ function injectAgentStatusMessages(
       provider: "pilotdeck",
       role: entry.kind === "error" ? "error" : "system",
       kind: entry.kind,
+      turnId: entry.turnId,
+      sequence: entry.sequence,
       text: entry.text,
       ...(isI18nDescriptor(entry.detail?.messageI18n) ? { contentI18n: entry.detail.messageI18n } : {}),
       ...(isI18nDescriptor(entry.detail?.userHintI18n) ? { userHintI18n: entry.detail.userHintI18n } : {}),
@@ -1053,15 +1146,7 @@ function injectAgentStatusMessages(
   if (statusMessages.length === 0) return;
 
   for (const statusMsg of statusMessages) {
-    let insertAt = allMessages.length;
-    for (let i = allMessages.length - 1; i >= 0; i--) {
-      if (allMessages[i].createdAt <= statusMsg.createdAt) {
-        insertAt = i + 1;
-        break;
-      }
-      if (i === 0) insertAt = 0;
-    }
-    allMessages.splice(insertAt, 0, statusMsg);
+    insertWebMessageByTranscriptOrder(allMessages, statusMsg);
   }
 }
 

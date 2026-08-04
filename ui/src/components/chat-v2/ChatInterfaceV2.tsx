@@ -438,6 +438,12 @@ function ChatInterfaceV2({
     if (!isLoading || !canAbortSession) return;
     const handleGlobalEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.repeat || event.defaultPrevented) return;
+      if (
+        event.target instanceof Element
+        && event.target.closest('[data-file-search-input]')
+      ) {
+        return;
+      }
       if (document.querySelector('[data-modal-overlay]')) return;
       event.preventDefault();
       handleAbortWithPending();
