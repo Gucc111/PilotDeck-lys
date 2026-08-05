@@ -362,7 +362,7 @@ describe('CronV2', () => {
     expect(screen.queryByText('Cron expression format is invalid.')).toBeNull();
   });
 
-  it('restores the default daily expression after switching from one-time back to recurring', async () => {
+  it('keeps an invalid recurring expression after temporarily switching to one-time', async () => {
     setup([]);
 
     fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
@@ -376,8 +376,32 @@ describe('CronV2', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Recurring' }));
 
     expect((screen.getByLabelText('Repeat period') as HTMLSelectElement).value).toBe('daily');
-    expect((screen.getByLabelText('Cron expression') as HTMLInputElement).value).toBe('30 8 * * *');
-    expect(screen.queryByText('Cron expression format is invalid.')).toBeNull();
+    expect((screen.getByLabelText('Cron expression') as HTMLInputElement).value).toBe('30 8 *');
+    expect(screen.getByText('Cron expression format is invalid.')).toBeTruthy();
+  });
+
+  it('keeps separate one-time and recurring drafts while creating a task', async () => {
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByText('Create Cron Task');
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2099-06-20' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '09:15' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring' }));
+    fireEvent.change(screen.getByLabelText('Repeat period'), { target: { value: 'weekly' } });
+    fireEvent.change(screen.getByLabelText('Day of week'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '08:30' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'One-time' }));
+    expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2099-06-20');
+    expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe('09:15');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring' }));
+    expect((screen.getByLabelText('Repeat period') as HTMLSelectElement).value).toBe('weekly');
+    expect((screen.getByLabelText('Day of week') as HTMLSelectElement).value).toBe('1');
+    expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe('08:30');
+    expect((screen.getByLabelText('Cron expression') as HTMLInputElement).value).toBe('30 8 * * 1');
   });
 
   it('collapses and restores the linked cron expression without changing it', async () => {
@@ -607,6 +631,34 @@ describe('CronV2', () => {
     });
   });
 
+  it('keeps separate one-time and recurring drafts while editing a task', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-01-15T12:00:00'));
+    setup([makeJob({
+      id: 'job-edit-drafts',
+      prompt: 'Keep both drafts',
+      cron: '30 13 * * 1',
+      schedule: { type: 'cron', expression: '30 13 * * 1', timezone: 'UTC' },
+      revision: 2,
+    })]);
+
+    await screen.findByText('Keep both drafts');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'One-time' }));
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-01-20' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '14:15' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring' }));
+    expect((screen.getByLabelText('Repeat period') as HTMLSelectElement).value).toBe('weekly');
+    expect((screen.getByLabelText('Day of week') as HTMLSelectElement).value).toBe('1');
+    expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe('13:30');
+    expect((screen.getByLabelText('Cron expression') as HTMLInputElement).value).toBe('30 13 * * 1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'One-time' }));
+    expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2026-01-20');
+    expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe('14:15');
+  });
+
   it('cancels editing without sending an update request', async () => {
     setup([makeJob({ id: 'job-cancel-edit', prompt: 'Keep original task' })]);
 
@@ -738,6 +790,19 @@ describe('CronV2', () => {
 
     expect(screen.queryByRole('dialog', { name: 'Delete cron task?' })).toBeNull();
     expect(apiMock.cronDelete).not.toHaveBeenCalled();
+  });
+
+  it('shows only a short preview of a long prompt in the delete confirmation', async () => {
+    const longPrompt = 'Long cron task prompt '.repeat(30);
+    const preview = `${longPrompt.slice(0, 160)}…`;
+    setup([makeJob({ id: 'job-delete', prompt: longPrompt })]);
+
+    fireEvent.click(await screen.findByTitle('Delete'));
+
+    const dialog = screen.getByRole('dialog', { name: 'Delete cron task?' });
+    const promptPreview = within(dialog).getByText(preview);
+    expect(promptPreview.className).toContain('line-clamp-2');
+    expect(dialog.textContent).not.toContain(longPrompt);
   });
 
   it('closes the delete confirmation with Escape without deleting', async () => {

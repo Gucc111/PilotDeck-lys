@@ -48,6 +48,30 @@ type CronFormValues = {
   advancedExpression: string;
 };
 
+type OnceScheduleDraft = Pick<CronFormValues, 'scheduleDate' | 'scheduleTime'>;
+type RecurringScheduleDraft = Pick<CronFormValues, 'scheduleTime' | 'recurrenceMode' | 'weekday' | 'dayOfMonth' | 'monthOfYear' | 'advancedExpression'>;
+
+function getSimpleCronSchedule(draft: RecurringScheduleDraft): SimpleCronSchedule {
+  switch (draft.recurrenceMode) {
+    case 'daily':
+      return { mode: 'daily', time: draft.scheduleTime };
+    case 'weekly':
+      return { mode: 'weekly', time: draft.scheduleTime, weekday: draft.weekday };
+    case 'monthly':
+      return { mode: 'monthly', time: draft.scheduleTime, dayOfMonth: draft.dayOfMonth };
+    case 'yearly':
+      return { mode: 'yearly', time: draft.scheduleTime, dayOfMonth: draft.dayOfMonth, monthOfYear: draft.monthOfYear };
+  }
+}
+
+function buildSimpleExpression(draft: RecurringScheduleDraft): string {
+  try {
+    return buildSimpleCronExpression(getSimpleCronSchedule(draft));
+  } catch {
+    return '';
+  }
+}
+
 const SIMPLE_RECURRENCE_MODES: {
   id: SimpleRecurrenceMode;
   labelKey: string;
@@ -557,39 +581,28 @@ function CronCreateView({
   const [message, setMessage] = useState(initialValues.message);
   const [projectKey, setProjectKey] = useState(initialValues.projectKey);
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind>(initialValues.scheduleKind);
-  const [scheduleDate, setScheduleDate] = useState(initialValues.scheduleDate);
-  const [scheduleTime, setScheduleTime] = useState(initialValues.scheduleTime);
+  const [onceDraft, setOnceDraft] = useState<OnceScheduleDraft>({
+    scheduleDate: initialValues.scheduleDate,
+    scheduleTime: initialValues.scheduleTime,
+  });
+  const [recurringDraft, setRecurringDraft] = useState<RecurringScheduleDraft>({
+    scheduleTime: initialValues.scheduleTime,
+    recurrenceMode: initialValues.recurrenceMode,
+    weekday: initialValues.weekday,
+    dayOfMonth: initialValues.dayOfMonth,
+    monthOfYear: initialValues.monthOfYear,
+    advancedExpression: initialValues.advancedExpression,
+  });
+  const [hasOnceDraft, setHasOnceDraft] = useState(initialValues.scheduleKind === 'once');
+  const [hasRecurringDraft, setHasRecurringDraft] = useState(initialValues.scheduleKind === 'cron');
   const [timezone, setTimezone] = useState(initialValues.timezone);
-  const [recurrenceMode, setRecurrenceMode] = useState<SimpleRecurrenceMode>(initialValues.recurrenceMode);
-  const [weekday, setWeekday] = useState(initialValues.weekday);
-  const [dayOfMonth, setDayOfMonth] = useState(initialValues.dayOfMonth);
-  const [monthOfYear, setMonthOfYear] = useState(initialValues.monthOfYear);
   const [advancedExpanded, setAdvancedExpanded] = useState(true);
-  const [advancedExpression, setAdvancedExpression] = useState(initialValues.advancedExpression);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const projectOptionExists = projects.some((project) => (project.fullPath || project.name) === projectKey);
+  const { scheduleTime, recurrenceMode, weekday, dayOfMonth, monthOfYear, advancedExpression } = recurringDraft;
 
-  const simpleSchedule = useMemo<SimpleCronSchedule>(() => {
-    switch (recurrenceMode) {
-      case 'daily':
-        return { mode: 'daily', time: scheduleTime };
-      case 'weekly':
-        return { mode: 'weekly', time: scheduleTime, weekday };
-      case 'monthly':
-        return { mode: 'monthly', time: scheduleTime, dayOfMonth };
-      case 'yearly':
-        return { mode: 'yearly', time: scheduleTime, dayOfMonth, monthOfYear };
-    }
-  }, [dayOfMonth, monthOfYear, recurrenceMode, scheduleTime, weekday]);
-  const simpleExpression = useMemo(() => {
-    try {
-      return buildSimpleCronExpression(simpleSchedule);
-    } catch {
-      return '';
-    }
-  }, [simpleSchedule]);
   const parsedAdvancedExpression = useMemo(
     () => parseSimpleCronExpression(advancedExpression),
     [advancedExpression],
@@ -599,9 +612,13 @@ function CronCreateView({
     ? buildSimpleCronExpression(parsedAdvancedExpression)
     : '';
 
-  useEffect(() => {
-    setAdvancedExpression(simpleExpression);
-  }, [simpleExpression]);
+  const updateRecurringDraft = (updates: Partial<RecurringScheduleDraft>) => {
+    setRecurringDraft((current) => {
+      const next = { ...current, ...updates };
+      return { ...next, advancedExpression: buildSimpleExpression(next) };
+    });
+    setHasRecurringDraft(true);
+  };
 
   const scheduleDescription = useMemo(() => {
     switch (recurrenceMode) {
@@ -630,47 +647,58 @@ function CronCreateView({
     setMessage(defaults.message);
     setProjectKey(defaults.projectKey);
     setScheduleKind(defaults.scheduleKind);
-    setScheduleDate(defaults.scheduleDate);
-    setScheduleTime(defaults.scheduleTime);
+    setOnceDraft({ scheduleDate: defaults.scheduleDate, scheduleTime: defaults.scheduleTime });
+    setRecurringDraft({
+      scheduleTime: defaults.scheduleTime,
+      recurrenceMode: defaults.recurrenceMode,
+      weekday: defaults.weekday,
+      dayOfMonth: defaults.dayOfMonth,
+      monthOfYear: defaults.monthOfYear,
+      advancedExpression: defaults.advancedExpression,
+    });
+    setHasOnceDraft(true);
+    setHasRecurringDraft(false);
     setTimezone(defaults.timezone);
-    setRecurrenceMode(defaults.recurrenceMode);
-    setWeekday(defaults.weekday);
-    setDayOfMonth(defaults.dayOfMonth);
-    setMonthOfYear(defaults.monthOfYear);
     setAdvancedExpanded(true);
-    setAdvancedExpression(defaults.advancedExpression);
   };
 
   const handleScheduleKindChange = (kind: ScheduleKind) => {
     if (kind === scheduleKind) return;
     setFormError(null);
-    if (kind === 'cron') {
-      setRecurrenceMode('daily');
-      setAdvancedExpression(scheduleTime
-        ? buildSimpleCronExpression({ mode: 'daily', time: scheduleTime })
-        : '');
-    } else {
-      setScheduleDate(getNextFutureDateForTime(scheduleTime));
+    if (kind === 'cron' && !hasRecurringDraft) {
+      const nextDraft: RecurringScheduleDraft = {
+        ...recurringDraft,
+        scheduleTime: onceDraft.scheduleTime,
+        recurrenceMode: 'daily',
+      };
+      setRecurringDraft({ ...nextDraft, advancedExpression: buildSimpleExpression(nextDraft) });
+      setHasRecurringDraft(true);
+    } else if (kind === 'once' && !hasOnceDraft) {
+      setOnceDraft({
+        scheduleDate: getNextFutureDateForTime(recurringDraft.scheduleTime),
+        scheduleTime: recurringDraft.scheduleTime,
+      });
+      setHasOnceDraft(true);
     }
     setScheduleKind(kind);
   };
 
   const handleExpressionChange = (expression: string) => {
-    setAdvancedExpression(expression);
     setFormError(null);
     const parsed = parseSimpleCronExpression(expression);
-    if (!parsed) return;
-
-    setRecurrenceMode(parsed.mode);
-    setScheduleTime(parsed.time);
-    if (parsed.mode === 'weekly') {
-      setWeekday(parsed.weekday);
-    } else if (parsed.mode === 'monthly') {
-      setDayOfMonth(parsed.dayOfMonth);
-    } else if (parsed.mode === 'yearly') {
-      setDayOfMonth(parsed.dayOfMonth);
-      setMonthOfYear(parsed.monthOfYear);
-    }
+    setRecurringDraft((current) => {
+      if (!parsed) return { ...current, advancedExpression: expression };
+      return {
+        ...current,
+        advancedExpression: expression,
+        scheduleTime: parsed.time,
+        recurrenceMode: parsed.mode,
+        weekday: parsed.mode === 'weekly' ? parsed.weekday : current.weekday,
+        dayOfMonth: parsed.mode === 'monthly' || parsed.mode === 'yearly' ? parsed.dayOfMonth : current.dayOfMonth,
+        monthOfYear: parsed.mode === 'yearly' ? parsed.monthOfYear : current.monthOfYear,
+      };
+    });
+    setHasRecurringDraft(true);
   };
 
   const validate = () => {
@@ -680,7 +708,7 @@ function CronCreateView({
     if (!projectKey) {
       return t('cron.create.validation.workspaceRequired', { defaultValue: 'Workspace is required.' });
     }
-    if (scheduleKind === 'once' && !scheduleTime) {
+    if (scheduleKind === 'once' && !onceDraft.scheduleTime) {
       return t('cron.create.validation.timeRequired', { defaultValue: 'Time is required.' });
     }
     if (!timezone.trim()) {
@@ -690,10 +718,10 @@ function CronCreateView({
       return t('cron.create.validation.timezoneInvalid', { defaultValue: 'Timezone is invalid.' });
     }
     if (scheduleKind === 'once') {
-      if (!scheduleDate) {
+      if (!onceDraft.scheduleDate) {
         return t('cron.create.validation.dateRequired', { defaultValue: 'Date is required.' });
       }
-      const runAt = resolveOneTimeRunAt(editingJob, scheduleDate, scheduleTime);
+      const runAt = resolveOneTimeRunAt(editingJob, onceDraft.scheduleDate, onceDraft.scheduleTime);
       if (!runAt || Date.parse(runAt) <= Date.now()) {
         return t('cron.create.validation.runAtFuture', { defaultValue: 'Run time must be in the future.' });
       }
@@ -731,7 +759,7 @@ function CronCreateView({
     try {
       let schedule: CronJobSchedule;
       if (scheduleKind === 'once') {
-        const runAt = resolveOneTimeRunAt(editingJob, scheduleDate, scheduleTime);
+        const runAt = resolveOneTimeRunAt(editingJob, onceDraft.scheduleDate, onceDraft.scheduleTime);
         if (!runAt) {
           setFormError(t('cron.create.validation.runAtFuture', { defaultValue: 'Run time must be in the future.' }));
           return;
@@ -879,9 +907,12 @@ function CronCreateView({
               </span>
               <input
                 type="date"
-                value={scheduleDate}
+                value={onceDraft.scheduleDate}
                 min={formatDateLocal(new Date())}
-                onChange={(event) => setScheduleDate(event.target.value)}
+                onChange={(event) => {
+                  setOnceDraft((current) => ({ ...current, scheduleDate: event.target.value }));
+                  setHasOnceDraft(true);
+                }}
                 className="mt-1.5 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
               />
             </label>
@@ -891,8 +922,11 @@ function CronCreateView({
               </span>
               <input
                 type="time"
-                value={scheduleTime}
-                onChange={(event) => setScheduleTime(event.target.value)}
+                value={onceDraft.scheduleTime}
+                onChange={(event) => {
+                  setOnceDraft((current) => ({ ...current, scheduleTime: event.target.value }));
+                  setHasOnceDraft(true);
+                }}
                 className="mt-1.5 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
               />
             </label>
@@ -918,10 +952,10 @@ function CronCreateView({
                   value={recurrenceMode}
                   onChange={(event) => {
                     const nextMode = event.target.value as SimpleRecurrenceMode;
-                    setRecurrenceMode(nextMode);
-                    if (nextMode === 'yearly') {
-                      setDayOfMonth((current) => Math.min(current, getYearlyMonthDayCount(monthOfYear)));
-                    }
+                    updateRecurringDraft({
+                      recurrenceMode: nextMode,
+                      dayOfMonth: nextMode === 'yearly' ? Math.min(dayOfMonth, getYearlyMonthDayCount(monthOfYear)) : dayOfMonth,
+                    });
                   }}
                   className="mt-1.5 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
                 >
@@ -945,7 +979,7 @@ function CronCreateView({
                   <select
                     aria-label={t('cron.create.fields.weekday', { defaultValue: 'Day of week' })}
                     value={weekday}
-                    onChange={(event) => setWeekday(Number(event.target.value))}
+                    onChange={(event) => updateRecurringDraft({ weekday: Number(event.target.value) })}
                     className="mt-1.5 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
                   >
                     {WEEKDAY_OPTIONS.map((option) => (
@@ -958,7 +992,7 @@ function CronCreateView({
                   <select
                     aria-label={t('cron.create.fields.monthDay', { defaultValue: 'Day of month' })}
                     value={dayOfMonth}
-                    onChange={(event) => setDayOfMonth(Number(event.target.value))}
+                    onChange={(event) => updateRecurringDraft({ dayOfMonth: Number(event.target.value) })}
                     className="mt-1.5 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
                   >
                     {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
@@ -972,8 +1006,10 @@ function CronCreateView({
                       value={monthOfYear}
                       onChange={(event) => {
                         const nextMonth = Number(event.target.value);
-                        setMonthOfYear(nextMonth);
-                        setDayOfMonth((current) => Math.min(current, getYearlyMonthDayCount(nextMonth)));
+                        updateRecurringDraft({
+                          monthOfYear: nextMonth,
+                          dayOfMonth: Math.min(dayOfMonth, getYearlyMonthDayCount(nextMonth)),
+                        });
                       }}
                       className="h-9 min-w-0 rounded-md border border-neutral-200 bg-white px-2 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
                     >
@@ -986,7 +1022,7 @@ function CronCreateView({
                     <select
                       aria-label={t('cron.create.fields.monthDay', { defaultValue: 'Day of month' })}
                       value={dayOfMonth}
-                      onChange={(event) => setDayOfMonth(Number(event.target.value))}
+                      onChange={(event) => updateRecurringDraft({ dayOfMonth: Number(event.target.value) })}
                       className="h-9 min-w-0 rounded-md border border-neutral-200 bg-white px-2 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
                     >
                       {Array.from({ length: getYearlyMonthDayCount(monthOfYear) }, (_, index) => index + 1).map((day) => (
@@ -1004,7 +1040,7 @@ function CronCreateView({
                 <input
                   type="time"
                   value={scheduleTime}
-                  onChange={(event) => setScheduleTime(event.target.value)}
+                  onChange={(event) => updateRecurringDraft({ scheduleTime: event.target.value })}
                   className="mt-1.5 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] text-neutral-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-blue-500 dark:focus:ring-blue-950"
                 />
               </label>
@@ -1224,7 +1260,7 @@ function CronJobRow({
   return (
     <>
       <div className="flex items-center gap-4 px-5 py-2.5 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/40">
-        <div className={cn(COL.title, 'truncate text-[13px] text-neutral-900 dark:text-neutral-100')} title={job.prompt || ''}>
+        <div className={cn(COL.title, 'truncate text-[13px] text-neutral-900 dark:text-neutral-100')}>
           {job.prompt || '—'}
         </div>
         <div className={cn(COL.createdAt, 'font-mono text-xxs tabular-nums text-neutral-500 dark:text-neutral-400')}>
@@ -1327,6 +1363,9 @@ function DeleteCronJobDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const prompt = job.prompt?.trim() || '';
+  const promptPreview = prompt.length > 160 ? `${prompt.slice(0, 160)}…` : prompt || '—';
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape' && !busy) {
       event.preventDefault();
@@ -1351,7 +1390,7 @@ function DeleteCronJobDialog({
 
   return (
     <div className="fixed inset-0 z-[65] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="delete-cron-job-title" onKeyDown={handleKeyDown}>
-      <div className="w-full max-w-md rounded-xl border border-border bg-card text-card-foreground shadow-xl">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-xl">
         <div className="flex items-start gap-3 border-b border-border p-5">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-destructive/15 text-destructive">
             <Trash2 className="h-5 w-5" strokeWidth={1.75} />
@@ -1360,13 +1399,13 @@ function DeleteCronJobDialog({
             <h3 id="delete-cron-job-title" className="text-base font-semibold text-foreground">
               {t('cron.deleteConfirm.title', { defaultValue: 'Delete cron task?' })}
             </h3>
-            <p className="mt-1 break-words text-sm text-muted-foreground">
-              {job.prompt || '—'}
+            <p className="mt-1 line-clamp-2 break-words text-sm text-muted-foreground">
+              {promptPreview}
             </p>
           </div>
         </div>
 
-        <div className="space-y-3 p-5">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
           <p className="text-sm text-foreground">
             {t('cron.deleteConfirm.description', { defaultValue: 'This cron task will be permanently deleted.' })}
           </p>
