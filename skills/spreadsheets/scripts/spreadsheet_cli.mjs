@@ -25,6 +25,19 @@ import {
   planSourcePaths,
   validateNumericIntegrityPlan,
 } from "./lib/numeric-integrity.mjs";
+import {
+  DATA_OPERATIONS,
+  VALIDATION_PROFILES,
+  defaultDataOperation,
+  deriveTaskProfile,
+} from "./lib/task-profile.mjs";
+import {
+  SPREADSHEET_ATTESTATION_PROTOCOL,
+  compareAttestationBindings,
+  validateSpreadsheetAttestation,
+} from "./lib/attestation.mjs";
+import { selectAdaptiveSheets, selectReviewPages } from "./lib/visual-policy.mjs";
+import { PROJECT_GUARD_PROTOCOL, compareProjectGuard } from "./lib/workspace-boundary.mjs";
 
 const execFileAsync = promisify(execFile);
 const runtimeRoot = process.env.SPREADSHEET_RUNTIME_ROOT;
@@ -44,6 +57,7 @@ const iconv = require("iconv-lite");
 
 const NATIVE_CHART_SPECS = new WeakMap();
 const INSERTED_IMAGE_SPECS = new WeakMap();
+const REGISTERED_INTEGRITY_PLANS = new WeakMap();
 const GUARDED_WORKBOOKS = new WeakSet();
 const GUARDED_WORKSHEETS = new WeakSet();
 const TABLE_RANGE_COPY_DEPTH = Symbol("pilotdeckTableRangeCopyDepth");
@@ -52,9 +66,11 @@ const RESULT_STATUSES = ["ok", "partial", "unsupported", "blocked", "error"];
 const CAPABILITY_STATES = ["supported", "partial", "fallback", "unsupported", "blocked"];
 const WORKBOOK_TYPES = new Set(["data", "tracker", "model", "dashboard", "report", "template"]);
 const STYLE_MODES = new Set(["neutral-built-in", "preserve-source", "user-template"]);
-const VISUAL_REVIEW_MODES = new Set(["all-pages", "selected-sheets", "structural-only"]);
-const TASK_PROTOCOL = "pilotdeck-spreadsheet-task/v1";
-const VISUAL_REVIEW_PROTOCOL = "pilotdeck-spreadsheet-visual-review/v1";
+const VISUAL_REVIEW_MODES = new Set(["adaptive", "all-pages", "selected-sheets", "structural-only"]);
+const TASK_PROTOCOL = "pilotdeck-spreadsheet-task/v2";
+const LEGACY_TASK_PROTOCOL = "pilotdeck-spreadsheet-task/v1";
+const VISUAL_REVIEW_PROTOCOL = "pilotdeck-spreadsheet-visual-review/v2";
+const LEGACY_VISUAL_REVIEW_PROTOCOL = "pilotdeck-spreadsheet-visual-review/v1";
 const PROJECT_SNAPSHOT_PROTOCOL = "pilotdeck-spreadsheet-project-snapshot/v1";
 const NUMERIC_INTEGRITY_STATES = new Set(["prepared", "bound"]);
 const EVIDENCE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"]);
@@ -1025,6 +1041,28 @@ function collectWorkbookFacts(workbook, { maxFormulas = 500, maxErrors = 500 } =
   return { formulaCount, formulas, errors, missingCachedResults, formulaReferencesWithErrors, invalidDates };
 }
 
+function taskValidationProfile(requirements) {
+  if (requirements?.task?.protocol === TASK_PROTOCOL && requirements.task.validationProfile) return requirements.task.validationProfile;
+  return requirements?.numericIntegrity ? "strict" : "standard";
+}
+
+function workbookDataFingerprint(workbook) {
+  const digest = crypto.createHash("sha256");
+  for (const worksheet of workbook.worksheets) {
+    digest.update(`sheet\0${worksheet.name}\0`);
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const formula = formulaDescriptor(cell);
+        const value = formula
+          ? { formula: formula.formula, sharedFormula: formula.sharedFormula }
+          : serializableValue(cell.value);
+        digest.update(`${cell.address}\0${JSON.stringify(value)}\0`);
+      });
+    });
+  }
+  return digest.digest("hex");
+}
+
 async function inspectPackage(filePath) {
   const data = await fs.readFile(filePath);
   const zip = await JSZip.loadAsync(data);
@@ -1262,10 +1300,13 @@ function validateRequirements(requirements, source = "requirements") {
     const taskKeys = new Set([
       "protocol", "workbookType", "styleMode", "styleSource", "input", "finalOutput",
       "visualReview", "allowDecorativeTitle", "allowedAccentColors", "projectSnapshot",
+      "validationProfile", "minimumValidationProfile", "dataOperation", "profileReasons",
     ]);
     const unknownTaskKeys = Object.keys(task).filter((key) => !taskKeys.has(key));
     if (unknownTaskKeys.length > 0) throw new Error(`${source}.task contains unsupported key(s): ${unknownTaskKeys.join(", ")}`);
-    if (task.protocol !== TASK_PROTOCOL) throw new Error(`${source}.task.protocol must be '${TASK_PROTOCOL}'`);
+    if (![TASK_PROTOCOL, LEGACY_TASK_PROTOCOL].includes(task.protocol)) {
+      throw new Error(`${source}.task.protocol must be '${TASK_PROTOCOL}' or '${LEGACY_TASK_PROTOCOL}'`);
+    }
     if (!WORKBOOK_TYPES.has(task.workbookType)) throw new Error(`${source}.task.workbookType is invalid`);
     if (!STYLE_MODES.has(task.styleMode)) throw new Error(`${source}.task.styleMode is invalid`);
     if (typeof task.finalOutput !== "string" || !path.isAbsolute(task.finalOutput) || workbookExtension(task.finalOutput) !== ".xlsx") {
@@ -1294,9 +1335,17 @@ function validateRequirements(requirements, source = "requirements") {
     if (task.allowedAccentColors !== undefined && (!Array.isArray(task.allowedAccentColors) || task.allowedAccentColors.some((color) => !/^[A-F0-9]{8}$/i.test(String(color))))) {
       throw new Error(`${source}.task.allowedAccentColors must contain ARGB color strings`);
     }
+    if (task.protocol === TASK_PROTOCOL) {
+      if (task.validationProfile !== undefined && !VALIDATION_PROFILES.includes(task.validationProfile)) throw new Error(`${source}.task.validationProfile is invalid`);
+      if (task.minimumValidationProfile !== undefined && !VALIDATION_PROFILES.includes(task.minimumValidationProfile)) throw new Error(`${source}.task.minimumValidationProfile is invalid`);
+      if (task.dataOperation !== undefined && !DATA_OPERATIONS.includes(task.dataOperation)) throw new Error(`${source}.task.dataOperation is invalid`);
+      if (task.profileReasons !== undefined && (!Array.isArray(task.profileReasons) || task.profileReasons.some((reason) => typeof reason !== "string" || reason.trim().length === 0))) {
+        throw new Error(`${source}.task.profileReasons must contain non-empty strings`);
+      }
+    }
     if (task.projectSnapshot !== undefined) {
       const snapshot = task.projectSnapshot;
-      if (!snapshot || snapshot.protocol !== PROJECT_SNAPSHOT_PROTOCOL
+      if (!snapshot || ![PROJECT_SNAPSHOT_PROTOCOL, PROJECT_GUARD_PROTOCOL].includes(snapshot.protocol)
         || typeof snapshot.path !== "string" || !path.isAbsolute(snapshot.path)
         || !/^[a-f0-9]{64}$/i.test(String(snapshot.sha256 ?? ""))) {
         throw new Error(`${source}.task.projectSnapshot requires protocol, an absolute path, and a SHA-256 hash`);
@@ -1478,7 +1527,14 @@ async function resolveRequirements(requirementsPath, inlineRequirements = null) 
   const validatedInline = validateRequirements(inlineRequirements, "builder requirements");
   if (!fileRequirements) return validatedInline;
   if (!validatedInline) return fileRequirements;
-  return validateRequirements({ ...validatedInline, ...fileRequirements }, "merged requirements");
+  const merged = { ...validatedInline, ...fileRequirements };
+  for (const key of REQUIREMENT_ARRAY_KEYS) {
+    if ((fileRequirements[key]?.length ?? 0) === 0 && (validatedInline[key]?.length ?? 0) > 0) merged[key] = validatedInline[key];
+  }
+  for (const key of ["exactSheetCount", "minFormulaCount", "maxTotalPages"]) {
+    if (fileRequirements[key] === undefined && validatedInline[key] !== undefined) merged[key] = validatedInline[key];
+  }
+  return validateRequirements(merged, "merged requirements");
 }
 
 function normalizeChartFormula(value) {
@@ -1676,11 +1732,24 @@ function evaluateRequirements(workbook, packageInfo, requirements) {
     ...(requirements.requiredImages ?? []),
     ...(requirements.numericIntegrity ? [requirements.numericIntegrity] : []),
   ].length;
-  record("semantic_requirement_floor", semanticAssertionCount > 0, { actual: semanticAssertionCount, minimum: 1 });
+  const profile = taskValidationProfile(requirements);
+  const lightweightAssertions = (requirements.requiredSheets?.length ?? 0)
+    + (Number.isFinite(requirements.minFormulaCount) ? 1 : 0);
+  const semanticFloorPassed = profile === "fast"
+    ? semanticAssertionCount + lightweightAssertions > 0
+    : semanticAssertionCount > 0 || (profile === "standard" && lightweightAssertions > 0);
+  record("semantic_requirement_floor", semanticFloorPassed, { actual: semanticAssertionCount, lightweight: lightweightAssertions, minimum: 1, profile });
 
   const formulaCount = collectWorkbookFacts(workbook).formulaCount;
   if (formulaCount > 0) {
-    record("formula_requirement_floor", (requirements.requiredFormulaRanges?.length ?? 0) > 0, { formulaCount, requiredFormulaRanges: requirements.requiredFormulaRanges?.length ?? 0 });
+    const formulaCoverageDeclared = (requirements.requiredFormulaRanges?.length ?? 0) > 0
+      || (profile !== "strict" && Number.isInteger(requirements.minFormulaCount) && requirements.minFormulaCount > 0);
+    record("formula_requirement_floor", formulaCoverageDeclared, {
+      formulaCount,
+      requiredFormulaRanges: requirements.requiredFormulaRanges?.length ?? 0,
+      minFormulaCount: requirements.minFormulaCount ?? null,
+      profile,
+    });
   }
   if (packageInfo.charts.length > 0) {
     const chartRequirements = requirements.requiredNativeCharts ?? [];
@@ -2700,6 +2769,16 @@ async function auditXlsx(filePath, requirements = null) {
   const cjkFontWarnings = collectCjkFontWarnings(workbook);
   const chartFailures = collectChartFailures(workbook, packageInfo);
   const stylePolicyFailures = collectStylePolicyFailures(workbook, requirements);
+  const dataPreservationFailures = [];
+  let dataPreservation = { status: "not_requested" };
+  if (requirements?.task?.dataOperation === "presentation-only" && requirements.task.input?.path) {
+    const inputWorkbook = await loadXlsx(requirements.task.input.path);
+    const expected = workbookDataFingerprint(inputWorkbook);
+    const actual = workbookDataFingerprint(workbook);
+    const passed = expected === actual;
+    dataPreservation = { status: passed ? "passed" : "failed", expected, actual };
+    if (!passed) dataPreservationFailures.push({ type: "presentation_only_data_changed", expected, actual });
+  }
   const blankSheets = workbook.worksheets
     .filter((worksheet) => worksheet.actualRowCount === 0)
     .map((worksheet) => worksheet.name);
@@ -2725,6 +2804,7 @@ async function auditXlsx(filePath, requirements = null) {
     ...facts.invalidDates.map((error) => ({ type: "invalid_date_value", ...error })),
     ...chartFailures,
     ...stylePolicyFailures,
+    ...dataPreservationFailures,
     ...packageInfo.compatibility.issues,
     ...numericIntegrity.failures.map((failure) => ({ ...failure, reason: failure.type, type: "numeric_integrity_failure" })),
     ...coverage.failures.map((failure) => ({ type: "requirement_not_met", requirement: failure })),
@@ -2746,6 +2826,7 @@ async function auditXlsx(filePath, requirements = null) {
       workbookType: requirements?.task?.workbookType ?? null,
       failures: stylePolicyFailures,
     },
+    dataPreservation,
     numericIntegrity,
     coverage,
     hardFailures,
@@ -3024,6 +3105,15 @@ function createToolkit(inputPath) {
       parseRangeReference,
       columnLetters,
       columnNumber,
+      integrity: {
+        register(workbook, plan) {
+          if (!workbook || typeof workbook.xlsx?.writeFile !== "function") throw new Error("integrity.register requires the builder workbook");
+          const validated = validateNumericIntegrityPlan(structuredClone(plan), "builder integrity plan");
+          if (validated.draft === true) throw new Error("builder integrity plan cannot remain draft");
+          REGISTERED_INTEGRITY_PLANS.set(workbook, validated);
+          return validated;
+        },
+      },
     },
   };
 }
@@ -3068,6 +3158,7 @@ async function buildFromBuilder(builderPath, inputPath) {
     nativeCharts: product?.nativeCharts ?? NATIVE_CHART_SPECS.get(workbook) ?? [],
     insertedImages: INSERTED_IMAGE_SPECS.get(workbook) ?? [],
     requirements: product?.requirements ?? null,
+    integrityPlan: product?.integrityPlan ?? REGISTERED_INTEGRITY_PLANS.get(workbook) ?? null,
   };
 }
 
@@ -3103,6 +3194,7 @@ function spreadsheetTaskPaths() {
     sourceEvidence: path.join(root, "qa", "source-evidence.json"),
     integrityPlan: path.join(root, "qa", "integrity-plan.json"),
     integrityReport: path.join(root, "qa", "numeric-integrity.json"),
+    attestation: path.join(root, "qa", "attestation.json"),
     projectSnapshot: path.join(root, "qa", "project-snapshot.json"),
     visualReview: path.join(root, "qa", "visual-review.json"),
     render: path.join(root, "qa", "render"),
@@ -3148,6 +3240,31 @@ async function captureProjectSnapshot(rootPath, { finalOutput, workDir = pilotDe
   };
 }
 
+async function captureProjectGuardSnapshot(rootPath, { finalOutput, workDir = pilotDeckWorkDir() }) {
+  const root = path.resolve(rootPath);
+  if (!(await pathExists(root))) throw new Error(`Spreadsheet project directory not found: ${root}`);
+  const files = [];
+  async function visit(directory) {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      if (projectSnapshotIgnoredPath(absolute, { root, finalOutput, workDir })) continue;
+      const relative = path.relative(root, absolute).split(path.sep).join("/");
+      if (entry.isDirectory()) await visit(absolute);
+      else if (entry.isFile()) files.push({ path: relative, type: "file" });
+      else if (entry.isSymbolicLink()) files.push({ path: relative, type: "symlink" });
+    }
+  }
+  await visit(root);
+  return {
+    protocol: PROJECT_GUARD_PROTOCOL,
+    root,
+    finalOutput: path.resolve(finalOutput),
+    files,
+  };
+}
+
 function compareProjectSnapshots(before, after) {
   const beforeFiles = new Map(before.files.map((item) => [item.path, item]));
   const afterFiles = new Map(after.files.map((item) => [item.path, item]));
@@ -3176,8 +3293,21 @@ async function assertProjectWorkspaceClean(requirements) {
     });
   }
   const before = await readJsonFile(snapshotPath, "Spreadsheet project snapshot");
-  if (before.protocol !== PROJECT_SNAPSHOT_PROTOCOL || !Array.isArray(before.files) || !path.isAbsolute(before.root)) {
+  if (![PROJECT_SNAPSHOT_PROTOCOL, PROJECT_GUARD_PROTOCOL].includes(before.protocol) || !Array.isArray(before.files) || !path.isAbsolute(before.root)) {
     throw new Error(`Invalid spreadsheet project snapshot: ${snapshotPath}`);
+  }
+  if (before.protocol === PROJECT_GUARD_PROTOCOL) {
+    const after = await captureProjectGuardSnapshot(before.root, { finalOutput: requirements.task.finalOutput });
+    const guard = compareProjectGuard(before, after);
+    if (!guard.clean) {
+      throw blocked("spreadsheet-project-artifacts", "Spreadsheet build artifacts leaked into the project directory", {
+        root: before.root,
+        suspicious: guard.suspicious.slice(0, 20).map((item) => item.path),
+        count: guard.suspicious.length,
+        next: "Move only the listed spreadsheet build artifacts under PILOTDECK_WORK_DIR; unrelated project changes do not need to be reverted.",
+      });
+    }
+    return { status: "passed", root: before.root, checkedCreatedFiles: guard.created.length, suspicious: 0 };
   }
   const after = await captureProjectSnapshot(before.root, { finalOutput: requirements.task.finalOutput });
   const diff = compareProjectSnapshots(before, after);
@@ -3318,9 +3448,11 @@ async function commandPrepare(options) {
     assertEvidenceSource(sourcePath);
   }
   if (workbookExtension(finalOutput) !== ".xlsx") throw new Error("--final-out must end in .xlsx");
-  const workbookType = String(options["workbook-type"] ?? "data");
+  const workbookType = String(options["workbook-type"] ?? existingRequirements?.task?.workbookType ?? "data");
   if (!WORKBOOK_TYPES.has(workbookType)) throw new Error(`--workbook-type must be one of ${[...WORKBOOK_TYPES].join(", ")}`);
-  const requestedInputPath = options.input ? path.resolve(requireOption(options, "input")) : null;
+  const requestedInputPath = options.input
+    ? path.resolve(requireOption(options, "input"))
+    : existingRequirements?.task?.input?.path ?? null;
   const inputResolution = requestedInputPath
     ? await resolveLatestSpreadsheetInput(requestedInputPath, { useExactInput: Boolean(options["use-exact-input"]) })
     : null;
@@ -3333,17 +3465,37 @@ async function commandPrepare(options) {
       throw blocked("source-replacement-unsupported", "Spreadsheet source replacement is not enabled; choose a new final output path");
     }
   }
-  const styleMode = String(options["style-mode"] ?? (inputPath ? "preserve-source" : "neutral-built-in"));
+  const styleMode = String(options["style-mode"] ?? existingRequirements?.task?.styleMode ?? (inputPath ? "preserve-source" : "neutral-built-in"));
   if (!STYLE_MODES.has(styleMode)) throw new Error(`--style-mode must be one of ${[...STYLE_MODES].join(", ")}`);
   if (styleMode === "preserve-source" && !inputPath) throw new Error("--style-mode preserve-source requires --input");
-  const styleSourcePath = options["style-source"] ? path.resolve(requireOption(options, "style-source")) : null;
+  const styleSourcePath = options["style-source"]
+    ? path.resolve(requireOption(options, "style-source"))
+    : existingRequirements?.task?.styleSource?.path ?? null;
   if (styleMode === "user-template" && !styleSourcePath) throw new Error("--style-mode user-template requires --style-source");
   if (styleSourcePath && !(await pathExists(styleSourcePath))) throw new Error(`Style source not found: ${styleSourcePath}`);
   if (styleSourcePath && workbookExtension(styleSourcePath) !== ".xlsx") throw new Error("--style-source must be an .xlsx workbook");
 
-  const visualMode = String(options["visual-review-mode"] ?? "all-pages");
+  const hasImageSources = sourcePaths.some((sourcePath) => EVIDENCE_IMAGE_EXTENSIONS.has(workbookExtension(sourcePath)));
+  const dataOperation = String(options["data-operation"] ?? existingRequirements?.task?.dataOperation ?? defaultDataOperation({
+    sourceCount: sourcePaths.length,
+    hasImageSources,
+    hasInput: Boolean(inputPath),
+  }));
+  const taskProfile = deriveTaskProfile({
+    requestedProfile: options["validation-profile"]
+      ? String(options["validation-profile"])
+      : existingRequirements?.task?.validationProfile ?? null,
+    dataOperation,
+    sourceCount: sourcePaths.length,
+    hasImageSources,
+    hasInput: Boolean(inputPath),
+  });
+
+  const visualMode = String(options["visual-review-mode"] ?? existingRequirements?.task?.visualReview?.mode ?? "adaptive");
   if (!VISUAL_REVIEW_MODES.has(visualMode)) throw new Error(`--visual-review-mode must be one of ${[...VISUAL_REVIEW_MODES].join(", ")}`);
-  const visualSheets = optionValues(options, "visual-sheet");
+  const visualSheets = optionValues(options, "visual-sheet").length > 0
+    ? optionValues(options, "visual-sheet")
+    : existingRequirements?.task?.visualReview?.sheets ?? [];
   if (visualMode === "selected-sheets" && visualSheets.length === 0) throw new Error("selected-sheets visual review requires at least one --visual-sheet");
   if (visualMode === "structural-only" && (workbookType !== "data" || !options["allow-structural-only"])) {
     throw blocked(
@@ -3373,10 +3525,10 @@ async function commandPrepare(options) {
     }
     projectSnapshotBinding = existingBinding;
   } else {
-    const projectSnapshot = await captureProjectSnapshot(path.dirname(finalOutput), { finalOutput });
+    const projectSnapshot = await captureProjectGuardSnapshot(path.dirname(finalOutput), { finalOutput });
     await writeJson(paths.projectSnapshot, projectSnapshot);
     projectSnapshotBinding = {
-      protocol: PROJECT_SNAPSHOT_PROTOCOL,
+      protocol: projectSnapshot.protocol,
       path: paths.projectSnapshot,
       sha256: await fileSha256(paths.projectSnapshot),
     };
@@ -3386,6 +3538,10 @@ async function commandPrepare(options) {
     protocol: TASK_PROTOCOL,
     workbookType,
     styleMode,
+    validationProfile: taskProfile.profile,
+    minimumValidationProfile: taskProfile.minimumProfile,
+    dataOperation: taskProfile.dataOperation,
+    profileReasons: taskProfile.reasons,
     ...(styleSourcePath ? { styleSource: { path: styleSourcePath, sha256: await fileSha256(styleSourcePath) } } : {}),
     ...(inputPath ? { input: { path: inputPath, sha256: await fileSha256(inputPath) } } : {}),
     finalOutput,
@@ -3393,8 +3549,12 @@ async function commandPrepare(options) {
       mode: visualMode,
       ...(visualMode === "selected-sheets" ? { sheets: [...new Set(visualSheets)] } : {}),
     },
-    allowDecorativeTitle: Boolean(options["allow-decorative-title"]),
-    allowedAccentColors: optionValues(options, "allow-accent-color").map((color) => color.toUpperCase()),
+    allowDecorativeTitle: options["allow-decorative-title"] !== undefined
+      ? Boolean(options["allow-decorative-title"])
+      : Boolean(existingRequirements?.task?.allowDecorativeTitle),
+    allowedAccentColors: optionValues(options, "allow-accent-color").length > 0
+      ? optionValues(options, "allow-accent-color").map((color) => color.toUpperCase())
+      : existingRequirements?.task?.allowedAccentColors ?? [],
     projectSnapshot: projectSnapshotBinding,
   };
   let sourceEvidence = null;
@@ -3478,8 +3638,8 @@ async function commandPrepare(options) {
       count: sourceEvidence.sources.length,
     } : { status: clearSources ? "cleared" : "not_requested", count: 0 },
     next: sourceEvidence
-      ? `Run integrity-scaffold --requirements ${requirementsPath} --operation <copy|union|join|aggregate|formula|ocr> with --source-id; use --append --from-operation for dependent steps, then run integrity-status and bind before building.`
-      : "Complete the declarative checks in requirements.json before building the candidate.",
+      ? `Declare the source-to-output lineage once in the builder with helpers.integrity.register(workbook, plan), then build; the runtime binds and audits it automatically. Use integrity-scaffold only for legacy debugging.`
+      : "Add only task-relevant declarative checks, then build once; build will write a reusable audit attestation.",
   };
   if (!options.quiet) await emitReport(report);
   return report;
@@ -3568,7 +3728,7 @@ async function numericIntegrityStatus(requirementsPath) {
     next: readyToBind
       ? `Run integrity-bind --requirements ${requirementsPath}.`
       : bound
-        ? "Build the candidate; audit and deliver will independently repeat numeric integrity checks."
+        ? "Build the candidate; its SHA-bound attestation will carry the numeric-integrity result through QA and delivery."
         : "Resolve only the listed blockers, then rerun integrity-status. Do not inspect the CLI implementation.",
   };
 }
@@ -3654,16 +3814,92 @@ async function commandIntegrityBind(options) {
     numericIntegrity: requirements.numericIntegrity,
     sourceBackedSheets: requirements.sourceBackedSheets,
     operations: plan.operations.map((operation) => ({ id: operation.id, type: operation.type })),
-    next: "Build the candidate; audit and deliver will independently reread the frozen sources.",
+    next: "Build the candidate once; QA and delivery will reuse its SHA-bound audit attestation.",
   };
   if (!options.quiet) await emitReport(report, options.report && String(options.report));
   else if (options.report) await writeJson(String(options.report), report);
 }
 
+async function commandTaskStatus(options) {
+  const requirementsPath = assertInternalArtifactPath(requireOption(options, "requirements"), "Spreadsheet requirements");
+  const requirements = validateRequirements(await readJsonFile(requirementsPath, "Spreadsheet requirements"), requirementsPath);
+  const taskRoot = path.dirname(path.dirname(requirementsPath));
+  const candidatePath = path.join(taskRoot, "tmp", "candidate.xlsx");
+  const qaReportPath = path.join(path.dirname(requirementsPath), "visual-review.json");
+  const attestationPath = attestationPathFor(requirementsPath, candidatePath);
+  const finalPath = requirements.task?.finalOutput ?? null;
+  const blockers = [];
+  let state = "prepared";
+  let candidateReady = false;
+  let qaReady = false;
+  let next = `Build the candidate at ${candidatePath}.`;
+  if (requirements.numericIntegrity?.state === "prepared") {
+    blockers.push({
+      code: "numeric-lineage-needed",
+      message: "Register source-to-output lineage once in the builder with helpers.integrity.register; build will bind it automatically.",
+    });
+  }
+  if (await pathExists(candidatePath)) {
+    if (await pathExists(attestationPath)) {
+      try {
+        await loadVerifiedSpreadsheetAttestation(attestationPath, candidatePath, requirementsPath);
+        state = "built";
+        candidateReady = true;
+        blockers.length = 0;
+        next = `Run qa-init --input ${candidatePath} --requirements ${requirementsPath} --report ${qaReportPath}.`;
+      } catch (error) {
+        blockers.push({ code: "stale-attestation", message: error instanceof Error ? error.message : String(error) });
+        next = "Rebuild once to refresh the candidate and its audit attestation.";
+      }
+    } else {
+      blockers.push({ code: "attestation-missing", message: "The candidate has no v2 audit attestation" });
+      next = "Rebuild once; do not run audit separately.";
+    }
+  }
+  if (await pathExists(qaReportPath)) {
+    try {
+      const qa = await readJsonFile(qaReportPath, "Spreadsheet visual review report");
+      await assertQaBindings(qa, qaReportPath);
+      if (qa.status === "ok") {
+        state = "reviewed";
+        qaReady = candidateReady;
+        blockers.length = 0;
+        next = `Run deliver with the unchanged candidate and QA report ${qaReportPath}.`;
+      }
+    } catch (error) {
+      blockers.push({ code: "qa-stale", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (finalPath && await pathExists(finalPath)) {
+    if (qaReady && await fileSha256(finalPath) === await fileSha256(candidatePath)) {
+      state = "delivered";
+      blockers.length = 0;
+      next = "Return the delivered workbook; no more validation commands are needed.";
+    } else {
+      blockers.push({
+        code: "unverified-final-output",
+        message: "A file exists at the final path, but it is not bound to the current reviewed candidate.",
+      });
+      next = qaReady
+        ? "Move the unrelated final-path file aside, then run deliver."
+        : next;
+    }
+  }
+  await emitReport({
+    status: "ok",
+    state,
+    profile: taskValidationProfile(requirements),
+    dataOperation: requirements.task?.dataOperation ?? "legacy",
+    paths: { requirements: requirementsPath, candidate: candidatePath, attestation: attestationPath, qa: qaReportPath, final: finalPath },
+    blockers,
+    next,
+  }, options.report && String(options.report));
+}
+
 function capabilitiesReport() {
   return {
     status: "ok",
-    protocolVersion: 1,
+    protocolVersion: 2,
     resultStatuses: RESULT_STATUSES,
     capabilityStates: CAPABILITY_STATES,
     outputPolicy: {
@@ -3671,7 +3907,7 @@ function capabilitiesReport() {
       mutationOutputsAreInternalCandidates: true,
       finalOutputRequiresCommand: "deliver",
       deliveryRequiresMatchingQaSha256: true,
-      deliveryRequiresCleanProjectSnapshot: true,
+      deliveryRequiresScopedProjectGuard: true,
       sourceReplacement: "blocked",
       existingOutputsBlockedByDefault: true,
     },
@@ -3696,8 +3932,8 @@ function capabilitiesReport() {
       pivotTablesExternalConnectionsPowerQuery: { status: "unsupported", fallback: "Create a companion workbook without mutating the source package." },
       macrosSignaturesEncryptionActiveX: { status: "blocked" },
       controlledFallback: { status: "supported", command: "fallback-patch", directUntrackedPackageMutation: "blocked" },
-      qa: { status: "supported", commands: ["qa-init", "qa-record", "qa-finalize"] },
-      delivery: { status: "supported", command: "deliver", candidateDigestBinding: true },
+      qa: { status: "supported", commands: ["qa-init", "qa-complete"], adaptiveReview: true },
+      delivery: { status: "supported", command: "deliver", candidateDigestBinding: true, repeatedAudit: false },
       numericIntegrity: {
         status: "supported",
         protocol: NUMERIC_INTEGRITY_PROTOCOL,
@@ -3721,23 +3957,48 @@ function capabilitiesReport() {
   };
 }
 
-async function commandCapabilities() {
-  await emitReport(capabilitiesReport());
+async function commandCapabilities(options = {}) {
+  const full = capabilitiesReport();
+  if (options.full) {
+    await emitReport(full);
+    return;
+  }
+  if (options.feature) {
+    const feature = requireOption(options, "feature");
+    if (!Object.hasOwn(full.operations, feature)) throw unsupported("capability-not-found", `No capability is declared for '${feature}'`, { available: Object.keys(full.operations) });
+    await emitReport({ status: "ok", protocolVersion: full.protocolVersion, feature, capability: full.operations[feature] });
+    return;
+  }
+  await emitReport({
+    status: "ok",
+    protocolVersion: full.protocolVersion,
+    profiles: VALIDATION_PROFILES,
+    dataOperations: DATA_OPERATIONS,
+    workflow: ["prepare", "build", "qa-init", "qa-complete", "deliver"],
+    auditPolicy: "Build audits once and writes a SHA-bound attestation reused by QA and delivery.",
+    next: "Query schema only for the command you are about to use; add --full only for capability debugging.",
+  });
 }
 
 function schemaFor(command) {
   const schemas = {
     prepare: {
       required: ["final-out"],
-      enums: { "workbook-type": [...WORKBOOK_TYPES], "style-mode": [...STYLE_MODES], "visual-review-mode": [...VISUAL_REVIEW_MODES] },
+      enums: {
+        "workbook-type": [...WORKBOOK_TYPES],
+        "style-mode": [...STYLE_MODES],
+        "visual-review-mode": [...VISUAL_REVIEW_MODES],
+        "validation-profile": VALIDATION_PROFILES,
+        "data-operation": DATA_OPERATIONS,
+      },
       repeatable: ["source", "visual-sheet", "allow-accent-color"],
       optional: ["overwrite", "clear-sources"],
-      overwriteBehavior: "Preserves the original project snapshot and existing frozen sources unless --source replaces them or --clear-sources explicitly removes them; preserved numeric integrity returns to prepared and must be rebound.",
+      overwriteBehavior: "Preserves the scoped project guard and existing frozen sources unless --source replaces them or --clear-sources explicitly removes them; registered builder lineage is rebound by the next build.",
     },
     requirements: {
       type: "object",
       allowedKeys: [...REQUIREMENT_KEYS],
-      task: { protocol: TASK_PROTOCOL, workbookTypes: [...WORKBOOK_TYPES], styleModes: [...STYLE_MODES], visualReviewModes: [...VISUAL_REVIEW_MODES] },
+      task: { protocols: [TASK_PROTOCOL, LEGACY_TASK_PROTOCOL], profiles: VALIDATION_PROFILES, dataOperations: DATA_OPERATIONS, workbookTypes: [...WORKBOOK_TYPES], styleModes: [...STYLE_MODES], visualReviewModes: [...VISUAL_REVIEW_MODES] },
     },
     "numeric-integrity": {
       protocol: NUMERIC_INTEGRITY_PROTOCOL,
@@ -3767,6 +4028,16 @@ function schemaFor(command) {
       required: ["requirements"],
       optional: ["report"],
       note: "Returns concise plan, binding, source, placeholder, range, and dependency blockers plus the exact next action. Use it instead of reading CLI implementation code.",
+    },
+    status: {
+      required: ["requirements"],
+      optional: ["report"],
+      note: "Returns the compact prepared/built/reviewed/delivered state and exactly one next action without reading runtime implementation.",
+    },
+    "qa-complete": {
+      required: ["report", "reviews"],
+      reviewsShape: { reviews: [{ sheet: "Summary", page: 1, status: "passed", notes: "Specific visual observation" }] },
+      note: "Records every selected adaptive-review page in one command and finalizes the SHA-bound review without rerunning the audit.",
     },
     "native-chart": {
       required: ["sheet", "type", "categories", "series", "anchor"],
@@ -4035,6 +4306,9 @@ async function commandBuildCore(options) {
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet candidate");
   const inputPath = options.input ? requireOption(options, "input") : null;
   const outputExtension = assertSupportedOutput(outputPath);
+  const requirementsPath = options.requirements
+    ? assertInternalArtifactPath(String(options.requirements), "Spreadsheet requirements")
+    : null;
 
   if (inputPath) {
     assertSupportedInput(inputPath);
@@ -4054,27 +4328,73 @@ async function commandBuildCore(options) {
     }
   }
 
-  const { workbook, sheetName, nativeCharts, insertedImages, requirements: builderRequirements } = await runStage(
+  const { workbook, sheetName, nativeCharts, insertedImages, requirements: builderRequirements, integrityPlan } = await runStage(
     "builder_execution",
     () => buildFromBuilder(builderPath, inputPath),
   );
   workbook.calcProperties.fullCalcOnLoad = true;
   workbook.calcProperties.forceFullCalc = true;
-  const requirements = await runStage(
+  let requirements = await runStage(
     "requirements_validation",
     () => resolveRequirements(
-      options.requirements
-        ? assertInternalArtifactPath(String(options.requirements), "Spreadsheet requirements")
-        : null,
+      requirementsPath,
       builderRequirements,
     ),
   );
+  if (integrityPlan) {
+    if (!requirementsPath || !requirements?.numericIntegrity) {
+      throw blocked("unprepared-integrity-plan", "The builder registered numeric lineage but the task has no prepared source bindings", {
+        next: "Run prepare with every fact source and pass its requirements path to build.",
+      });
+    }
+    if (requirements.numericIntegrity.state === "prepared") {
+      const planPath = assertInternalArtifactPath(requirements.numericIntegrity.plan.path, "Spreadsheet numeric-integrity plan");
+      await writeJson(planPath, { ...integrityPlan, draft: false });
+      await commandIntegrityBind({ requirements: requirementsPath, plan: planPath, quiet: true });
+      requirements = await runStage("requirements_validation", () => resolveRequirements(requirementsPath, builderRequirements));
+    } else {
+      const registeredHash = crypto.createHash("sha256").update(`${JSON.stringify({ ...integrityPlan, draft: false }, null, 2)}\n`).digest("hex");
+      if (registeredHash !== requirements.numericIntegrity.plan.sha256?.toLowerCase()) {
+        throw blocked("builder-integrity-plan-changed", "The builder's registered numeric lineage differs from the bound plan", {
+          next: "Re-run prepare --overwrite to return integrity to prepared, then rebuild once so the registered plan can be rebound.",
+        });
+      }
+    }
+  }
   const typographyNormalization = await runStage(
     "typography_normalization",
     async () => normalizeCjkTypography(workbook, requirements),
   );
   await runStage("builder_validation", async () => validateWorkbookForSerialization(workbook, nativeCharts));
   const facts = collectWorkbookFacts(workbook);
+  if (requirements?.task?.protocol === TASK_PROTOCOL && requirementsPath) {
+    let requirementsChanged = false;
+    if (requirements.task.validationProfile === "fast"
+      && requirements.task.dataOperation === "create"
+      && (facts.formulaCount > 0 || nativeCharts.length > 0)) {
+      requirements.task.validationProfile = "standard";
+      requirements.task.profileReasons = [
+        ...(requirements.task.profileReasons ?? []),
+        `Build output uses ${facts.formulaCount > 0 ? "formulas" : "native charts"}; validation was automatically escalated to standard.`,
+      ];
+      requirementsChanged = true;
+    }
+    if ((requirements.requiredSheets?.length ?? 0) === 0) {
+      requirements.requiredSheets = workbook.worksheets.map((worksheet) => worksheet.name);
+      requirementsChanged = true;
+    }
+    if (taskValidationProfile(requirements) !== "strict"
+      && facts.formulaCount > 0
+      && requirements.minFormulaCount === undefined
+      && (requirements.requiredFormulaRanges?.length ?? 0) === 0) {
+      requirements.minFormulaCount = facts.formulaCount;
+      requirementsChanged = true;
+    }
+    if (requirementsChanged) {
+      validateRequirements(requirements, requirementsPath);
+      await writeJson(requirementsPath, requirements);
+    }
+  }
   assertNumericIntegrityBound(requirements);
   await runStage("requirements_preflight", () => validateWorkbookRequirementsPreflight(workbook, requirements));
 
@@ -4100,7 +4420,9 @@ async function commandBuildCore(options) {
       await exportDelimited(workbook, stagedPath, options.sheet ? String(options.sheet) : sheetName, options.encoding ? String(options.encoding) : "utf8-bom");
       const audit = await auditDelimited(stagedPath);
       await replaceFileAtomically(stagedPath, outputPath);
-      await emitReport({ status: audit.status, output: path.resolve(outputPath), format: outputExtension.slice(1), audit }, options.report && String(options.report));
+      const report = { status: audit.status, output: path.resolve(outputPath), format: outputExtension.slice(1), audit };
+      if (!options.quiet) await emitReport(report, options.report && String(options.report));
+      else if (options.report) await writeJson(String(options.report), report);
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -4130,8 +4452,17 @@ async function commandBuildCore(options) {
       );
     }
     await replaceFileAtomically(stagedPath, outputPath);
+    const attestation = requirementsPath
+      ? await runStage("attestation", () => writeSpreadsheetAttestation({
+        candidatePath: outputPath,
+        requirementsPath,
+        builderPath,
+        requirements,
+        audit: { ...audit, path: path.resolve(outputPath) },
+      }))
+      : null;
     const reportedAudit = { ...audit, path: path.resolve(outputPath) };
-    await emitReport({
+    const report = {
       status: audit.status,
       output: path.resolve(outputPath),
       formulaCount: facts.formulaCount,
@@ -4141,7 +4472,10 @@ async function commandBuildCore(options) {
       typographyNormalization,
       requirements: reportedAudit.coverage,
       audit: reportedAudit,
-    }, options.report && String(options.report));
+      attestation: attestation ? { path: attestation.path, sha256: attestation.sha256 } : null,
+    };
+    if (!options.quiet) await emitReport(report, options.report && String(options.report));
+    else if (options.report) await writeJson(String(options.report), report);
   } catch (error) {
     const failedDir = assertInternalArtifactPath(`${outputPath}.failed`, "Failed spreadsheet build artifacts");
     let failedArtifacts = null;
@@ -4489,6 +4823,73 @@ async function fileSha256(filePath) {
   return crypto.createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
 }
 
+function attestationPathFor(requirementsPath, candidatePath) {
+  return requirementsPath
+    ? path.join(path.dirname(path.resolve(requirementsPath)), "attestation.json")
+    : `${path.resolve(candidatePath)}.attestation.json`;
+}
+
+function attestationSourceBindings(requirements) {
+  const bindings = [
+    ...(requirements?.sourceFiles ?? []).map((item) => ({ path: resolveThroughExistingAncestor(item.path), sha256: item.sha256.toLowerCase() })),
+    ...(requirements?.task?.input ? [{ path: resolveThroughExistingAncestor(requirements.task.input.path), sha256: requirements.task.input.sha256.toLowerCase() }] : []),
+    ...(requirements?.task?.styleSource ? [{ path: resolveThroughExistingAncestor(requirements.task.styleSource.path), sha256: requirements.task.styleSource.sha256.toLowerCase() }] : []),
+  ];
+  return [...new Map(bindings.map((item) => [item.path, item])).values()];
+}
+
+async function writeSpreadsheetAttestation({ candidatePath, requirementsPath, builderPath, requirements, audit }) {
+  const target = assertInternalArtifactPath(attestationPathFor(requirementsPath, candidatePath), "Spreadsheet audit attestation");
+  const attestation = validateSpreadsheetAttestation({
+    protocol: SPREADSHEET_ATTESTATION_PROTOCOL,
+    createdAt: new Date().toISOString(),
+    profile: taskValidationProfile(requirements),
+    candidate: { path: resolveThroughExistingAncestor(candidatePath), sha256: await fileSha256(candidatePath) },
+    requirements: { path: resolveThroughExistingAncestor(requirementsPath), sha256: await fileSha256(requirementsPath) },
+    builder: { path: resolveThroughExistingAncestor(builderPath), sha256: await fileSha256(builderPath) },
+    runtime: { node: process.version, cliSha256: await fileSha256(fileURLToPath(import.meta.url)) },
+    sources: attestationSourceBindings(requirements),
+    evidence: requirements?.numericIntegrity?.evidence?.sha256
+      ? { path: resolveThroughExistingAncestor(requirements.numericIntegrity.evidence.path), sha256: requirements.numericIntegrity.evidence.sha256.toLowerCase() }
+      : null,
+    plan: requirements?.numericIntegrity?.plan?.sha256
+      ? { path: resolveThroughExistingAncestor(requirements.numericIntegrity.plan.path), sha256: requirements.numericIntegrity.plan.sha256.toLowerCase() }
+      : null,
+    audit,
+  });
+  await writeJson(target, attestation);
+  return { path: target, sha256: await fileSha256(target), attestation };
+}
+
+async function observedBinding(binding) {
+  if (!binding?.path || !(await pathExists(binding.path))) return binding?.path ? { path: resolveThroughExistingAncestor(binding.path), sha256: null } : null;
+  return { path: resolveThroughExistingAncestor(binding.path), sha256: await fileSha256(binding.path) };
+}
+
+async function loadVerifiedSpreadsheetAttestation(attestationPath, candidatePath, requirementsPath, { includeExternal = false } = {}) {
+  const resolvedPath = assertInternalArtifactPath(attestationPath, "Spreadsheet audit attestation");
+  const attestation = validateSpreadsheetAttestation(await readJsonFile(resolvedPath, "Spreadsheet audit attestation"));
+  const actual = {
+    candidate: await observedBinding({ path: candidatePath }),
+    requirements: await observedBinding({ path: requirementsPath }),
+  };
+  if (includeExternal) {
+    actual.builder = await observedBinding(attestation.builder);
+    actual.sources = await Promise.all(attestation.sources.map((binding) => observedBinding(binding)));
+    if (attestation.evidence) actual.evidence = await observedBinding(attestation.evidence);
+    if (attestation.plan) actual.plan = await observedBinding(attestation.plan);
+  }
+  const failures = compareAttestationBindings(attestation, actual, { includeExternal });
+  if (failures.length > 0) {
+    throw blocked("stale-spreadsheet-attestation", "Spreadsheet audit bindings changed after the candidate was validated", {
+      attestation: resolvedPath,
+      failures,
+      next: "Rebuild the candidate once; do not rerun individual audit stages or inspect the CLI implementation.",
+    });
+  }
+  return { path: resolvedPath, sha256: await fileSha256(resolvedPath), attestation };
+}
+
 function evaluateRenderRequirements(rendered, requirements) {
   const checks = [];
   if (!requirements) return { status: "not_requested", total: 0, passed: 0, checks: [], failures: [] };
@@ -4523,7 +4924,7 @@ async function decodedPixelDigest(pagePath) {
 }
 
 async function assertQaBindings(state, reportPath) {
-  if (state.protocol !== VISUAL_REVIEW_PROTOCOL) throw new Error(`Unsupported spreadsheet QA protocol in ${reportPath}`);
+  if (![VISUAL_REVIEW_PROTOCOL, LEGACY_VISUAL_REVIEW_PROTOCOL].includes(state.protocol)) throw new Error(`Unsupported spreadsheet QA protocol in ${reportPath}`);
   if (!state.candidate?.path || !state.requirements?.path) throw new Error("Spreadsheet QA report is missing candidate or requirements binding");
   const candidateSha256 = await fileSha256(state.candidate.path);
   const requirementsSha256 = await fileSha256(state.requirements.path);
@@ -4533,12 +4934,43 @@ async function assertQaBindings(state, reportPath) {
   if (requirementsSha256 !== state.requirements.sha256) {
     throw blocked("stale-spreadsheet-requirements", "The spreadsheet requirements changed after QA initialization", { expected: state.requirements.sha256, actual: requirementsSha256 });
   }
+  if (state.protocol === VISUAL_REVIEW_PROTOCOL) {
+    if (!state.attestation?.path || !state.attestation?.sha256) throw new Error("Spreadsheet QA report is missing its audit attestation binding");
+    const actualAttestationSha256 = await fileSha256(state.attestation.path);
+    if (actualAttestationSha256 !== state.attestation.sha256) {
+      throw blocked("stale-spreadsheet-attestation", "The spreadsheet audit attestation changed after QA initialization", {
+        expected: state.attestation.sha256,
+        actual: actualAttestationSha256,
+      });
+    }
+  }
   for (const page of state.pages ?? []) {
     const digest = await decodedPixelDigest(page.path);
     if (digest.sha256 !== page.pixelSha256) {
       throw blocked("stale-spreadsheet-render", "A spreadsheet render page changed after QA initialization", { page: page.id, expected: page.pixelSha256, actual: digest.sha256 });
     }
   }
+}
+
+async function visualReviewSignals(inputPath, requirements, audit) {
+  const workbook = await loadXlsx(inputPath);
+  const chartSheets = new Set((audit?.package?.charts ?? []).map((chart) => chart.sheet).filter(Boolean));
+  const requiredSheets = new Set(requirements?.requiredSheets ?? []);
+  return workbook.worksheets.map((worksheet) => {
+    let formulaCount = 0;
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        if (formulaDescriptor(cell)) formulaCount += 1;
+      });
+    });
+    return {
+      name: worksheet.name,
+      rowCount: Math.max(worksheet.rowCount, worksheet.actualRowCount),
+      formulaCount,
+      hasChart: chartSheets.has(worksheet.name),
+      required: requiredSheets.has(worksheet.name),
+    };
+  });
 }
 
 async function commandQaInit(options) {
@@ -4555,7 +4987,14 @@ async function commandQaInit(options) {
   if (options.overwrite) await fs.rm(renderDir, { recursive: true, force: true });
   const requirements = await runStage("requirements_validation", () => resolveRequirements(requirementsPath));
   if (!requirements?.task) throw blocked("unprepared-spreadsheet-task", "QA requires requirements produced by prepare");
-  const audit = await runStage("audit", () => auditXlsx(inputPath, requirements));
+  const isV2 = requirements.task.protocol === TASK_PROTOCOL;
+  const attestationPath = options.attestation
+    ? assertInternalArtifactPath(requireOption(options, "attestation"), "Spreadsheet audit attestation")
+    : attestationPathFor(requirementsPath, inputPath);
+  const verifiedAttestation = isV2
+    ? await runStage("attestation", () => loadVerifiedSpreadsheetAttestation(attestationPath, inputPath, requirementsPath))
+    : null;
+  const audit = verifiedAttestation?.attestation.audit ?? await runStage("audit", () => auditXlsx(inputPath, requirements));
   if (audit.status === "error") throw new Error(`Candidate workbook failed QA audit. ${summarizeAuditFailures(audit)}`);
   if (audit.coverage.status !== "passed" || audit.coverage.total === 0) throw new Error("Candidate workbook has no passing, verifiable requirement coverage");
   if (audit.warningDispositions.status === "failed") {
@@ -4577,24 +5016,34 @@ async function commandQaInit(options) {
   let renderCoverage = { status: "not_required", total: 0, passed: 0, checks: [], failures: [] };
   let pages = [];
   if (visualPolicy.mode !== "structural-only") {
+    const signals = await visualReviewSignals(inputPath, requirements, audit);
+    const mustRenderAllSheets = visualPolicy.mode === "all-pages"
+      || requirements.maxTotalPages !== undefined
+      || (requirements.maxPagesPerSheet?.length ?? 0) > 0;
+    const adaptiveSheets = visualPolicy.mode === "adaptive" && !mustRenderAllSheets
+      ? selectAdaptiveSheets(signals)
+      : null;
     rendered = await runStage("render", () => renderWorkbook(inputPath, renderDir, {
       perSheet: true,
       montagePath: path.join(renderDir, "montage.png"),
-      sheetNames: visualPolicy.mode === "selected-sheets" ? visualPolicy.sheets : null,
+      sheetNames: visualPolicy.mode === "selected-sheets" ? visualPolicy.sheets : adaptiveSheets,
     }));
     const blankPages = rendered.pageStats.filter((page) => page.blank);
     if (blankPages.length > 0) throw new Error(`Candidate workbook produced blank print page(s): ${blankPages.map((page) => `${page.sheet}:${path.basename(page.path)}`).join(", ")}`);
     renderCoverage = evaluateRenderRequirements(rendered, requirements);
     if (renderCoverage.status === "failed") throw new Error(`Candidate workbook failed render requirements: ${renderCoverage.failures.map((failure) => failure.type).join(", ")}`);
     const pageNumberBySheet = new Map();
-    for (const page of rendered.pageStats) {
+    const numberedPages = rendered.pageStats.map((page) => {
       const pageNumber = (pageNumberBySheet.get(page.sheet) ?? 0) + 1;
       pageNumberBySheet.set(page.sheet, pageNumber);
+      return { ...page, page: pageNumber };
+    });
+    for (const page of selectReviewPages(numberedPages, requirements.task)) {
       const pixels = await decodedPixelDigest(page.path);
       pages.push({
-        id: `${page.sheet}#${pageNumber}`,
+        id: `${page.sheet}#${page.page}`,
         sheet: page.sheet,
-        page: pageNumber,
+        page: page.page,
         path: page.path,
         pixelSha256: pixels.sha256,
         width: pixels.width,
@@ -4608,6 +5057,7 @@ async function commandQaInit(options) {
     protocol: VISUAL_REVIEW_PROTOCOL,
     candidate: { path: path.resolve(inputPath), sha256: await fileSha256(inputPath) },
     requirements: { path: path.resolve(requirementsPath), sha256: await fileSha256(requirementsPath) },
+    ...(verifiedAttestation ? { attestation: { path: verifiedAttestation.path, sha256: verifiedAttestation.sha256 } } : {}),
     task: requirements.task,
     audit,
     renderCoverage,
@@ -4639,6 +5089,49 @@ async function commandQaRecord(options) {
   if (!options.quiet) await emitReport({ status: "ok", report: reportPath, page: page.id, review: page.review, progress: state.visualReview });
 }
 
+async function commandQaComplete(options) {
+  const reportPath = assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet visual review report");
+  const reviewsPath = assertInternalArtifactPath(requireOption(options, "reviews"), "Spreadsheet visual review observations");
+  const state = await readJsonFile(reportPath, "Spreadsheet visual review report");
+  await assertQaBindings(state, reportPath);
+  const payload = await readJsonFile(reviewsPath, "Spreadsheet visual review observations");
+  const reviews = payload.reviews;
+  if (!Array.isArray(reviews)) throw new Error("Spreadsheet visual review observations must contain a reviews array");
+  const seen = new Set();
+  for (const [index, review] of reviews.entries()) {
+    if (!review || typeof review !== "object" || Array.isArray(review)) throw new Error(`reviews[${index}] must be an object`);
+    const sheet = String(review.sheet ?? "");
+    const pageNumber = Number(review.page);
+    const status = String(review.status ?? "");
+    const notes = String(review.notes ?? "").trim();
+    if (!sheet || !Number.isInteger(pageNumber) || pageNumber < 1) throw new Error(`reviews[${index}] requires sheet and positive page`);
+    if (!['passed', 'failed'].includes(status)) throw new Error(`reviews[${index}].status must be passed or failed`);
+    if (!notes) throw new Error(`reviews[${index}].notes must be non-empty`);
+    const page = state.pages?.find((item) => item.sheet === sheet && item.page === pageNumber);
+    if (!page) throw new Error(`Visual review page not found: ${sheet}#${pageNumber}`);
+    if (seen.has(page.id)) throw new Error(`Visual review page is duplicated: ${page.id}`);
+    seen.add(page.id);
+    page.review = { status, notes };
+  }
+  const missing = (state.pages ?? []).filter((page) => !seen.has(page.id));
+  if (missing.length > 0) {
+    throw blocked("incomplete-spreadsheet-visual-observations", "The batch review does not cover every selected page", {
+      pages: missing.map((page) => page.id),
+    });
+  }
+  state.status = "partial";
+  state.visualReview = { status: "pending", reviewed: seen.size, total: state.pages.length };
+  await writeJson(reportPath, state);
+  await commandQaFinalize({ report: reportPath, quiet: true });
+  const finalized = await readJsonFile(reportPath, "Spreadsheet visual review report");
+  if (!options.quiet) await emitReport({
+    status: finalized.status,
+    report: reportPath,
+    visualReview: finalized.visualReview,
+    next: "Deliver the unchanged candidate; delivery will verify the attestation and copy hash without rerunning the audit.",
+  });
+}
+
 async function commandQaFinalize(options) {
   const reportPath = assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet visual review report");
   const state = await readJsonFile(reportPath, "Spreadsheet visual review report");
@@ -4648,7 +5141,9 @@ async function commandQaFinalize(options) {
   if (missing.length > 0) throw blocked("incomplete-spreadsheet-visual-review", "Every rendered spreadsheet page requires a review record", { pages: missing.map((page) => page.id) });
   if (failed.length > 0) throw blocked("failed-spreadsheet-visual-review", "Spreadsheet visual review contains failed pages", { pages: failed.map((page) => page.id) });
   const requirements = await resolveRequirements(state.requirements.path);
-  const audit = await auditXlsx(state.candidate.path, requirements);
+  const audit = state.protocol === VISUAL_REVIEW_PROTOCOL
+    ? (await loadVerifiedSpreadsheetAttestation(state.attestation.path, state.candidate.path, state.requirements.path)).attestation.audit
+    : await auditXlsx(state.candidate.path, requirements);
   if (audit.status === "error" || audit.coverage.status !== "passed" || audit.warningDispositions.status === "failed") {
     throw new Error(`Candidate workbook no longer passes final QA. ${summarizeAuditFailures(audit)}`);
   }
@@ -4690,7 +5185,15 @@ async function commandDeliver(options) {
   if (!pathsReferToSameLocation(inputPath, qaState.candidate.path) || !pathsReferToSameLocation(requirementsPath, qaState.requirements.path)) {
     throw blocked("spreadsheet-qa-binding-mismatch", "Delivery input or requirements do not match the finalized QA report");
   }
-  const audit = await runStage("audit", () => auditXlsx(inputPath, requirements));
+  const verifiedAttestation = requirements.task.protocol === TASK_PROTOCOL
+    ? await runStage("attestation", () => loadVerifiedSpreadsheetAttestation(
+      qaState.attestation.path,
+      inputPath,
+      requirementsPath,
+      { includeExternal: true },
+    ))
+    : null;
+  const audit = verifiedAttestation?.attestation.audit ?? await runStage("audit", () => auditXlsx(inputPath, requirements));
   if (audit.status === "error") throw new Error(`Candidate workbook failed structural, formula, or requirement coverage audit. ${summarizeAuditFailures(audit)}`);
   if (audit.coverage.status !== "passed" || audit.coverage.total === 0) {
     throw new Error("Candidate workbook has no passing, verifiable requirement coverage");
@@ -4710,8 +5213,8 @@ async function commandDeliver(options) {
     throw new Error("Candidate and sealed deliverable hashes do not match");
   }
   await fs.rename(temporaryOutput, outputPath);
-  const finalAudit = await auditXlsx(outputPath, requirements);
   const finalSha256 = await fileSha256(outputPath);
+  const finalAudit = verifiedAttestation ? audit : await auditXlsx(outputPath, requirements);
   if (finalAudit.status === "error" || finalAudit.coverage.status !== "passed" || finalAudit.warningDispositions.status === "failed" || finalSha256 !== candidateSha256) {
     await fs.rm(outputPath, { force: true });
     throw new Error("Final deliverable failed post-seal verification");
@@ -4723,6 +5226,7 @@ async function commandDeliver(options) {
     sha256: finalSha256,
     coverage: finalAudit.coverage,
     qa: { report: qaReportPath, protocol: qaState.protocol, visualReview: qaState.visualReview },
+    attestation: verifiedAttestation ? { path: verifiedAttestation.path, sha256: verifiedAttestation.sha256 } : null,
     renderCoverage: qaState.renderCoverage,
     audit: finalAudit,
     render: qaState.render,
@@ -4852,7 +5356,33 @@ async function commandSelfTest(options) {
   if (preparedRequirements.task.styleMode !== "neutral-built-in" || preparedRequirements.task.allowDecorativeTitle !== false) {
     throw new Error("Spreadsheet prepare did not freeze the neutral built-in policy");
   }
+  if (preparedRequirements.task.protocol !== TASK_PROTOCOL
+    || preparedRequirements.task.validationProfile !== "fast"
+    || preparedRequirements.task.dataOperation !== "create"
+    || preparedRequirements.task.projectSnapshot?.protocol !== PROJECT_GUARD_PROTOCOL) {
+    throw new Error("Spreadsheet prepare did not freeze the v2 task profile and scoped project guard");
+  }
   steps.push({ name: "prepare-protocol", status: "ok", styleMode: preparedRequirements.task.styleMode });
+
+  const standardCopyProfile = deriveTaskProfile({ dataOperation: "copy", sourceCount: 1 });
+  const strictTransformProfile = deriveTaskProfile({ dataOperation: "transform", sourceCount: 2 });
+  let profileDowngradeRejected = false;
+  try {
+    deriveTaskProfile({ requestedProfile: "fast", dataOperation: "union", sourceCount: 2 });
+  } catch (error) {
+    profileDowngradeRejected = error instanceof Error && error.message.includes("below the 'standard' minimum");
+  }
+  if (standardCopyProfile.profile !== "standard" || strictTransformProfile.profile !== "strict" || !profileDowngradeRejected) {
+    throw new Error("Spreadsheet validation profiles did not enforce operation-based minimums");
+  }
+  steps.push({
+    name: "validation-profiles",
+    status: "ok",
+    create: preparedRequirements.task.validationProfile,
+    copy: standardCopyProfile.profile,
+    transform: strictTransformProfile.profile,
+    downgradeRejected: true,
+  });
 
   const cjkOrderWorkbook = createWorkbook();
   const cjkOrderSheet = cjkOrderWorkbook.addWorksheet("中文后处理");
@@ -4910,6 +5440,50 @@ async function commandSelfTest(options) {
     throw new Error("Project snapshot did not isolate internal work files from project-root pollution");
   }
   steps.push({ name: "project-workspace-pollution-gate", status: "ok", created: snapshotDiff.created.map((item) => item.path) });
+
+  const guardProjectRoot = path.join(outputDir, "project-guard-v2-fixture");
+  const guardWorkDir = path.join(guardProjectRoot, ".pilotdeck", "work");
+  await fs.mkdir(guardProjectRoot, { recursive: true });
+  await fs.writeFile(path.join(guardProjectRoot, "source.txt"), "before\n", "utf8");
+  const guardBefore = await captureProjectGuardSnapshot(guardProjectRoot, {
+    finalOutput: path.join(guardProjectRoot, "final.xlsx"),
+    workDir: guardWorkDir,
+  });
+  const guardManifestPath = path.join(guardWorkDir, "spreadsheets", "qa", "project-snapshot.json");
+  const guardPreviousWorkDir = process.env.PILOTDECK_WORK_DIR;
+  process.env.PILOTDECK_WORK_DIR = guardWorkDir;
+  await writeJson(guardManifestPath, guardBefore);
+  const guardRequirements = {
+    task: {
+      finalOutput: path.join(guardProjectRoot, "final.xlsx"),
+      projectSnapshot: {
+        protocol: PROJECT_GUARD_PROTOCOL,
+        path: guardManifestPath,
+        sha256: await fileSha256(guardManifestPath),
+      },
+    },
+  };
+  await fs.writeFile(path.join(guardProjectRoot, "source.txt"), "changed by collaborator\n", "utf8");
+  await fs.writeFile(path.join(guardProjectRoot, "notes.txt"), "unrelated\n", "utf8");
+  await fs.mkdir(path.join(guardProjectRoot, "qa"), { recursive: true });
+  await fs.mkdir(path.join(guardProjectRoot, "render"), { recursive: true });
+  await fs.writeFile(path.join(guardProjectRoot, "qa", "team-notes.txt"), "unrelated\n", "utf8");
+  await fs.writeFile(path.join(guardProjectRoot, "render", "README.md"), "unrelated\n", "utf8");
+  const unrelatedGuardResult = await assertProjectWorkspaceClean(guardRequirements);
+  await fs.writeFile(path.join(guardProjectRoot, "build_q2.mjs"), "export default {};\n", "utf8");
+  let leakedArtifactRejected = false;
+  try {
+    await assertProjectWorkspaceClean(guardRequirements);
+  } catch (error) {
+    leakedArtifactRejected = error instanceof SpreadsheetProtocolError && error.code === "spreadsheet-project-artifacts";
+  } finally {
+    if (guardPreviousWorkDir === undefined) delete process.env.PILOTDECK_WORK_DIR;
+    else process.env.PILOTDECK_WORK_DIR = guardPreviousWorkDir;
+  }
+  if (unrelatedGuardResult.status !== "passed" || !leakedArtifactRejected) {
+    throw new Error("Scoped project guard did not ignore unrelated edits while rejecting leaked spreadsheet artifacts");
+  }
+  steps.push({ name: "scoped-project-guard-v2", status: "ok", unrelatedEditsIgnored: true, leakedArtifactRejected: true });
 
   const fallbackFixtureDir = path.join(outputDir, "source-normalization-fixture");
   await fs.mkdir(fallbackFixtureDir, { recursive: true });
@@ -4970,6 +5544,107 @@ async function commandSelfTest(options) {
   await sharp({ create: { width: 240, height: 120, channels: 3, background: "white" } })
     .png()
     .toFile(imageSourcePath);
+
+  const autoBindWorkDir = path.join(integrityPhase1Dir, "auto-bind-turn");
+  const autoBindPreviousWorkDir = process.env.PILOTDECK_WORK_DIR;
+  process.env.PILOTDECK_WORK_DIR = autoBindWorkDir;
+  try {
+    const autoPrepared = await commandPrepare({
+      "final-out": path.join(integrityPhase1Dir, "auto-bound-final.xlsx"),
+      source: [sourceAPath],
+      "data-operation": "copy",
+      quiet: true,
+    });
+    const autoRequirements = await readJsonFile(autoPrepared.paths.requirements, "Auto-bind requirements");
+    const effectiveSourcePath = autoRequirements.sourceFiles[0].path;
+    const autoPlan = {
+      protocol: NUMERIC_INTEGRITY_PROTOCOL,
+      mode: "strict",
+      draft: false,
+      operations: [{
+        id: "copy-source",
+        type: "copy",
+        fields: {
+          id: { semanticType: "identifier" },
+          amount: { semanticType: "decimal", scale: 2, currency: "CNY" },
+        },
+        inputs: [{ source: effectiveSourcePath, sheet: "数据", range: "A2:B3", columns: { id: "A", amount: "B" } }],
+        output: { sheet: "复制", range: "A2:B3", columns: { id: "A", amount: "B" } },
+        keyColumns: ["id"],
+      }],
+      invariants: [],
+    };
+    const autoBuilderSource = `export default async function build({ createWorkbook, helpers }) {\n  const workbook = createWorkbook();\n  workbook.addWorksheet("复制").addRows([["编号", "金额"], ["A-1", 10.25], ["A-2", 20.5]]);\n  helpers.integrity.register(workbook, ${JSON.stringify(autoPlan, null, 2)});\n  return workbook;\n}\n`;
+    await fs.writeFile(autoPrepared.paths.builder, autoBuilderSource, "utf8");
+    await commandBuild({
+      builder: autoPrepared.paths.builder,
+      requirements: autoPrepared.paths.requirements,
+      out: autoPrepared.paths.candidate,
+      quiet: true,
+    });
+    const boundRequirements = await readJsonFile(autoPrepared.paths.requirements, "Auto-bound requirements");
+    if (boundRequirements.task.validationProfile !== "standard"
+      || boundRequirements.numericIntegrity?.state !== "bound"
+      || !(await pathExists(autoPrepared.paths.attestation))) {
+      throw new Error("Builder integrity registration did not bind and attest a standard source copy in one build");
+    }
+    steps.push({ name: "builder-integrity-auto-bind", status: "ok", profile: "standard", buildCount: 1 });
+  } finally {
+    if (autoBindPreviousWorkDir === undefined) delete process.env.PILOTDECK_WORK_DIR;
+    else process.env.PILOTDECK_WORK_DIR = autoBindPreviousWorkDir;
+  }
+
+  const presentationInputPath = path.join(integrityPhase1Dir, "presentation-input.xlsx");
+  const presentationWorkbook = createWorkbook();
+  const presentationSheet = presentationWorkbook.addWorksheet("数据");
+  presentationSheet.addRows([["项目", "数量", "单价", "金额"], ["A", 2, 10.5, null]]);
+  presentationSheet.getCell("D2").value = { formula: "B2*C2", result: 21 };
+  await presentationWorkbook.xlsx.writeFile(presentationInputPath);
+  const presentationWorkDir = path.join(integrityPhase1Dir, "presentation-turn");
+  const presentationPreviousWorkDir = process.env.PILOTDECK_WORK_DIR;
+  process.env.PILOTDECK_WORK_DIR = presentationWorkDir;
+  try {
+    const presentationPrepared = await commandPrepare({
+      "final-out": path.join(integrityPhase1Dir, "presentation-final.xlsx"),
+      input: presentationInputPath,
+      "data-operation": "presentation-only",
+      quiet: true,
+    });
+    const styleOnlyBuilder = `export default async function build({ inputPath, loadWorkbook, helpers }) {\n  const workbook = await loadWorkbook(inputPath);\n  helpers.styleHeader(workbook.getWorksheet("数据"), "A1:D1");\n  return workbook;\n}\n`;
+    await fs.writeFile(presentationPrepared.paths.builder, styleOnlyBuilder, "utf8");
+    await commandBuild({
+      builder: presentationPrepared.paths.builder,
+      input: presentationInputPath,
+      requirements: presentationPrepared.paths.requirements,
+      out: presentationPrepared.paths.candidate,
+      quiet: true,
+    });
+    const presentationCandidateSha256 = await fileSha256(presentationPrepared.paths.candidate);
+    const dataChangingBuilder = `export default async function build({ inputPath, loadWorkbook }) {\n  const workbook = await loadWorkbook(inputPath);\n  workbook.getWorksheet("数据").getCell("B2").value = 999;\n  return workbook;\n}\n`;
+    await fs.writeFile(presentationPrepared.paths.builder, dataChangingBuilder, "utf8");
+    let presentationMutationRejected = false;
+    try {
+      await commandBuild({
+        builder: presentationPrepared.paths.builder,
+        input: presentationInputPath,
+        requirements: presentationPrepared.paths.requirements,
+        out: presentationPrepared.paths.candidate,
+        quiet: true,
+      });
+    } catch (error) {
+      presentationMutationRejected = error instanceof SpreadsheetStageError
+        && error.stage === "audit"
+        && error.message.includes("presentation_only_data_changed");
+    }
+    if (!presentationMutationRejected || await fileSha256(presentationPrepared.paths.candidate) !== presentationCandidateSha256) {
+      throw new Error("Presentation-only validation did not preserve data/formulas or atomically reject a value change");
+    }
+    steps.push({ name: "presentation-only-fingerprint", status: "ok", styleChangePassed: true, dataChangeRejected: true });
+  } finally {
+    if (presentationPreviousWorkDir === undefined) delete process.env.PILOTDECK_WORK_DIR;
+    else process.env.PILOTDECK_WORK_DIR = presentationPreviousWorkDir;
+  }
+
   const integrityCandidatePath = path.join(integrityPhase1Dir, "candidate.xlsx");
   const integrityCandidate = createWorkbook();
   integrityCandidate.addWorksheet("复制").addRows([["编号", "金额"], ["A-1", 10.25], ["A-2", 20.5]]);
@@ -5487,6 +6162,10 @@ async function commandSelfTest(options) {
       protocol: TASK_PROTOCOL,
       workbookType: "template",
       styleMode: "preserve-source",
+      validationProfile: "standard",
+      minimumValidationProfile: "standard",
+      dataOperation: "copy",
+      profileReasons: ["self-test source copy uses standard validation"],
       input: { path: rawPath, sha256: await fileSha256(rawPath) },
       finalOutput: sealedPath,
       visualReview: { mode: "all-pages" },
@@ -5957,16 +6636,48 @@ async function commandSelfTest(options) {
   const qaReportPath = path.join(outputDir, "visual-review.json");
   const deliveryReportPath = path.join(outputDir, "delivery.json");
   await fs.writeFile(requirementsPath, `${JSON.stringify(selfTestRequirements, null, 2)}\n`, "utf8");
+  await writeSpreadsheetAttestation({
+    candidatePath: finalPath,
+    requirementsPath,
+    builderPath: fileURLToPath(import.meta.url),
+    requirements: selfTestRequirements,
+    audit,
+  });
   await commandQaInit({ input: finalPath, requirements: requirementsPath, report: qaReportPath, "render-dir": path.join(outputDir, "qa-render"), quiet: true });
   let qaState = await readJsonFile(qaReportPath, "Self-test visual review");
-  for (const page of qaState.pages) {
-    await commandQaRecord({ report: qaReportPath, sheet: page.sheet, page: String(page.page), status: "passed", notes: `Inspected ${page.id}: content, chart, typography, and page bounds are visible.`, quiet: true });
-  }
-  await commandQaFinalize({ report: qaReportPath, quiet: true });
+  const qaObservationsPath = path.join(outputDir, "qa-observations.json");
+  await fs.writeFile(qaObservationsPath, `${JSON.stringify({
+    reviews: qaState.pages.map((page) => ({
+      sheet: page.sheet,
+      page: page.page,
+      status: "passed",
+      notes: `Inspected ${page.id}: content, chart, typography, and page bounds are visible.`,
+    })),
+  }, null, 2)}\n`, "utf8");
+  await commandQaComplete({ report: qaReportPath, reviews: qaObservationsPath, quiet: true });
   await commandDeliver({ input: finalPath, out: sealedPath, requirements: requirementsPath, "qa-report": qaReportPath, report: deliveryReportPath, quiet: true });
   qaState = await readJsonFile(qaReportPath, "Self-test visual review");
   if (qaState.status !== "ok" || await fileSha256(finalPath) !== await fileSha256(sealedPath)) throw new Error("SHA-bound QA and delivery regression");
   steps.push({ name: "qa-delivery-binding", status: "ok", sha256: await fileSha256(sealedPath), pages: qaState.pages.length });
+
+  const attestationBuilderPath = path.join(outputDir, "attestation-builder.mjs");
+  await fs.writeFile(attestationBuilderPath, "export default async function build() {}\n", "utf8");
+  await writeSpreadsheetAttestation({
+    candidatePath: finalPath,
+    requirementsPath,
+    builderPath: attestationBuilderPath,
+    requirements: selfTestRequirements,
+    audit,
+  });
+  await fs.appendFile(attestationBuilderPath, "// changed after build\n");
+  let staleBuilderRejected = false;
+  try {
+    await loadVerifiedSpreadsheetAttestation(attestationPathFor(requirementsPath, finalPath), finalPath, requirementsPath, { includeExternal: true });
+  } catch (error) {
+    staleBuilderRejected = error instanceof SpreadsheetProtocolError && error.code === "stale-spreadsheet-attestation";
+  }
+  if (!staleBuilderRejected) throw new Error("Delivery attestation did not reject a builder changed after build");
+  steps.push({ name: "attestation-builder-binding", status: "ok", staleBuilderRejected: true });
 
   const staleCandidatePath = path.join(outputDir, "stale-candidate.xlsx");
   const staleRequirementsPath = path.join(outputDir, "stale-requirements.json");
@@ -5976,6 +6687,14 @@ async function commandSelfTest(options) {
   staleRequirements.task.finalOutput = path.join(outputDir, "stale-final.xlsx");
   staleRequirements.task.visualReview = { mode: "structural-only" };
   await fs.writeFile(staleRequirementsPath, `${JSON.stringify(staleRequirements, null, 2)}\n`, "utf8");
+  const staleAudit = await auditXlsx(staleCandidatePath, staleRequirements);
+  await writeSpreadsheetAttestation({
+    candidatePath: staleCandidatePath,
+    requirementsPath: staleRequirementsPath,
+    builderPath: fileURLToPath(import.meta.url),
+    requirements: staleRequirements,
+    audit: staleAudit,
+  });
   await commandQaInit({ input: staleCandidatePath, requirements: staleRequirementsPath, report: staleQaPath, quiet: true });
   await fs.appendFile(staleCandidatePath, "changed-after-review");
   let staleQaRejected = false;
@@ -6056,7 +6775,7 @@ async function commandSelfTest(options) {
 }
 
 function printHelp() {
-  process.stdout.write(`PilotDeck spreadsheets skill\n\nCommands:\n  capabilities\n  schema --command <prepare|requirements|numeric-integrity|integrity-scaffold|integrity-status|native-chart|image|fallback-patch>\n  prepare --final-out final.xlsx [--input source.xlsx] [--source facts.xlsx --source scan.png] [--overwrite] [--clear-sources]\n  evidence-observe --evidence source-evidence.json --source scan.png --fact-id total --region x,y,w,h --method METHOD --raw-text TEXT --value DECIMAL --confidence 0.95\n  evidence-confirm --evidence source-evidence.json --fact-id total --value DECIMAL --confirmed-by user\n  integrity-scaffold --requirements requirements.json --operation <copy|union|join|aggregate|formula|ocr> [--source-id source-1] [--append --from-operation operation-id]\n  integrity-status --requirements requirements.json\n  integrity-bind --requirements requirements.json [--plan integrity-plan.json --evidence source-evidence.json]\n  resolve-latest --input source.xlsx [--use-exact-input]\n  scaffold --out builder.mjs\n  build --builder builder.mjs --out candidate.xlsx [--input source.xlsx] [--requirements requirements.json]\n  fallback-patch --input candidate.xlsx --script patch.mjs --out patched.xlsx --manifest fallback.json --reason TEXT --allow-part PART\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  convert-legacy --input source.xls --out converted.xlsx\n  recalculate --input source.xlsx --out recalculated.xlsx\n  audit --input book.xlsx [--requirements requirements.json --out audit.json]\n  render --input book.xlsx --out-dir render [--pdf render.pdf --montage montage.png --per-sheet]\n  qa-init --input candidate.xlsx --requirements requirements.json --report visual-review.json\n  qa-record --report visual-review.json --sheet Sheet1 --page 1 --status passed --notes TEXT\n  qa-finalize --report visual-review.json\n  deliver --input candidate.xlsx --out final.xlsx --requirements requirements.json --qa-report visual-review.json\n  self-test [--out directory]\n`);
+  process.stdout.write(`PilotDeck spreadsheets skill\n\nNormal workflow:\n  capabilities [--feature charts|numericIntegrity] [--full]\n  schema --command <prepare|requirements|status|qa-complete|numeric-integrity|native-chart|image|fallback-patch>\n  prepare --final-out final.xlsx [--input source.xlsx] [--source facts.xlsx] [--data-operation create|presentation-only|copy|union|transform|ocr] [--validation-profile fast|standard|strict]\n  status --requirements requirements.json\n  scaffold --out builder.mjs\n  build --builder builder.mjs --out candidate.xlsx [--input source.xlsx] --requirements requirements.json\n  qa-init --input candidate.xlsx --requirements requirements.json --report visual-review.json\n  qa-complete --report visual-review.json --reviews observations.json\n  deliver --input candidate.xlsx --out final.xlsx --requirements requirements.json --qa-report visual-review.json\n\nInspection and compatibility:\n  resolve-latest --input source.xlsx [--use-exact-input]\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  convert-legacy --input source.xls --out converted.xlsx\n  recalculate --input source.xlsx --out recalculated.xlsx\n  render --input book.xlsx --out-dir render [--pdf render.pdf --montage montage.png --per-sheet]\n  fallback-patch --input candidate.xlsx --script patch.mjs --out patched.xlsx --manifest fallback.json --reason TEXT --allow-part PART\n\nLegacy/debug validation:\n  audit --input book.xlsx [--requirements requirements.json --out audit.json]\n  integrity-scaffold --requirements requirements.json --operation <copy|union|join|aggregate|formula|ocr>\n  integrity-status --requirements requirements.json\n  integrity-bind --requirements requirements.json [--plan integrity-plan.json --evidence source-evidence.json]\n  qa-record --report visual-review.json --sheet Sheet1 --page 1 --status passed --notes TEXT\n  qa-finalize --report visual-review.json\n  self-test [--out directory]\n`);
 }
 
 async function main() {
@@ -6065,6 +6784,7 @@ async function main() {
     case "capabilities": await commandCapabilities(options); break;
     case "schema": await commandSchema(options); break;
     case "prepare": await commandPrepare(options); break;
+    case "status": await commandTaskStatus(options); break;
     case "evidence-observe": await commandEvidenceObserve(options); break;
     case "evidence-confirm": await commandEvidenceConfirm(options); break;
     case "integrity-scaffold": await commandIntegrityScaffold(options); break;
@@ -6081,6 +6801,7 @@ async function main() {
     case "render": await commandRender(options); break;
     case "qa-init": await commandQaInit(options); break;
     case "qa-record": await commandQaRecord(options); break;
+    case "qa-complete": await commandQaComplete(options); break;
     case "qa-finalize": await commandQaFinalize(options); break;
     case "deliver": await commandDeliver(options); break;
     case "self-test": await commandSelfTest(options); break;

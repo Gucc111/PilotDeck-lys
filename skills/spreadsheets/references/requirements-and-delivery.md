@@ -11,11 +11,15 @@ Use only fields that the task needs:
 ```json
 {
   "task": {
-    "protocol": "pilotdeck-spreadsheet-task/v1",
+    "protocol": "pilotdeck-spreadsheet-task/v2",
     "workbookType": "data",
     "styleMode": "neutral-built-in",
+    "validationProfile": "strict",
+    "minimumValidationProfile": "strict",
+    "dataOperation": "transform",
+    "profileReasons": ["transform requires at least strict validation"],
     "finalOutput": "/absolute/path/final.xlsx",
-    "visualReview": { "mode": "all-pages" },
+    "visualReview": { "mode": "adaptive" },
     "allowDecorativeTitle": false,
     "allowedAccentColors": []
   },
@@ -107,20 +111,22 @@ Use only fields that the task needs:
 
 - `workbookType` is `data`, `tracker`, `model`, `dashboard`, `report`, or `template`.
 - `styleMode` is `neutral-built-in`, `preserve-source`, or `user-template`.
+- `dataOperation` is `create`, `presentation-only`, `copy`, `union`, `transform`, or `ocr`.
+- `validationProfile` is `fast`, `standard`, or `strict` and cannot be below the operation's minimum. The runtime may escalate a formula- or chart-bearing `fast` build to `standard`.
 - `preserve-source` includes the resolved latest input path and SHA-256.
 - `user-template` includes the exact template path and SHA-256.
-- `visualReview.mode` is `all-pages`, `selected-sheets`, or explicitly authorized `structural-only` for a data workbook.
+- `visualReview.mode` normally is `adaptive`; `all-pages`, `selected-sheets`, and explicitly authorized `structural-only` remain available for exceptional scopes.
 - `finalOutput` is the exact new `.xlsx` path authorized for delivery. Source replacement is currently blocked.
 
 Do not add decorative-title or accent-color permission because the builder already used them. Those fields reflect the current user's requirements, not a post-build exception.
 
 ## Source-backed workbooks
 
-Set `sourceBacked: true` whenever one or more files supply facts for the output. Prefer repeatable `prepare --source`, which records absolute paths and SHA-256 values, generates source evidence, and prevents manual hash transcription. `audit` and `deliver` reject missing or changed sources. `integrity-bind` derives every materially source-backed output sheet from the plan.
+Set `sourceBacked: true` whenever one or more files supply facts for the output. Prefer repeatable `prepare --source`, which records absolute paths and SHA-256 values, generates source evidence, and prevents manual hash transcription. Build and delivery reject missing or changed sources. Register the plan once with `helpers.integrity.register(workbook, plan)`; build validates, stores, binds, and audits it automatically.
 
 Each source-backed sheet must have either a bound numeric-integrity operation or at least one `expectedCells`/`expectedRanges` assertion. Use numeric integrity for complete copied, unioned, joined, aggregated, calculated, or image-derived numeric facts. Use `expectedRanges` for additional user-critical non-numeric matrices rather than checking one convenient cell.
 
-The requirements schema rejects a source-backed sheet with neither form of fact coverage. A numeric-integrity task remains `prepared` until the generated plan and evidence are validated by `integrity-bind`; build rejects that unbound state. The build also checks declared sheets, formula ranges, tables, validations, non-formula facts, and neutral-style policy before the expensive recalculation stage, so correct the plan, requirements, or builder instead of waiting for a late audit failure.
+The requirements schema rejects a source-backed sheet with neither form of fact coverage. A numeric-integrity task remains `prepared` until the builder registers a complete plan; the same build binds it before candidate validation. The build also checks declared sheets, formula ranges, tables, validations, non-formula facts, and neutral-style policy before expensive recalculation, so correct the plan, requirements, or builder instead of waiting for a late failure.
 
 Build the expected matrices from actual `inspect` output or exact text/JSON extraction. Do not type them from memory. Requirements prove that the output matches the frozen fact matrix; source hashes prove the inputs were not changed during the task.
 
@@ -147,7 +153,9 @@ bash "$SHEET" build \
   --out "$WORKSPACE/tmp/candidate.xlsx"
 ```
 
-Initialize QA, inspect each returned page, and record it before finalizing:
+The successful build writes one attestation containing the candidate SHA, requirements SHA, builder SHA, source/evidence bindings, and complete audit. Do not repeat the audit before QA.
+
+Initialize adaptive QA, inspect every selected page, and finalize them in one batch:
 
 ```bash
 bash "$SHEET" qa-init \
@@ -155,16 +163,12 @@ bash "$SHEET" qa-init \
   --requirements "$WORKSPACE/qa/requirements.json" \
   --report "$WORKSPACE/qa/visual-review.json"
 
-bash "$SHEET" qa-record \
+bash "$SHEET" qa-complete \
   --report "$WORKSPACE/qa/visual-review.json" \
-  --sheet "指标总览" --page 1 --status passed \
-  --notes "Checked visible facts, formats, chart labels, and page bounds."
-
-bash "$SHEET" qa-finalize \
-  --report "$WORKSPACE/qa/visual-review.json"
+  --reviews "$WORKSPACE/qa/observations.json"
 ```
 
-`qa-init` binds the candidate SHA-256, requirements SHA-256, structural/calculation audit, render coverage, and normalized decoded-pixel digest for every required page. `qa-record` preserves those digests and adds one page-specific review. Any candidate, requirements, or page-image mutation makes the review stale.
+`qa-init` verifies and reuses the build attestation, renders the required sheets, and binds a normalized decoded-pixel digest for every selected page. `qa-complete` requires exactly one page-specific observation for every selected page. Any candidate, requirements, attestation, or page-image mutation makes the review stale.
 
 Then seal that exact candidate:
 
@@ -177,7 +181,7 @@ bash "$SHEET" deliver \
   --report "$WORKSPACE/qa/delivery.json"
 ```
 
-`deliver` requires finalized SHA-bound QA, rechecks structural/formula/type/style coverage and source hashes, verifies the exact prepared output path, atomically copies the candidate, reopens the final artifact, records lineage, and reports its SHA-256.
+`deliver` requires finalized SHA-bound QA, verifies the attestation plus current source/evidence hashes and the exact prepared output path, atomically copies the already-audited candidate bytes, verifies the final SHA, records lineage, and reports its SHA-256. It does not rerun the complete workbook audit for v2 tasks.
 
 Warnings block delivery until they are fixed or explicitly dispositioned. Formula errors, invalid dates, missing required objects, blank print pages, failed coverage, and hash mismatches are hard failures. A failed build does not update the requested candidate; never recover by copying a raw or debug workbook to the final path.
 

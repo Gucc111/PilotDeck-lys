@@ -26,15 +26,19 @@ export default async function build({
 
 Use `createWorkbook()` for a new XLSX. It initializes workbook metadata and requests full calculation. Use `loadWorkbook(inputPath)` for `.xlsx`, `.csv`, or `.tsv` input.
 
-For source-backed work, do not invent the numeric-integrity JSON shape. After `prepare`, run:
+For source-backed work, register the transformation plan on the workbook. The first build validates and binds it automatically:
 
-```bash
-bash "$SHEET" integrity-scaffold \
-  --requirements "$WORKSPACE/qa/requirements.json" \
-  --operation copy
+```js
+helpers.integrity.register(workbook, {
+  protocol: "pilotdeck-numeric-integrity/v1",
+  mode: "strict",
+  draft: false,
+  operations: [/* copy, union, join, aggregate, formula, or ocr */],
+  invariants: [],
+});
 ```
 
-For multi-step work, select sources with `--source-id` and add dependent steps with `--append --from-operation`; never reference the candidate as an input source. Edit the returned draft, keep its frozen effective source paths, set `draft=false`, and run `integrity-status` before binding. Do not create project-root temporary conversions, replace source paths with guessed filenames, or inspect CLI implementation code to discover the next command.
+Use exact effective source paths from the prepared source evidence and never reference the candidate as an input source. For multi-step work, downstream operations reference earlier operation IDs. `integrity-scaffold`, `integrity-status`, and `integrity-bind` remain available for legacy/debug plan authoring, but they are not separate steps in the normal build path. Do not create project-root temporary conversions, replace source paths with guessed filenames, or inspect CLI implementation code to discover the next command.
 
 ## Create worksheets
 
@@ -235,21 +239,18 @@ Return a workbook and choose `.csv` or `.tsv` as the `build --out` extension. Th
 Keep every builder, candidate, conversion, render, and report under the turn work directory. Only `FINAL_XLSX` is user-facing.
 
 ```bash
-WORKSPACE="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}/spreadsheets"
+WORKSPACE="${PILOTDECK_WORK_DIR:?PILOTDECK_WORK_DIR is required}/spreadsheets"
 FINAL_XLSX="$PWD/<requested-output>.xlsx"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/qa"
-bash "$SHEET" prepare --final-out "$FINAL_XLSX" --workbook-type data
-# For source-backed numeric work, add repeatable --source paths, complete the
-# generated integrity plan, then bind it before build:
-bash "$SHEET" integrity-bind --requirements "$WORKSPACE/qa/requirements.json"
+bash "$SHEET" prepare --final-out "$FINAL_XLSX" --workbook-type data --data-operation create
 bash "$SHEET" scaffold --out "$WORKSPACE/tmp/workbook.mjs"
 bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
 bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --input "$INPUT_XLSX" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
 bash "$SHEET" convert-legacy --input "$INPUT_XLS" --out "$WORKSPACE/tmp/converted.xlsx"
 bash "$SHEET" inspect --input "$INPUT_XLSX" --sheet Summary --range A1:H20 --styles --out "$WORKSPACE/tmp/inspection.json"
-bash "$SHEET" audit --input "$WORKSPACE/tmp/candidate.xlsx" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/qa/audit.json"
 bash "$SHEET" qa-init --input "$WORKSPACE/tmp/candidate.xlsx" --requirements "$WORKSPACE/qa/requirements.json" --report "$WORKSPACE/qa/visual-review.json"
-bash "$SHEET" qa-record --report "$WORKSPACE/qa/visual-review.json" --sheet Summary --page 1 --status passed --notes "Inspected the current page at full resolution."
-bash "$SHEET" qa-finalize --report "$WORKSPACE/qa/visual-review.json"
-bash "$SHEET" deliver --input "$WORKSPACE/tmp/candidate.xlsx" --out "$FINAL_XLSX" --requirements "$WORKSPACE/qa/requirements.json" --qa-report "$WORKSPACE/qa/visual-review.json"
+bash "$SHEET" qa-complete --report "$WORKSPACE/qa/visual-review.json" --reviews "$WORKSPACE/qa/observations.json"
+bash "$SHEET" deliver --input "$WORKSPACE/tmp/candidate.xlsx" --out "$FINAL_XLSX" --requirements "$WORKSPACE/qa/requirements.json" --qa-report "$WORKSPACE/qa/visual-review.json" --report "$WORKSPACE/qa/delivery.json"
 ```
+
+Do not run `audit` after a successful v2 build. Use `status --requirements ...` when you need the exact current state or next command.

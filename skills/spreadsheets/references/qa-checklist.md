@@ -30,15 +30,9 @@
 - Reconcile important totals with source rows.
 - Check relative and absolute references after copied formulas.
 - Check zero, blank, negative, and missing-data edge cases.
-- Run the final formula error scan.
+- Confirm the build attestation's audit is `status: ok` and `coverage.status: passed`.
 
-Use:
-
-```bash
-bash "$SHEET" audit --input "$FINAL_FILE" --out "$WORKSPACE/qa/audit.json"
-```
-
-Do not finalize unless the audit returns `status: ok`. Fix every warning, or register its type and concrete rationale in `warningDispositions`; unresolved warnings return `partial` and block `deliver`. Pay particular attention to missing cached formula results, blank sheets, oversized used ranges, and CJK fallback. Review `advisories` and `package.roundTripRisks` before any future edit of a workbook containing native charts or drawings.
+Do not rerun a standalone audit after a successful v2 build. The build attestation already contains the complete result reused by QA and delivery. Fix every warning, or register its type and concrete rationale in `warningDispositions`; unresolved warnings block delivery. Pay particular attention to missing cached formula results, blank sheets, oversized used ranges, and CJK fallback. Review `advisories` and `package.roundTripRisks` before any future edit of a workbook containing native charts or drawings.
 
 ## Visual verification
 
@@ -48,7 +42,7 @@ Initialize the canonical render and review state:
 bash "$SHEET" qa-init --input "$CANDIDATE" --requirements "$REQUIREMENTS" --report "$WORKSPACE/qa/visual-review.json"
 ```
 
-Inspect the montage for overall coverage, then inspect every `page-N.png` at full resolution.
+Inspect the montage for overall coverage, then inspect every page selected in `visual-review.json` at full resolution. Adaptive review may select representative sheets and first/last pages for a large data workbook; small, dashboard, report, and template workbooks remain fully reviewed.
 
 Check:
 
@@ -62,14 +56,13 @@ Check:
 - Chinese titles, labels, chart text, and full-width punctuation have complete glyphs.
 - The reported sheet-to-page mapping is plausible and contains no automatically detected blank pages.
 
-After each page, call `qa-record` with its exact sheet, page number, result, and specific observations. Run `qa-finalize` only after all required pages pass. Do not hand-edit the report or reuse review notes after rebuilding.
+Create one observations JSON with a `reviews` array. Include exactly one object per selected page with its sheet, page number, `passed`/`failed` status, and specific notes. Run `qa-complete --report ... --reviews ...` once after inspection. Do not hand-edit the review report or reuse observations after rebuilding.
 
 ## Final integrity
 
 - Seal the candidate with `deliver --qa-report`; do not manually copy it to the final path.
-- Reopen the exported file through `inspect` after the last rebuild.
 - Confirm page count and worksheet count are plausible.
 - Confirm the final SHA-256 matches the sealed candidate and the final coverage remains passed.
-- Confirm the finalized QA candidate SHA and requirements SHA match delivery.
+- Confirm the finalized QA candidate, requirements, and attestation hashes match delivery.
 - Confirm the deliverable extension matches the requested format.
 - Deliver only the final spreadsheet unless support artifacts were requested.

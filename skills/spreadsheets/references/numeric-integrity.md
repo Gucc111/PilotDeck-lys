@@ -21,8 +21,8 @@ Use the numeric-integrity protocol whenever source files supply important numeri
 - When a malformed XLSX requires LibreOffice normalization, retain both authorities: the untouched origin hash and the internal derived hash. The plan reads the derived path, while audit verifies that neither origin nor derived file changed.
 - Treat `source-evidence.json` as a generated inventory and image-region ledger. Never hand-edit it.
 - Treat `integrity-plan.json` as the declared transformation, not as a list of model-authored answers.
-- Let `audit` reread the frozen files and independently recompute the expected records and values.
-- Require `deliver` to repeat the same audit. A stale plan, stale evidence file, changed source, unverified image fact, or mismatched output blocks delivery.
+- Let the build audit reread the frozen files and independently recompute the expected records and values.
+- Bind that result in the build attestation. QA reuses the attested result, and delivery verifies the attestation plus current source/evidence hashes. A stale plan, stale evidence file, changed source, unverified image fact, or mismatched output blocks delivery.
 
 The protocol prevents silent copying, join, aggregation, formula, and transcription errors. It does not establish the external authenticity of a source document.
 
@@ -45,13 +45,30 @@ bash "$SHEET" prepare \
 - `$WORKSPACE/qa/integrity-plan.json`
 - `$WORKSPACE/qa/requirements.json`
 
-Inspect the source ranges, then complete the plan. Query the authoritative schema instead of guessing fields:
+Inspect the source ranges, then declare the plan once in the builder with `helpers.integrity.register(workbook, plan)`. Query the authoritative schema instead of guessing fields:
 
 ```bash
 bash "$SHEET" schema --command numeric-integrity
 ```
 
-Generate an operation-shaped draft from the frozen evidence:
+The preferred workflow is:
+
+1. Use exact effective source paths from `source-evidence.json`.
+2. Describe every source-to-output operation in one non-draft plan.
+3. Register it on the returned workbook.
+4. Run build once. Build validates, writes, binds, and audits the plan before updating the candidate.
+
+```js
+helpers.integrity.register(workbook, {
+  protocol: "pilotdeck-numeric-integrity/v1",
+  mode: "strict",
+  draft: false,
+  operations,
+  invariants,
+});
+```
+
+For difficult multi-step plans, generate an operation-shaped draft as a legacy/debug authoring aid:
 
 ```bash
 bash "$SHEET" integrity-scaffold \
@@ -74,7 +91,7 @@ bash "$SHEET" integrity-scaffold \
   --append
 ```
 
-The scaffold uses exact effective source paths and copies a prior operation's output mapping into dependent inputs. It sets `draft: true` and may use explicit `REPLACE_WITH_*` placeholders. Review the grain, map real columns and semantic types, correct exact header-excluding ranges, set output ranges and keys, then set `draft` to `false`.
+The scaffold uses exact effective source paths and copies a prior operation's output mapping into dependent inputs. It sets `draft: true` and may use explicit `REPLACE_WITH_*` placeholders. Review the grain, map real columns and semantic types, correct exact header-excluding ranges, set output ranges and keys, then set `draft` to `false`. Move the finished plan into the builder registration.
 
 Check the state without reading runtime source code:
 
@@ -83,16 +100,16 @@ bash "$SHEET" integrity-status \
   --requirements "$WORKSPACE/qa/requirements.json"
 ```
 
-Fix only the returned source, placeholder, dependency, field, or range blockers. A mapped column outside its declared range is rejected before binding. Bind only when `readyToBind` is true.
+Fix only the returned source, placeholder, dependency, field, or range blockers. A mapped column outside its declared range is rejected before binding.
 
-Bind the completed plan:
+Manual binding remains available only for legacy/debug state:
 
 ```bash
 bash "$SHEET" integrity-bind \
   --requirements "$WORKSPACE/qa/requirements.json"
 ```
 
-Binding validates the plan, binds the current plan and evidence hashes, derives `sourceBackedSheets`, and derives required formula ranges. Any later plan or evidence change requires another `integrity-bind`.
+Normal builders do not need this command: build performs the same validation and binding from `helpers.integrity.register`. Binding derives `sourceBackedSheets` and required formula ranges. Any later plan or evidence change requires a new build and attestation.
 
 ## Plan model
 
@@ -313,7 +330,7 @@ bash "$SHEET" evidence-confirm \
   --confirmed-by user
 ```
 
-Never infer confirmation from silence, prior context, a model's confidence, or a balancing equation. Re-run `integrity-bind` after any observation or confirmation change.
+Never infer confirmation from silence, prior context, a model's confidence, or a balancing equation. After any observation or confirmation change, rebuild so the registered plan, evidence, audit, and attestation are rebound together. Use `integrity-bind` directly only when repairing legacy/debug state.
 
 ## Failure policy
 
