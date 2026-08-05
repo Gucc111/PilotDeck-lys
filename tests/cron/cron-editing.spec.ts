@@ -13,7 +13,7 @@ import { CronTaskStore } from "../../src/cron/storage/CronTaskStore.js";
 import { InProcessGateway } from "../../src/gateway/client/InProcessGateway.js";
 import { RemoteGateway } from "../../src/gateway/client/RemoteGateway.js";
 import type { GatewayWsClient } from "../../src/gateway/client/GatewayWsClient.js";
-import type { Gateway, GatewayCronController } from "../../src/gateway/index.js";
+import type { Gateway, GatewayCronController, GatewayEvent } from "../../src/gateway/index.js";
 import { PILOTDECK_GATEWAY_PROTOCOL_VERSION } from "../../src/gateway/protocol/version.js";
 import { GatewayWsConnection } from "../../src/gateway/server/GatewayWsConnection.js";
 import type { TextWebSocketConnection } from "../../src/gateway/server/websocket.js";
@@ -45,7 +45,12 @@ function makeTask(overrides: Partial<CronTask> = {}): CronTask {
   };
 }
 
-function createFire(store: CronTaskStore, gateway: Gateway, now: () => Date): CronFire {
+function createFire(
+  store: CronTaskStore,
+  gateway: Gateway,
+  now: () => Date,
+  onTurnEvent?: (sessionKey: string, channelKey: string, event: GatewayEvent) => void,
+): CronFire {
   const activeRuns = new Map<string, { runId: string; taskId: string; sessionKey: string; scheduleType: "once" | "cron"; stopRequested: boolean }>();
   return new CronFire({
     gateway,
@@ -61,6 +66,7 @@ function createFire(store: CronTaskStore, gateway: Gateway, now: () => Date): Cr
     runTimeoutMs: 60_000,
     defaultTimezone: "UTC",
     releaseTaskSession: async () => undefined,
+    onTurnEvent,
   });
 }
 
@@ -319,6 +325,83 @@ test("CronFire never executes an edited snapshot and claims a current snapshot o
     const completed = await store.getTask(oldSnapshot.taskId);
     assert.equal(completed?.status, "scheduled");
     assert.equal(completed?.revision, 3);
+  } finally {
+    rmSync(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("CronFire forwards live gateway events", async () => {
+  const pilotHome = mkdtempSync(join(tmpdir(), "pilotdeck-cron-turn-events-"));
+  const projectKey = "/tmp/projects/cron-editing";
+  const now = () => new Date("2026-01-01T00:00:00.000Z");
+  try {
+    const store = createStore(pilotHome, projectKey);
+    const task = makeTask();
+    await store.putTask(task);
+    const gatewayEvents: GatewayEvent[] = [
+      { type: "assistant_text_delta", text: "Working" },
+      { type: "turn_completed", usage: {}, finishReason: "completed" },
+    ];
+    const gateway = {
+      submitTurn: async function* () {
+        yield* gatewayEvents;
+      },
+    } as unknown as Gateway;
+    const forwarded: Array<{ sessionKey: string; channelKey: string; event: GatewayEvent }> = [];
+    const fire = createFire(store, gateway, now, (sessionKey, channelKey, event) => {
+      forwarded.push({ sessionKey, channelKey, event });
+    });
+
+    await fire.runTask(task, "run-1");
+
+    assert.deepEqual(forwarded, gatewayEvents.map((event) => ({
+      sessionKey: task.sessionKey,
+      channelKey: task.channelKey,
+      event,
+    })));
+    assert.equal((await store.getTask(task.taskId))?.status, "scheduled");
+  } finally {
+    rmSync(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("CronFire completes when live event forwarding fails", async () => {
+  const pilotHome = mkdtempSync(join(tmpdir(), "pilotdeck-cron-turn-events-failure-"));
+  const projectKey = "/tmp/projects/cron-editing";
+  const now = () => new Date("2026-01-01T00:00:00.000Z");
+  try {
+    const store = createStore(pilotHome, projectKey);
+    const task = makeTask();
+    await store.putTask(task);
+    const gateway = {
+      submitTurn: async function* () {
+        yield { type: "assistant_text_delta", text: "Working" } as GatewayEvent;
+        yield { type: "turn_completed", usage: {}, finishReason: "completed" } as GatewayEvent;
+      },
+    } as unknown as Gateway;
+    const warnings: string[] = [];
+    const fire = new CronFire({
+      gateway,
+      store,
+      now,
+      registerActiveRun: () => undefined,
+      unregisterActiveRun: () => undefined,
+      getActiveRun: () => undefined,
+      runTimeoutMs: 60_000,
+      defaultTimezone: "UTC",
+      releaseTaskSession: async () => undefined,
+      onTurnEvent: () => {
+        throw new Error("notification unavailable");
+      },
+      logger: {
+        warn: (message) => warnings.push(message),
+      },
+    });
+
+    await fire.runTask(task, "run-1");
+
+    assert.equal((await store.getTask(task.taskId))?.status, "scheduled");
+    assert.ok(warnings.includes("cron turn event delivery failed"));
   } finally {
     rmSync(pilotHome, { recursive: true, force: true });
   }

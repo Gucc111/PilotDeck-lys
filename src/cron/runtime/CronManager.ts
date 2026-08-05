@@ -30,6 +30,7 @@ import { createCronListTool } from "../tool/CronListTool.js";
 import { createCronStopTool } from "../tool/CronStopTool.js";
 import { migrateCronStores } from "../storage/CronStoreMigration.js";
 import { CronRuntime, type CronRuntimeLogger } from "./CronRuntime.js";
+import type { CronTurnEventHandler } from "./CronFire.js";
 
 export type CreateCronManagerOptions = {
   config: CronConfig;
@@ -40,6 +41,7 @@ export type CreateCronManagerOptions = {
   logger?: CronRuntimeLogger;
   telemetry?: TelemetryClient;
   onResultDelivery?: CronResultDeliveryHandler;
+  onTurnEvent?: CronTurnEventHandler;
 };
 
 export class CronManager {
@@ -188,6 +190,7 @@ export class CronManager {
       logger: this.options.logger,
       telemetry: this.options.telemetry,
       onResultDelivery: this.options.onResultDelivery,
+      onTurnEvent: this.options.onTurnEvent,
       activeRunCount: () => this.activeRunCount(),
       skipToolCreation: true,
     });

@@ -22,6 +22,8 @@ export type CronPhaseEventCallback = (event: {
   error?: { code: string; message: string };
 }) => void;
 
+export type CronTurnEventHandler = (sessionKey: string, channelKey: string, event: GatewayEvent) => void;
+
 export type CronFireDependencies = {
   gateway: Gateway;
   store: CronTaskStore;
@@ -33,6 +35,7 @@ export type CronFireDependencies = {
   defaultTimezone: string;
   releaseTaskSession: (task: CronTask) => Promise<void>;
   onResultDelivery?: CronResultDeliveryHandler;
+  onTurnEvent?: CronTurnEventHandler;
   logger?: {
     warn: (message: string, data?: Record<string, unknown>) => void;
   };
@@ -99,6 +102,7 @@ export class CronFire {
         timeoutMs: this.deps.runTimeoutMs,
       })) {
         await this.deps.store.appendRunEvent(runId, event);
+        this.forwardTurnEvent(task, event);
         if (event.type === "assistant_text_delta") {
           assistantText += event.text;
         }
@@ -193,6 +197,18 @@ export class CronFire {
           runId,
           error: updateError instanceof Error ? updateError.message : String(updateError),
         });
+      });
+    }
+  }
+
+  private forwardTurnEvent(task: CronTask, event: GatewayEvent): void {
+    try {
+      this.deps.onTurnEvent?.(task.sessionKey, task.channelKey, event);
+    } catch (error) {
+      this.deps.logger?.warn("cron turn event delivery failed", {
+        taskId: task.taskId,
+        runId: task.lastRunId,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
