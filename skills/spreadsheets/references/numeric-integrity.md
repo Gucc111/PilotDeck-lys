@@ -18,6 +18,7 @@ Use the numeric-integrity protocol whenever source files supply important numeri
 ## Trust boundary
 
 - Treat the frozen source files, their SHA-256 hashes, and the runtime's direct reread as the authority.
+- When a malformed XLSX requires LibreOffice normalization, retain both authorities: the untouched origin hash and the internal derived hash. The plan reads the derived path, while audit verifies that neither origin nor derived file changed.
 - Treat `source-evidence.json` as a generated inventory and image-region ledger. Never hand-edit it.
 - Treat `integrity-plan.json` as the declared transformation, not as a list of model-authored answers.
 - Let `audit` reread the frozen files and independently recompute the expected records and values.
@@ -49,6 +50,40 @@ Inspect the source ranges, then complete the plan. Query the authoritative schem
 ```bash
 bash "$SHEET" schema --command numeric-integrity
 ```
+
+Generate an operation-shaped draft from the frozen evidence:
+
+```bash
+bash "$SHEET" integrity-scaffold \
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --operation union \
+  --id union-orders \
+  --source-id source-1 \
+  --source-id source-2
+```
+
+Append dependent transformations without treating the unverified candidate as a source:
+
+```bash
+bash "$SHEET" integrity-scaffold \
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --operation join \
+  --id join-products \
+  --source-id source-3 \
+  --from-operation union-orders \
+  --append
+```
+
+The scaffold uses exact effective source paths and copies a prior operation's output mapping into dependent inputs. It sets `draft: true` and may use explicit `REPLACE_WITH_*` placeholders. Review the grain, map real columns and semantic types, correct exact header-excluding ranges, set output ranges and keys, then set `draft` to `false`.
+
+Check the state without reading runtime source code:
+
+```bash
+bash "$SHEET" integrity-status \
+  --requirements "$WORKSPACE/qa/requirements.json"
+```
+
+Fix only the returned source, placeholder, dependency, field, or range blockers. A mapped column outside its declared range is rejected before binding. Bind only when `readyToBind` is true.
 
 Bind the completed plan:
 
@@ -85,6 +120,22 @@ Use absolute source paths. Use exact source and output A1 ranges excluding heade
   }
 }
 ```
+
+For a downstream operation, replace `source` with `operation` and reuse the referenced operation's exact output sheet, range, and selected column mappings:
+
+```json
+{
+  "operation": "union-orders",
+  "sheet": "订单明细",
+  "range": "A4:F27",
+  "columns": {
+    "orderId": "A",
+    "amount": "F"
+  }
+}
+```
+
+Dependencies must point backward in the plan. Their expected rows come from the prior source-derived transformation, not from candidate cells.
 
 Ranges are evidence boundaries, not approximate hints. Include every intended record. The runtime skips rows whose mapped fields are all blank unless `skipBlankRows` is `false`.
 

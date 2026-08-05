@@ -26,6 +26,16 @@ export default async function build({
 
 Use `createWorkbook()` for a new XLSX. It initializes workbook metadata and requests full calculation. Use `loadWorkbook(inputPath)` for `.xlsx`, `.csv`, or `.tsv` input.
 
+For source-backed work, do not invent the numeric-integrity JSON shape. After `prepare`, run:
+
+```bash
+bash "$SHEET" integrity-scaffold \
+  --requirements "$WORKSPACE/qa/requirements.json" \
+  --operation copy
+```
+
+For multi-step work, select sources with `--source-id` and add dependent steps with `--append --from-operation`; never reference the candidate as an input source. Edit the returned draft, keep its frozen effective source paths, set `draft=false`, and run `integrity-status` before binding. Do not create project-root temporary conversions, replace source paths with guessed filenames, or inspect CLI implementation code to discover the next command.
+
 ## Create worksheets
 
 ```js

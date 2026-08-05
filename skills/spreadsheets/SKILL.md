@@ -22,12 +22,14 @@ Work with standalone spreadsheet files through a reproducible JavaScript `.mjs` 
 - Use `await helpers.addImage(...)` for local raster illustrations. Do not fetch remote images or use an image to impersonate a chart.
 - Create `requirements.json` for every non-trivial workbook and require `coverage.status=passed`.
 - Pass every fact-providing file through repeatable `prepare --source`. For source-backed workbooks containing important numbers, bind a strict numeric-integrity plan before building; do not hand-write source evidence or use model-authored expected totals as the only proof.
+- If ExcelJS cannot read a source that LibreOffice can open, let `prepare` create its normalized copy under `PILOTDECK_WORK_DIR`; use the effective path returned in source evidence and never create `.tmp_src` or converted copies beside user files.
 - Treat copied, joined, unioned, aggregated, and formula-derived values as different operations and reconcile them against the frozen sources. A numeric-looking string does not satisfy a numeric fact.
 - Treat image-derived numbers as unverified until independent high-confidence observations agree or the user explicitly confirms the bound image region. Never use `evidence-confirm` without that explicit confirmation.
 - Treat Chinese as first-class content when the user does not specify a language. Apply the cross-platform typography policy and verify glyphs after recalculation.
 - Render every final worksheet page and inspect the individual PNG files at full size. A montage is only an overview.
 - Fix formula errors, clipped content, broken tables, unreadable formats, unexpected blank sheets, and poor page layout before delivery.
 - Build to a scratch candidate and use `deliver` to seal the final XLSX. Do not manually copy an unaudited candidate to the final path.
+- Keep every builder, comparison report, normalized source, and debug artifact under `PILOTDECK_WORK_DIR`. `deliver` compares the project directory with the snapshot frozen by `prepare` and blocks unexpected new, modified, or deleted files.
 - Use `qa-init`, record every required page with `qa-record`, and run `qa-finalize`. Any candidate, requirements, or render change invalidates the review.
 - A failed `build`, `audit`, or `deliver` means the workbook is not deliverable. Do not copy a raw/debug workbook, remove requested features, append `|| true`, or claim success after a gate fails.
 - Use the bundled helpers for conditional formatting and native charts. Do not replace them with unsupported ExcelJS chart APIs or unvalidated low-level conditional-formatting objects.
@@ -154,6 +156,8 @@ For an existing workbook, add `--input "$INPUT_XLSX"`; the default style mode be
 
 `prepare` creates the canonical requirements and returns builder, candidate, render, QA, and delivery-report paths. Complete the declarative checks in that requirements file, then create one executable builder:
 
+Do not rerun `prepare` merely to update acceptance checks; edit the prepared requirements arrays. If the user changes task policy and `prepare --overwrite` is necessary, omit `--source` only to preserve the original frozen sources and project snapshot. The command returns numeric integrity to `prepared`; run `integrity-status` and bind again. Use `--clear-sources` only when the user explicitly changes the task to a non-source-backed workbook.
+
 ```bash
 bash "$SHEET" scaffold \
   --out "$WORKSPACE/tmp/workbook.mjs"
@@ -165,9 +169,9 @@ For a task based on input facts:
 
 1. Pass every source through `prepare --source`; do not manually copy its hash into requirements.
 2. Inspect the exact source ranges, table grain, candidate keys, units, and ambiguous regions.
-3. Complete the generated `integrity-plan.json` with `copy`, `union`, `join`, `aggregate`, `formula`, or `ocr` operations.
+3. Run `integrity-scaffold --requirements "$WORKSPACE/qa/requirements.json" --operation <copy|union|join|aggregate|formula|ocr>`. Select inputs with repeatable `--source-id`. For a multi-step transformation, add each dependent step with `--append --from-operation <id>`; never use the candidate workbook as a source. Edit the generated draft instead of inventing a plan shape.
 4. For image facts, record independent observations with `evidence-observe`; when they disagree, stop unless the user explicitly confirms the value and region.
-5. Run `integrity-bind --requirements "$WORKSPACE/qa/requirements.json"`. Do not build while numeric integrity remains `prepared`.
+5. Resolve placeholders, set `draft` to `false`, then run `integrity-status --requirements "$WORKSPACE/qa/requirements.json"`. Fix only its listed blockers; do not inspect the CLI implementation. Run `integrity-bind` only when status reports `readyToBind: true`. Do not build while numeric integrity remains `prepared`.
 6. Add `expectedRanges` only for additional user-visible acceptance matrices and `expectedCells` for important checkpoints; do not duplicate a complete reconciliation as hand-authored expectations.
 7. If a source omits a value or the mapping is ambiguous, keep it blank, label it unconfirmed, or ask the user. Never invent a fact to make integrity pass.
 
@@ -191,6 +195,8 @@ bash "$SHEET" build \
 ```
 
 `build` preserves the input, validates builder structures and requirements, blocks unsafe round trips, recalculates formula-driven XLSX files, and performs a compact formula audit. It stages output and updates the requested candidate only after audit passes, so a failed build must be fixed and rerun. Every build writes `<candidate>.build-report.json`; a post-serialization failure also preserves its latest raw/staged files and full audit under `<candidate>.failed/` for diagnosis only. Never deliver those failed artifacts. Fix the reported `stage`, worksheet, range, and field instead of disabling requested features or switching to a second builder. Never add `--allow-risky-roundtrip` unless the user has explicitly accepted the listed compatibility risks.
+
+For a net-new `neutral-built-in` workbook, `build` performs a final CJK-only font pass after the builder returns. It replaces only missing or Latin-only fallback font names and preserves size, bold, color, and all non-CJK cells. This makes typography independent of whether rows were added before or after a helper call.
 
 ## Built-in style policy
 

@@ -38,19 +38,46 @@ function validateColumns(columns, fields, label) {
   }
 }
 
-function validateRegion(region, fields, label, { source = false } = {}) {
+function columnNumber(column) {
+  let result = 0;
+  for (const character of String(column).trim().toUpperCase()) result = result * 26 + character.charCodeAt(0) - 64;
+  return result;
+}
+
+function rangeBounds(range, label) {
+  const match = String(range).trim().toUpperCase().match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+  if (!match) fail(`${label} must be an explicit rectangular A1 range`);
+  const startCol = columnNumber(match[1]);
+  const startRow = Number.parseInt(match[2], 10);
+  const endCol = columnNumber(match[3]);
+  const endRow = Number.parseInt(match[4], 10);
+  if (startCol > endCol || startRow > endRow) fail(`${label} must run from the top-left cell to the bottom-right cell`);
+  return { startCol, startRow, endCol, endRow };
+}
+
+function validateRegion(region, fields, label, { input = false } = {}) {
   requireObject(region, label);
-  const allowed = new Set(["sheet", "range", "columns", "skipBlankRows", ...(source ? ["source"] : [])]);
+  const allowed = new Set(["sheet", "range", "columns", "skipBlankRows", ...(input ? ["source", "operation"] : [])]);
   validateKeys(region, allowed, label);
-  if (source) {
-    requireNonEmptyString(region.source, `${label}.source`);
+  if (input) {
+    const hasSource = typeof region.source === "string" && region.source.trim().length > 0;
+    const hasOperation = typeof region.operation === "string" && region.operation.trim().length > 0;
+    if (hasSource === hasOperation) fail(`${label} must reference exactly one frozen source or prior operation`);
+    if (hasSource) requireNonEmptyString(region.source, `${label}.source`);
+    if (hasOperation) requireNonEmptyString(region.operation, `${label}.operation`);
+  }
+  if (region.source !== undefined) {
     if (!path.isAbsolute(region.source)) fail(`${label}.source must be an absolute path`);
   }
   requireNonEmptyString(region.sheet, `${label}.sheet`);
-  if (!/^[A-Z]+\d+:[A-Z]+\d+$/i.test(requireNonEmptyString(region.range, `${label}.range`))) {
-    fail(`${label}.range must be an explicit rectangular A1 range`);
-  }
+  const bounds = rangeBounds(requireNonEmptyString(region.range, `${label}.range`), `${label}.range`);
   validateColumns(region.columns, fields, `${label}.columns`);
+  for (const [field, column] of Object.entries(region.columns)) {
+    const columnIndex = columnNumber(column);
+    if (columnIndex < bounds.startCol || columnIndex > bounds.endCol) {
+      fail(`${label}.columns.${field} maps to ${column}, outside ${region.range}`);
+    }
+  }
   if (region.skipBlankRows !== undefined && typeof region.skipBlankRows !== "boolean") {
     fail(`${label}.skipBlankRows must be true or false`);
   }
@@ -117,10 +144,10 @@ function validateOperation(operation, index, ids) {
     return;
   }
   if (!Array.isArray(operation.inputs) || operation.inputs.length === 0) fail(`${label}.inputs must be a non-empty array`);
-  if (type === "copy" && operation.inputs.length !== 1) fail(`${label}.inputs must contain exactly one source for copy`);
+  if (type === "copy" && operation.inputs.length !== 1) fail(`${label}.inputs must contain exactly one input for copy`);
   if (type === "join" && operation.inputs.length < 2) fail(`${label}.inputs must contain a base and at least one lookup for join`);
-  if (type === "formula" && operation.inputs.length !== 1) fail(`${label}.inputs must contain exactly one source for formula`);
-  operation.inputs.forEach((input, inputIndex) => validateRegion(input, operation.fields, `${label}.inputs[${inputIndex}]`, { source: true }));
+  if (type === "formula" && operation.inputs.length !== 1) fail(`${label}.inputs must contain exactly one input for formula`);
+  operation.inputs.forEach((input, inputIndex) => validateRegion(input, operation.fields, `${label}.inputs[${inputIndex}]`, { input: true }));
   validateRegion(operation.output, operation.fields, `${label}.output`);
   const outputFields = new Set(Object.keys(operation.output.columns));
   for (const [inputIndex, input] of operation.inputs.entries()) {
@@ -206,9 +233,10 @@ function validateOperation(operation, index, ids) {
 
 export function validateNumericIntegrityPlan(plan, label = "integrity plan") {
   requireObject(plan, label);
-  validateKeys(plan, new Set(["protocol", "mode", "operations", "invariants", "ocrPolicy"]), label);
+  validateKeys(plan, new Set(["protocol", "mode", "draft", "operations", "invariants", "ocrPolicy"]), label);
   if (plan.protocol !== NUMERIC_INTEGRITY_PROTOCOL) fail(`${label}.protocol must be '${NUMERIC_INTEGRITY_PROTOCOL}'`);
   if (plan.mode !== "strict") fail(`${label}.mode must be 'strict'`);
+  if (plan.draft !== undefined && typeof plan.draft !== "boolean") fail(`${label}.draft must be true or false`);
   if (!Array.isArray(plan.operations) || plan.operations.length === 0) fail(`${label}.operations must be a non-empty array`);
   if (plan.invariants !== undefined && !Array.isArray(plan.invariants)) fail(`${label}.invariants must be an array`);
   if (plan.operations.some((operation) => operation.type === "ocr")) {
@@ -225,7 +253,27 @@ export function validateNumericIntegrityPlan(plan, label = "integrity plan") {
     fail(`${label}.ocrPolicy is only valid when an ocr operation is declared`);
   }
   const ids = new Set();
-  plan.operations.forEach((operation, index) => validateOperation(operation, index, ids));
+  const priorOperations = new Map();
+  plan.operations.forEach((operation, index) => {
+    validateOperation(operation, index, ids);
+    const operationLabel = `${label}.operations[${index}]`;
+    for (const [inputIndex, input] of (operation.inputs ?? []).entries()) {
+      if (!input.operation) continue;
+      const dependency = priorOperations.get(input.operation);
+      if (!dependency) {
+        fail(`${operationLabel}.inputs[${inputIndex}].operation must reference an earlier operation`);
+      }
+      if (input.sheet !== dependency.output.sheet || input.range !== dependency.output.range) {
+        fail(`${operationLabel}.inputs[${inputIndex}] must reuse ${input.operation}'s exact output sheet and range`);
+      }
+      for (const [field, column] of Object.entries(input.columns)) {
+        if (dependency.output.columns[field]?.toUpperCase() !== String(column).toUpperCase()) {
+          fail(`${operationLabel}.inputs[${inputIndex}].columns.${field} must match ${input.operation}'s output mapping`);
+        }
+      }
+    }
+    priorOperations.set(operation.id, operation);
+  });
   for (const [index, invariant] of (plan.invariants ?? []).entries()) {
     const invariantLabel = `${label}.invariants[${index}]`;
     requireObject(invariant, invariantLabel);
@@ -842,15 +890,29 @@ export async function evaluateNumericIntegrityPlan(plan, adapters) {
         failures: ocr.failures,
       };
       operations.push(result);
-      operationRows.set(operation.id, { operation, rows: ocr.rows });
+      operationRows.set(operation.id, { operation, rows: ocr.rows, expectedRows: ocr.rows });
       allFailures.push(...ocr.failures.map((failure) => ({ operation: operation.id, ...failure })));
       continue;
     }
     const operationFailures = [];
     const inputRows = [];
     for (const [inputIndex, input] of operation.inputs.entries()) {
-      const rawRows = await adapters.readSourceRows(input, operation);
       const fields = Object.keys(input.columns);
+      let rawRows;
+      if (input.operation) {
+        const dependency = operationRows.get(input.operation);
+        if (!dependency) {
+          operationFailures.push({ type: "operation_input_missing", input: inputIndex, operation: input.operation });
+          inputRows.push([]);
+          continue;
+        }
+        rawRows = dependency.expectedRows.map((row) => ({
+          row: row.row,
+          values: Object.fromEntries(fields.map((field) => [field, row.cells[field]])),
+        }));
+      } else {
+        rawRows = await adapters.readSourceRows(input, operation);
+      }
       const normalized = [];
       for (const row of rawRows) {
         try {
@@ -922,7 +984,7 @@ export async function evaluateNumericIntegrityPlan(plan, adapters) {
       failures: operationFailures,
     };
     operations.push(result);
-    operationRows.set(operation.id, { operation, rows: actualRows });
+    operationRows.set(operation.id, { operation, rows: actualRows, expectedRows });
     allFailures.push(...operationFailures.map((failure) => ({ operation: operation.id, ...failure })));
   }
   const invariants = evaluateInvariants(plan, operationRows);
@@ -938,7 +1000,10 @@ export async function evaluateNumericIntegrityPlan(plan, adapters) {
 
 export function planSourcePaths(plan) {
   validateNumericIntegrityPlan(plan);
-  return [...new Set(plan.operations.flatMap((operation) => operation.inputs ?? []).map((input) => path.resolve(input.source)))];
+  return [...new Set(plan.operations
+    .flatMap((operation) => operation.inputs ?? [])
+    .filter((input) => input.source)
+    .map((input) => path.resolve(input.source)))];
 }
 
 export function planOutputSheets(plan) {
