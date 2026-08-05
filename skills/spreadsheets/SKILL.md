@@ -29,6 +29,7 @@ Work with standalone spreadsheet files through a reproducible JavaScript `.mjs` 
 - Use `qa-init`, record every required page with `qa-record`, and run `qa-finalize`. Any candidate, requirements, or render change invalidates the review.
 - A failed `build`, `audit`, or `deliver` means the workbook is not deliverable. Do not copy a raw/debug workbook, remove requested features, append `|| true`, or claim success after a gate fails.
 - Use the bundled helpers for conditional formatting and native charts. Do not replace them with unsupported ExcelJS chart APIs or unvalidated low-level conditional-formatting objects.
+- Use `helpers.addTableFromRange` after populating worksheet cells. Do not call `worksheet.addTable` with placeholder rows over existing data; the runtime rejects destructive table writes.
 - Resolve every audit warning or add a task-specific `warningDispositions` entry with a concrete rationale. Undisposed warnings block `deliver`.
 - If a standard helper is insufficient, follow the controlled fallback ladder. Never run an untracked package-mutating script or deliver its output directly.
 
@@ -173,7 +174,7 @@ bash "$SHEET" build \
   --out "$WORKSPACE/tmp/candidate.xlsx"
 ```
 
-`build` preserves the input, validates builder structures and requirements, blocks unsafe round trips, recalculates formula-driven XLSX files, and performs a compact formula audit. It stages output and updates the requested candidate only after audit passes, so a failed build must be fixed and rerun. Fix the reported `stage`, worksheet, range, and field instead of disabling requested features or switching to a second builder. Never add `--allow-risky-roundtrip` unless the user has explicitly accepted the listed compatibility risks.
+`build` preserves the input, validates builder structures and requirements, blocks unsafe round trips, recalculates formula-driven XLSX files, and performs a compact formula audit. It stages output and updates the requested candidate only after audit passes, so a failed build must be fixed and rerun. Every build writes `<candidate>.build-report.json`; a post-serialization failure also preserves its latest raw/staged files and full audit under `<candidate>.failed/` for diagnosis only. Never deliver those failed artifacts. Fix the reported `stage`, worksheet, range, and field instead of disabling requested features or switching to a second builder. Never add `--allow-risky-roundtrip` unless the user has explicitly accepted the listed compatibility risks.
 
 ## Built-in style policy
 
@@ -195,6 +196,7 @@ bash "$SHEET" build \
 - For CSV and TSV, preserve identifiers with leading zeroes as text and do not infer dates or numbers unless the task requires it.
 - Preserve identifiers longer than 15 digits as text. Detect UTF-8/UTF-8 BOM/GBK/GB18030 and default new delimited exports to UTF-8 BOM.
 - Preserve source facts exactly when translating labels or reorganizing tables. Never substitute plausible KPIs, channels, action items, owners, dates, or statuses.
+- Point charts at the actual source or derived worksheet ranges. Do not duplicate values into a hidden hardcoded range merely to make chart validation pass; fix the upstream table or formulas instead.
 
 ## Validate and review
 

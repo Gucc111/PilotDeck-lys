@@ -56,6 +56,7 @@ helpers.addNativeChart(workbook, {
 - Category and series ranges must have equal lengths.
 - Categories must be non-blank, series values must be non-blank and numeric after recalculation, and line charts must contain at least two complete points.
 - Keep chart sources visible and formula-backed when reshaping is needed.
+- Never copy calculated values into a hidden static range to bypass a chart-source error. Repair the source table/formulas, recalculate, and chart the real range so later edits update the chart.
 - Do not use an image to satisfy a requested chart.
 - Add every requested chart to `requirements.json`; audit the sheet, type, source ranges, native chart count, and `minPoints`. For a requested three-month trend, use `minPoints: 3`.
 - Render and inspect chart titles, category labels, legend labels, units, placement, and empty-data behavior.

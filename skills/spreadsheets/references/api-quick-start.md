@@ -132,6 +132,8 @@ helpers.addTableFromRange(sheet, {
 });
 ```
 
+Use this helper when the range is already populated. ExcelJS `worksheet.addTable()` writes its `columns` and `rows` into the target range and can silently replace existing formulas or values; the runtime rejects any raw table call that would overwrite populated cells.
+
 Use unique table names. Do not overlap tables.
 
 ## Data validation

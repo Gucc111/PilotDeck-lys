@@ -106,6 +106,8 @@ Set `sourceBacked: true` whenever one or more files supply facts for the output.
 
 Each source-backed sheet must have at least one `expectedCells` or `expectedRanges` assertion. Use `expectedRanges` for complete user-critical tables rather than checking one convenient cell. This is especially important for KPI histories, channel/source tables, schedules, action registers, owners, dates, and other facts where a plausible replacement would still look polished.
 
+The requirements schema rejects a source-backed sheet with no fact assertion. The build also checks declared sheets, formula ranges, tables, validations, non-formula facts, and neutral-style policy before the expensive recalculation stage, so correct the requirements or builder instead of waiting for a late audit failure.
+
 Build the expected matrices from actual `inspect` output or exact text/JSON extraction. Do not type them from memory. Requirements prove that the output matches the frozen fact matrix; source hashes prove the inputs were not changed during the task.
 
 For non-trivial workbooks, structural checks alone are rejected. Formula-driven workbooks need `requiredFormulaRanges`. Native charts need `requiredNativeCharts` with exact `sourceRanges` and `minPoints`. Coverage means only that the declared checks passed; it is not a percentage of undeclared user intent.
@@ -162,6 +164,8 @@ bash "$SHEET" deliver \
 `deliver` requires finalized SHA-bound QA, rechecks structural/formula/type/style coverage and source hashes, verifies the exact prepared output path, atomically copies the candidate, reopens the final artifact, records lineage, and reports its SHA-256.
 
 Warnings block delivery until they are fixed or explicitly dispositioned. Formula errors, invalid dates, missing required objects, blank print pages, failed coverage, and hash mismatches are hard failures. A failed build does not update the requested candidate; never recover by copying a raw or debug workbook to the final path.
+
+Every build writes `<candidate>.build-report.json`. When serialization has started, a failed build also writes `<candidate>.failed/` with the available raw workbook, staged workbook, full audit, and failure report. These are internal diagnostic artifacts, not alternative deliverables.
 
 ## Claims
 
