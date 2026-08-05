@@ -644,9 +644,11 @@ export class InProcessGateway implements Gateway {
       active: true,
       sessionKey: replay.sessionKey,
       runId: replay.runId,
-      events: replay.events
-        .filter((event) => this.shouldReplayActiveTurnEvent(input.sessionKey, event))
-        .map((event) => cloneGatewayEvent(event)),
+      events: input.includeEvents === false
+        ? []
+        : replay.events
+          .filter((event) => this.shouldReplayActiveTurnEvent(input.sessionKey, event))
+          .map((event) => cloneGatewayEvent(event)),
       ...(replay.truncated ? { truncated: true } : {}),
     };
   }

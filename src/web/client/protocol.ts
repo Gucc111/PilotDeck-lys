@@ -311,6 +311,8 @@ export type WebForkSessionResult = {
 
 export type WebActiveTurnSnapshotInput = {
   sessionKey: string;
+  /** Defaults to true. Set false for status-only polling. */
+  includeEvents?: boolean;
 };
 
 export type WebActiveTurnSnapshot = {

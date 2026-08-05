@@ -62,8 +62,7 @@ import {
     abortViaGateway,
     decidePermissionViaGateway,
     grantSessionPermissionViaGateway,
-    isSessionActiveViaGateway,
-    getActiveTurnSnapshotFramesViaGateway,
+    getSessionActivityViaGateway,
     getActiveSessionIdsViaGateway,
     elicitationRespondViaGateway,
     getRouterDashboardData,
@@ -2512,17 +2511,14 @@ function handleChatConnection(ws, request) {
                 if (normalizeSessionId(sessionId)) {
                     sessionWatchRegistry.watch(sessionId, ws);
                 }
-                const isProcessing = isSessionActiveViaGateway(sessionId);
                 const includeActiveTurnMessages = data.includeActiveTurnMessages !== false;
-                const activeTurnMessages = (isProcessing && includeActiveTurnMessages)
-                    ? await getActiveTurnSnapshotFramesViaGateway(sessionId, data.provider || 'pilotdeck')
-                    : [];
+                const activity = await getSessionActivityViaGateway(sessionId, data.provider || 'pilotdeck', includeActiveTurnMessages);
                 writer.send({
                     type: 'session-status',
                     sessionId,
                     provider: data.provider || 'pilotdeck',
-                    isProcessing,
-                    activeTurnMessages,
+                    isProcessing: activity.isProcessing,
+                    activeTurnMessages: includeActiveTurnMessages ? activity.activeTurnMessages : [],
                     tokenBudget: getSessionTokenBudget(sessionId),
                 });
             } else if (data.type === 'get-pending-permissions') {

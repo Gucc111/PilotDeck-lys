@@ -1369,13 +1369,31 @@ export function isSessionActiveViaGateway(sessionId) {
     return Boolean(sessionState.get(sessionId)?.active);
 }
 
-export async function getActiveTurnSnapshotFramesViaGateway(sessionId, provider = 'pilotdeck') {
-    if (!isPilotDeckSessionKey(sessionId)) return [];
-    const gw = await ensureGateway();
-    if (typeof gw.getActiveTurnSnapshot !== 'function') return [];
-    const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId });
-    if (!snapshot?.active || !Array.isArray(snapshot.events)) return [];
-    return snapshot.events.flatMap((event) => gatewayEventToFrames(event, sessionId, provider) || []);
+export async function getSessionActivityViaGateway(sessionId, provider = 'pilotdeck', includeActiveTurnMessages = true) {
+    if (!isPilotDeckSessionKey(sessionId)) {
+        return { isProcessing: false, activeTurnMessages: [] };
+    }
+
+    const localIsProcessing = Boolean(sessionState.get(sessionId)?.active);
+    try {
+        const gw = await ensureGateway();
+        if (typeof gw.getActiveTurnSnapshot !== 'function') {
+            return { isProcessing: localIsProcessing, activeTurnMessages: [] };
+        }
+        const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId, includeEvents: includeActiveTurnMessages });
+        if (!snapshot || typeof snapshot.active !== 'boolean') {
+            return { isProcessing: localIsProcessing, activeTurnMessages: [] };
+        }
+        return {
+            isProcessing: snapshot.active,
+            activeTurnMessages: includeActiveTurnMessages && snapshot.active && Array.isArray(snapshot.events)
+                ? snapshot.events.flatMap((event) => gatewayEventToFrames(event, sessionId, provider) || [])
+                : [],
+        };
+    } catch (error) {
+        console.warn('[pilotdeck-bridge] failed to read active turn snapshot:', error?.message || error);
+        return { isProcessing: localIsProcessing, activeTurnMessages: [] };
+    }
 }
 
 export function getActiveSessionIdsViaGateway() {

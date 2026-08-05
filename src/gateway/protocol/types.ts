@@ -239,6 +239,8 @@ export type GatewayEvent = GatewayTurnScopedEventMetadata & (
 
 export type GatewayActiveTurnSnapshotInput = {
   sessionKey: string;
+  /** Defaults to true. Set false for status-only polling. */
+  includeEvents?: boolean;
 };
 
 export type GatewayActiveTurnSnapshot = {
