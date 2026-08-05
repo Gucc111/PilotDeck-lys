@@ -229,6 +229,9 @@ WORKSPACE="${PILOTDECK_WORK_DIR:-$PWD/.pilotdeck/work/manual/<task-slug>}/spread
 FINAL_XLSX="$PWD/<requested-output>.xlsx"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/qa"
 bash "$SHEET" prepare --final-out "$FINAL_XLSX" --workbook-type data
+# For source-backed numeric work, add repeatable --source paths, complete the
+# generated integrity plan, then bind it before build:
+bash "$SHEET" integrity-bind --requirements "$WORKSPACE/qa/requirements.json"
 bash "$SHEET" scaffold --out "$WORKSPACE/tmp/workbook.mjs"
 bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"
 bash "$SHEET" build --builder "$WORKSPACE/tmp/workbook.mjs" --input "$INPUT_XLSX" --requirements "$WORKSPACE/qa/requirements.json" --out "$WORKSPACE/tmp/candidate.xlsx"

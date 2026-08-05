@@ -9,6 +9,7 @@ Run:
 ```bash
 bash "$SHEET" capabilities
 bash "$SHEET" schema --command requirements
+bash "$SHEET" schema --command numeric-integrity
 bash "$SHEET" schema --command native-chart
 bash "$SHEET" schema --command image
 ```

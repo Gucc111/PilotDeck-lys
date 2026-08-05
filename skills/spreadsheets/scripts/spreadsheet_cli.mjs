@@ -17,6 +17,14 @@ import {
   pruneEmptyDrawingParts,
   workbookSheetParts,
 } from "./lib/native-charts.mjs";
+import {
+  NUMERIC_INTEGRITY_PROTOCOL,
+  SOURCE_EVIDENCE_PROTOCOL,
+  evaluateNumericIntegrityPlan,
+  planOutputSheets,
+  planSourcePaths,
+  validateNumericIntegrityPlan,
+} from "./lib/numeric-integrity.mjs";
 
 const execFileAsync = promisify(execFile);
 const runtimeRoot = process.env.SPREADSHEET_RUNTIME_ROOT;
@@ -47,6 +55,8 @@ const STYLE_MODES = new Set(["neutral-built-in", "preserve-source", "user-templa
 const VISUAL_REVIEW_MODES = new Set(["all-pages", "selected-sheets", "structural-only"]);
 const TASK_PROTOCOL = "pilotdeck-spreadsheet-task/v1";
 const VISUAL_REVIEW_PROTOCOL = "pilotdeck-spreadsheet-visual-review/v1";
+const NUMERIC_INTEGRITY_STATES = new Set(["prepared", "bound"]);
+const EVIDENCE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"]);
 
 class SpreadsheetProtocolError extends Error {
   constructor(status, code, message, details = {}) {
@@ -1161,6 +1171,7 @@ const REQUIREMENT_KEYS = new Set([
   "sourceBacked",
   "sourceFiles",
   "sourceBackedSheets",
+  "numericIntegrity",
   "requiredSheets",
   "exactSheetCount",
   "minFormulaCount",
@@ -1259,6 +1270,36 @@ function validateRequirements(requirements, source = "requirements") {
   }
   if (requirements.sourceBackedSheets?.some((sheet) => typeof sheet !== "string" || sheet.trim().length === 0)) {
     throw new Error(`${source}.sourceBackedSheets must contain non-empty worksheet names`);
+  }
+  if (requirements.numericIntegrity !== undefined) {
+    const integrity = requirements.numericIntegrity;
+    if (!integrity || typeof integrity !== "object" || Array.isArray(integrity)) {
+      throw new Error(`${source}.numericIntegrity must be an object`);
+    }
+    const allowedIntegrityKeys = new Set(["protocol", "mode", "state", "evidence", "plan", "blockOnUnverified"]);
+    const unknownIntegrityKeys = Object.keys(integrity).filter((key) => !allowedIntegrityKeys.has(key));
+    if (unknownIntegrityKeys.length > 0) throw new Error(`${source}.numericIntegrity contains unsupported key(s): ${unknownIntegrityKeys.join(", ")}`);
+    if (integrity.protocol !== NUMERIC_INTEGRITY_PROTOCOL) {
+      throw new Error(`${source}.numericIntegrity.protocol must be '${NUMERIC_INTEGRITY_PROTOCOL}'`);
+    }
+    if (integrity.mode !== "strict") throw new Error(`${source}.numericIntegrity.mode must be 'strict'`);
+    if (!NUMERIC_INTEGRITY_STATES.has(integrity.state)) {
+      throw new Error(`${source}.numericIntegrity.state must be prepared or bound`);
+    }
+    if (integrity.blockOnUnverified !== true) {
+      throw new Error(`${source}.numericIntegrity.blockOnUnverified must be true`);
+    }
+    for (const [bindingName, binding] of [["evidence", integrity.evidence], ["plan", integrity.plan]]) {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding) || typeof binding.path !== "string" || !path.isAbsolute(binding.path)) {
+        throw new Error(`${source}.numericIntegrity.${bindingName} requires an absolute path`);
+      }
+      if (binding.sha256 !== undefined && !/^[a-f0-9]{64}$/i.test(String(binding.sha256))) {
+        throw new Error(`${source}.numericIntegrity.${bindingName}.sha256 must be a SHA-256 hash`);
+      }
+      if (integrity.state === "bound" && !/^[a-f0-9]{64}$/i.test(String(binding.sha256 ?? ""))) {
+        throw new Error(`${source}.numericIntegrity.${bindingName}.sha256 is required after integrity-bind`);
+      }
+    }
   }
   for (const [key, value] of [["exactSheetCount", requirements.exactSheetCount], ["minFormulaCount", requirements.minFormulaCount], ["maxTotalPages", requirements.maxTotalPages]]) {
     if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
@@ -1363,14 +1404,16 @@ function validateRequirements(requirements, source = "requirements") {
   }
   if (requirements.sourceBacked) {
     if ((requirements.sourceFiles?.length ?? 0) === 0) throw new Error(`${source}.sourceBacked requires sourceFiles`);
-    if ((requirements.sourceBackedSheets?.length ?? 0) === 0) throw new Error(`${source}.sourceBacked requires sourceBackedSheets`);
+    if ((requirements.sourceBackedSheets?.length ?? 0) === 0 && requirements.numericIntegrity?.state !== "prepared") {
+      throw new Error(`${source}.sourceBacked requires sourceBackedSheets`);
+    }
     for (const sheet of requirements.sourceBackedSheets) {
       const assertions = [
         ...(requirements.expectedCells ?? []).filter((item) => item.sheet === sheet),
         ...(requirements.expectedRanges ?? []).filter((item) => item.sheet === sheet),
       ];
-      if (assertions.length === 0) {
-        throw new Error(`${source}.sourceBackedSheets '${sheet}' requires at least one expectedCells or expectedRanges assertion sourced from inspected input facts`);
+      if (assertions.length === 0 && !requirements.numericIntegrity) {
+        throw new Error(`${source}.sourceBackedSheets '${sheet}' requires expectedCells/expectedRanges or bound numericIntegrity coverage`);
       }
     }
   }
@@ -1391,7 +1434,7 @@ function normalizeChartFormula(value) {
 }
 
 function valuesEqual(actual, expected, tolerance = 0) {
-  if (typeof expected === "number") return Number.isFinite(Number(actual)) && Math.abs(Number(actual) - expected) <= tolerance;
+  if (typeof expected === "number") return typeof actual === "number" && Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
   if (typeof expected === "string" && /^\d{4}-\d{2}-\d{2}$/.test(expected) && actual instanceof Date && isValidDate(actual)) {
     return actual.toISOString().startsWith(expected);
   }
@@ -1579,6 +1622,7 @@ function evaluateRequirements(workbook, packageInfo, requirements) {
     ...(requirements.requiredConditionalFormatting ?? []),
     ...(requirements.requiredDataValidations ?? []),
     ...(requirements.requiredImages ?? []),
+    ...(requirements.numericIntegrity ? [requirements.numericIntegrity] : []),
   ].length;
   record("semantic_requirement_floor", semanticAssertionCount > 0, { actual: semanticAssertionCount, minimum: 1 });
 
@@ -1598,7 +1642,11 @@ function evaluateRequirements(workbook, packageInfo, requirements) {
       ...(requirements.expectedCells ?? []).filter((item) => item.sheet === sheetName),
       ...(requirements.expectedRanges ?? []).filter((item) => item.sheet === sheetName),
     ];
-    record("source_backed_sheet_assertions", assertions.length > 0, { sheet: sheetName, assertions: assertions.length });
+    record("source_backed_sheet_assertions", assertions.length > 0 || requirements.numericIntegrity?.state === "bound", {
+      sheet: sheetName,
+      assertions: assertions.length,
+      numericIntegrity: requirements.numericIntegrity?.state ?? null,
+    });
   }
 
   const failures = checks.filter((check) => !check.passed);
@@ -1669,6 +1717,384 @@ async function evaluateSourceFiles(requirements) {
     });
   }
   return checks;
+}
+
+function assertEvidenceSource(filePath) {
+  const extension = workbookExtension(filePath);
+  if (![".xlsx", ".csv", ".tsv", ...EVIDENCE_IMAGE_EXTENSIONS].includes(extension)) {
+    throw new Error(`Unsupported numeric-integrity source '${extension || "(none)"}': ${filePath}`);
+  }
+  return extension;
+}
+
+function worksheetEvidenceSummary(worksheet) {
+  const digest = crypto.createHash("sha256");
+  const typeCounts = {};
+  let populatedCells = 0;
+  let formulaCells = 0;
+  let numericCells = 0;
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    row.eachCell({ includeEmpty: false }, (cell) => {
+      const value = effectiveCellValue(cell);
+      const type = cellValueType(cell);
+      populatedCells += 1;
+      typeCounts[type] = (typeCounts[type] ?? 0) + 1;
+      if (type === "number") numericCells += 1;
+      const formula = formulaDescriptor(cell);
+      if (formula) formulaCells += 1;
+      digest.update(JSON.stringify({
+        address: cell.address,
+        type,
+        value: serializableValue(value),
+        formula: formula?.formula ?? null,
+        result: formula ? serializableValue(formula.result) : null,
+        numberFormat: cell.numFmt ?? null,
+      }));
+      digest.update("\n");
+    });
+  });
+  const lastColumn = Math.max(worksheet.actualColumnCount, 1);
+  const lastRow = Math.max(worksheet.actualRowCount, 1);
+  return {
+    name: worksheet.name,
+    usedRange: `A1:${columnLetters(lastColumn)}${lastRow}`,
+    rows: worksheet.actualRowCount,
+    columns: worksheet.actualColumnCount,
+    populatedCells,
+    numericCells,
+    formulaCells,
+    typeCounts,
+    contentSha256: digest.digest("hex"),
+  };
+}
+
+async function captureSourceEvidence(sourcePaths) {
+  const sources = [];
+  for (const [index, sourcePathValue] of sourcePaths.entries()) {
+    const sourcePath = path.resolve(sourcePathValue);
+    if (!(await pathExists(sourcePath))) throw new Error(`Numeric-integrity source not found: ${sourcePath}`);
+    const extension = assertEvidenceSource(sourcePath);
+    const source = {
+      id: `source-${index + 1}`,
+      path: sourcePath,
+      sha256: await fileSha256(sourcePath),
+      format: extension.slice(1),
+    };
+    if ([".xlsx", ".csv", ".tsv"].includes(extension)) {
+      const workbook = extension === ".xlsx" ? await loadXlsx(sourcePath) : await loadDelimited(sourcePath, { inferTypes: true });
+      source.kind = "structured";
+      source.sheets = workbook.worksheets.map(worksheetEvidenceSummary);
+      source.summarySha256 = crypto.createHash("sha256").update(JSON.stringify(source.sheets)).digest("hex");
+    } else {
+      const metadata = await sharp(sourcePath).metadata();
+      source.kind = "image";
+      source.image = {
+        width: metadata.width ?? null,
+        height: metadata.height ?? null,
+        channels: metadata.channels ?? null,
+        space: metadata.space ?? null,
+        density: metadata.density ?? null,
+      };
+    }
+    sources.push(source);
+  }
+  return {
+    protocol: SOURCE_EVIDENCE_PROTOCOL,
+    sources,
+    imageFacts: [],
+  };
+}
+
+function validateSourceEvidence(evidence, label = "source evidence") {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) throw new Error(`${label} must be an object`);
+  if (evidence.protocol !== SOURCE_EVIDENCE_PROTOCOL) throw new Error(`${label}.protocol must be '${SOURCE_EVIDENCE_PROTOCOL}'`);
+  if (!Array.isArray(evidence.sources) || evidence.sources.length === 0) throw new Error(`${label}.sources must be a non-empty array`);
+  if (!Array.isArray(evidence.imageFacts)) throw new Error(`${label}.imageFacts must be an array`);
+  for (const [index, source] of evidence.sources.entries()) {
+    if (!source || typeof source.path !== "string" || !path.isAbsolute(source.path) || !/^[a-f0-9]{64}$/i.test(String(source.sha256 ?? ""))) {
+      throw new Error(`${label}.sources[${index}] requires an absolute path and SHA-256 hash`);
+    }
+  }
+  const sourcePaths = new Set(evidence.sources.map((source) => path.resolve(source.path)));
+  const factIds = new Set();
+  for (const [index, fact] of evidence.imageFacts.entries()) {
+    const factLabel = `${label}.imageFacts[${index}]`;
+    if (!fact || typeof fact.id !== "string" || fact.id.trim().length === 0) throw new Error(`${factLabel}.id must be a non-empty string`);
+    if (factIds.has(fact.id)) throw new Error(`${factLabel}.id '${fact.id}' is duplicated`);
+    factIds.add(fact.id);
+    if (typeof fact.source !== "string" || !path.isAbsolute(fact.source) || !sourcePaths.has(path.resolve(fact.source))) {
+      throw new Error(`${factLabel}.source must reference a frozen source image`);
+    }
+    if (!fact.region || !["x", "y", "width", "height"].every((key) => Number.isInteger(fact.region[key]) && fact.region[key] >= (key === "width" || key === "height" ? 1 : 0))) {
+      throw new Error(`${factLabel}.region requires non-negative integer x/y and positive width/height`);
+    }
+    if (!/^[a-f0-9]{64}$/i.test(String(fact.regionSha256 ?? ""))) throw new Error(`${factLabel}.regionSha256 must be a SHA-256 hash`);
+    if (!Array.isArray(fact.observations)) throw new Error(`${factLabel}.observations must be an array`);
+    for (const [observationIndex, observation] of fact.observations.entries()) {
+      if (!observation || typeof observation.method !== "string" || observation.method.trim().length === 0
+        || typeof observation.rawText !== "string" || String(observation.normalizedValue ?? "").trim().length === 0
+        || !Number.isFinite(observation.confidence) || observation.confidence < 0 || observation.confidence > 1) {
+        throw new Error(`${factLabel}.observations[${observationIndex}] requires method, rawText, normalizedValue, and confidence from 0 to 1`);
+      }
+    }
+    if (fact.confirmation !== null && fact.confirmation !== undefined) {
+      if (fact.confirmation.status !== "confirmed" || fact.confirmation.confirmedBy !== "user"
+        || fact.confirmation.basis !== "explicit-user" || String(fact.confirmation.value ?? "").trim().length === 0) {
+        throw new Error(`${factLabel}.confirmation must record an explicit user-confirmed value`);
+      }
+    }
+  }
+  return evidence;
+}
+
+function parseImageRegion(value) {
+  const parts = String(value).split(",").map((item) => Number.parseInt(item.trim(), 10));
+  if (parts.length !== 4 || parts.some((item) => !Number.isInteger(item))) throw new Error("--region must be x,y,width,height integers");
+  const [x, y, width, height] = parts;
+  if (x < 0 || y < 0 || width < 1 || height < 1) throw new Error("--region must use non-negative x/y and positive width/height");
+  return { x, y, width, height };
+}
+
+async function imageRegionSha256(sourcePath, region) {
+  const metadata = await sharp(sourcePath).metadata();
+  if (!metadata.width || !metadata.height || region.x + region.width > metadata.width || region.y + region.height > metadata.height) {
+    throw new Error(`Image region exceeds ${metadata.width ?? "?"}x${metadata.height ?? "?"} source bounds`);
+  }
+  const buffer = await sharp(sourcePath)
+    .extract({ left: region.x, top: region.y, width: region.width, height: region.height })
+    .png()
+    .toBuffer();
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+async function commandEvidenceObserve(options) {
+  const evidencePath = assertInternalArtifactPath(requireOption(options, "evidence"), "Spreadsheet source evidence");
+  const evidence = validateSourceEvidence(await readJsonFile(evidencePath, "Spreadsheet source evidence"));
+  const sourcePath = path.resolve(requireOption(options, "source"));
+  const source = evidence.sources.find((item) => pathsReferToSameLocation(item.path, sourcePath));
+  if (!source || source.kind !== "image") throw new Error(`Evidence source is not a frozen image: ${sourcePath}`);
+  if (await fileSha256(sourcePath) !== source.sha256.toLowerCase()) throw new Error(`Source image changed after prepare: ${sourcePath}`);
+  const factId = requireOption(options, "fact-id").trim();
+  const method = requireOption(options, "method").trim();
+  const rawText = requireOption(options, "raw-text");
+  const normalizedValue = requireOption(options, "value").trim();
+  const confidence = Number(requireOption(options, "confidence"));
+  if (!factId || !method || !normalizedValue) throw new Error("--fact-id, --method, and --value must be non-empty");
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error("--confidence must be between 0 and 1");
+  const region = parseImageRegion(requireOption(options, "region"));
+  const regionSha256 = await imageRegionSha256(sourcePath, region);
+  let fact = evidence.imageFacts.find((item) => item.id === factId);
+  if (!fact) {
+    fact = { id: factId, source: sourcePath, region, regionSha256, observations: [], confirmation: null };
+    evidence.imageFacts.push(fact);
+  } else if (!pathsReferToSameLocation(fact.source, sourcePath)
+    || JSON.stringify(fact.region) !== JSON.stringify(region)
+    || fact.regionSha256 !== regionSha256) {
+    throw new Error(`Image fact '${factId}' is already bound to a different source region`);
+  }
+  const methodIndex = fact.observations.findIndex((item) => item.method.trim().toLowerCase() === method.toLowerCase());
+  const observation = { method, rawText, normalizedValue, confidence };
+  if (methodIndex >= 0) {
+    if (!options.overwrite) throw new Error(`Image fact '${factId}' already has an observation from method '${method}'`);
+    fact.observations[methodIndex] = observation;
+  } else {
+    fact.observations.push(observation);
+  }
+  fact.confirmation = null;
+  validateSourceEvidence(evidence);
+  await writeJson(evidencePath, evidence);
+  const report = { status: "ok", evidence: evidencePath, fact };
+  if (!options.quiet) await emitReport(report, options.report && String(options.report));
+  else if (options.report) await writeJson(String(options.report), report);
+}
+
+async function commandEvidenceConfirm(options) {
+  const evidencePath = assertInternalArtifactPath(requireOption(options, "evidence"), "Spreadsheet source evidence");
+  const evidence = validateSourceEvidence(await readJsonFile(evidencePath, "Spreadsheet source evidence"));
+  const factId = requireOption(options, "fact-id").trim();
+  const value = requireOption(options, "value").trim();
+  const confirmedBy = requireOption(options, "confirmed-by").trim().toLowerCase();
+  if (confirmedBy !== "user") throw new Error("--confirmed-by must be user and may only be used after explicit user confirmation");
+  const fact = evidence.imageFacts.find((item) => item.id === factId);
+  if (!fact) throw new Error(`Image fact not found: ${factId}`);
+  if (!value) throw new Error("--value must be non-empty");
+  fact.confirmation = { status: "confirmed", value, confirmedBy: "user", basis: "explicit-user" };
+  validateSourceEvidence(evidence);
+  await writeJson(evidencePath, evidence);
+  const report = { status: "ok", evidence: evidencePath, factId, confirmation: fact.confirmation };
+  if (!options.quiet) await emitReport(report, options.report && String(options.report));
+  else if (options.report) await writeJson(String(options.report), report);
+}
+
+function numericIntegrityPlanTemplate() {
+  return {
+    protocol: NUMERIC_INTEGRITY_PROTOCOL,
+    mode: "strict",
+    operations: [],
+    invariants: [],
+  };
+}
+
+function columnNumberFromLetters(value) {
+  const letters = String(value).trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(letters)) throw new Error(`Invalid Excel column '${value}'`);
+  let result = 0;
+  for (const character of letters) result = result * 26 + character.charCodeAt(0) - 64;
+  return result;
+}
+
+function rowsFromWorkbookRegion(workbook, region) {
+  const worksheet = workbook.getWorksheet(region.sheet);
+  if (!worksheet) throw new Error(`Worksheet not found: ${region.sheet}`);
+  const bounds = parseRangeReference(region.range);
+  const columns = Object.fromEntries(Object.entries(region.columns).map(([field, column]) => [field, columnNumberFromLetters(column)]));
+  for (const [field, column] of Object.entries(columns)) {
+    if (column < bounds.startCol || column > bounds.endCol) {
+      throw new Error(`${region.sheet}!${region.range} does not contain mapped column ${region.columns[field]} for '${field}'`);
+    }
+  }
+  const rows = [];
+  for (let rowNumber = bounds.startRow; rowNumber <= bounds.endRow; rowNumber += 1) {
+    const values = {};
+    let populated = false;
+    for (const [field, column] of Object.entries(columns)) {
+      const cell = worksheet.getCell(rowNumber, column);
+      const value = effectiveCellValue(cell);
+      if (hasCellContent(value)) populated = true;
+      values[field] = {
+        value,
+        type: cellValueType(cell),
+        address: cell.address,
+        formula: formulaDescriptor(cell)?.formula ?? null,
+        numberFormat: cell.numFmt ?? null,
+      };
+    }
+    if (populated || region.skipBlankRows === false) rows.push({ row: rowNumber, values });
+  }
+  return rows;
+}
+
+async function evaluateBoundNumericIntegrity(candidateWorkbook, requirements) {
+  const binding = requirements?.numericIntegrity;
+  if (!binding) return { status: "not_requested", protocol: NUMERIC_INTEGRITY_PROTOCOL, checks: [], operations: [], failures: [] };
+  const failures = [];
+  const checks = [];
+  const record = (type, passed, details = {}) => {
+    const check = { type, passed, ...details };
+    checks.push(check);
+    if (!passed) failures.push(check);
+  };
+  if (binding.state !== "bound") {
+    record("integrity_binding", false, { expected: "bound", actual: binding.state });
+    return { status: "failed", protocol: NUMERIC_INTEGRITY_PROTOCOL, checks, operations: [], failures };
+  }
+  try {
+    const evidencePath = assertInternalArtifactPath(binding.evidence.path, "Spreadsheet source evidence");
+    const planPath = assertInternalArtifactPath(binding.plan.path, "Spreadsheet numeric-integrity plan");
+    const [evidenceHash, planHash] = await Promise.all([fileSha256(evidencePath), fileSha256(planPath)]);
+    record("evidence_binding", evidenceHash === binding.evidence.sha256.toLowerCase(), { expected: binding.evidence.sha256.toLowerCase(), actual: evidenceHash, path: evidencePath });
+    record("plan_binding", planHash === binding.plan.sha256.toLowerCase(), { expected: binding.plan.sha256.toLowerCase(), actual: planHash, path: planPath });
+    if (failures.length > 0) return { status: "failed", protocol: NUMERIC_INTEGRITY_PROTOCOL, checks, operations: [], failures };
+    const evidence = validateSourceEvidence(await readJsonFile(evidencePath, "Spreadsheet source evidence"));
+    const plan = validateNumericIntegrityPlan(await readJsonFile(planPath, "Spreadsheet numeric-integrity plan"));
+    const expectedSources = new Map((requirements.sourceFiles ?? []).map((item) => [path.resolve(item.path), item.sha256.toLowerCase()]));
+    const evidenceSources = new Map(evidence.sources.map((item) => [path.resolve(item.path), item.sha256.toLowerCase()]));
+    for (const [sourcePath, expectedHash] of expectedSources.entries()) {
+      record("evidence_source_coverage", evidenceSources.get(sourcePath) === expectedHash, { path: sourcePath, expectedSha256: expectedHash, evidenceSha256: evidenceSources.get(sourcePath) ?? null });
+    }
+    for (const fact of evidence.imageFacts) {
+      const actualRegionSha256 = await imageRegionSha256(fact.source, fact.region);
+      record("image_region_binding", actualRegionSha256 === fact.regionSha256.toLowerCase(), {
+        evidenceId: fact.id,
+        source: fact.source,
+        region: fact.region,
+        expectedSha256: fact.regionSha256.toLowerCase(),
+        actualSha256: actualRegionSha256,
+      });
+    }
+    const usedSources = planSourcePaths(plan);
+    for (const sourcePath of usedSources) {
+      record("plan_source_frozen", expectedSources.has(sourcePath), { path: sourcePath });
+    }
+    const sourceCache = new Map();
+    const loadStructuredSource = async (sourcePath) => {
+      const resolved = path.resolve(sourcePath);
+      if (!sourceCache.has(resolved)) {
+        const extension = assertEvidenceSource(resolved);
+        if (![".xlsx", ".csv", ".tsv"].includes(extension)) throw new Error(`Structured operation cannot read image source: ${resolved}`);
+        sourceCache.set(resolved, extension === ".xlsx" ? await loadXlsx(resolved) : await loadDelimited(resolved, { inferTypes: true }));
+      }
+      return sourceCache.get(resolved);
+    };
+    const evaluation = await evaluateNumericIntegrityPlan(plan, {
+      readSourceRows: async (region) => rowsFromWorkbookRegion(await loadStructuredSource(region.source), region),
+      readCandidateRows: async (region) => rowsFromWorkbookRegion(candidateWorkbook, region),
+      readImageFact: async (evidenceId) => evidence.imageFacts.find((fact) => fact.id === evidenceId) ?? null,
+      readCandidateCell: async (sheetName, address) => {
+        const cell = candidateWorkbook.getWorksheet(sheetName)?.getCell(address);
+        if (!cell) throw new Error(`Candidate cell not found: ${sheetName}!${address}`);
+        return {
+          value: effectiveCellValue(cell),
+          type: cellValueType(cell),
+          address: cell.address,
+          formula: formulaDescriptor(cell)?.formula ?? null,
+          numberFormat: cell.numFmt ?? null,
+        };
+      },
+    });
+    for (const operation of evaluation.operations) {
+      record("numeric_operation", operation.status === "passed", {
+        operation: operation.id,
+        operationType: operation.type,
+        sourceRecords: operation.sourceRecords,
+        expectedOutputRecords: operation.expectedOutputRecords,
+        outputRecords: operation.outputRecords,
+        failures: operation.failures,
+      });
+    }
+    for (const invariant of evaluation.invariants?.checks ?? []) {
+      record("numeric_invariant", invariant.passed, {
+        invariant: invariant.invariant,
+        operation: invariant.operation,
+        expression: invariant.expression,
+        expected: invariant.expected,
+        checkedRows: invariant.checkedRows,
+        mismatches: invariant.mismatches,
+      });
+    }
+    return {
+      status: failures.length === 0 && evaluation.status === "passed" ? "passed" : "failed",
+      protocol: NUMERIC_INTEGRITY_PROTOCOL,
+      checks,
+      operations: evaluation.operations,
+      failures,
+      evidence: { path: evidencePath, sha256: evidenceHash },
+      plan: { path: planPath, sha256: planHash },
+    };
+  } catch (error) {
+    record("numeric_integrity_runtime", false, { error: error instanceof Error ? error.message : String(error) });
+    return { status: "failed", protocol: NUMERIC_INTEGRITY_PROTOCOL, checks, operations: [], failures };
+  }
+}
+
+function assertNumericIntegrityBound(requirements) {
+  if (requirements?.numericIntegrity && requirements.numericIntegrity.state !== "bound") {
+    throw blocked(
+      "numeric-integrity-unbound",
+      "Source-backed numeric integrity must be bound before build",
+      { next: "Complete integrity-plan.json, then run integrity-bind." },
+    );
+  }
+}
+
+async function persistNumericIntegrityReport(requirements, report) {
+  if (!requirements?.numericIntegrity || !report || report.status === "not_requested") return null;
+  const target = assertInternalArtifactPath(
+    path.join(path.dirname(requirements.numericIntegrity.evidence.path), "numeric-integrity.json"),
+    "Spreadsheet numeric-integrity report",
+  );
+  await writeJson(target, report);
+  return target;
 }
 
 async function evaluateTaskFiles(requirements) {
@@ -1868,6 +2294,21 @@ async function auditXlsx(filePath, requirements = null) {
   const workbook = await loadXlsx(filePath);
   const facts = collectWorkbookFacts(workbook);
   const coverage = evaluateRequirements(workbook, packageInfo, requirements);
+  const numericIntegrity = await evaluateBoundNumericIntegrity(workbook, requirements);
+  if (numericIntegrity.status !== "not_requested") {
+    const check = {
+      type: "numeric_integrity",
+      passed: numericIntegrity.status === "passed",
+      expected: "passed",
+      actual: numericIntegrity.status,
+      failures: numericIntegrity.failures,
+    };
+    coverage.checks.push(check);
+    if (!check.passed) coverage.failures.push(check);
+    coverage.total = coverage.checks.length;
+    coverage.passed = coverage.checks.filter((item) => item.passed).length;
+    coverage.status = coverage.failures.length === 0 ? "passed" : "failed";
+  }
   const sourceFileChecks = await evaluateSourceFiles(requirements);
   const taskFileChecks = await evaluateTaskFiles(requirements);
   const fileChecks = [...sourceFileChecks, ...taskFileChecks];
@@ -1907,6 +2348,7 @@ async function auditXlsx(filePath, requirements = null) {
     ...chartFailures,
     ...stylePolicyFailures,
     ...packageInfo.compatibility.issues,
+    ...numericIntegrity.failures.map((failure) => ({ ...failure, reason: failure.type, type: "numeric_integrity_failure" })),
     ...coverage.failures.map((failure) => ({ type: "requirement_not_met", requirement: failure })),
   ];
   return {
@@ -1926,6 +2368,7 @@ async function auditXlsx(filePath, requirements = null) {
       workbookType: requirements?.task?.workbookType ?? null,
       failures: stylePolicyFailures,
     },
+    numericIntegrity,
     coverage,
     hardFailures,
     warnings,
@@ -2279,6 +2722,9 @@ function spreadsheetTaskPaths() {
     builder: path.join(root, "tmp", "workbook.mjs"),
     candidate: path.join(root, "tmp", "candidate.xlsx"),
     requirements: path.join(root, "qa", "requirements.json"),
+    sourceEvidence: path.join(root, "qa", "source-evidence.json"),
+    integrityPlan: path.join(root, "qa", "integrity-plan.json"),
+    integrityReport: path.join(root, "qa", "numeric-integrity.json"),
     visualReview: path.join(root, "qa", "visual-review.json"),
     render: path.join(root, "qa", "render"),
     deliveryReport: path.join(root, "qa", "delivery.json"),
@@ -2382,6 +2828,11 @@ async function commandPrepare(options) {
     ? assertInternalArtifactPath(requireOption(options, "requirements-out"), "Spreadsheet requirements")
     : paths.requirements;
   const finalOutput = assertDeliveryOutputPath(requireOption(options, "final-out"));
+  const sourcePaths = [...new Set(optionValues(options, "source").map((item) => path.resolve(item)))];
+  for (const sourcePath of sourcePaths) {
+    if (!(await pathExists(sourcePath))) throw new Error(`Numeric-integrity source not found: ${sourcePath}`);
+    assertEvidenceSource(sourcePath);
+  }
   if (workbookExtension(finalOutput) !== ".xlsx") throw new Error("--final-out must end in .xlsx");
   const workbookType = String(options["workbook-type"] ?? "data");
   if (!WORKBOOK_TYPES.has(workbookType)) throw new Error(`--workbook-type must be one of ${[...WORKBOOK_TYPES].join(", ")}`);
@@ -2438,8 +2889,26 @@ async function commandPrepare(options) {
     allowDecorativeTitle: Boolean(options["allow-decorative-title"]),
     allowedAccentColors: optionValues(options, "allow-accent-color").map((color) => color.toUpperCase()),
   };
+  const sourceEvidence = sourcePaths.length > 0 ? await captureSourceEvidence(sourcePaths) : null;
+  if (sourceEvidence) {
+    await writeJson(paths.sourceEvidence, sourceEvidence);
+    await writeJson(paths.integrityPlan, numericIntegrityPlanTemplate());
+  }
   const requirements = validateRequirements({
     task,
+    ...(sourceEvidence ? {
+      sourceBacked: true,
+      sourceFiles: sourceEvidence.sources.map((source) => ({ path: source.path, sha256: source.sha256 })),
+      sourceBackedSheets: [],
+      numericIntegrity: {
+        protocol: NUMERIC_INTEGRITY_PROTOCOL,
+        mode: "strict",
+        state: "prepared",
+        evidence: { path: paths.sourceEvidence, sha256: await fileSha256(paths.sourceEvidence) },
+        plan: { path: paths.integrityPlan },
+        blockOnUnverified: true,
+      },
+    } : {}),
     requiredSheets: [],
     requiredFormulaRanges: [],
     expectedCells: [],
@@ -2460,10 +2929,82 @@ async function commandPrepare(options) {
     paths: { ...paths, requirements: requirementsPath },
     task,
     ...(inputResolution ? { inputResolution } : {}),
-    next: "Complete the declarative checks in requirements.json before building the candidate.",
+    next: sourceEvidence
+      ? "Complete integrity-plan.json and declarative checks, then run integrity-bind before building the candidate."
+      : "Complete the declarative checks in requirements.json before building the candidate.",
   };
   if (!options.quiet) await emitReport(report);
   return report;
+}
+
+async function commandIntegrityBind(options) {
+  const requirementsPath = assertInternalArtifactPath(requireOption(options, "requirements"), "Spreadsheet requirements");
+  const requirements = await readJsonFile(requirementsPath, "Spreadsheet requirements");
+  validateRequirements(requirements, requirementsPath);
+  if (!requirements.numericIntegrity) throw new Error("Requirements were not prepared with --source");
+  const evidencePath = assertInternalArtifactPath(
+    options.evidence ? requireOption(options, "evidence") : requirements.numericIntegrity.evidence.path,
+    "Spreadsheet source evidence",
+  );
+  const planPath = assertInternalArtifactPath(
+    options.plan ? requireOption(options, "plan") : requirements.numericIntegrity.plan.path,
+    "Spreadsheet numeric-integrity plan",
+  );
+  const evidence = validateSourceEvidence(await readJsonFile(evidencePath, "Spreadsheet source evidence"));
+  const plan = validateNumericIntegrityPlan(await readJsonFile(planPath, "Spreadsheet numeric-integrity plan"));
+  const frozenSources = new Map((requirements.sourceFiles ?? []).map((item) => [path.resolve(item.path), item.sha256.toLowerCase()]));
+  const evidenceSources = new Map(evidence.sources.map((item) => [path.resolve(item.path), item.sha256.toLowerCase()]));
+  for (const [sourcePath, expectedHash] of frozenSources.entries()) {
+    if (evidenceSources.get(sourcePath) !== expectedHash) throw new Error(`Source evidence does not match frozen source: ${sourcePath}`);
+  }
+  for (const sourcePath of planSourcePaths(plan)) {
+    if (!frozenSources.has(sourcePath)) throw new Error(`Integrity plan references an unfrozen source: ${sourcePath}`);
+  }
+  const imageFactIds = new Set(evidence.imageFacts.map((fact) => fact.id));
+  for (const operation of plan.operations) {
+    if (operation.type !== "ocr") continue;
+    for (const reference of operation.facts) {
+      if (!imageFactIds.has(reference.evidenceId)) throw new Error(`OCR operation '${operation.id}' references missing image fact '${reference.evidenceId}'`);
+    }
+  }
+  requirements.numericIntegrity = {
+    ...requirements.numericIntegrity,
+    state: "bound",
+    evidence: { path: evidencePath, sha256: await fileSha256(evidencePath) },
+    plan: { path: planPath, sha256: await fileSha256(planPath) },
+  };
+  requirements.sourceBacked = true;
+  requirements.sourceBackedSheets = planOutputSheets(plan);
+  const integrityFormulaRanges = [];
+  for (const operation of plan.operations) {
+    if (operation.type !== "formula") continue;
+    const outputBounds = parseRangeReference(operation.output.range);
+    for (const calculation of operation.calculations ?? []) {
+      if (calculation.requireFormula === false) continue;
+      const column = operation.output.columns[calculation.target].toUpperCase();
+      integrityFormulaRanges.push({
+        sheet: operation.output.sheet,
+        range: `${column}${outputBounds.startRow}:${column}${outputBounds.endRow}`,
+      });
+    }
+  }
+  const existingFormulaRangeKeys = new Set((requirements.requiredFormulaRanges ?? []).map((item) => `${item.sheet}\u001f${item.range}`));
+  requirements.requiredFormulaRanges = [
+    ...(requirements.requiredFormulaRanges ?? []),
+    ...integrityFormulaRanges.filter((item) => !existingFormulaRangeKeys.has(`${item.sheet}\u001f${item.range}`)),
+  ];
+  validateRequirements(requirements, requirementsPath);
+  await writeJson(requirementsPath, requirements);
+  const report = {
+    status: "ok",
+    requirements: requirementsPath,
+    numericIntegrity: requirements.numericIntegrity,
+    sourceBackedSheets: requirements.sourceBackedSheets,
+    operations: plan.operations.map((operation) => ({ id: operation.id, type: operation.type })),
+    next: "Build the candidate; audit and deliver will independently reread the frozen sources.",
+  };
+  if (!options.quiet) await emitReport(report, options.report && String(options.report));
+  else if (options.report) await writeJson(String(options.report), report);
 }
 
 function capabilitiesReport() {
@@ -2503,6 +3044,22 @@ function capabilitiesReport() {
       controlledFallback: { status: "supported", command: "fallback-patch", directUntrackedPackageMutation: "blocked" },
       qa: { status: "supported", commands: ["qa-init", "qa-record", "qa-finalize"] },
       delivery: { status: "supported", command: "deliver", candidateDigestBinding: true },
+      numericIntegrity: {
+        status: "supported",
+        protocol: NUMERIC_INTEGRITY_PROTOCOL,
+        operations: ["copy", "union", "join", "aggregate", "formula", "ocr"],
+        fixedPointDecimal: true,
+        rowExpressionInvariants: true,
+        imageEvidence: {
+          status: "supported",
+          automaticRecognition: "external-observations",
+          independentConsensus: true,
+          explicitUserConfirmation: true,
+          unverifiedDelivery: "blocked",
+        },
+        sourceBinding: "sha256",
+        deliveryBlocking: true,
+      },
     },
   };
 }
@@ -2516,12 +3073,28 @@ function schemaFor(command) {
     prepare: {
       required: ["final-out"],
       enums: { "workbook-type": [...WORKBOOK_TYPES], "style-mode": [...STYLE_MODES], "visual-review-mode": [...VISUAL_REVIEW_MODES] },
-      repeatable: ["visual-sheet", "allow-accent-color"],
+      repeatable: ["source", "visual-sheet", "allow-accent-color"],
     },
     requirements: {
       type: "object",
       allowedKeys: [...REQUIREMENT_KEYS],
       task: { protocol: TASK_PROTOCOL, workbookTypes: [...WORKBOOK_TYPES], styleModes: [...STYLE_MODES], visualReviewModes: [...VISUAL_REVIEW_MODES] },
+    },
+    "numeric-integrity": {
+      protocol: NUMERIC_INTEGRITY_PROTOCOL,
+      mode: ["strict"],
+      operations: {
+        supported: ["copy", "union", "join", "aggregate", "formula", "ocr"],
+        structuredRequired: ["id", "type", "fields", "inputs", "output"],
+        ocrRequired: ["id", "type", "fields", "facts", "output.sheet"],
+        regionRequired: ["sheet", "range", "columns"],
+        sourceRegionAdditionalRequired: ["source"],
+        fieldTypes: ["decimal", "integer", "number", "identifier", "string", "boolean", "date"],
+      },
+      ocrPolicy: {
+        required: ["minConfidence", "minIndependentObservations", "allowExplicitUserConfirmation"],
+        note: "The runtime binds image regions and observations; it does not bundle an OCR model.",
+      },
     },
     "native-chart": {
       required: ["sheet", "type", "categories", "series", "anchor"],
@@ -2826,6 +3399,7 @@ async function commandBuildCore(options) {
       builderRequirements,
     ),
   );
+  assertNumericIntegrityBound(requirements);
   await runStage("requirements_preflight", () => validateWorkbookRequirementsPreflight(workbook, requirements));
 
   if (requirements?.task?.input) {
@@ -2872,6 +3446,7 @@ async function commandBuildCore(options) {
     }
     const chartResult = await runStage("chart_injection", () => injectNativeCharts(stagedPath, nativeCharts, { JSZip, loadXlsx }));
     audit = await runStage("audit", () => auditXlsx(stagedPath, requirements));
+    await runStage("numeric_integrity_report", () => persistNumericIntegrityReport(requirements, audit.numericIntegrity));
     if (audit.status === "error") {
       throw new SpreadsheetStageError(
         "audit",
@@ -2994,6 +3569,7 @@ async function commandAudit(options) {
     "audit",
     () => extension === ".xlsx" ? auditXlsx(inputPath, requirements) : auditDelimited(inputPath),
   );
+  await runStage("numeric_integrity_report", () => persistNumericIntegrityReport(requirements, report.numericIntegrity));
   await emitReport(report, options.out && String(options.out));
   if (report.status === "error") process.exitCode = 1;
 }
@@ -3587,6 +4163,317 @@ async function commandSelfTest(options) {
   }
   steps.push({ name: "prepare-protocol", status: "ok", styleMode: preparedRequirements.task.styleMode });
 
+  const integrityPhase1Dir = path.join(outputDir, "numeric-integrity-phase1");
+  const integrityPhase1WorkDir = path.join(integrityPhase1Dir, "turn-work");
+  await fs.mkdir(integrityPhase1Dir, { recursive: true });
+  const sourceAPath = path.join(integrityPhase1Dir, "source-a.xlsx");
+  const sourceBPath = path.join(integrityPhase1Dir, "source-b.xlsx");
+  const lookupPath = path.join(integrityPhase1Dir, "lookup.xlsx");
+  const calculationSourcePath = path.join(integrityPhase1Dir, "calculation-source.xlsx");
+  const imageSourcePath = path.join(integrityPhase1Dir, "amount-scan.png");
+  const sourceAWorkbook = createWorkbook();
+  sourceAWorkbook.addWorksheet("数据").addRows([["编号", "金额"], ["A-1", 10.25], ["A-2", 20.5]]);
+  await sourceAWorkbook.xlsx.writeFile(sourceAPath);
+  const sourceBWorkbook = createWorkbook();
+  sourceBWorkbook.addWorksheet("数据").addRows([["编号", "金额"], ["B-1", 30.75]]);
+  await sourceBWorkbook.xlsx.writeFile(sourceBPath);
+  const lookupWorkbook = createWorkbook();
+  lookupWorkbook.addWorksheet("分类").addRows([["编号", "分类"], ["A-1", "甲"], ["A-2", "乙"]]);
+  await lookupWorkbook.xlsx.writeFile(lookupPath);
+  const calculationSourceWorkbook = createWorkbook();
+  calculationSourceWorkbook.addWorksheet("计算数据").addRows([
+    ["编号", "部门", "数量", "单价", "未税金额", "税额"],
+    ["X-1", "甲", 3, 10.25, 30.75, 3.08],
+    ["X-2", "甲", 2, 5.5, 11, 1.1],
+    ["X-3", "乙", 1, 7.25, 7.25, 0.73],
+  ]);
+  await calculationSourceWorkbook.xlsx.writeFile(calculationSourcePath);
+  await sharp({ create: { width: 240, height: 120, channels: 3, background: "white" } })
+    .png()
+    .toFile(imageSourcePath);
+  const integrityCandidatePath = path.join(integrityPhase1Dir, "candidate.xlsx");
+  const integrityCandidate = createWorkbook();
+  integrityCandidate.addWorksheet("复制").addRows([["编号", "金额"], ["A-1", 10.25], ["A-2", 20.5]]);
+  integrityCandidate.addWorksheet("合表").addRows([["编号", "金额"], ["A-1", 10.25], ["A-2", 20.5], ["B-1", 30.75]]);
+  integrityCandidate.addWorksheet("映射").addRows([["编号", "金额", "分类"], ["A-1", 10.25, "甲"], ["A-2", 20.5, "乙"]]);
+  integrityCandidate.addWorksheet("部门汇总").addRows([["部门", "未税合计"], ["甲", 41.75], ["乙", 7.25]]);
+  const formulaSheet = integrityCandidate.addWorksheet("公式核算");
+  formulaSheet.addRows([
+    ["编号", "数量", "单价", "计算金额", "未税金额", "税额", "含税金额"],
+    ["X-1", 3, 10.25, null, 30.75, 3.08, null],
+    ["X-2", 2, 5.5, null, 11, 1.1, null],
+    ["X-3", 1, 7.25, null, 7.25, 0.73, null],
+  ]);
+  for (let row = 2; row <= 4; row += 1) {
+    const quantity = formulaSheet.getCell(`B${row}`).value;
+    const unitPrice = formulaSheet.getCell(`C${row}`).value;
+    const net = formulaSheet.getCell(`E${row}`).value;
+    const tax = formulaSheet.getCell(`F${row}`).value;
+    formulaSheet.getCell(`D${row}`).value = { formula: `B${row}*C${row}`, result: quantity * unitPrice };
+    formulaSheet.getCell(`G${row}`).value = { formula: `E${row}+F${row}`, result: Number((net + tax).toFixed(2)) };
+  }
+  integrityCandidate.addWorksheet("图片录入").addRows([["项目", "金额"], ["扫描金额", 1250]]);
+  await integrityCandidate.xlsx.writeFile(integrityCandidatePath);
+  const integrityWorkDirBefore = process.env.PILOTDECK_WORK_DIR;
+  process.env.PILOTDECK_WORK_DIR = integrityPhase1WorkDir;
+  try {
+    const integrityPrepared = await commandPrepare({
+      "final-out": path.join(integrityPhase1Dir, "sealed.xlsx"),
+      "workbook-type": "data",
+      source: [sourceAPath, sourceBPath, lookupPath, calculationSourcePath, imageSourcePath],
+      quiet: true,
+    });
+    const unboundRequirements = await readJsonFile(integrityPrepared.paths.requirements, "Unbound numeric-integrity requirements");
+    let unboundRejected = false;
+    try {
+      assertNumericIntegrityBound(unboundRequirements);
+    } catch (error) {
+      unboundRejected = error instanceof SpreadsheetProtocolError && error.code === "numeric-integrity-unbound";
+    }
+    if (!unboundRejected) throw new Error("Source-backed build did not reject an unbound numeric-integrity plan");
+    await commandEvidenceObserve({
+      evidence: integrityPrepared.paths.sourceEvidence,
+      source: imageSourcePath,
+      "fact-id": "scan-total",
+      region: "20,20,160,60",
+      method: "vision-model-a",
+      "raw-text": "1,250.00",
+      value: "1250.00",
+      confidence: "0.97",
+      quiet: true,
+    });
+    await commandEvidenceObserve({
+      evidence: integrityPrepared.paths.sourceEvidence,
+      source: imageSourcePath,
+      "fact-id": "scan-total",
+      region: "20,20,160,60",
+      method: "ocr-engine-b",
+      "raw-text": "1250.00",
+      value: "1250.00",
+      confidence: "0.95",
+      quiet: true,
+    });
+    const integrityPlan = {
+      protocol: NUMERIC_INTEGRITY_PROTOCOL,
+      mode: "strict",
+      operations: [
+        {
+          id: "copy-source-a",
+          type: "copy",
+          fields: {
+            id: { semanticType: "identifier" },
+            amount: { semanticType: "decimal", scale: 2, currency: "CNY" },
+          },
+          inputs: [{ source: sourceAPath, sheet: "数据", range: "A2:B3", columns: { id: "A", amount: "B" } }],
+          output: { sheet: "复制", range: "A2:B3", columns: { id: "A", amount: "B" } },
+          keyColumns: ["id"],
+        },
+        {
+          id: "union-sources",
+          type: "union",
+          fields: {
+            id: { semanticType: "identifier" },
+            amount: { semanticType: "decimal", scale: 2, currency: "CNY" },
+          },
+          inputs: [
+            { source: sourceAPath, sheet: "数据", range: "A2:B3", columns: { id: "A", amount: "B" } },
+            { source: sourceBPath, sheet: "数据", range: "A2:B2", columns: { id: "A", amount: "B" } },
+          ],
+          output: { sheet: "合表", range: "A2:B4", columns: { id: "A", amount: "B" } },
+          keyColumns: ["id"],
+          preserveOrder: true,
+        },
+        {
+          id: "join-category",
+          type: "join",
+          fields: {
+            id: { semanticType: "identifier" },
+            amount: { semanticType: "decimal", scale: 2, currency: "CNY" },
+            category: { semanticType: "string" },
+          },
+          inputs: [
+            { source: sourceAPath, sheet: "数据", range: "A2:B3", columns: { id: "A", amount: "B" } },
+            { source: lookupPath, sheet: "分类", range: "A2:B3", columns: { id: "A", category: "B" } },
+          ],
+          output: { sheet: "映射", range: "A2:C3", columns: { id: "A", amount: "B", category: "C" } },
+          keyColumns: ["id"],
+        },
+        {
+          id: "aggregate-net-by-department",
+          type: "aggregate",
+          fields: {
+            department: { semanticType: "string" },
+            net: { semanticType: "decimal", scale: 2, currency: "CNY" },
+            totalNet: { semanticType: "decimal", scale: 2, currency: "CNY" },
+          },
+          inputs: [{ source: calculationSourcePath, sheet: "计算数据", range: "A2:F4", columns: { department: "B", net: "E" } }],
+          output: { sheet: "部门汇总", range: "A2:B3", columns: { department: "A", totalNet: "B" } },
+          groupBy: ["department"],
+          measures: [{ source: "net", target: "totalNet", operator: "sum", rounding: "half-up" }],
+        },
+        {
+          id: "recalculate-row-formulas",
+          type: "formula",
+          fields: {
+            id: { semanticType: "identifier" },
+            quantity: { semanticType: "integer" },
+            unitPrice: { semanticType: "decimal", scale: 2, currency: "CNY" },
+            amount: { semanticType: "decimal", scale: 2, currency: "CNY" },
+            net: { semanticType: "decimal", scale: 2, currency: "CNY" },
+            tax: { semanticType: "decimal", scale: 2, currency: "CNY" },
+            gross: { semanticType: "decimal", scale: 2, currency: "CNY" },
+          },
+          inputs: [{
+            source: calculationSourcePath,
+            sheet: "计算数据",
+            range: "A2:F4",
+            columns: { id: "A", quantity: "C", unitPrice: "D", net: "E", tax: "F" },
+          }],
+          output: {
+            sheet: "公式核算",
+            range: "A2:G4",
+            columns: { id: "A", quantity: "B", unitPrice: "C", amount: "D", net: "E", tax: "F", gross: "G" },
+          },
+          keyColumns: ["id"],
+          calculations: [
+            { target: "amount", expression: "quantity * unitPrice", rounding: "half-up", requireFormula: true },
+            { target: "gross", expression: "net + tax", rounding: "half-up", requireFormula: true },
+          ],
+        },
+        {
+          id: "capture-image-amount",
+          type: "ocr",
+          fields: {
+            amount: { semanticType: "decimal", scale: 2, currency: "CNY" },
+          },
+          output: { sheet: "图片录入" },
+          facts: [{ evidenceId: "scan-total", cell: "B2", field: "amount" }],
+        },
+      ],
+      invariants: [
+        { id: "amount-balance", type: "row-expression", operation: "recalculate-row-formulas", expression: "amount - quantity * unitPrice", expected: "0", scale: 2 },
+        { id: "tax-balance", type: "row-expression", operation: "recalculate-row-formulas", expression: "gross - net - tax", expected: "0", scale: 2 },
+      ],
+      ocrPolicy: {
+        minConfidence: 0.9,
+        minIndependentObservations: 2,
+        allowExplicitUserConfirmation: true,
+      },
+    };
+    await writeJson(integrityPrepared.paths.integrityPlan, integrityPlan);
+    await commandIntegrityBind({ requirements: integrityPrepared.paths.requirements, quiet: true });
+    let integrityRequirements = await readJsonFile(integrityPrepared.paths.requirements, "Phase 1 numeric-integrity requirements");
+    const integrityAudit = await auditXlsx(integrityCandidatePath, integrityRequirements);
+    if (integrityAudit.numericIntegrity.status !== "passed" || integrityAudit.status === "error") {
+      throw new Error(`Structured numeric integrity did not pass: ${JSON.stringify(integrityAudit.numericIntegrity.failures)}`);
+    }
+    const tamperedPath = path.join(integrityPhase1Dir, "candidate-tampered.xlsx");
+    const tampered = await loadXlsx(integrityCandidatePath);
+    tampered.getWorksheet("合表").getCell("B3").value = 999;
+    await tampered.xlsx.writeFile(tamperedPath);
+    const tamperedAudit = await auditXlsx(tamperedPath, integrityRequirements);
+    if (tamperedAudit.numericIntegrity.status !== "failed" || tamperedAudit.status !== "error") {
+      throw new Error("Structured numeric integrity did not reject a changed amount");
+    }
+    const textNumberPath = path.join(integrityPhase1Dir, "candidate-text-number.xlsx");
+    const textNumber = await loadXlsx(integrityCandidatePath);
+    textNumber.getWorksheet("复制").getCell("B2").value = "10.25";
+    await textNumber.xlsx.writeFile(textNumberPath);
+    const textNumberAudit = await auditXlsx(textNumberPath, integrityRequirements);
+    if (textNumberAudit.numericIntegrity.status !== "failed") {
+      throw new Error("Strict numeric integrity accepted a text-formatted number");
+    }
+    steps.push({
+      name: "numeric-integrity-phase1",
+      status: "ok",
+      operations: integrityAudit.numericIntegrity.operations.filter((operation) => ["copy", "union", "join"].includes(operation.type)).map((operation) => operation.type),
+      tamperRejected: true,
+      textNumberRejected: true,
+    });
+    const formulaTamperedPath = path.join(integrityPhase1Dir, "candidate-formula-tampered.xlsx");
+    const formulaTampered = await loadXlsx(integrityCandidatePath);
+    formulaTampered.getWorksheet("公式核算").getCell("G2").value = { formula: "E2+F2", result: 999 };
+    await formulaTampered.xlsx.writeFile(formulaTamperedPath);
+    const formulaTamperedAudit = await auditXlsx(formulaTamperedPath, integrityRequirements);
+    if (formulaTamperedAudit.numericIntegrity.status !== "failed") {
+      throw new Error("Formula integrity accepted an incorrect cached result");
+    }
+    const hardcodedFormulaPath = path.join(integrityPhase1Dir, "candidate-formula-hardcoded.xlsx");
+    const hardcodedFormula = await loadXlsx(integrityCandidatePath);
+    hardcodedFormula.getWorksheet("公式核算").getCell("D2").value = 30.75;
+    await hardcodedFormula.xlsx.writeFile(hardcodedFormulaPath);
+    const hardcodedFormulaAudit = await auditXlsx(hardcodedFormulaPath, integrityRequirements);
+    if (hardcodedFormulaAudit.numericIntegrity.status !== "failed") {
+      throw new Error("Formula integrity accepted a hardcoded derived value");
+    }
+    steps.push({
+      name: "numeric-integrity-phase2",
+      status: "ok",
+      operations: integrityAudit.numericIntegrity.operations.filter((operation) => ["aggregate", "formula"].includes(operation.type)).map((operation) => operation.type),
+      invariants: integrityAudit.numericIntegrity.checks.filter((check) => check.type === "numeric_invariant").length,
+      incorrectFormulaRejected: true,
+      hardcodedFormulaRejected: true,
+    });
+    await commandEvidenceObserve({
+      evidence: integrityPrepared.paths.sourceEvidence,
+      source: imageSourcePath,
+      "fact-id": "scan-total",
+      region: "20,20,160,60",
+      method: "ocr-engine-b",
+      "raw-text": "1251.00",
+      value: "1251.00",
+      confidence: "0.95",
+      overwrite: true,
+      quiet: true,
+    });
+    const staleEvidenceAudit = await auditXlsx(integrityCandidatePath, integrityRequirements);
+    if (staleEvidenceAudit.numericIntegrity.status !== "failed"
+      || !staleEvidenceAudit.numericIntegrity.checks.some((check) => check.type === "evidence_binding" && !check.passed)) {
+      throw new Error("Numeric integrity did not reject evidence changed after binding");
+    }
+    await commandIntegrityBind({ requirements: integrityPrepared.paths.requirements, quiet: true });
+    integrityRequirements = await readJsonFile(integrityPrepared.paths.requirements, "Disagreeing image evidence requirements");
+    const disagreementAudit = await auditXlsx(integrityCandidatePath, integrityRequirements);
+    if (disagreementAudit.numericIntegrity.status !== "failed"
+      || !disagreementAudit.numericIntegrity.operations.some((operation) => operation.type === "ocr" && operation.status === "failed")) {
+      throw new Error("OCR integrity did not block disagreeing observations");
+    }
+    await commandEvidenceConfirm({
+      evidence: integrityPrepared.paths.sourceEvidence,
+      "fact-id": "scan-total",
+      value: "1250.00",
+      "confirmed-by": "user",
+      quiet: true,
+    });
+    await commandIntegrityBind({ requirements: integrityPrepared.paths.requirements, quiet: true });
+    integrityRequirements = await readJsonFile(integrityPrepared.paths.requirements, "Confirmed image evidence requirements");
+    const confirmedAudit = await auditXlsx(integrityCandidatePath, integrityRequirements);
+    if (confirmedAudit.numericIntegrity.status !== "passed") {
+      throw new Error("Explicit user confirmation did not resolve image evidence disagreement");
+    }
+    const imageTamperedPath = path.join(integrityPhase1Dir, "candidate-image-tampered.xlsx");
+    const imageTampered = await loadXlsx(integrityCandidatePath);
+    imageTampered.getWorksheet("图片录入").getCell("B2").value = 1200;
+    await imageTampered.xlsx.writeFile(imageTamperedPath);
+    const imageTamperedAudit = await auditXlsx(imageTamperedPath, integrityRequirements);
+    if (imageTamperedAudit.numericIntegrity.status !== "failed") {
+      throw new Error("OCR integrity accepted an output value that differed from confirmed evidence");
+    }
+    steps.push({
+      name: "numeric-integrity-phase3",
+      status: "ok",
+      regionBound: true,
+      staleEvidenceRejected: true,
+      independentConsensusPassed: true,
+      disagreementRejected: true,
+      explicitUserConfirmationPassed: true,
+      outputTamperRejected: true,
+    });
+  } finally {
+    if (integrityWorkDirBefore === undefined) delete process.env.PILOTDECK_WORK_DIR;
+    else process.env.PILOTDECK_WORK_DIR = integrityWorkDirBefore;
+  }
+
   const recalculation = await recalculateWorkbook(rawPath, finalPath);
   await injectNativeCharts(finalPath, nativeCharts, { JSZip, loadXlsx });
   const recalculated = await loadXlsx(finalPath);
@@ -4048,7 +4935,7 @@ async function commandSelfTest(options) {
       invalidRequirementMessages.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if (invalidRequirementMessages.length !== 3 || !invalidRequirementMessages.some((message) => message.includes("requires at least one expectedCells or expectedRanges"))) {
+  if (invalidRequirementMessages.length !== 3 || !invalidRequirementMessages.some((message) => message.includes("requires expectedCells/expectedRanges or bound numericIntegrity coverage"))) {
     throw new Error("Malformed or shallow source-backed requirements were not rejected deterministically");
   }
   steps.push({ name: "requirements-schema", status: "ok", detected: invalidRequirementMessages.length });
@@ -4319,7 +5206,7 @@ async function commandSelfTest(options) {
 }
 
 function printHelp() {
-  process.stdout.write(`PilotDeck spreadsheets skill\n\nCommands:\n  capabilities\n  schema --command <prepare|requirements|native-chart|image|fallback-patch>\n  prepare --final-out final.xlsx [--input source.xlsx --workbook-type data --style-mode preserve-source]\n  resolve-latest --input source.xlsx [--use-exact-input]\n  scaffold --out builder.mjs\n  build --builder builder.mjs --out candidate.xlsx [--input source.xlsx] [--requirements requirements.json]\n  fallback-patch --input candidate.xlsx --script patch.mjs --out patched.xlsx --manifest fallback.json --reason TEXT --allow-part PART\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  convert-legacy --input source.xls --out converted.xlsx\n  recalculate --input source.xlsx --out recalculated.xlsx\n  audit --input book.xlsx [--requirements requirements.json --out audit.json]\n  render --input book.xlsx --out-dir render [--pdf render.pdf --montage montage.png --per-sheet]\n  qa-init --input candidate.xlsx --requirements requirements.json --report visual-review.json\n  qa-record --report visual-review.json --sheet Sheet1 --page 1 --status passed --notes TEXT\n  qa-finalize --report visual-review.json\n  deliver --input candidate.xlsx --out final.xlsx --requirements requirements.json --qa-report visual-review.json\n  self-test [--out directory]\n`);
+  process.stdout.write(`PilotDeck spreadsheets skill\n\nCommands:\n  capabilities\n  schema --command <prepare|requirements|numeric-integrity|native-chart|image|fallback-patch>\n  prepare --final-out final.xlsx [--input source.xlsx] [--source facts.xlsx --source scan.png]\n  evidence-observe --evidence source-evidence.json --source scan.png --fact-id total --region x,y,w,h --method METHOD --raw-text TEXT --value DECIMAL --confidence 0.95\n  evidence-confirm --evidence source-evidence.json --fact-id total --value DECIMAL --confirmed-by user\n  integrity-bind --requirements requirements.json [--plan integrity-plan.json --evidence source-evidence.json]\n  resolve-latest --input source.xlsx [--use-exact-input]\n  scaffold --out builder.mjs\n  build --builder builder.mjs --out candidate.xlsx [--input source.xlsx] [--requirements requirements.json]\n  fallback-patch --input candidate.xlsx --script patch.mjs --out patched.xlsx --manifest fallback.json --reason TEXT --allow-part PART\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  convert-legacy --input source.xls --out converted.xlsx\n  recalculate --input source.xlsx --out recalculated.xlsx\n  audit --input book.xlsx [--requirements requirements.json --out audit.json]\n  render --input book.xlsx --out-dir render [--pdf render.pdf --montage montage.png --per-sheet]\n  qa-init --input candidate.xlsx --requirements requirements.json --report visual-review.json\n  qa-record --report visual-review.json --sheet Sheet1 --page 1 --status passed --notes TEXT\n  qa-finalize --report visual-review.json\n  deliver --input candidate.xlsx --out final.xlsx --requirements requirements.json --qa-report visual-review.json\n  self-test [--out directory]\n`);
 }
 
 async function main() {
@@ -4328,6 +5215,9 @@ async function main() {
     case "capabilities": await commandCapabilities(options); break;
     case "schema": await commandSchema(options); break;
     case "prepare": await commandPrepare(options); break;
+    case "evidence-observe": await commandEvidenceObserve(options); break;
+    case "evidence-confirm": await commandEvidenceConfirm(options); break;
+    case "integrity-bind": await commandIntegrityBind(options); break;
     case "resolve-latest": await commandResolveLatest(options); break;
     case "scaffold": await commandScaffold(options); break;
     case "build": await commandBuild(options); break;

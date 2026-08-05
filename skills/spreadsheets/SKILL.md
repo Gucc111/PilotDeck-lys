@@ -1,6 +1,6 @@
 ---
 name: spreadsheets
-description: Create, edit, inspect, analyze, recalculate, render, and validate standalone spreadsheet files in .xlsx, .xls, .csv, and .tsv formats through a capability-declared workflow with controlled OOXML fallback, neutral built-in styling, native charts, raster images, source integrity, and SHA-bound visual QA. Use whenever the requested input or deliverable is a workspace spreadsheet, including formula-driven workbooks, formatted tables, data cleanup, workbook questions, legacy XLS conversion, Chinese or bilingual workbooks, and spreadsheet visual QA. Do not use for Google Sheets, macro-enabled .xlsm files, or live control of Microsoft Excel.
+description: Create, edit, inspect, analyze, recalculate, render, and validate standalone spreadsheet files in .xlsx, .xls, .csv, and .tsv formats through a capability-declared workflow with controlled OOXML fallback, neutral built-in styling, native charts, raster images, source-bound numeric reconciliation, and SHA-bound visual QA. Use whenever the requested input or deliverable is a workspace spreadsheet, including multi-file merges, numeric filling, formula-driven workbooks, formatted tables, data cleanup, workbook questions, legacy XLS conversion, Chinese or bilingual workbooks, and spreadsheet visual QA. Do not use for Google Sheets, macro-enabled .xlsm files, or live control of Microsoft Excel.
 ---
 
 # Spreadsheets
@@ -21,7 +21,9 @@ Work with standalone spreadsheet files through a reproducible JavaScript `.mjs` 
 - Use native Excel chart objects for requested charts. A raster image or SVG does not satisfy a chart requirement.
 - Use `await helpers.addImage(...)` for local raster illustrations. Do not fetch remote images or use an image to impersonate a chart.
 - Create `requirements.json` for every non-trivial workbook and require `coverage.status=passed`.
-- For source-backed workbooks, freeze source file hashes and a compact fact matrix before building. Do not rely on remembered values or reconstruct missing facts from context.
+- Pass every fact-providing file through repeatable `prepare --source`. For source-backed workbooks containing important numbers, bind a strict numeric-integrity plan before building; do not hand-write source evidence or use model-authored expected totals as the only proof.
+- Treat copied, joined, unioned, aggregated, and formula-derived values as different operations and reconcile them against the frozen sources. A numeric-looking string does not satisfy a numeric fact.
+- Treat image-derived numbers as unverified until independent high-confidence observations agree or the user explicitly confirms the bound image region. Never use `evidence-confirm` without that explicit confirmation.
 - Treat Chinese as first-class content when the user does not specify a language. Apply the cross-platform typography policy and verify glyphs after recalculation.
 - Render every final worksheet page and inspect the individual PNG files at full size. A montage is only an overview.
 - Fix formula errors, clipped content, broken tables, unreadable formats, unexpected blank sheets, and poor page layout before delivery.
@@ -41,6 +43,7 @@ Work with standalone spreadsheet files through a reproducible JavaScript `.mjs` 
 - Read [chinese-and-cross-platform.md](references/chinese-and-cross-platform.md) for Chinese, bilingual, or unspecified-language net-new workbooks.
 - Read [charts-and-compatibility.md](references/charts-and-compatibility.md) before editing an existing XLSX or handling charts and advanced Excel objects.
 - Read [requirements-and-delivery.md](references/requirements-and-delivery.md) for every non-trivial workbook.
+- Read [numeric-integrity.md](references/numeric-integrity.md) for every source-backed task that copies, merges, maps, aggregates, calculates, or reads numeric values from images.
 - Read [qa-checklist.md](references/qa-checklist.md) before delivery.
 - Read [capabilities-and-fallbacks.md](references/capabilities-and-fallbacks.md) before declaring a feature unavailable or writing package-level code.
 
@@ -137,6 +140,16 @@ bash "$SHEET" prepare \
   --workbook-type data
 ```
 
+When fact sources exist, include each one independently of `--input` in that same `prepare` call:
+
+```bash
+bash "$SHEET" prepare \
+  --final-out "$FINAL_XLSX" \
+  --workbook-type data \
+  --source "$SOURCE_A" \
+  --source "$SOURCE_B"
+```
+
 For an existing workbook, add `--input "$INPUT_XLSX"`; the default style mode becomes `preserve-source`. Use `--style-mode user-template --style-source "$TEMPLATE_XLSX"` only for a concrete user-supplied style source. For a dashboard/report, select that workbook type explicitly. Use `selected-sheets` visual review only for bounded data workbooks and name every sheet.
 
 `prepare` creates the canonical requirements and returns builder, candidate, render, QA, and delivery-report paths. Complete the declarative checks in that requirements file, then create one executable builder:
@@ -148,12 +161,15 @@ bash "$SHEET" scaffold \
 
 Write `$WORKSPACE/qa/requirements.json` from the user's requested sheets, formulas, native charts, images, validations, conditional formatting, expected cells/ranges, and relevant print-page constraints. Keep the prepared `task` policy unchanged. A sheet list plus a formula count is not sufficient coverage.
 
-For a task based on input files:
+For a task based on input facts:
 
-1. Inspect the exact source ranges or text sections first.
-2. Set `sourceBacked: true`, record every input in `sourceFiles` with its pre-build SHA-256, and list output data sheets in `sourceBackedSheets`.
-3. Add `expectedRanges` for complete user-critical tables such as KPI history, source rows, action items, owners, and deadlines. Use `expectedCells` for important totals and derived checkpoints.
-4. Do not create a builder until the fact matrix is written. If a source omits a status, owner, date, or value, keep it blank or label it as unconfirmed instead of inventing it.
+1. Pass every source through `prepare --source`; do not manually copy its hash into requirements.
+2. Inspect the exact source ranges, table grain, candidate keys, units, and ambiguous regions.
+3. Complete the generated `integrity-plan.json` with `copy`, `union`, `join`, `aggregate`, `formula`, or `ocr` operations.
+4. For image facts, record independent observations with `evidence-observe`; when they disagree, stop unless the user explicitly confirms the value and region.
+5. Run `integrity-bind --requirements "$WORKSPACE/qa/requirements.json"`. Do not build while numeric integrity remains `prepared`.
+6. Add `expectedRanges` only for additional user-visible acceptance matrices and `expectedCells` for important checkpoints; do not duplicate a complete reconciliation as hand-authored expectations.
+7. If a source omits a value or the mapping is ambiguous, keep it blank, label it unconfirmed, or ask the user. Never invent a fact to make integrity pass.
 
 Patch and rerun that builder instead of creating duplicate scripts. Build a net-new workbook:
 
@@ -190,6 +206,8 @@ bash "$SHEET" build \
 - Write derived values as formulas and use visible helper ranges for complex logic.
 - Use bounded ranges instead of entire-column references in large calculations.
 - Use typed numbers, booleans, and dates rather than display-formatted strings.
+- Preserve identifiers as text. Strict numeric comparison rejects strings such as `"100"` when a numeric cell is required.
+- Declare decimal scale, currency/unit, key columns, duplicate policy, missing-match policy, rounding, and business invariants in the integrity plan when they affect correctness.
 - Apply explicit number formats for currency, percentages, counts, and dates.
 - Keep cross-sheet references quoted, for example `'Revenue Model'!B6`.
 - In ExcelJS formula objects, omit the leading `=`. See [formulas-and-data.md](references/formulas-and-data.md).

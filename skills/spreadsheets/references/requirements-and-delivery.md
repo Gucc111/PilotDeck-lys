@@ -27,6 +27,20 @@ Use only fields that the task needs:
     }
   ],
   "sourceBackedSheets": ["指标总览", "KPI趋势"],
+  "numericIntegrity": {
+    "protocol": "pilotdeck-numeric-integrity/v1",
+    "mode": "strict",
+    "state": "bound",
+    "evidence": {
+      "path": "/absolute/internal/source-evidence.json",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "plan": {
+      "path": "/absolute/internal/integrity-plan.json",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "blockOnUnverified": true
+  },
   "requiredSheets": ["指标总览", "KPI趋势"],
   "exactSheetCount": 5,
   "minFormulaCount": 10,
@@ -102,13 +116,15 @@ Do not add decorative-title or accent-color permission because the builder alrea
 
 ## Source-backed workbooks
 
-Set `sourceBacked: true` whenever one or more files supply facts for the output. Record absolute input paths and their SHA-256 values before building; `audit` and `deliver` reject missing or changed sources. List every output sheet that materially reproduces source facts in `sourceBackedSheets`.
+Set `sourceBacked: true` whenever one or more files supply facts for the output. Prefer repeatable `prepare --source`, which records absolute paths and SHA-256 values, generates source evidence, and prevents manual hash transcription. `audit` and `deliver` reject missing or changed sources. `integrity-bind` derives every materially source-backed output sheet from the plan.
 
-Each source-backed sheet must have at least one `expectedCells` or `expectedRanges` assertion. Use `expectedRanges` for complete user-critical tables rather than checking one convenient cell. This is especially important for KPI histories, channel/source tables, schedules, action registers, owners, dates, and other facts where a plausible replacement would still look polished.
+Each source-backed sheet must have either a bound numeric-integrity operation or at least one `expectedCells`/`expectedRanges` assertion. Use numeric integrity for complete copied, unioned, joined, aggregated, calculated, or image-derived numeric facts. Use `expectedRanges` for additional user-critical non-numeric matrices rather than checking one convenient cell.
 
-The requirements schema rejects a source-backed sheet with no fact assertion. The build also checks declared sheets, formula ranges, tables, validations, non-formula facts, and neutral-style policy before the expensive recalculation stage, so correct the requirements or builder instead of waiting for a late audit failure.
+The requirements schema rejects a source-backed sheet with neither form of fact coverage. A numeric-integrity task remains `prepared` until the generated plan and evidence are validated by `integrity-bind`; build rejects that unbound state. The build also checks declared sheets, formula ranges, tables, validations, non-formula facts, and neutral-style policy before the expensive recalculation stage, so correct the plan, requirements, or builder instead of waiting for a late audit failure.
 
 Build the expected matrices from actual `inspect` output or exact text/JSON extraction. Do not type them from memory. Requirements prove that the output matches the frozen fact matrix; source hashes prove the inputs were not changed during the task.
+
+Numeric expected values are type-strict: the text `"100"` does not satisfy the number `100`. For comprehensive numeric source reconciliation, use [numeric-integrity.md](numeric-integrity.md) instead of duplicating source values into requirements.
 
 For non-trivial workbooks, structural checks alone are rejected. Formula-driven workbooks need `requiredFormulaRanges`. Native charts need `requiredNativeCharts` with exact `sourceRanges` and `minPoints`. Coverage means only that the declared checks passed; it is not a percentage of undeclared user intent.
 
