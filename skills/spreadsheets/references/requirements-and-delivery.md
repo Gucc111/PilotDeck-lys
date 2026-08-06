@@ -1,5 +1,7 @@
 # Requirements coverage and delivery
 
+> Legacy protocol reference. The model-guided workflow uses `build`, multimodal `review`, optional task-specific `evaluate`, and direct `deliver`. Use this requirements/attestation/QA protocol only when an existing task already depends on it or when its frozen acceptance contract is deliberately requested.
+
 Create a task-specific `requirements.json` for every non-trivial workbook. Requirements turn user-visible promises into checks that cannot be satisfied by a look-alike image or an unrelated worksheet object.
 
 Run `prepare` first. It creates the canonical file and freezes its `task` section. Add workbook checks without rewriting that policy.

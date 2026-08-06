@@ -1,73 +1,79 @@
 # Formatting
 
-## Preserve an existing workbook
+Use formatting to clarify the workbook's information and purpose. Do not treat visual decoration as evidence of quality.
 
-- Render the source workbook before editing it.
-- Inspect the target range's fills, fonts, borders, alignment, merged cells, number formats, widths, and row heights.
-- Change values without replacing existing styles.
-- Extend surrounding formulas, table ranges, validations, and conditional formatting when adding rows or columns.
-- Make the smallest plausible visual change. Do not apply sheet-wide autofit or restyling without a redesign request.
+## Find the design source
 
-## Baseline for a new workbook
+Look for presentation guidance in this order:
 
-- When no template or concrete style is supplied, use `neutral-built-in` and select the correct workbook type during `prepare`.
-- For `data`, `tracker`, and `model`, start the usable table at the top of the sheet. Do not add a merged banner, oversized title, KPI cards, decorative blank rows, or a dashboard shell.
-- Use bold dark text, white or light-gray header fill, and a thin neutral bottom border. Do not make ordinary headers blue or activate a colored theme from generic words such as “professional”.
-- Use `TableStyleLight1`. Other built-in table themes are not part of the neutral default.
-- Keep the body white. Use color only for requested branding or semantic input/status/warning meaning.
-- Keep gridlines visible for ordinary data sheets. Hide them only when a dashboard/report layout supplies an equally clear structure.
-- Freeze header rows or identifier columns for large sheets.
-- Apply formatting only to populated or intentionally reserved ranges.
+1. Explicit user requirements.
+2. A supplied template or visual reference.
+3. The established language of an existing workbook.
+4. The workbook's purpose and information structure.
+5. A restrained neutral baseline when none of the above supplies a direction.
 
-## Style modes and workbook types
+When editing an existing workbook, render and inspect it first. Preserve unrelated fills, fonts, borders, alignment, number formats, widths, row heights, tables, and conventions. Make the smallest coherent change unless the user requests a redesign.
 
-- `preserve-source`: inspect and preserve the source's visual language. Do not apply the neutral template over an existing workbook.
-- `user-template`: use only the frozen template or explicit user tokens. Generic genres are not style sources.
-- `neutral-built-in`: enforce the neutral rules during audit and delivery.
-- `data`: compact grid/table, filters, frozen headers, no decorative title.
-- `tracker`: data rules plus restrained semantic status colors.
-- `model`: separate inputs, formulas, and outputs with minimal semantic formatting.
-- `dashboard` or `report`: titles, KPI blocks, hidden gridlines, and accent colors are allowed only when that archetype is explicitly selected.
-- `template`: preserve the template structure and formatting.
+## Use a neutral baseline thoughtfully
 
-## Typography and alignment
+For an ordinary data sheet without a supplied style, prefer:
 
-- For Chinese, bilingual, or unspecified-language workbooks, follow [chinese-and-cross-platform.md](chinese-and-cross-platform.md).
-- Use one neutral body-font profile. Do not promise a universal CJK font; XLSX does not reliably embed fonts.
-- Use bold sparingly to establish reading order.
-- Left-align descriptions, right-align numbers, and apply explicit date/number formats.
-- Widen columns before creating deeply wrapped rows.
-- Keep row heights consistent within a section.
-- Use CJK-aware `helpers.autoFitColumns`; use `helpers.autoFitRows` after widths are final for wrapped text.
+- White body cells and dark text.
+- Bold text or a light-gray fill for headers.
+- Subtle borders or whitespace for grouping.
+- Readable column widths and consistent row heights.
+- Explicit number, percentage, currency, and date formats.
+- Frozen headers and filters when they improve navigation.
+- Color only when it communicates status, category, exception, or another useful meaning.
+
+Do not automatically add a merged cover title, oversized heading, KPI cards, dashboard framing, theme palette, gradients, shadows, or widespread colored fills. Generic requests such as "professional" do not imply a blue or branded theme.
+
+Neutral is a starting point, not a restriction. Reports and dashboards may benefit from stronger hierarchy, accent colors, summary blocks, and hidden gridlines when those choices support their content.
+
+## Build hierarchy before decoration
+
+Prefer this sequence:
+
+1. Organize the data and sections clearly.
+2. Apply appropriate number formats.
+3. Set alignment, widths, heights, and wrapping.
+4. Establish hierarchy with typography and spacing.
+5. Add borders and restrained fills where they improve scanning.
+6. Add color or graphic emphasis only when it carries meaning.
+
+Use bold sparingly. Left-align descriptions, right-align numbers, and keep identifiers visually distinct from quantities. Widen columns before creating deeply wrapped rows.
+
+## Use workbook purpose as context
+
+- Favor density, scanning, filtering, and accurate types in data tables.
+- Favor input clarity, validation, and editable ranges in trackers and forms.
+- Distinguish assumptions, formulas, and outputs in calculation models.
+- Use stronger narrative hierarchy in reports.
+- Use charts and summary components in dashboards when they answer a real question.
+- Follow the supplied structure and tokens in templates.
+
+These are design considerations, not runtime categories.
 
 ## Number formats
 
-Use invariant Excel format codes:
+Use invariant Excel format codes appropriate to the content:
 
 - Count: `#,##0`
 - Decimal: `#,##0.0`
 - Percentage: `0.0%`
-- Currency: `"$"#,##0` or a currency requested by the user
 - Chinese yuan: `¥#,##0` or `¥#,##0.00`
 - Date: `yyyy-mm-dd`
-- Month: `mmm yyyy`
 
-Use enough precision to support the decision, not every available decimal place.
+Use enough precision to support the task without creating visual noise. Keep numeric-looking identifiers as text.
 
 ## Tables and summaries
 
-- Use a native table when filters, banding, or structured growth improve usability.
-- Keep table names unique and stable.
-- Show important totals near the top or in a summary block, driven by formulas.
-- Use conditional formatting for status, thresholds, variances, and exceptions.
-- Do not merge cells inside calculation tables. Reserve merging for titles and section labels.
+Use a native table when filters, banding, or structured growth improve usability. Keep names unique and stable. Do not merge cells inside calculation tables.
 
-## Visual QA
+Use summaries and conditional formatting when they help the user understand totals, status, thresholds, variance, or exceptions. Drive derived summaries with formulas when practical.
 
-At full-size render, verify:
+## Review the result
 
-- Headers and important numbers are not clipped.
-- Wrapped text is readable and row heights are sufficient.
-- Units, currency, dates, and percentages display correctly.
-- Sections do not overlap and pages do not contain accidental blank areas caused by a bloated used range.
-- Print scaling does not make the workbook unreadably small.
+Render the candidate and inspect the images at useful resolution. Look for clipping, poor wrapping, unreadable scaling, accidental blank areas, misleading emphasis, excessive styling, broken hierarchy, and differences from supplied templates.
+
+Let the model judge whether the presentation supports the user's request. Do not turn palette choices, title size, or fill counts into universal pass/fail rules.

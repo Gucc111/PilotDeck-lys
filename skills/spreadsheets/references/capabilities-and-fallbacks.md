@@ -1,20 +1,18 @@
 # Spreadsheet capabilities and controlled fallback
 
-Read this file before declaring the bundled spreadsheet workflow insufficient or writing package-level code.
+Read this file when the standard builder and helpers cannot express an important requested feature.
 
-## Discover, do not guess
+## Inspect capabilities when needed
 
 Run:
 
 ```bash
 bash "$SHEET" capabilities
-bash "$SHEET" schema --command requirements
-bash "$SHEET" schema --command numeric-integrity
 bash "$SHEET" schema --command native-chart
 bash "$SHEET" schema --command image
 ```
 
-The live CLI output is authoritative. Only `status: ok` is success. Preserve `partial`, `unsupported`, and `blocked` instead of silently changing the requested feature.
+Use the concise capability report first and query a schema only for the feature you need. Treat `unsupported` and `blocked` as evidence to reconsider the implementation or report a limitation, not as permission to silently change the request.
 
 ## Decision ladder
 
@@ -70,7 +68,7 @@ A no-op returns `partial`. An allowlist escape returns `blocked`. Correct the sc
 
 The wrapper reduces accidental writes and inherited secrets but is not an operating-system network sandbox. The script must use only its package directory and task-local assets.
 
-Every successful fallback still produces an internal candidate. Run requirements audit, recalculation when applicable, SHA-bound visual QA, and `deliver` normally.
+Every successful fallback still produces an internal candidate. Recalculate when applicable, run `review`, add task-specific evaluation when needed, and deliver the reviewed candidate normally.
 
 ## Capability boundaries
 

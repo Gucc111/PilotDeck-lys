@@ -1,5 +1,7 @@
 # QA checklist
 
+> Legacy SHA-bound QA reference. New model-guided tasks should use [evaluation.md](evaluation.md) and inspect the rendered workbook directly instead of creating observations JSON.
+
 ## Structural inspection
 
 - Confirm the expected worksheet names and count.

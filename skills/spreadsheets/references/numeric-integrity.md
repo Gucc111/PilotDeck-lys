@@ -1,6 +1,8 @@
 # Numeric integrity
 
-Use the numeric-integrity protocol whenever source files supply important numeric facts to an output workbook. The protocol proves faithful transfer and declared calculations; it cannot prove that an unchanged source value is true in the real world.
+Use the numeric-integrity protocol when a task benefits from an independently replayable, source-bound reconciliation plan, such as complex joins, multi-source transformations, fixed-point financial calculations, or important OCR-derived facts. It is an optional advanced verification capability, not a required phase for every source-backed workbook.
+
+Prefer a small task-specific evaluator for straightforward comparisons. Choose this protocol when its stronger lineage, evidence binding, and replay guarantees justify the additional setup. The protocol proves faithful transfer and declared calculations; it cannot prove that an unchanged source value is true in the real world.
 
 ## Contents
 
@@ -26,7 +28,9 @@ Use the numeric-integrity protocol whenever source files supply important numeri
 
 The protocol prevents silent copying, join, aggregation, formula, and transcription errors. It does not establish the external authenticity of a source document.
 
-## Workflow
+## Legacy protocol workflow
+
+The current numeric-integrity implementation uses the legacy prepared-task protocol. Enter this workflow deliberately after deciding that the task needs it; do not infer that decision from the presence or count of source files.
 
 Pass every fact source in the original `prepare` call:
 

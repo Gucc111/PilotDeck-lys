@@ -418,6 +418,36 @@ function normalizeLibreOfficeDataValidations(xml) {
   return { xml: normalizedXml, normalizedCount };
 }
 
+function normalizeExcelJsTableSemantics(xml) {
+  const tableOpen = xml.match(/<table\b[^>]*>/i)?.[0];
+  if (!tableOpen || /\btotalsRowCount="1"/i.test(tableOpen)) {
+    return { xml, changed: false };
+  }
+  let normalizedOpen = tableOpen.replace(/\s+totalsRowShown="[^"]*"/i, "");
+  normalizedOpen = normalizedOpen.replace(/>$/, ' totalsRowShown="0">');
+  const normalized = xml
+    .replace(tableOpen, normalizedOpen)
+    .replace(/\s+totalsRowLabel=""/gi, "");
+  return { xml: normalized, changed: normalized !== xml };
+}
+
+async function normalizeGeneratedTablePackage(filePath) {
+  const zip = await JSZip.loadAsync(await fs.readFile(filePath));
+  let changedParts = 0;
+  for (const [entryName, entry] of Object.entries(zip.files)) {
+    if (entry.dir || !/^xl\/tables\/table\d+[.]xml$/i.test(entryName)) continue;
+    const xml = await entry.async("string");
+    const normalized = normalizeExcelJsTableSemantics(xml);
+    if (!normalized.changed) continue;
+    zip.file(entryName, normalized.xml);
+    changedParts += 1;
+  }
+  if (changedParts > 0) {
+    await fs.writeFile(filePath, await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+  }
+  return { changed: changedParts > 0, changedParts };
+}
+
 async function normalizeLibreOfficeRoundTripPackage(filePath) {
   const zip = await JSZip.loadAsync(await fs.readFile(filePath));
   let normalizedValidations = 0;
@@ -670,7 +700,11 @@ function addTableFromRange(worksheet, { name, range, style = { theme: "TableStyl
     if (!header) throw new Error(`Table '${name}' has an empty header at ${columnLetters(column)}${bounds.startRow}`);
     if (seen.has(header)) throw new Error(`Table '${name}' has duplicate header '${header}'`);
     seen.add(header);
-    columns.push({ name: header });
+    columns.push({
+      name: header,
+      filterButton: true,
+      ...(column === bounds.startCol ? { totalsRowLabel: "" } : {}),
+    });
   }
   const rows = [];
   for (let row = bounds.startRow + 1; row <= bounds.endRow; row += 1) {
@@ -702,16 +736,14 @@ function addListValidation(worksheet, rangeRef, values, options = {}) {
   if (Array.isArray(values) && formula.length > 255) {
     throw new Error("Inline list validation exceeds Excel's 255-character limit; place the values in cells and pass a range formula instead");
   }
-  forEachCellInRange(worksheet, rangeRef, (cell) => {
-    cell.dataValidation = {
-      type: "list",
-      allowBlank: options.allowBlank ?? true,
-      showErrorMessage: options.showErrorMessage ?? true,
-      errorStyle: options.errorStyle ?? "stop",
-      errorTitle: options.errorTitle ?? "输入无效",
-      error: options.error ?? "请选择列表中的值",
-      formulae: [formula],
-    };
+  worksheet.dataValidations.add(rangeRef, {
+    type: "list",
+    allowBlank: options.allowBlank ?? true,
+    showErrorMessage: options.showErrorMessage ?? true,
+    errorStyle: options.errorStyle ?? "stop",
+    errorTitle: options.errorTitle ?? "输入无效",
+    error: options.error ?? "请选择列表中的值",
+    formulae: [formula],
   });
 }
 
@@ -1128,6 +1160,7 @@ function tableSummaries(worksheet) {
 }
 
 function worksheetSummary(worksheet) {
+  const validationRanges = Object.keys(worksheet.dataValidations?.model ?? {}).filter((range) => worksheet.dataValidations.model[range]);
   return {
     name: worksheet.name,
     state: worksheet.state,
@@ -1137,6 +1170,9 @@ function worksheetSummary(worksheet) {
     actualColumnCount: worksheet.actualColumnCount,
     mergedRanges: Array.isArray(worksheet.model?.merges) ? worksheet.model.merges : [],
     tables: tableSummaries(worksheet),
+    autoFilter: serializableValue(worksheet.autoFilter ?? null),
+    dataValidations: validationRanges.slice(0, 100),
+    conditionalFormatting: (worksheet.conditionalFormattings ?? []).slice(0, 100).map((entry) => entry.ref),
     views: serializableValue(worksheet.views),
     pageSetup: serializableValue(worksheet.pageSetup),
   };
@@ -1205,7 +1241,11 @@ async function inspectXlsx(filePath, options = {}) {
     formulas: {
       count: facts.formulaCount,
       items: facts.formulas,
+      errors: facts.errors,
+      missingCachedResults: facts.missingCachedResults,
+      invalidReferences: facts.formulaReferencesWithErrors,
     },
+    invalidDates: facts.invalidDates,
   };
 }
 
@@ -3903,20 +3943,18 @@ function capabilitiesReport() {
     resultStatuses: RESULT_STATUSES,
     capabilityStates: CAPABILITY_STATES,
     outputPolicy: {
-      taskSetupCommand: "prepare",
+      taskSetupCommand: "optional-legacy-prepare",
       mutationOutputsAreInternalCandidates: true,
       finalOutputRequiresCommand: "deliver",
-      deliveryRequiresMatchingQaSha256: true,
-      deliveryRequiresScopedProjectGuard: true,
+      deliveryRequiresMatchingCandidateSha256: true,
+      legacyDeliverySupportsQaBindings: true,
       sourceReplacement: "blocked",
       existingOutputsBlockedByDefault: true,
     },
     stylePolicy: {
-      modes: [...STYLE_MODES],
-      workbookTypes: [...WORKBOOK_TYPES],
-      defaultForNewWorkbook: "neutral-built-in",
-      genericProfessionalLanguageActivatesColorTheme: false,
-      neutralDataWorkbookAllowsDecorativeTitle: false,
+      defaultWhenUnspecified: "restrained-neutral",
+      guidance: "Use the user request, templates, source workbook, and workbook purpose to choose presentation. Runtime does not make the aesthetic decision.",
+      helperDefaults: "neutral-and-overridable",
     },
     operations: {
       inspect: { status: "supported", formats: ["xlsx", "xls", "csv", "tsv"] },
@@ -3932,8 +3970,10 @@ function capabilitiesReport() {
       pivotTablesExternalConnectionsPowerQuery: { status: "unsupported", fallback: "Create a companion workbook without mutating the source package." },
       macrosSignaturesEncryptionActiveX: { status: "blocked" },
       controlledFallback: { status: "supported", command: "fallback-patch", directUntrackedPackageMutation: "blocked" },
-      qa: { status: "supported", commands: ["qa-init", "qa-complete"], adaptiveReview: true },
-      delivery: { status: "supported", command: "deliver", candidateDigestBinding: true, repeatedAudit: false },
+      review: { status: "supported", command: "review", multimodalRender: true, structuralEvidence: true, verdict: "model" },
+      evaluate: { status: "supported", command: "evaluate", taskSpecificScript: true, sourceReread: true, verdict: "model-authored-checks" },
+      legacyQa: { status: "supported", commands: ["qa-init", "qa-complete"], adaptiveReview: true },
+      delivery: { status: "supported", command: "deliver", candidateDigestBinding: true, legacyQaBindings: true },
       numericIntegrity: {
         status: "supported",
         protocol: NUMERIC_INTEGRITY_PROTOCOL,
@@ -3951,7 +3991,8 @@ function capabilitiesReport() {
         sourceNormalization: { fallback: "LibreOffice", lineage: "origin-and-derived-sha256", location: "PILOTDECK_WORK_DIR" },
         planScaffold: { command: "integrity-scaffold", bindsFrozenSourcePaths: true, draftMustBeResolved: true },
         planStatus: { command: "integrity-status", conciseBlockers: true, implementationInspection: "unnecessary" },
-        deliveryBlocking: true,
+        defaultWorkflow: "optional-model-selected-evidence",
+        legacyDeliveryBlocking: true,
       },
     },
   };
@@ -3972,11 +4013,10 @@ async function commandCapabilities(options = {}) {
   await emitReport({
     status: "ok",
     protocolVersion: full.protocolVersion,
-    profiles: VALIDATION_PROFILES,
-    dataOperations: DATA_OPERATIONS,
-    workflow: ["prepare", "build", "qa-init", "qa-complete", "deliver"],
-    auditPolicy: "Build audits once and writes a SHA-bound attestation reused by QA and delivery.",
-    next: "Query schema only for the command you are about to use; add --full only for capability debugging.",
+    workflow: ["inspect", "build", "review", "deliver"],
+    review: "Review renders and structural facts with model judgment; use audit or source reconciliation when the task needs stronger evidence.",
+    legacyWorkflow: ["prepare", "build", "qa-init", "qa-complete", "deliver"],
+    next: "Use the simplest capability that supplies enough evidence for the current task; add --full only for capability debugging.",
   });
 }
 
@@ -4263,15 +4303,6 @@ async function commandFallbackPatch(options) {
   }
 }
 
-function workbookRequiresRequirements(workbook, nativeCharts, facts) {
-  if (workbook.worksheets.length > 1 || facts.formulaCount > 0 || nativeCharts.length > 0) return true;
-  return workbook.worksheets.some((worksheet) => (
-    tableSummaries(worksheet).length > 0
-    || (worksheet.conditionalFormattings?.length ?? 0) > 0
-    || Object.keys(worksheet.dataValidations?.model ?? {}).length > 0
-  ));
-}
-
 async function replaceFileAtomically(sourcePath, outputPath) {
   await ensureParent(outputPath);
   const resolvedOutput = path.resolve(outputPath);
@@ -4409,10 +4440,6 @@ async function commandBuildCore(options) {
     throw blocked("unprepared-input", "The task was prepared as a new workbook but build received an existing input", { input: path.resolve(inputPath) });
   }
 
-  if (outputExtension === ".xlsx" && workbookRequiresRequirements(workbook, nativeCharts, facts) && !requirements) {
-    throw new Error("Non-trivial XLSX builds require verifiable requirements. Return requirements from the builder or pass --requirements.");
-  }
-
   if (outputExtension === ".csv" || outputExtension === ".tsv") {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pilotdeck-spreadsheet-delimited-build-"));
     try {
@@ -4423,10 +4450,10 @@ async function commandBuildCore(options) {
       const report = { status: audit.status, output: path.resolve(outputPath), format: outputExtension.slice(1), audit };
       if (!options.quiet) await emitReport(report, options.report && String(options.report));
       else if (options.report) await writeJson(String(options.report), report);
+      return report;
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
-    return;
   }
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pilotdeck-spreadsheet-build-"));
@@ -4442,6 +4469,7 @@ async function commandBuildCore(options) {
     } else {
       await fs.copyFile(rawPath, stagedPath);
     }
+    const tableNormalization = await runStage("table_normalization", () => normalizeGeneratedTablePackage(stagedPath));
     const chartResult = await runStage("chart_injection", () => injectNativeCharts(stagedPath, nativeCharts, { JSZip, loadXlsx }));
     audit = await runStage("audit", () => auditXlsx(stagedPath, requirements));
     await runStage("numeric_integrity_report", () => persistNumericIntegrityReport(requirements, audit.numericIntegrity));
@@ -4468,6 +4496,7 @@ async function commandBuildCore(options) {
       formulaCount: facts.formulaCount,
       recalculated,
       nativeCharts: chartResult,
+      tableNormalization,
       insertedImages,
       typographyNormalization,
       requirements: reportedAudit.coverage,
@@ -4476,6 +4505,7 @@ async function commandBuildCore(options) {
     };
     if (!options.quiet) await emitReport(report, options.report && String(options.report));
     else if (options.report) await writeJson(String(options.report), report);
+    return report;
   } catch (error) {
     const failedDir = assertInternalArtifactPath(`${outputPath}.failed`, "Failed spreadsheet build artifacts");
     let failedArtifacts = null;
@@ -4543,8 +4573,7 @@ async function commandBuild(options) {
   }
 }
 
-async function commandInspect(options) {
-  const inputPath = requireOption(options, "input");
+async function inspectSpreadsheet(inputPath, options = {}) {
   const extension = assertSupportedInput(inputPath, { legacy: true });
   let report;
   if (extension === ".xls") {
@@ -4562,7 +4591,105 @@ async function commandInspect(options) {
   } else {
     report = extension === ".xlsx" ? await inspectXlsx(inputPath, options) : await inspectDelimited(inputPath, options);
   }
+  return report;
+}
+
+async function commandInspect(options) {
+  const inputPath = requireOption(options, "input");
+  const report = await inspectSpreadsheet(inputPath, options);
   await emitReport(report, options.out && String(options.out));
+}
+
+function readRangeMatrix(workbook, sheetName, rangeRef, { typed = false } = {}) {
+  const worksheet = workbook.getWorksheet(sheetName);
+  if (!worksheet) throw new Error(`Worksheet not found: ${sheetName}`);
+  const bounds = parseRangeReference(rangeRef);
+  const matrix = [];
+  for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
+    const values = [];
+    for (let column = bounds.startCol; column <= bounds.endCol; column += 1) {
+      const cell = worksheet.getCell(row, column);
+      const formula = formulaDescriptor(cell);
+      const value = effectiveCellValue(cell);
+      values.push(typed ? {
+        address: cell.address,
+        value: serializableValue(value),
+        type: cellValueType(cell),
+        formula: formula?.formula ?? null,
+        numberFormat: cell.numFmt ?? null,
+      } : serializableValue(value));
+    }
+    matrix.push(values);
+  }
+  return matrix;
+}
+
+function compareMatrices(actual, expected, { tolerance = 0, maxMismatches = 100 } = {}) {
+  const mismatches = [];
+  const rowCount = Math.max(actual?.length ?? 0, expected?.length ?? 0);
+  for (let row = 0; row < rowCount; row += 1) {
+    const actualRow = actual?.[row] ?? [];
+    const expectedRow = expected?.[row] ?? [];
+    const columnCount = Math.max(actualRow.length, expectedRow.length);
+    for (let column = 0; column < columnCount; column += 1) {
+      if (valuesEqual(actualRow[column], expectedRow[column], tolerance)) continue;
+      if (mismatches.length < maxMismatches) {
+        mismatches.push({ row: row + 1, column: column + 1, expected: expectedRow[column] ?? null, actual: actualRow[column] ?? null });
+      }
+    }
+  }
+  return {
+    passed: mismatches.length === 0,
+    actualShape: [actual?.length ?? 0, Math.max(0, ...(actual ?? []).map((row) => row.length))],
+    expectedShape: [expected?.length ?? 0, Math.max(0, ...(expected ?? []).map((row) => row.length))],
+    mismatches,
+  };
+}
+
+async function commandEvaluate(options) {
+  const inputPath = assertInternalArtifactPath(requireOption(options, "input"), "Spreadsheet candidate");
+  const scriptPath = assertInternalArtifactPath(requireOption(options, "script"), "Spreadsheet evaluator");
+  const reportPath = options.out
+    ? assertInternalArtifactPath(String(options.out), "Spreadsheet evaluation report")
+    : null;
+  const evaluatorUrl = `${pathToFileURL(path.resolve(scriptPath)).href}?pilotdeck=${Date.now()}`;
+  const module = await import(evaluatorUrl);
+  if (typeof module.default !== "function") throw new Error("The evaluator must export a default async function");
+  const candidate = await loadWorkbook(inputPath, { inferTypes: true });
+  const product = await module.default({
+    inputPath: path.resolve(inputPath),
+    candidate,
+    loadWorkbook,
+    loadXlsx,
+    loadDelimited,
+    helpers: {
+      readRange: (workbook, sheet, range) => readRangeMatrix(workbook, sheet, range),
+      readTypedRange: (workbook, sheet, range) => readRangeMatrix(workbook, sheet, range, { typed: true }),
+      compareMatrices,
+    },
+  });
+  if (!product || typeof product !== "object" || Array.isArray(product) || !Array.isArray(product.checks)) {
+    throw new Error("The evaluator must return { checks: [{ name, passed, ...details }], ...optionalEvidence }");
+  }
+  const checks = product.checks.map((check, index) => {
+    if (!check || typeof check !== "object" || Array.isArray(check)) throw new Error(`Evaluator checks[${index}] must be an object`);
+    const name = String(check.name ?? "").trim();
+    if (!name || typeof check.passed !== "boolean") throw new Error(`Evaluator checks[${index}] requires a name and boolean passed value`);
+    return { ...serializableValue(check), name, passed: check.passed };
+  });
+  const failed = checks.filter((check) => !check.passed);
+  const report = {
+    ...serializableValue(product),
+    status: checks.length === 0 ? "partial" : failed.length > 0 ? "error" : "ok",
+    input: path.resolve(inputPath),
+    evaluator: { path: path.resolve(scriptPath), sha256: await fileSha256(scriptPath) },
+    checks,
+    failed,
+  };
+  if (!options.quiet) await emitReport(report, reportPath);
+  else if (reportPath) await writeJson(reportPath, report);
+  if (report.status === "error") process.exitCode = 1;
+  return report;
 }
 
 async function commandAudit(options) {
@@ -4589,7 +4716,8 @@ async function commandConvertLegacy(options) {
   const inputPath = requireOption(options, "input");
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Converted spreadsheet candidate");
   const report = await convertLegacyXls(inputPath, outputPath);
-  await emitReport(report, options.report && String(options.report));
+  if (!options.quiet) await emitReport(report, options.report && String(options.report));
+  else if (options.report) await writeJson(String(options.report), report);
 }
 
 async function commandRecalculate(options) {
@@ -4817,6 +4945,52 @@ async function commandRender(options) {
   });
   const blankPages = rendered.pageStats.filter((page) => page.blank);
   await emitReport({ status: blankPages.length > 0 ? "partial" : "ok", input: path.resolve(inputPath), blankPages, ...rendered }, options.report && String(options.report));
+}
+
+async function commandReview(options) {
+  const inputPath = requireOption(options, "input");
+  const outputDir = assertInternalArtifactPath(requireOption(options, "out-dir"), "Spreadsheet review directory");
+  const reportPath = options.report
+    ? assertInternalArtifactPath(String(options.report), "Spreadsheet review report")
+    : null;
+  const sheetNames = optionValues(options, "sheet");
+  const inspectionOptions = {
+    ...(sheetNames[0] ? { sheet: sheetNames[0] } : {}),
+    ...(options.range ? { range: String(options.range) } : {}),
+    ...(options["max-rows"] ? { "max-rows": options["max-rows"] } : {}),
+    ...(options["max-cols"] ? { "max-cols": options["max-cols"] } : {}),
+    styles: true,
+  };
+  const inspection = await runStage("inspection", () => inspectSpreadsheet(inputPath, inspectionOptions));
+  let render;
+  try {
+    const rendered = await runStage("render", () => renderWorkbook(inputPath, outputDir, {
+      perSheet: true,
+      sheetNames: sheetNames.length > 0 ? sheetNames : null,
+      montagePath: path.join(outputDir, "montage.png"),
+    }));
+    const blankPages = rendered.pageStats.filter((page) => page.blank);
+    render = {
+      status: blankPages.length > 0 ? "partial" : "ok",
+      blankPages,
+      ...rendered,
+    };
+  } catch (error) {
+    render = {
+      status: "unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const report = {
+    status: render.status === "ok" ? "ok" : "partial",
+    input: path.resolve(inputPath),
+    inspection,
+    render,
+    judgment: "Review the rendered workbook and structural facts against the user's request. This report records evidence and does not make the final product decision.",
+  };
+  if (!options.quiet) await emitReport(report, reportPath);
+  else if (reportPath) await writeJson(reportPath, report);
+  return report;
 }
 
 async function fileSha256(filePath) {
@@ -5158,7 +5332,7 @@ async function commandQaFinalize(options) {
   if (!options.quiet) await emitReport({ ...state, report: reportPath });
 }
 
-async function commandDeliver(options) {
+async function commandLegacyDeliver(options) {
   const inputPath = requireOption(options, "input");
   assertInternalArtifactPath(inputPath, "Spreadsheet candidate");
   const outputPath = assertDeliveryOutputPath(requireOption(options, "out"));
@@ -5236,6 +5410,71 @@ async function commandDeliver(options) {
   };
   if (!options.quiet) await emitReport(report, options.report && String(options.report));
   else if (options.report) await writeJson(String(options.report), report);
+  return report;
+}
+
+async function commandDirectDeliver(options) {
+  const inputPath = assertInternalArtifactPath(requireOption(options, "input"), "Spreadsheet candidate");
+  const outputPath = assertDeliveryOutputPath(requireOption(options, "out"));
+  const reportPath = options.report
+    ? assertInternalArtifactPath(String(options.report), "Spreadsheet delivery report")
+    : null;
+  const inputExtension = assertSupportedInput(inputPath);
+  const outputExtension = assertSupportedOutput(outputPath);
+  if (inputExtension !== outputExtension) {
+    throw new Error(`Candidate and deliverable formats must match (${inputExtension} != ${outputExtension})`);
+  }
+  if (pathsReferToSameLocation(inputPath, outputPath)) throw new Error("Deliverable must be distinct from the candidate workbook");
+  if (await pathExists(outputPath)) throw new Error(`Refusing to overwrite existing deliverable: ${outputPath}`);
+
+  const audit = await runStage(
+    "audit",
+    () => inputExtension === ".xlsx" ? auditXlsx(inputPath) : auditDelimited(inputPath),
+  );
+  if (audit.status === "error") {
+    throw new Error(`Candidate workbook is not safe to deliver. ${summarizeFailures(audit.hardFailures)}`);
+  }
+
+  await ensureParent(outputPath);
+  const temporaryOutput = path.join(path.dirname(path.resolve(outputPath)), `.${path.basename(outputPath)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.copyFile(inputPath, temporaryOutput);
+  const candidateSha256 = await fileSha256(inputPath);
+  const copiedSha256 = await fileSha256(temporaryOutput);
+  if (candidateSha256 !== copiedSha256) {
+    await fs.rm(temporaryOutput, { force: true });
+    throw new Error("Candidate and deliverable hashes do not match");
+  }
+  await fs.rename(temporaryOutput, outputPath);
+  const finalSha256 = await fileSha256(outputPath);
+  if (finalSha256 !== candidateSha256) {
+    await fs.rm(outputPath, { force: true });
+    throw new Error("Final deliverable hash does not match the reviewed candidate");
+  }
+  const lineage = inputExtension === ".xlsx"
+    ? await recordSpreadsheetDelivery(outputPath, null, finalSha256)
+    : null;
+  const report = {
+    status: "ok",
+    output: path.resolve(outputPath),
+    sha256: finalSha256,
+    candidate: { path: path.resolve(inputPath), sha256: candidateSha256 },
+    audit,
+    lineage,
+  };
+  if (!options.quiet) await emitReport(report, reportPath);
+  else if (reportPath) await writeJson(reportPath, report);
+  return report;
+}
+
+async function commandDeliver(options) {
+  const hasRequirements = options.requirements !== undefined;
+  const hasQaReport = options["qa-report"] !== undefined;
+  if (hasRequirements !== hasQaReport) {
+    throw new Error("Legacy delivery requires both --requirements and --qa-report; omit both for the model-reviewed delivery path");
+  }
+  return hasRequirements
+    ? commandLegacyDeliver(options)
+    : commandDirectDeliver(options);
 }
 
 async function createSelfTestWorkbook() {
@@ -5336,7 +5575,41 @@ async function commandSelfTest(options) {
   const workbook = await createSelfTestWorkbook();
   const nativeCharts = NATIVE_CHART_SPECS.get(workbook) ?? [];
   await workbook.xlsx.writeFile(rawPath);
+  await normalizeGeneratedTablePackage(rawPath);
   steps.push({ name: "create", status: "ok", output: rawPath });
+
+  const helperZip = await JSZip.loadAsync(await fs.readFile(rawPath));
+  const tableXml = await Promise.all(Object.entries(helperZip.files)
+    .filter(([entryName, entry]) => !entry.dir && /^xl\/tables\/table\d+[.]xml$/i.test(entryName))
+    .map(([, entry]) => entry.async("string")));
+  if (tableXml.length === 0
+    || tableXml.some((xml) => /hiddenButton="1"/i.test(xml))
+    || tableXml.some((xml) => /totalsRowLabel="Total"/i.test(xml))
+    || tableXml.some((xml) => !/totalsRowShown="0"/i.test(xml))) {
+    throw new Error("Table helper hid filter buttons or emitted a phantom totals-row label");
+  }
+
+  const sparseValidationPath = path.join(outputDir, "sparse-validation.xlsx");
+  const sparseValidationWorkbook = createWorkbook();
+  const sparseValidationSheet = sparseValidationWorkbook.addWorksheet("录入");
+  sparseValidationSheet.addRows([["名称", "状态"], ["示例", null]]);
+  addListValidation(sparseValidationSheet, "B2:B1000", ["未开始", "进行中", "已完成"], { allowBlank: true });
+  if (sparseValidationSheet.rowCount !== 2) {
+    throw new Error("Range validation materialized empty worksheet rows");
+  }
+  await sparseValidationWorkbook.xlsx.writeFile(sparseValidationPath);
+  const sparseValidationZip = await JSZip.loadAsync(await fs.readFile(sparseValidationPath));
+  const sparseValidationXml = await sparseValidationZip.file("xl/worksheets/sheet1.xml").async("string");
+  if (!/sqref="B2:B1000"/i.test(sparseValidationXml) || !/<dimension[^>]+ref="A1:B2"/i.test(sparseValidationXml)) {
+    throw new Error("Range validation changed the used range or lost its target range");
+  }
+  steps.push({
+    name: "model-friendly-helpers",
+    status: "ok",
+    visibleTableFilters: true,
+    phantomTotalsLabel: false,
+    sparseValidationRange: "B2:B1000",
+  });
 
   const workDirBeforePrepare = process.env.PILOTDECK_WORK_DIR;
   const preparedWorkDir = path.join(outputDir, "prepared-turn");
@@ -6763,6 +7036,98 @@ async function commandSelfTest(options) {
   if (!symlinkBoundaryRejected) throw new Error("Work-directory boundary allowed a symlink escape");
   steps.push({ name: "work-directory-boundary", status: "ok" });
 
+  const modelWorkflowDir = path.join(outputDir, "model-workflow");
+  const modelSourcePath = path.join(outputDir, "model-workflow-source.csv");
+  const modelBuilderPath = path.join(modelWorkflowDir, "builder.mjs");
+  const modelCandidatePath = path.join(modelWorkflowDir, "candidate.xlsx");
+  const modelReviewDir = path.join(modelWorkflowDir, "review");
+  const modelReviewReportPath = path.join(modelWorkflowDir, "review.json");
+  const modelEvaluatorPath = path.join(modelWorkflowDir, "evaluator.mjs");
+  const modelEvaluationPath = path.join(modelWorkflowDir, "evaluation.json");
+  const modelDeliveryReportPath = path.join(modelWorkflowDir, "delivery.json");
+  const modelFinalPath = path.join(outputDir, "model-workflow-final.xlsx");
+  await fs.mkdir(modelWorkflowDir, { recursive: true });
+  await fs.writeFile(modelSourcePath, "产品,数量,单价\n甲,2,10.5\n乙,3,8\n", "utf8");
+  await fs.writeFile(modelBuilderPath, `export default async function build({ inputPath, createWorkbook, loadWorkbook, helpers }) {
+  const source = await loadWorkbook(inputPath, { inferTypes: true });
+  const sourceSheet = source.worksheets[0];
+  const workbook = createWorkbook();
+  const sheet = workbook.addWorksheet("明细", { views: [{ state: "frozen", ySplit: 1, showGridLines: true }] });
+  sheet.addRow(["产品", "数量", "单价", "金额"]);
+  for (let row = 2; row <= sourceSheet.rowCount; row += 1) {
+    const product = sourceSheet.getCell(row, 1).value;
+    const quantity = Number(sourceSheet.getCell(row, 2).value);
+    const unitPrice = Number(sourceSheet.getCell(row, 3).value);
+    sheet.addRow([product, quantity, unitPrice, quantity * unitPrice]);
+  }
+  helpers.styleHeader(sheet, "A1:D1");
+  helpers.setNumberFormat(sheet, "C2:D3", "0.00");
+  helpers.addTableFromRange(sheet, { name: "Details", range: "A1:D3" });
+  helpers.autoFitColumns(sheet, { min: 10, max: 24 });
+  return workbook;
+}
+`, "utf8");
+  await fs.writeFile(modelEvaluatorPath, `export default async function evaluate({ candidate, loadWorkbook, helpers }) {
+  const source = await loadWorkbook(${JSON.stringify(modelSourcePath)}, { inferTypes: true });
+  const sourceSheet = source.worksheets[0];
+  const expected = [["产品", "数量", "单价", "金额"]];
+  for (let row = 2; row <= sourceSheet.rowCount; row += 1) {
+    const product = sourceSheet.getCell(row, 1).value;
+    const quantity = Number(sourceSheet.getCell(row, 2).value);
+    const unitPrice = Number(sourceSheet.getCell(row, 3).value);
+    expected.push([product, quantity, unitPrice, quantity * unitPrice]);
+  }
+  const comparison = helpers.compareMatrices(helpers.readRange(candidate, "明细", "A1:D3"), expected, { tolerance: 1e-9 });
+  return { checks: [{ name: "source values and derived amounts agree", passed: comparison.passed, comparison }] };
+}
+`, "utf8");
+  const workDirBeforeModelWorkflow = process.env.PILOTDECK_WORK_DIR;
+  process.env.PILOTDECK_WORK_DIR = modelWorkflowDir;
+  try {
+    const buildReport = await commandBuild({
+      builder: modelBuilderPath,
+      input: modelSourcePath,
+      out: modelCandidatePath,
+      quiet: true,
+    });
+    const reviewReport = await commandReview({
+      input: modelCandidatePath,
+      "out-dir": modelReviewDir,
+      report: modelReviewReportPath,
+      quiet: true,
+    });
+    const evaluationReport = await commandEvaluate({
+      input: modelCandidatePath,
+      script: modelEvaluatorPath,
+      out: modelEvaluationPath,
+      quiet: true,
+    });
+    const deliveryReport = await commandDeliver({
+      input: modelCandidatePath,
+      out: modelFinalPath,
+      report: modelDeliveryReportPath,
+      quiet: true,
+    });
+    if (buildReport?.status === "error"
+      || reviewReport?.render?.status === "unavailable"
+      || evaluationReport?.status !== "ok"
+      || deliveryReport?.status !== "ok"
+      || !(await pathExists(modelFinalPath))) {
+      throw new Error("The model-guided spreadsheet workflow did not complete successfully");
+    }
+    steps.push({
+      name: "model-guided-workflow",
+      status: "ok",
+      build: buildReport.status,
+      review: reviewReport.status,
+      evaluation: evaluationReport.status,
+      delivery: deliveryReport.status,
+    });
+  } finally {
+    if (workDirBeforeModelWorkflow === undefined) delete process.env.PILOTDECK_WORK_DIR;
+    else process.env.PILOTDECK_WORK_DIR = workDirBeforeModelWorkflow;
+  }
+
   const report = {
     status: "ok",
     outputDir: path.resolve(outputDir),
@@ -6775,7 +7140,7 @@ async function commandSelfTest(options) {
 }
 
 function printHelp() {
-  process.stdout.write(`PilotDeck spreadsheets skill\n\nNormal workflow:\n  capabilities [--feature charts|numericIntegrity] [--full]\n  schema --command <prepare|requirements|status|qa-complete|numeric-integrity|native-chart|image|fallback-patch>\n  prepare --final-out final.xlsx [--input source.xlsx] [--source facts.xlsx] [--data-operation create|presentation-only|copy|union|transform|ocr] [--validation-profile fast|standard|strict]\n  status --requirements requirements.json\n  scaffold --out builder.mjs\n  build --builder builder.mjs --out candidate.xlsx [--input source.xlsx] --requirements requirements.json\n  qa-init --input candidate.xlsx --requirements requirements.json --report visual-review.json\n  qa-complete --report visual-review.json --reviews observations.json\n  deliver --input candidate.xlsx --out final.xlsx --requirements requirements.json --qa-report visual-review.json\n\nInspection and compatibility:\n  resolve-latest --input source.xlsx [--use-exact-input]\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  convert-legacy --input source.xls --out converted.xlsx\n  recalculate --input source.xlsx --out recalculated.xlsx\n  render --input book.xlsx --out-dir render [--pdf render.pdf --montage montage.png --per-sheet]\n  fallback-patch --input candidate.xlsx --script patch.mjs --out patched.xlsx --manifest fallback.json --reason TEXT --allow-part PART\n\nLegacy/debug validation:\n  audit --input book.xlsx [--requirements requirements.json --out audit.json]\n  integrity-scaffold --requirements requirements.json --operation <copy|union|join|aggregate|formula|ocr>\n  integrity-status --requirements requirements.json\n  integrity-bind --requirements requirements.json [--plan integrity-plan.json --evidence source-evidence.json]\n  qa-record --report visual-review.json --sheet Sheet1 --page 1 --status passed --notes TEXT\n  qa-finalize --report visual-review.json\n  self-test [--out directory]\n`);
+  process.stdout.write(`PilotDeck spreadsheets skill\n\nModel-guided workflow:\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  scaffold --out builder.mjs\n  build --builder builder.mjs --out candidate.xlsx [--input source.xlsx]\n  review --input candidate.xlsx --out-dir review [--sheet Sheet1 --report review.json]\n  evaluate --input candidate.xlsx --script evaluator.mjs [--out evaluation.json]\n  deliver --input candidate.xlsx --out final.xlsx [--report delivery.json]\n\nAdditional capabilities:\n  capabilities [--feature charts|numericIntegrity] [--full]\n  convert-legacy --input source.xls --out converted.xlsx\n  recalculate --input source.xlsx --out recalculated.xlsx\n  audit --input book.xlsx [--requirements requirements.json --out audit.json]\n  render --input book.xlsx --out-dir render [--pdf render.pdf --montage montage.png --per-sheet]\n  fallback-patch --input candidate.xlsx --script patch.mjs --out patched.xlsx --manifest fallback.json --reason TEXT --allow-part PART\n\nLegacy protocol:\n  prepare --final-out final.xlsx [--input source.xlsx] [--source facts.xlsx] [--data-operation create|presentation-only|copy|union|transform|ocr] [--validation-profile fast|standard|strict]\n  status --requirements requirements.json\n  qa-init --input candidate.xlsx --requirements requirements.json --report visual-review.json\n  qa-complete --report visual-review.json --reviews observations.json\n  deliver --input candidate.xlsx --out final.xlsx --requirements requirements.json --qa-report visual-review.json\n  schema --command <prepare|requirements|status|qa-complete|numeric-integrity|native-chart|image|fallback-patch>\n  integrity-scaffold --requirements requirements.json --operation <copy|union|join|aggregate|formula|ocr>\n  integrity-status --requirements requirements.json\n  integrity-bind --requirements requirements.json [--plan integrity-plan.json --evidence source-evidence.json]\n  qa-record --report visual-review.json --sheet Sheet1 --page 1 --status passed --notes TEXT\n  qa-finalize --report visual-review.json\n  self-test [--out directory]\n`);
 }
 
 async function main() {
@@ -6795,10 +7160,12 @@ async function main() {
     case "build": await commandBuild(options); break;
     case "fallback-patch": await commandFallbackPatch(options); break;
     case "inspect": await commandInspect(options); break;
+    case "evaluate": await commandEvaluate(options); break;
     case "convert-legacy": await commandConvertLegacy(options); break;
     case "recalculate": await commandRecalculate(options); break;
     case "audit": await commandAudit(options); break;
     case "render": await commandRender(options); break;
+    case "review": await commandReview(options); break;
     case "qa-init": await commandQaInit(options); break;
     case "qa-record": await commandQaRecord(options); break;
     case "qa-complete": await commandQaComplete(options); break;
