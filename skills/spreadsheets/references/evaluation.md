@@ -13,9 +13,11 @@ bash "$SHEET" review \
   --report "$WORKSPACE/review/report.json"
 ```
 
-`review` renders every worksheet separately and creates a montage. It also returns workbook structure, representative cells with styles, formulas, tables, validations, conditional formatting, chart/package information, and compatibility issues.
+`review` renders every worksheet separately into a directory named for the current candidate revision. It returns that revision and each full-size page with its worksheet name, page number, and image path. It also returns workbook structure, representative cells with styles, formulas, tables, validations, conditional formatting, chart/package information, and compatibility issues. `review_pending` means the images are available to inspect, not that their visual quality passed.
 
-Open the montage first, then inspect relevant full-size pages. Judge the evidence against the user's request and the source materials. Look for clipping, poor wrapping, incorrect formats, excessive styling, confusing hierarchy, broken charts, blank pages, and unintended differences from a supplied template.
+Choose and open the pages relevant to the task. Keep visual conclusions within the pages actually inspected. Judge the evidence against the user's request and the source materials. Look for clipping, poor wrapping, incorrect formats, excessive styling, confusing hierarchy, broken charts, blank pages, and unintended differences from a supplied template.
+
+Visual observations belong to the revision that produced them. After changing the workbook, run `review` again and inspect the new revision's relevant pages before describing the final visual result. Let the task and the scope of the change determine which pages matter instead of recording a fixed checklist.
 
 Rendering shows what a user sees, but it cannot prove formulas, types, hidden content, validation behavior, native object identity, or source fidelity. Use the structural report and code-based checks for those facts.
 
@@ -71,9 +73,3 @@ Use ordinary JavaScript to perform joins, aggregations, key checks, invariants, 
 - Use tolerances only when exact equality is inappropriate.
 - Keep the evaluator separate from the builder when practical so the same implementation error is less likely to appear in both.
 - Verify only claims that matter to the task; do not create checks merely to satisfy a template.
-
-## Use deeper reconciliation selectively
-
-Use [numeric-integrity.md](numeric-integrity.md) when complex multi-source transformations, fixed-point financial calculations, key-sensitive joins, or OCR evidence justify an independently replayable lineage plan.
-
-That protocol remains an available verification capability. Do not invoke it automatically for every workbook containing a source file.

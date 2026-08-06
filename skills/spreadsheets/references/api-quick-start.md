@@ -171,4 +171,4 @@ bash "$SHEET" review --input "$WORKSPACE/tmp/candidate.xlsx" --out-dir "$WORKSPA
 bash "$SHEET" deliver --input "$WORKSPACE/tmp/candidate.xlsx" --out "$FINAL_XLSX"
 ```
 
-Use the optional `audit`, `evaluate`, numeric-integrity, and fallback capabilities when they provide useful evidence for the current task. They are not mandatory phases of every build.
+Use the optional `audit`, `evaluate`, and fallback capabilities when they provide useful evidence for the current task. They are not mandatory phases of every build.

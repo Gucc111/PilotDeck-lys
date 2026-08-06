@@ -95,7 +95,9 @@ bash "$SHEET" review \
   --report "$WORKSPACE/review/report.json"
 ```
 
-Open the montage and relevant full-size pages. Judge them against the user's request, source materials, and intended use. Check visual hierarchy, readability, clipping, spacing, number formats, charts, unnecessary decoration, and consistency with supplied templates.
+The review result returns a revision identifier and each rendered page with its worksheet name, page number, and full-size image path. `review_pending` means the current revision is ready to inspect; it is not a visual pass. Choose and open the pages that matter for the task, and keep visual claims within the pages you actually inspected. Check visual hierarchy, readability, clipping, spacing, number formats, charts, unnecessary decoration, and consistency with supplied templates.
+
+Visual observations describe only the candidate revision that produced them. If you revise the workbook afterward, run review again and inspect the new revision's relevant pages before delivery. Decide which pages matter from the task and the changes you made; do not turn review into a fixed page-by-page pipeline.
 
 Use the structural facts in the review report for information images cannot prove, including formulas, cell types, validations, native objects, hidden content, and package compatibility.
 
@@ -109,8 +111,6 @@ bash "$SHEET" evaluate \
 ```
 
 Choose verification evidence according to consequence and uncertainty. A simple workbook may need visual and structural review only; a complex transformation may need source reconciliation. If evidence reveals a problem, revise the builder and review the new candidate.
-
-Use the legacy requirements and numeric-integrity protocol only when its independent reconciliation adds real value. Do not use it merely because a source file exists.
 
 ## Deliver
 

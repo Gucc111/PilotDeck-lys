@@ -47,7 +47,7 @@ bash "$SHEET" fallback-patch \
   --input "$WORKSPACE/tmp/candidate.xlsx" \
   --script "$WORKSPACE/tmp/patch.mjs" \
   --out "$WORKSPACE/tmp/patched-candidate.xlsx" \
-  --manifest "$WORKSPACE/qa/fallback-manifest.json" \
+  --manifest "$WORKSPACE/tmp/fallback-manifest.json" \
   --reason "The standard native-chart helper cannot create the requested object." \
   --allow-part "xl/charts/chart*.xml" \
   --allow-part "xl/drawings/drawing*.xml" \
