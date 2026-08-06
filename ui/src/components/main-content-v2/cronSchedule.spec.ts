@@ -11,6 +11,7 @@ describe('buildSimpleCronExpression', () => {
     expect(buildSimpleCronExpression({ mode: 'weekly', time: '08:30', weekday: 1 })).toBe('30 8 * * 1');
     expect(buildSimpleCronExpression({ mode: 'monthly', time: '08:30', dayOfMonth: 15 })).toBe('30 8 15 * *');
     expect(buildSimpleCronExpression({ mode: 'yearly', time: '08:30', dayOfMonth: 15, monthOfYear: 9 })).toBe('30 8 15 9 *');
+    expect(buildSimpleCronExpression({ mode: 'yearly', time: '08:30', dayOfMonth: 29, monthOfYear: 2 })).toBe('30 8 29 2 *');
   });
 
   it('supports boundary times and Sunday', () => {
@@ -23,7 +24,6 @@ describe('buildSimpleCronExpression', () => {
     expect(() => buildSimpleCronExpression({ mode: 'weekly', time: '08:30', weekday: 7 })).toThrow();
     expect(() => buildSimpleCronExpression({ mode: 'monthly', time: '08:30', dayOfMonth: 32 })).toThrow();
     expect(() => buildSimpleCronExpression({ mode: 'yearly', time: '08:30', dayOfMonth: 31, monthOfYear: 4 })).toThrow();
-    expect(() => buildSimpleCronExpression({ mode: 'yearly', time: '08:30', dayOfMonth: 29, monthOfYear: 2 })).toThrow();
   });
 });
 
@@ -33,6 +33,7 @@ describe('parseSimpleCronExpression', () => {
     ['30 8 * * 1', { mode: 'weekly', time: '08:30', weekday: 1 }],
     ['30 8 15 * *', { mode: 'monthly', time: '08:30', dayOfMonth: 15 }],
     ['30 8 15 9 *', { mode: 'yearly', time: '08:30', dayOfMonth: 15, monthOfYear: 9 }],
+    ['30 8 29 2 *', { mode: 'yearly', time: '08:30', dayOfMonth: 29, monthOfYear: 2 }],
   ])('parses a supported standard expression: %s', (expression, expected) => {
     expect(parseSimpleCronExpression(expression)).toEqual(expected);
   });
@@ -55,7 +56,6 @@ describe('parseSimpleCronExpression', () => {
     '0 9 15 * 1',
     '0 9 * 9 *',
     '0 9 31 4 *',
-    '0 9 29 2 *',
     '60 9 * * *',
     '0 24 * * *',
     '0 9 32 * *',
@@ -72,8 +72,8 @@ describe('parseSimpleCronExpression', () => {
 });
 
 describe('yearly dates', () => {
-  it('excludes February 29 from standard yearly schedules', () => {
-    expect(getYearlyMonthDayCount(2)).toBe(28);
+  it('allows February 29 for leap-year schedules', () => {
+    expect(getYearlyMonthDayCount(2)).toBe(29);
     expect(getYearlyMonthDayCount(4)).toBe(30);
     expect(getYearlyMonthDayCount(12)).toBe(31);
   });

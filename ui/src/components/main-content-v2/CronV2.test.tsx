@@ -238,6 +238,28 @@ describe('CronV2', () => {
     });
   });
 
+  it('shows recurrence notices for monthly short dates and leap day', async () => {
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByText('Create Cron Task');
+    fireEvent.click(screen.getByRole('button', { name: 'Recurring' }));
+    fireEvent.change(screen.getByLabelText('Repeat period'), { target: { value: 'monthly' } });
+
+    for (const day of ['29', '30', '31']) {
+      fireEvent.change(screen.getByLabelText('Day of month'), { target: { value: day } });
+      expect(screen.getByText('Months without this date will not trigger the task.')).toBeTruthy();
+    }
+    fireEvent.change(screen.getByLabelText('Day of month'), { target: { value: '28' } });
+    expect(screen.queryByText('Months without this date will not trigger the task.')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Repeat period'), { target: { value: 'yearly' } });
+    fireEvent.change(screen.getByLabelText('Month'), { target: { value: '2' } });
+    expect((screen.getByLabelText('Day of month') as HTMLSelectElement).options).toHaveLength(29);
+    fireEvent.change(screen.getByLabelText('Day of month'), { target: { value: '29' } });
+    expect(screen.getByText('This task will only trigger in leap years.')).toBeTruthy();
+  });
+
   it('clamps the yearly day when the selected month is shorter', async () => {
     setup([]);
 
@@ -254,7 +276,7 @@ describe('CronV2', () => {
     expect((screen.getByLabelText('Day of month') as HTMLSelectElement).value).toBe('30');
 
     fireEvent.change(screen.getByLabelText('Month'), { target: { value: '2' } });
-    expect((screen.getByLabelText('Day of month') as HTMLSelectElement).options).toHaveLength(28);
+    expect((screen.getByLabelText('Day of month') as HTMLSelectElement).options).toHaveLength(29);
   });
 
   it('updates the cron expression when the standard fields change', async () => {

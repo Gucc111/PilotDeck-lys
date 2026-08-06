@@ -68,7 +68,8 @@ export function parseSimpleCronExpression(expression: string): SimpleCronSchedul
 
 export function getYearlyMonthDayCount(month: number): number {
   assertIntegerInRange(month, 1, 12, 'month');
-  return new Date(2023, month, 0).getDate();
+  // February 29 is a valid yearly schedule. It simply only runs in leap years.
+  return new Date(2024, month, 0).getDate();
 }
 
 function isValidYearlyDate(month: number, day: number): boolean {

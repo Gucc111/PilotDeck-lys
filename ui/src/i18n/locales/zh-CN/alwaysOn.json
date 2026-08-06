@@ -197,7 +197,9 @@
         "december": "十二月"
       },
       "help": {
-        "expressionFormat": "格式：分钟 小时 日期 月份 星期"
+        "expressionFormat": "格式：分钟 小时 日期 月份 星期",
+        "monthlyDateMayBeSkipped": "不存在该日期的月份不会触发任务。",
+        "yearlyLeapDay": "仅在闰年触发任务。"
       },
       "plan": {
         "label": "计划：",

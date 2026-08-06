@@ -641,6 +641,11 @@ function CronCreateView({
   const scheduleDescriptionWithTimezone = timezone.trim()
     ? `${scheduleDescription} (${timezone.trim()})`
     : scheduleDescription;
+  const scheduleNotice = recurrenceMode === 'monthly' && dayOfMonth >= 29
+    ? t('cron.create.help.monthlyDateMayBeSkipped', { defaultValue: 'Months without this date will not trigger the task.' })
+    : recurrenceMode === 'yearly' && monthOfYear === 2 && dayOfMonth === 29
+      ? t('cron.create.help.yearlyLeapDay', { defaultValue: 'This task will only trigger in leap years.' })
+      : null;
 
   const resetForm = () => {
     const defaults = getDefaultFormValues();
@@ -1063,6 +1068,11 @@ function CronCreateView({
               </span>{' '}
               {scheduleDescriptionWithTimezone}
             </p>
+            {scheduleNotice ? (
+              <p aria-live="polite" className="text-[12px] text-neutral-500 dark:text-neutral-400">
+                {scheduleNotice}
+              </p>
+            ) : null}
 
             <div className="rounded-lg border border-blue-200 bg-blue-50/30 p-3 dark:border-blue-900 dark:bg-blue-950/20">
               <button

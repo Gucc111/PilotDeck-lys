@@ -197,7 +197,9 @@
         "december": "December"
       },
       "help": {
-        "expressionFormat": "Format: minute hour day month weekday"
+        "expressionFormat": "Format: minute hour day month weekday",
+        "monthlyDateMayBeSkipped": "Months without this date will not trigger the task.",
+        "yearlyLeapDay": "This task will only trigger in leap years."
       },
       "plan": {
         "label": "Plan:",

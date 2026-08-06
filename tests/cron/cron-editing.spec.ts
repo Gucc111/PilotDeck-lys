@@ -7,6 +7,7 @@ import test from "node:test";
 import { createCronRuntime, defaultCronConfig } from "../../src/cron/index.js";
 import type { CronTask, CronUpdateInput } from "../../src/cron/protocol/types.js";
 import { CronFire } from "../../src/cron/runtime/CronFire.js";
+import { computeNextCronRunAt } from "../../src/cron/runtime/CronSchedule.js";
 import { CronScheduler } from "../../src/cron/runtime/CronScheduler.js";
 import { resolveCronPaths } from "../../src/cron/storage/CronPaths.js";
 import { CronTaskStore } from "../../src/cron/storage/CronTaskStore.js";
@@ -105,6 +106,13 @@ test("CronTaskStore normalizes legacy tasks without a revision to zero", async (
   } finally {
     rmSync(pilotHome, { recursive: true, force: true });
   }
+});
+
+test("CronSchedule finds the next February 29 in the task timezone", () => {
+  assert.equal(
+    computeNextCronRunAt("30 8 29 2 *", new Date("2026-01-01T00:00:00.000Z"), "Asia/Shanghai")?.toISOString(),
+    "2028-02-29T00:30:00.000Z",
+  );
 });
 
 test("CronRuntime updates a task in place and rejects running or stale updates", async () => {
@@ -234,6 +242,7 @@ test("CronRuntime updates daily, weekly, monthly, yearly, and one-time schedules
       { schedule: { type: "cron", expression: "30 8 * * 1", timezone: "UTC" }, nextRunAt: "2026-01-05T08:30:00.000Z" },
       { schedule: { type: "cron", expression: "30 8 15 * *", timezone: "UTC" }, nextRunAt: "2026-01-15T08:30:00.000Z" },
       { schedule: { type: "cron", expression: "30 8 15 9 *", timezone: "UTC" }, nextRunAt: "2026-09-15T08:30:00.000Z" },
+      { schedule: { type: "cron", expression: "30 8 29 2 *", timezone: "UTC" }, nextRunAt: "2028-02-29T08:30:00.000Z" },
       { schedule: { type: "once", runAt: "2026-01-02T12:00:00.000Z" }, nextRunAt: "2026-01-02T12:00:00.000Z" },
     ];
 
