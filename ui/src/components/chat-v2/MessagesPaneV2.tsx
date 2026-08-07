@@ -574,6 +574,15 @@ function MessagesPaneV2({
   const windowedMessageItems = shouldVirtualizeMessages
     ? keyedMessageItems.slice(virtualWindow.startIndex, virtualWindow.endIndex)
     : keyedMessageItems;
+  const unanchoredLiveProcessGroups = useMemo(() => {
+    if (liveProcessGroups.length === 0) return [];
+    const renderedAnchorIndices = new Set(
+      keyedMessageItems.map((item) => item.originalIndex),
+    );
+    return liveProcessGroups.filter(
+      (group) => !renderedAnchorIndices.has(group.afterOriginalIndex),
+    );
+  }, [keyedMessageItems, liveProcessGroups]);
   const liveProcessHeaderIndex = useMemo(() => {
     if (!isAssistantWorking) return -1;
     for (let index = keyedMessageItems.length - 1; index >= 0; index -= 1) {
@@ -1213,6 +1222,12 @@ function MessagesPaneV2({
 
           {shouldVirtualizeMessages && virtualWindow.bottomPadding > 0 ? (
             <div aria-hidden="true" style={{ height: virtualWindow.bottomPadding }} />
+          ) : null}
+
+          {unanchoredLiveProcessGroups.length > 0 ? (
+            <div className="flex min-w-0 flex-col gap-2">
+              {unanchoredLiveProcessGroups.map(renderLiveProcessGroup)}
+            </div>
           ) : null}
 
           {isAssistantWorking &&

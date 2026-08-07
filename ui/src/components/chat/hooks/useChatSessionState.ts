@@ -90,6 +90,40 @@ export function shouldRenderPendingBubble(
   return pendingTargetSessionId !== null && pendingTargetSessionId === activeSessionId;
 }
 
+/**
+ * Keep the bounded history window turn-aware. A long-running turn can emit
+ * more than `visibleMessageCount` process messages after its user prompt. A
+ * plain tail slice would then discard the prompt, leaving the live-process
+ * grouping code without a visible row to attach the collapsed process to.
+ *
+ * Preserve the most recent user message by replacing the oldest tail entry,
+ * so the render cap remains unchanged while the active turn keeps its anchor.
+ */
+export function selectVisibleMessages(
+  messages: ChatMessage[],
+  visibleMessageCount: number,
+): ChatMessage[] {
+  if (messages.length <= visibleMessageCount) return messages;
+
+  const tail = messages.slice(-visibleMessageCount);
+  const tailStartIndex = messages.length - tail.length;
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.type === 'user') {
+      latestUserIndex = index;
+      break;
+    }
+  }
+
+  if (latestUserIndex < 0 || latestUserIndex >= tailStartIndex) {
+    return tail;
+  }
+  if (tail.length <= 1) {
+    return [messages[latestUserIndex]];
+  }
+  return [messages[latestUserIndex], ...tail.slice(1)];
+}
+
 export function getStreamContentKey(messages: ChatMessage[]): string {
   const lastMessage = messages[messages.length - 1];
   if (!lastMessage) {
@@ -947,8 +981,7 @@ export function useChatSessionState({
   }, [sessionIsReadOnly, selectedProject, selectedSession?.id]);
 
   const visibleMessages = useMemo(() => {
-    if (chatMessages.length <= visibleMessageCount) return chatMessages;
-    return chatMessages.slice(-visibleMessageCount);
+    return selectVisibleMessages(chatMessages, visibleMessageCount);
   }, [chatMessages, visibleMessageCount]);
   const streamContentKey = useMemo(
     () => getStreamContentKey(visibleMessages),

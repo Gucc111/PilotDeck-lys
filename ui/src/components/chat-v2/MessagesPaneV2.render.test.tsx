@@ -165,6 +165,25 @@ describe('MessagesPaneV2 render behavior', () => {
     expect(Number(container?.getAttribute('data-rendered-message-count'))).toBeLessThan(220);
   });
 
+  it('keeps a live process status visible when the process fragment has no renderable anchor', () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = Array.from({ length: 4 }, (_, index) => ({
+      id: `tool-${index}`,
+      type: 'assistant',
+      content: '',
+      timestamp: now,
+      isToolUse: true,
+      toolName: 'Read',
+      toolId: `tool-${index}`,
+      toolInput: JSON.stringify({ file_path: `src/Orphaned-${index}.tsx` }),
+    }));
+
+    const { container } = renderPane({ messages, isAssistantWorking: true });
+
+    expect(container.querySelector('[data-total-message-count]')?.getAttribute('data-total-message-count')).toBe('0');
+    expect(screen.getByText('Reading Orphaned-3.tsx')).toBeTruthy();
+  });
+
   it('resynchronizes a virtual window when the mounted pane changes sessions', async () => {
     const sessionAMessages = Array.from({ length: 220 }, (_, index) => ({
       ...makeMessage(index),
