@@ -169,10 +169,10 @@ function parseModelDefinition(
   const catalogModel = catalogHit.model;
 
   const capabilities = parseCapabilities(protocol, model.capabilities, catalogModel?.capabilities);
-  // Non-exact model-name matches are useful for token/capability hints,
-  // but they must not silently opt a model into image delivery.
-  // The settings UI only shows catalog defaults for the selected provider.
-  const catalogMultimodal = catalogHit.matchType === "exact"
+  // Cross-provider model-name matches are useful for token/capability hints,
+  // but they must not silently opt a custom model into image delivery. Aliases
+  // declared by the selected catalog provider are trusted like exact matches.
+  const catalogMultimodal = catalogHit.matchType === "exact" || catalogHit.matchType === "alias"
     ? catalogModel?.multimodal
     : undefined;
   const multimodal = parseMultimodal(model.multimodal, catalogMultimodal);

@@ -95,3 +95,19 @@ test("catalog models keep their catalog image capability when no override is set
     ["text", "image"],
   );
 });
+
+test("catalog model aliases keep their declared provider image capability", () => {
+  const config = parseModelConfig({
+    providers: {
+      openai: {
+        apiKey: "test-key",
+        models: { "gpt-4o-2024-11-20": {} },
+      },
+    },
+  });
+
+  assert.deepEqual(
+    config.providers.openai.models["gpt-4o-2024-11-20"].multimodal.input,
+    ["text", "image"],
+  );
+});
