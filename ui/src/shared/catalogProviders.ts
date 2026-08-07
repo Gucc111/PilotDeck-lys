@@ -11,6 +11,7 @@
 export type CatalogModel = {
   id: string;
   displayName: string;
+  aliases?: string[];
   /** Whether the model accepts image input. Drives the 🖼 indicator in the UI. */
   supportsImage?: boolean;
   /** Context window size (tokens). Drives the placeholder in the max-context-tokens setting. */
@@ -38,11 +39,11 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     protocol: 'anthropic',
     defaultUrl: 'https://api.anthropic.com',
     models: [
-      { id: 'claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 128000 },
-      { id: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 32768 },
-      { id: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 16384 },
-      { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
-      { id: 'claude-haiku-3-5-20241022', displayName: 'Claude 3.5 Haiku', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
+      { id: 'claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', aliases: ['claude-sonnet-4-6'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 128000 },
+      { id: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', aliases: ['claude-opus-4', 'claude-opus-4.6'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 32768 },
+      { id: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', aliases: ['claude-sonnet-4'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 16384 },
+      { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', aliases: ['claude-sonnet-4.5', 'claude-3-5-sonnet-20250929'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
+      { id: 'claude-haiku-3-5-20241022', displayName: 'Claude 3.5 Haiku', aliases: ['claude-3-5-haiku', 'claude-3.5-haiku', 'claude-haiku-3.5'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
     ],
   },
   {
@@ -193,6 +194,35 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
 
 export function findCatalogProviderById(id: string): CatalogProvider | undefined {
   return CATALOG_PROVIDERS.find((p) => p.id === id);
+}
+
+export function findCatalogModelByProviderOrAlias(
+  providerId: string,
+  modelId: string,
+): { provider?: CatalogProvider; model?: CatalogModel } {
+  const provider = findCatalogProviderById(providerId);
+  const providerExact = provider?.models.find((model) => model.id === modelId);
+  if (providerExact) return { provider, model: providerExact };
+
+  const providerAlias = provider?.models.find((model) => model.aliases?.includes(modelId));
+  if (providerAlias) return { provider, model: providerAlias };
+
+  const crossExact = CATALOG_PROVIDERS
+    .flatMap((catalogProvider) => catalogProvider.models.map((model) => ({ provider: catalogProvider, model })))
+    .find((entry) => entry.model.id === modelId);
+  if (crossExact) return { provider: provider ?? crossExact.provider, model: crossExact.model };
+
+  const crossAlias = CATALOG_PROVIDERS
+    .flatMap((catalogProvider) => catalogProvider.models.map((model) => ({ provider: catalogProvider, model })))
+    .find((entry) => entry.model.aliases?.includes(modelId));
+  if (crossAlias) return { provider: provider ?? crossAlias.provider, model: crossAlias.model };
+
+  const slashIndex = modelId.indexOf('/');
+  if (slashIndex >= 0) {
+    return findCatalogModelByProviderOrAlias(providerId, modelId.slice(slashIndex + 1));
+  }
+
+  return { provider };
 }
 
 export function findCatalogProviderByUrl(url: string): CatalogProvider | undefined {

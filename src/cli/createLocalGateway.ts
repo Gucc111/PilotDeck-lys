@@ -1893,7 +1893,14 @@ class ProjectRuntimeRegistry {
       getModelTokenLimits: (provider, model) => {
         try {
           const caps = runtime.model.getCapabilities(provider, model);
-          return { maxContextTokens: caps.maxContextTokens, maxOutputTokens: caps.maxOutputTokens };
+          const maxContextTokens = resolveRoutedModelMaxContextTokens({
+            modelRuntime: runtime.model,
+            agentModel: runtime.snapshot.config.agent.model,
+            agentMaxContextTokens: runtime.snapshot.config.agent.maxContextTokens,
+            provider,
+            model,
+          }) ?? caps.maxContextTokens;
+          return { maxContextTokens, maxOutputTokens: caps.maxOutputTokens };
         } catch {
           return undefined;
         }
@@ -2370,13 +2377,11 @@ class ProjectRuntimeRegistry {
     try {
       const caps = runtime.model.getCapabilities(provider, model);
       maxContextTokens = agent.maxContextTokens ?? caps.maxContextTokens;
-      maxOutputTokens = caps.maxOutputTokens;
     } catch {
       maxContextTokens = agent.maxContextTokens;
     }
     maxOutputTokens = readPositiveIntegerEnv(this.options.env.PILOTDECK_MAX_OUTPUT_TOKENS)
-      ?? agent.maxOutputTokens
-      ?? maxOutputTokens;
+      ?? agent.maxOutputTokens;
     return {
       provider,
       model,

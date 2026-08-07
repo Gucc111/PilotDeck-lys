@@ -68,7 +68,6 @@ import {
 
 const TOOL_EVENT_PUMP_INTERVAL_MS = 500;
 const SUBAGENT_STATUS_HEARTBEAT_MS = 2_000;
-const DEFAULT_RESERVED_OUTPUT_TOKENS = 4_096;
 const EMPTY_LENGTH_OUTPUT_RETRY_FLOOR = 4_096;
 const CIRCUIT_BREAKER_GRACE_PROMPT = [
   "Your last several tool calls all failed input validation with the same error.",
@@ -434,9 +433,9 @@ export class AgentLoop {
 
       let emittedContextBudget = false;
       if (ctx?.tryAutoCompact) {
-        const routedMaxCtx = routedLimits?.maxContextTokens ?? this.dependencies.getModelMaxContextTokens?.(decision.provider, decision.model);
+        const routedMaxCtx = this.currentMaxContextTokens(decision.provider, decision.model);
         const currentBudgetMaxCtx = preRoutingMaxContextTokens;
-        if (routedMaxCtx !== undefined && routedMaxCtx !== currentBudgetMaxCtx) {
+        if (routedMaxCtx !== currentBudgetMaxCtx) {
           try {
             const reservedOutputTokens = this.getReservedOutputTokens(decision.provider, decision.model);
             const recompact = await ctx.tryAutoCompact({
@@ -1833,9 +1832,9 @@ export class AgentLoop {
 
   private getReservedOutputTokens(provider?: string, model?: string): number {
     if (provider && model) {
-      return this.currentMaxOutputTokens(provider, model) ?? DEFAULT_RESERVED_OUTPUT_TOKENS;
+      return this.currentMaxOutputTokens(provider, model) ?? 0;
     }
-    return this.currentMaxOutputTokens(this.config.provider, this.config.model) ?? DEFAULT_RESERVED_OUTPUT_TOKENS;
+    return this.currentMaxOutputTokens(this.config.provider, this.config.model) ?? 0;
   }
 
   private tokenCapKey(provider: string, model: string): string {
@@ -1853,15 +1852,22 @@ export class AgentLoop {
 
   private currentMaxContextTokens(provider: string, model: string): number {
     const transient = this.transientTokenCaps.get(this.tokenCapKey(provider, model))?.maxContextTokens;
-    return transient ?? this.getModelTokenLimits(provider, model)?.maxContextTokens ?? this.config.maxContextTokens ?? 1_000_000;
+    return transient
+      ?? this.config.maxContextTokens
+      ?? this.dependencies.getModelMaxContextTokens?.(provider, model)
+      ?? this.getModelTokenLimits(provider, model)?.maxContextTokens
+      ?? 1_000_000;
   }
 
   private currentMaxOutputTokens(provider: string, model: string): number | undefined {
     const transient = this.transientTokenCaps.get(this.tokenCapKey(provider, model));
     const modelMaxOutputTokens = this.getModelTokenLimits(provider, model)?.maxOutputTokens;
-    const requested = transient?.attemptMaxOutputTokens ?? transient?.requestedMaxOutputTokens ?? this.config.maxOutputTokens ?? modelMaxOutputTokens;
-    const candidates = [requested, modelMaxOutputTokens, transient?.hardMaxOutputTokens]
+    const requested = transient?.attemptMaxOutputTokens ?? transient?.requestedMaxOutputTokens ?? this.config.maxOutputTokens;
+    const candidates = [requested, transient?.hardMaxOutputTokens]
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+    if (candidates.length > 0 && typeof modelMaxOutputTokens === "number" && Number.isFinite(modelMaxOutputTokens) && modelMaxOutputTokens > 0) {
+      candidates.push(modelMaxOutputTokens);
+    }
     return candidates.length > 0 ? Math.min(...candidates.map((value) => Math.floor(value))) : undefined;
   }
 

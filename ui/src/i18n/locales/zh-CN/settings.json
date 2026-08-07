@@ -985,7 +985,7 @@
           "noCatalog": "无目录条目，默认仅文本。",
           "imageWarning": "请只在上游确实支持图片时启用。",
           "maxOutputTokens": "最大输出 Token 数",
-          "maxOutputDescription": "单次回复最多生成的 Token。留空使用默认值。",
+          "maxOutputDescription": "单次回复最多生成的 Token。留空则不预留输出 Token。",
           "maxContextTokens": "最大上下文 Token 数",
           "maxContextDescription": "自动压缩参考的上下文窗口。留空使用模型默认值。"
         },

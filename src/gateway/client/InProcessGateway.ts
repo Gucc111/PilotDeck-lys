@@ -1691,8 +1691,8 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
     case "context_budget":
       const reservedOutputTokens = event.snapshot.reservedOutputTokens ?? event.snapshot.maxOutputTokens ?? 0;
       const totalContextTokens = event.snapshot.effectiveContextTokens !== undefined
-        ? event.snapshot.effectiveContextTokens + reservedOutputTokens
-        : event.snapshot.maxContextTokens + reservedOutputTokens;
+        ? event.snapshot.totalContextTokens ?? event.snapshot.effectiveContextTokens + reservedOutputTokens
+        : event.snapshot.totalContextTokens ?? event.snapshot.maxContextTokens + reservedOutputTokens;
       return [{
         type: "context_budget",
         used: event.snapshot.tokens,

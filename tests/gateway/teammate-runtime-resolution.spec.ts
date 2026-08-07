@@ -32,6 +32,25 @@ model:
             maxOutputTokens: 4096
 `;
 
+function tokenConfig(agentExtra = ""): string {
+  return `schemaVersion: 1
+agent:
+  model: fixture/main
+${agentExtra.trim() ? agentExtra : ""}
+model:
+  providers:
+    fixture:
+      protocol: openai
+      url: https://fixture.invalid
+      apiKey: test
+      models:
+        main:
+          capabilities:
+            maxContextTokens: 200000
+            maxOutputTokens: 128000
+`;
+}
+
 function definition(id: string, extra = ""): string {
   return `---
 schemaVersion: 1
@@ -43,6 +62,85 @@ ${extra.trim()}
 Handle the assigned task.
 `;
 }
+
+test("local gateway treats blank agent maxOutputTokens as no explicit output reserve", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-token-config-"));
+  const pilotHome = join(root, "pilot-home");
+  const projectRoot = join(root, "project");
+  let dispose: (() => void) | undefined;
+  try {
+    await Promise.all([
+      mkdir(pilotHome, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ]);
+    await writeFile(
+      join(pilotHome, "pilotdeck.yaml"),
+      tokenConfig("  maxContextTokens: 128000"),
+      "utf8",
+    );
+
+    const local = createLocalGateway({
+      projectRoot,
+      pilotHome,
+      env: { PILOT_HOME: pilotHome },
+    });
+    dispose = local.dispose;
+
+    const runtime = local.registry.resolve(projectRoot);
+    const config = (local.registry as unknown as {
+      createAgentConfig(runtime: unknown, sessionKey: string): {
+        maxContextTokens?: number;
+        maxOutputTokens?: number;
+      };
+    }).createAgentConfig(runtime, "web:s_token_blank_output");
+
+    assert.equal(config.maxContextTokens, 128000);
+    assert.equal(config.maxOutputTokens, undefined);
+  } finally {
+    dispose?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local gateway preserves explicit agent maxOutputTokens as output reserve", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-token-config-"));
+  const pilotHome = join(root, "pilot-home");
+  const projectRoot = join(root, "project");
+  let dispose: (() => void) | undefined;
+  try {
+    await Promise.all([
+      mkdir(pilotHome, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ]);
+    await writeFile(
+      join(pilotHome, "pilotdeck.yaml"),
+      tokenConfig(`  maxContextTokens: 128000
+  maxOutputTokens: 65536`),
+      "utf8",
+    );
+
+    const local = createLocalGateway({
+      projectRoot,
+      pilotHome,
+      env: { PILOT_HOME: pilotHome },
+    });
+    dispose = local.dispose;
+
+    const runtime = local.registry.resolve(projectRoot);
+    const config = (local.registry as unknown as {
+      createAgentConfig(runtime: unknown, sessionKey: string): {
+        maxContextTokens?: number;
+        maxOutputTokens?: number;
+      };
+    }).createAgentConfig(runtime, "web:s_token_explicit_output");
+
+    assert.equal(config.maxContextTokens, 128000);
+    assert.equal(config.maxOutputTokens, 65536);
+  } finally {
+    dispose?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("runtime resolves only globally defined teammates enabled and valid for the workspace", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-runtime-"));

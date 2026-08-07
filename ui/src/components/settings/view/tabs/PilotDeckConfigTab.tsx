@@ -55,6 +55,7 @@ import SettingsToggle from '../SettingsToggle';
 import { cn } from '../../../../lib/utils';
 import {
   CATALOG_PROVIDERS,
+  findCatalogModelByProviderOrAlias,
   findCatalogProviderById,
   type CatalogProvider,
   type CatalogProviderProtocol,
@@ -1543,8 +1544,9 @@ function activeModelCapabilities(config: PilotDeckConfig): {
   const userCapabilities = userDef && typeof userDef === 'object'
     ? (userDef as Record<string, unknown>).capabilities
     : null;
-  const catalogProvider = findCatalogProviderById(providerId);
-  const catalogModel = catalogProvider?.models.find((m) => m.id === modelId);
+  const catalogHit = findCatalogModelByProviderOrAlias(providerId, modelId);
+  const catalogProvider = catalogHit.provider ?? findCatalogProviderById(providerId);
+  const catalogModel = catalogHit.model;
   const protocolDefaults = defaultCapabilitiesForProtocol(provider.protocol ?? catalogProvider?.protocol);
   const maxContextTokens = readPositiveCapability(userCapabilities, 'maxContextTokens')
     ?? catalogModel?.maxContextTokens

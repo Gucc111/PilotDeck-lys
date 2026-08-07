@@ -985,7 +985,7 @@
           "noCatalog": "No catalog entry; defaulting to text only.",
           "imageWarning": "Enable only when the upstream model supports images.",
           "maxOutputTokens": "Max output tokens",
-          "maxOutputDescription": "Maximum tokens generated in one response. Leave empty to use the default.",
+          "maxOutputDescription": "Maximum tokens generated in one response. Leave empty to avoid reserving output tokens.",
           "maxContextTokens": "Max context tokens",
           "maxContextDescription": "Context window used for auto-compaction. Leave empty to use the model default."
         },
