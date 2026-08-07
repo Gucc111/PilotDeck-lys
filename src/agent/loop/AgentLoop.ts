@@ -251,6 +251,8 @@ export class AgentLoop {
     let jsonSelfCorrectCount = 0;
     let hasAttemptedToolCallRetry = false;
     let hasAttemptedReasoningContentRetry = false;
+    /** Prevent a provider that keeps rejecting text-only retries from looping forever. */
+    let hasAttemptedImageStrip = false;
     const largeFileRepair = new LargeFileRepair();
 
     /**
@@ -1128,7 +1130,8 @@ export class AgentLoop {
           continue;
         }
 
-        if (reactive && reactive.type === "strip_images_and_retry") {
+        if (reactive && reactive.type === "strip_images_and_retry" && !hasAttemptedImageStrip) {
+          hasAttemptedImageStrip = true;
           messages = stripTrailingErrorPair(messages);
           messages = stripImagesFromMessages(messages);
           yield {
@@ -1710,6 +1713,7 @@ export class AgentLoop {
         hasAttemptedOutputRetry = false;
         hasAttemptedEmptyRetry = false;
         hasAttemptedToolCallRetry = false;
+        hasAttemptedImageStrip = false;
       }
 
       if (this.config.stopOnStructuredOutput && structuredOutput !== undefined) {
