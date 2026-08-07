@@ -142,6 +142,74 @@ test("local gateway preserves explicit agent maxOutputTokens as output reserve",
   }
 });
 
+test("local gateway applies teammate token overrides to teammate sessions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-token-overrides-"));
+  const pilotHome = join(root, "pilot-home");
+  const projectRoot = join(root, "project");
+  const disposers: Array<() => void> = [];
+  try {
+    await Promise.all([
+      mkdir(join(pilotHome, "teammates"), { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        join(pilotHome, "pilotdeck.yaml"),
+        tokenConfig(`  maxContextTokens: 128000
+  maxOutputTokens: 65536`),
+        "utf8",
+      ),
+      writeFile(
+        join(pilotHome, "teammates", "worker.md"),
+        definition("worker", `maxContextTokens: 64000
+maxOutputTokens: 8192`),
+        "utf8",
+      ),
+    ]);
+    await new TeammateEnablementStore({ pilotHome }).set(projectRoot, ["worker"]);
+
+    const resolveConfig = async (env: Record<string, string | undefined> = {}) => {
+      const local = createLocalGateway({
+        projectRoot,
+        pilotHome,
+        env: { PILOT_HOME: pilotHome, ...env },
+      });
+      disposers.push(local.dispose);
+      await local.registry.listEnabledTeammates(projectRoot);
+      const runtime = local.registry.resolve(projectRoot);
+      const teammate = runtime.teammates[0]!;
+      const sessionKey = `team:${env.PILOTDECK_MAX_OUTPUT_TOKENS ?? "default"}`;
+      const registry = local.registry as unknown as {
+        compileTeammateBinding(
+          leaderSessionId: string,
+          projectRoot: string,
+          definition: unknown,
+          sessionKey: string,
+        ): Promise<unknown>;
+        createAgentConfig(runtime: unknown, sessionKey: string): {
+          maxContextTokens?: number;
+          maxOutputTokens?: number;
+        };
+      };
+      await registry.compileTeammateBinding("leader", projectRoot, teammate, sessionKey);
+      return registry.createAgentConfig(runtime, sessionKey);
+    };
+
+    const teammateConfig = await resolveConfig();
+    assert.equal(teammateConfig.maxContextTokens, 64_000);
+    assert.equal(teammateConfig.maxOutputTokens, 8_192);
+
+    const envOverrideConfig = await resolveConfig({
+      PILOTDECK_MAX_OUTPUT_TOKENS: "32768",
+    });
+    assert.equal(envOverrideConfig.maxContextTokens, 64_000);
+    assert.equal(envOverrideConfig.maxOutputTokens, 32_768);
+  } finally {
+    for (const dispose of disposers) dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runtime resolves only globally defined teammates enabled and valid for the workspace", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-runtime-"));
   const pilotHome = join(root, "pilot-home");

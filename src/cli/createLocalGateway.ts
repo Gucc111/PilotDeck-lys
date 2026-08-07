@@ -2374,13 +2374,16 @@ class ProjectRuntimeRegistry {
     }
     let maxContextTokens: number | undefined;
     let maxOutputTokens: number | undefined;
+    const configuredMaxContextTokens = teammateBinding?.definition.maxContextTokens
+      ?? agent.maxContextTokens;
     try {
       const caps = runtime.model.getCapabilities(provider, model);
-      maxContextTokens = agent.maxContextTokens ?? caps.maxContextTokens;
+      maxContextTokens = configuredMaxContextTokens ?? caps.maxContextTokens;
     } catch {
-      maxContextTokens = agent.maxContextTokens;
+      maxContextTokens = configuredMaxContextTokens;
     }
     maxOutputTokens = readPositiveIntegerEnv(this.options.env.PILOTDECK_MAX_OUTPUT_TOKENS)
+      ?? teammateBinding?.definition.maxOutputTokens
       ?? agent.maxOutputTokens;
     return {
       provider,
@@ -2553,6 +2556,8 @@ function toRuntimeTeammateDefinition(
     prompt: teammate.prompt,
     contextPolicy: workspace.binding.contextPolicy ?? "persistent",
     ...(teammate.model ? { model: teammate.model } : {}),
+    ...(teammate.maxContextTokens !== undefined ? { maxContextTokens: teammate.maxContextTokens } : {}),
+    ...(teammate.maxOutputTokens !== undefined ? { maxOutputTokens: teammate.maxOutputTokens } : {}),
     tools: [...teammate.tools],
     plugins: [...teammate.plugins],
     skills: [...teammate.skills],

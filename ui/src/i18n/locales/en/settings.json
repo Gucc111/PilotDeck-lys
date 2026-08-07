@@ -245,6 +245,10 @@
       "prompt": "Prompt",
       "model": "Model",
       "modelHelp": "Optional model override. Leave empty to use the default.",
+      "maxOutputTokens": "Max output tokens",
+      "maxOutputTokensHelp": "Maximum tokens generated in one teammate reply. Leave empty to avoid an explicit output reserve.",
+      "maxContextTokens": "Max context tokens",
+      "maxContextTokensHelp": "Context window used for this teammate's auto-compaction budget. Leave empty to use the global agent or model default.",
       "tools": "Tools",
       "plugins": "Plugins",
       "skills": "Skills",
@@ -258,6 +262,8 @@
       "description": "Reviews changes for correctness and maintainability.",
       "prompt": "You are a careful code reviewer...",
       "model": "provider/model",
+      "maxOutputTokens": "65536",
+      "maxContextTokens": "128000",
       "tools": "read\nsearch",
       "plugins": "plugin-name",
       "skills": "skill-name",
@@ -276,7 +282,8 @@
       "idRequired": "A stable ID is required.",
       "idInvalid": "Use 1–100 ASCII letters, numbers, dots, underscores, or hyphens; start and end with a letter or number and do not use \"..\".",
       "nameRequired": "A display name is required.",
-      "promptRequired": "A prompt is required."
+      "promptRequired": "A prompt is required.",
+      "positiveInteger": "Enter a positive integer or leave this empty."
     },
     "diagnostics": {
       "global": "Global definition errors",

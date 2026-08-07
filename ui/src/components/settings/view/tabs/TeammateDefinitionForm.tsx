@@ -118,6 +118,43 @@ export default function TeammateDefinitionForm({
           />
         </Field>
 
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label={t('teammates.fields.maxOutputTokens')}
+            error={validationErrors.maxOutputTokens}
+          >
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={draft.maxOutputTokens}
+              onChange={(event) => onUpdateDraft('maxOutputTokens', event.target.value)}
+              placeholder={t('teammates.placeholders.maxOutputTokens')}
+              className={fieldClass(INPUT_CLASS, validationErrors.maxOutputTokens)}
+            />
+            <span className="block text-xs leading-5 text-muted-foreground">
+              {t('teammates.fields.maxOutputTokensHelp')}
+            </span>
+          </Field>
+          <Field
+            label={t('teammates.fields.maxContextTokens')}
+            error={validationErrors.maxContextTokens}
+          >
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={draft.maxContextTokens}
+              onChange={(event) => onUpdateDraft('maxContextTokens', event.target.value)}
+              placeholder={t('teammates.placeholders.maxContextTokens')}
+              className={fieldClass(INPUT_CLASS, validationErrors.maxContextTokens)}
+            />
+            <span className="block text-xs leading-5 text-muted-foreground">
+              {t('teammates.fields.maxContextTokensHelp')}
+            </span>
+          </Field>
+        </div>
+
         {ARRAY_FIELDS.map((field) => (
           <Field key={field} label={t(`teammates.fields.${field}`)}>
             <MultiSelect

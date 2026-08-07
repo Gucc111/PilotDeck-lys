@@ -15,6 +15,8 @@ export interface TeammateDocumentInput {
   name?: string;
   description?: string;
   model?: string;
+  maxContextTokens?: number;
+  maxOutputTokens?: number;
   tools?: string[];
   plugins?: string[];
   skills?: string[];
@@ -29,6 +31,8 @@ export interface TeammateDefinition {
   name: string;
   description?: string;
   model?: string;
+  maxContextTokens?: number;
+  maxOutputTokens?: number;
   tools: string[];
   plugins: string[];
   skills: string[];

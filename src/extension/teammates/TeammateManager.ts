@@ -39,6 +39,8 @@ const ALLOWED_FIELDS = new Set([
   "name",
   "description",
   "model",
+  "maxContextTokens",
+  "maxOutputTokens",
   ...ARRAY_FIELDS,
 ]);
 
@@ -528,6 +530,18 @@ function parseTeammateDocument(content: string, relativePath?: string): ParsedDo
   const name = validateName(parsed.name, candidateId, diagnostics, relativePath);
   const description = optionalString(parsed, "description", diagnostics, relativePath);
   const model = optionalString(parsed, "model", diagnostics, relativePath);
+  const maxContextTokens = optionalPositiveInteger(
+    parsed,
+    "maxContextTokens",
+    diagnostics,
+    relativePath,
+  );
+  const maxOutputTokens = optionalPositiveInteger(
+    parsed,
+    "maxOutputTokens",
+    diagnostics,
+    relativePath,
+  );
   const arrays = Object.fromEntries(
     ARRAY_FIELDS.map((field) => [
       field,
@@ -563,6 +577,8 @@ function parseTeammateDocument(content: string, relativePath?: string): ParsedDo
           name,
           ...(description !== undefined ? { description } : {}),
           ...(model !== undefined ? { model } : {}),
+          ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
           tools: arrays.tools,
           plugins: arrays.plugins,
           skills: arrays.skills,
@@ -692,6 +708,26 @@ function optionalString(
   return value.trim();
 }
 
+function optionalPositiveInteger(
+  frontmatter: Record<string, unknown>,
+  field: "maxContextTokens" | "maxOutputTokens",
+  diagnostics: TeammateDiagnostic[],
+  relativePath?: string,
+): number | undefined {
+  const value = frontmatter[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    diagnostics.push(
+      diagnostic("FIELD_TYPE_INVALID", `${field} must be a positive integer.`, {
+        relativePath,
+        field,
+      }),
+    );
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
 function optionalStringArray(
   frontmatter: Record<string, unknown>,
   field: (typeof ARRAY_FIELDS)[number],
@@ -733,6 +769,8 @@ function renderTeammateDocument(input: TeammateDocumentInput): string {
   if (input.name !== undefined) frontmatter.name = input.name;
   if (input.description !== undefined) frontmatter.description = input.description;
   if (input.model !== undefined) frontmatter.model = input.model;
+  if (input.maxContextTokens !== undefined) frontmatter.maxContextTokens = input.maxContextTokens;
+  if (input.maxOutputTokens !== undefined) frontmatter.maxOutputTokens = input.maxOutputTokens;
   for (const field of ARRAY_FIELDS) {
     if (input[field] !== undefined) frontmatter[field] = input[field];
   }

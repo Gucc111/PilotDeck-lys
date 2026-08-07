@@ -11,6 +11,12 @@ vi.mock('../../../../utils/api', () => ({
   authenticatedFetch: mocks.authenticatedFetch,
 }));
 
+vi.mock('../../../../hooks/usePilotDeckConfig', () => ({
+  usePilotDeckConfig: () => ({
+    raw: 'schemaVersion: 1\nmodel:\n  providers: {}\n',
+  }),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: (() => {
     const t = (key: string, options?: Record<string, unknown>) => {
@@ -26,7 +32,14 @@ vi.mock('react-i18next', () => ({
         'teammates.fields.id': 'Stable ID',
         'teammates.fields.name': 'Display name',
         'teammates.fields.prompt': 'Prompt',
+        'teammates.fields.maxOutputTokens': 'Max output tokens',
+        'teammates.fields.maxOutputTokensHelp': 'Output help.',
+        'teammates.fields.maxContextTokens': 'Max context tokens',
+        'teammates.fields.maxContextTokensHelp': 'Context help.',
         'teammates.fields.toolsHelp': 'Leave empty to grant no ordinary tools.',
+        'teammates.placeholders.maxOutputTokens': '65536',
+        'teammates.placeholders.maxContextTokens': '128000',
+        'teammates.validation.positiveInteger': 'Enter a positive integer or leave this empty.',
         'teammates.list.toolCount': `${String(options?.count ?? 0)} tool(s)`,
         'teammates.list.workspaceCount': `${String(options?.count ?? 0)} workspace(s)`,
         'teammates.enablement.toggleLabel':
@@ -95,6 +108,8 @@ const implementer = {
   name: 'Implementer',
   description: 'Implements tasks',
   prompt: 'Implement the assigned task.',
+  maxContextTokens: 64000,
+  maxOutputTokens: 8192,
   tools: ['bash', 'read_file'],
   plugins: [],
   skills: [],
@@ -279,6 +294,7 @@ describe('TeammatesTab', () => {
       expectedRevision: 'revision-1',
       binding: {
         enabled: false,
+        contextPolicy: 'persistent',
         toolProfile: {
           mode: 'custom',
           tools: ['bash', 'read_file'],
@@ -291,6 +307,7 @@ describe('TeammatesTab', () => {
     await waitFor(() => expect(bindingPutCalls()).toHaveLength(2));
     expect(JSON.parse(bindingPutCalls()[1][1].body).binding).toEqual({
       enabled: false,
+      contextPolicy: 'persistent',
       toolProfile: { mode: 'inherit' },
     });
   });
@@ -311,6 +328,7 @@ describe('TeammatesTab', () => {
     const payload = JSON.parse(bindingPutCalls()[0][1].body);
     expect(payload.binding).toEqual({
       enabled: false,
+      contextPolicy: 'persistent',
       toolProfile: {
         mode: 'custom',
         tools: ['bash'],
@@ -429,13 +447,41 @@ describe('TeammatesTab', () => {
     });
   });
 
+  it('shows and clears teammate token limits in global definitions', async () => {
+    render(<TeammatesTab projects={projects} />);
+
+    await navigateToTeammate('Implementer');
+
+    const output = screen.getByLabelText(/Max output tokens/) as HTMLInputElement;
+    const context = screen.getByLabelText(/Max context tokens/) as HTMLInputElement;
+    expect(output.value).toBe('8192');
+    expect(context.value).toBe('64000');
+
+    fireEvent.change(output, { target: { value: '' } });
+    fireEvent.change(context, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save teammate' }));
+
+    await waitFor(() => {
+      expect(mocks.authenticatedFetch).toHaveBeenCalledWith(
+        '/api/teammates/implementer',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+    });
+    const call = mocks.authenticatedFetch.mock.calls.find(
+      ([url, init]) => url === '/api/teammates/implementer' && init?.method === 'PUT',
+    );
+    const payload = JSON.parse(call?.[1]?.body);
+    expect(payload.definition).not.toHaveProperty('maxContextTokens');
+    expect(payload.definition).not.toHaveProperty('maxOutputTokens');
+  });
+
   it('continues saving global definitions separately from bindings', async () => {
     render(<TeammatesTab projects={projects} />);
 
     await screen.findByText('Implementer');
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
-    expect(screen.getByText('Leave empty to grant no ordinary tools.')).toBeTruthy();
+    expect(screen.getByLabelText(/Max output tokens/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText(/Stable ID/), {
       target: { value: 'new-teammate' },
     });
@@ -444,6 +490,12 @@ describe('TeammatesTab', () => {
     });
     fireEvent.change(screen.getByLabelText('Prompt'), {
       target: { value: 'Do the assigned work.' },
+    });
+    fireEvent.change(screen.getByLabelText(/Max output tokens/), {
+      target: { value: '4096' },
+    });
+    fireEvent.change(screen.getByLabelText(/Max context tokens/), {
+      target: { value: '32000' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save teammate' }));
 
@@ -456,6 +508,11 @@ describe('TeammatesTab', () => {
     const call = mocks.authenticatedFetch.mock.calls.find(
       ([url, init]) => url === '/api/teammates/new-teammate' && init?.method === 'PUT',
     );
-    expect(JSON.parse(call?.[1]?.body)).not.toHaveProperty('projectPath');
+    const payload = JSON.parse(call?.[1]?.body);
+    expect(payload).not.toHaveProperty('projectPath');
+    expect(payload.definition).toEqual(expect.objectContaining({
+      maxOutputTokens: 4096,
+      maxContextTokens: 32000,
+    }));
   });
 });

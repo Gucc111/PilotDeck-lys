@@ -12,6 +12,12 @@ function requireProjectPath(value) {
   return value.trim();
 }
 
+function optionalPositiveInteger(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
 function sendError(res, error) {
   const code = error?.code || error?.details?.code;
   const status = error?.statusCode
@@ -124,12 +130,16 @@ router.put('/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
     const definition = req.body?.definition || {};
+    const maxContextTokens = optionalPositiveInteger(definition.maxContextTokens);
+    const maxOutputTokens = optionalPositiveInteger(definition.maxOutputTokens);
     const document = {
       schemaVersion: 1,
       id,
       name: definition.name || id,
       description: definition.description || '',
       ...(definition.model ? { model: definition.model } : {}),
+      ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
       tools: Array.isArray(definition.tools) ? definition.tools : [],
       plugins: Array.isArray(definition.plugins) ? definition.plugins : [],
       skills: Array.isArray(definition.skills) ? definition.skills : [],

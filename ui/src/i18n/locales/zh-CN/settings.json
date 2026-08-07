@@ -245,6 +245,10 @@
       "prompt": "提示词",
       "model": "模型",
       "modelHelp": "可选的模型覆盖；留空则使用默认模型。",
+      "maxOutputTokens": "最大输出 Token 数",
+      "maxOutputTokensHelp": "此队友单次回复最多生成的 Token。留空则不显式预留输出 Token。",
+      "maxContextTokens": "最大上下文 Token 数",
+      "maxContextTokensHelp": "此队友自动压缩预算使用的上下文窗口。留空则使用全局智能体或模型默认值。",
       "tools": "工具",
       "plugins": "插件",
       "skills": "技能",
@@ -258,6 +262,8 @@
       "description": "审查变更的正确性和可维护性。",
       "prompt": "你是一名严谨的代码审查员……",
       "model": "provider/model",
+      "maxOutputTokens": "65536",
+      "maxContextTokens": "128000",
       "tools": "read\nsearch",
       "plugins": "plugin-name",
       "skills": "skill-name",
@@ -276,7 +282,8 @@
       "idRequired": "必须填写稳定 ID。",
       "idInvalid": "请使用 1–100 个 ASCII 字母、数字、点、下划线或连字符；首尾必须是字母或数字，且不能使用“..”。",
       "nameRequired": "必须填写显示名称。",
-      "promptRequired": "必须填写提示词。"
+      "promptRequired": "必须填写提示词。",
+      "positiveInteger": "请输入正整数，或留空。"
     },
     "diagnostics": {
       "global": "全局定义错误",

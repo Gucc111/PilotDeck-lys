@@ -25,6 +25,8 @@ export type TeammateDefinition = {
   description: string;
   prompt: string;
   model?: string;
+  maxContextTokens?: number;
+  maxOutputTokens?: number;
   tools: string[];
   plugins: string[];
   skills: string[];

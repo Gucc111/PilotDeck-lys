@@ -21,6 +21,8 @@ export type TeammateDraft = {
   description: string;
   prompt: string;
   model: string;
+  maxContextTokens: string;
+  maxOutputTokens: string;
   tools: string;
   plugins: string;
   skills: string;
@@ -54,6 +56,8 @@ export const EMPTY_DRAFT: TeammateDraft = {
   description: '',
   prompt: '',
   model: '',
+  maxContextTokens: '',
+  maxOutputTokens: '',
   tools: '',
   plugins: '',
   skills: '',
@@ -73,17 +77,27 @@ export function validateDraft(
   }
   if (!draft.name.trim()) errors.name = t('teammates.validation.nameRequired');
   if (!draft.prompt.trim()) errors.prompt = t('teammates.validation.promptRequired');
+  if (!isBlankOrPositiveInteger(draft.maxContextTokens)) {
+    errors.maxContextTokens = t('teammates.validation.positiveInteger');
+  }
+  if (!isBlankOrPositiveInteger(draft.maxOutputTokens)) {
+    errors.maxOutputTokens = t('teammates.validation.positiveInteger');
+  }
   return errors;
 }
 
 export function definitionFromDraft(draft: TeammateDraft): TeammateDefinition {
   const model = draft.model.trim();
+  const maxContextTokens = parseOptionalPositiveInteger(draft.maxContextTokens);
+  const maxOutputTokens = parseOptionalPositiveInteger(draft.maxOutputTokens);
   return {
     id: draft.id.trim(),
     name: draft.name.trim(),
     description: draft.description.trim(),
     prompt: draft.prompt.trim(),
     ...(model ? { model } : {}),
+    ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     tools: parseArrayField(draft.tools),
     plugins: parseArrayField(draft.plugins),
     skills: parseArrayField(draft.skills),
@@ -98,6 +112,8 @@ export function draftFromTeammate(teammate: TeammateRecord): TeammateDraft {
     description: teammate.description || '',
     prompt: teammate.prompt,
     model: teammate.model || '',
+    maxContextTokens: teammate.maxContextTokens ? String(teammate.maxContextTokens) : '',
+    maxOutputTokens: teammate.maxOutputTokens ? String(teammate.maxOutputTokens) : '',
     tools: teammate.tools.join('\n'),
     plugins: teammate.plugins.join('\n'),
     skills: teammate.skills.join('\n'),
@@ -116,6 +132,27 @@ export function parseArrayField(value: string): string[] {
   );
 }
 
+function isBlankOrPositiveInteger(value: string): boolean {
+  if (!value.trim()) return true;
+  return parseOptionalPositiveInteger(value) !== undefined;
+}
+
+function parseOptionalPositiveInteger(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function positiveIntegerProp<K extends 'maxContextTokens' | 'maxOutputTokens'>(
+  value: unknown,
+  key: K,
+): Partial<Record<K, number>> {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? ({ [key]: value } as Record<K, number>)
+    : {};
+}
+
 export function normalizeTeammates(value: unknown): TeammateRecord[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -128,6 +165,8 @@ export function normalizeTeammates(value: unknown): TeammateRecord[] {
       description: typeof entry.description === 'string' ? entry.description : '',
       prompt: typeof entry.prompt === 'string' ? entry.prompt : '',
       ...(typeof entry.model === 'string' && entry.model ? { model: entry.model } : {}),
+      ...positiveIntegerProp(entry.maxContextTokens, 'maxContextTokens'),
+      ...positiveIntegerProp(entry.maxOutputTokens, 'maxOutputTokens'),
       tools: normalizeStringArray(entry.tools),
       plugins: normalizeStringArray(entry.plugins),
       skills: normalizeStringArray(entry.skills),

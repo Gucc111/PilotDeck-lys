@@ -143,6 +143,8 @@ id: ../escape
 description: 42
 tools: read
 plugins: [github, 7]
+maxContextTokens: many
+maxOutputTokens: 0
 unexpected: true
 `,
         "",
@@ -169,6 +171,18 @@ unexpected: true
     assert.equal(
       listed.diagnostics.some(
         (item) => item.code === "FIELD_TYPE_INVALID" && item.field === "tools",
+      ),
+      true,
+    );
+    assert.equal(
+      listed.diagnostics.some(
+        (item) => item.code === "FIELD_TYPE_INVALID" && item.field === "maxContextTokens",
+      ),
+      true,
+    );
+    assert.equal(
+      listed.diagnostics.some(
+        (item) => item.code === "FIELD_TYPE_INVALID" && item.field === "maxOutputTokens",
       ),
       true,
     );
@@ -221,6 +235,8 @@ test("TeammateManager provides validated atomic CRUD and blocks path traversal",
         name: "Product Planner",
         description: "Plans scoped product work",
         model: "gpt-5",
+        maxContextTokens: 64_000,
+        maxOutputTokens: 8_192,
         tools: ["read"],
         plugins: [],
         skills: ["planning"],
@@ -229,7 +245,11 @@ test("TeammateManager provides validated atomic CRUD and blocks path traversal",
       },
     });
     assert.equal(created.teammate.relativePath, "product/planner.md");
+    assert.equal(created.teammate.maxContextTokens, 64_000);
+    assert.equal(created.teammate.maxOutputTokens, 8_192);
     assert.match(created.content, /schemaVersion: 1/);
+    assert.match(created.content, /maxContextTokens: 64000/);
+    assert.match(created.content, /maxOutputTokens: 8192/);
     assert.equal(
       await readFile(
         join(root, "teammates", "product", "planner.md"),

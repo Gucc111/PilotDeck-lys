@@ -72,6 +72,8 @@ describe('teammate settings routes', () => {
           description: 'Implements work',
           prompt: 'Implement the assigned task.',
           model: 'openai/gpt-test',
+          maxContextTokens: 64000,
+          maxOutputTokens: 8192,
           tools: ['read_file'],
           plugins: [],
           skills: [],
@@ -86,6 +88,8 @@ describe('teammate settings routes', () => {
         schemaVersion: 1,
         id: 'implementer',
         prompt: 'Implement the assigned task.',
+        maxContextTokens: 64000,
+        maxOutputTokens: 8192,
       }),
     }));
     expect(gateway.reloadExtensions).toHaveBeenCalledWith({

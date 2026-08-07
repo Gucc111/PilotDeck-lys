@@ -13,6 +13,8 @@ export type RuntimeTeammateDefinition = {
   prompt: string;
   contextPolicy?: TeammateContextPolicy;
   model?: string;
+  maxContextTokens?: number;
+  maxOutputTokens?: number;
   tools: string[];
   plugins?: string[];
   skills?: string[];
