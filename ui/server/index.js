@@ -89,6 +89,7 @@ import {
     OFFICE_PREVIEW_SERVICE_BUILTIN,
     OFFICE_PREVIEW_SERVICE_LIBREOFFICE,
     convertOfficeDocumentToPdf,
+    getConfiguredOfficePreviewSettings,
     getConfiguredOfficePreviewService,
     getLibreOfficeCandidateStatuses,
     getLibreOfficeStatus,
@@ -1430,13 +1431,14 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, async (re
 app.get('/api/office-preview/status', authenticateToken, officePreviewStatusRateLimiter, async (req, res) => {
     try {
         const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
-        const [libreOffice, candidates, service] = await Promise.all([
+        const configuredPreview = getConfiguredOfficePreviewSettings();
+        const [libreOffice, candidates] = await Promise.all([
             getLibreOfficeStatus({ forceRefresh }),
             getLibreOfficeCandidateStatuses({ forceRefresh }),
-            Promise.resolve(getConfiguredOfficePreviewService()),
         ]);
         res.json({
-            service,
+            service: configuredPreview.service,
+            configuredBinaryPath: configuredPreview.binaryPath,
             libreOffice: {
                 ...libreOffice,
                 candidates,

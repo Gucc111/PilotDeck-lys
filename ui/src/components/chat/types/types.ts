@@ -111,6 +111,7 @@ export interface ChatMessage {
   isCompactBoundary?: boolean;
   activityId?: string;
   runId?: string;
+  turnId?: string;
   compactTrigger?: string;
   preTokens?: number;
   postTokens?: number;

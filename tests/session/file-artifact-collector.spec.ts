@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { FileArtifactCollector } from "../../src/session/artifacts/FileArtifactCollector.js";
-import type { PilotDeckToolErrorCode } from "../../src/tool/index.js";
+import type { PilotDeckToolErrorCode, PilotDeckToolResult } from "../../src/tool/index.js";
 
 function toolResult(toolName: string) {
   return {
@@ -28,6 +28,17 @@ function failedToolResult(toolName: string, code: PilotDeckToolErrorCode) {
     content: [{ type: "text" as const, text: "Tool did not execute." }],
     startedAt: "2026-07-21T10:00:00.000Z",
     completedAt: "2026-07-21T10:00:00.100Z",
+  };
+}
+
+function successfulFileResult(toolCallId: string, paths: string[]): PilotDeckToolResult {
+  return {
+    type: "success",
+    toolCallId,
+    toolName: "document_generator",
+    content: paths.map((path) => ({ type: "file" as const, path })),
+    startedAt: "2026-07-21T10:00:00.000Z",
+    completedAt: "2026-07-21T10:00:01.000Z",
   };
 }
 
@@ -193,6 +204,82 @@ test("file artifact fingerprints are reused for unchanged files across scans and
 
     assert.equal(hashCalls, 2, "only the changed file is re-hashed");
     assert.deepEqual(artifacts.map((artifact) => artifact.path), ["report.txt"]);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("concurrent collectors in one workspace keep only files explicitly reported by their own turns", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-concurrent-"));
+  try {
+    const firstTurn = await FileArtifactCollector.start({ cwd: projectRoot });
+    const secondTurn = await FileArtifactCollector.start({ cwd: projectRoot });
+
+    await writeFile(join(projectRoot, "first.txt"), "first turn");
+    await writeFile(join(projectRoot, "second.txt"), "second turn");
+    await writeFile(join(projectRoot, "shared.txt"), "shared result");
+    await writeFile(join(projectRoot, "unreported.txt"), "unknown owner");
+
+    firstTurn.observeToolResult(successfulFileResult("first-call", ["first.txt", "shared.txt"]));
+    secondTurn.observeToolResult(successfulFileResult("second-call", ["second.txt", "shared.txt"]));
+
+    const firstArtifacts = await firstTurn.finish("complete");
+    const secondArtifacts = await secondTurn.finish("complete");
+
+    assert.deepEqual(
+      firstArtifacts.map((artifact) => artifact.path),
+      ["first.txt", "shared.txt"],
+    );
+    assert.deepEqual(
+      secondArtifacts.map((artifact) => artifact.path),
+      ["second.txt", "shared.txt"],
+    );
+    assert.ok(firstArtifacts.every((artifact) => artifact.source === "tool"));
+    assert.ok(secondArtifacts.every((artifact) => artifact.source === "tool"));
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("concurrent collectors in separate workspaces retain independent workspace diffs", async () => {
+  const firstRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-project-a-"));
+  const secondRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-project-b-"));
+  try {
+    const firstTurn = await FileArtifactCollector.start({ cwd: firstRoot });
+    const secondTurn = await FileArtifactCollector.start({ cwd: secondRoot });
+
+    await writeFile(join(firstRoot, "first.txt"), "first project");
+    await writeFile(join(secondRoot, "second.txt"), "second project");
+    firstTurn.observeToolResult(toolResult("bash"));
+    secondTurn.observeToolResult(toolResult("bash"));
+
+    const firstArtifacts = await firstTurn.finish("complete");
+    const secondArtifacts = await secondTurn.finish("complete");
+
+    assert.deepEqual(firstArtifacts.map((artifact) => artifact.path), ["first.txt"]);
+    assert.deepEqual(secondArtifacts.map((artifact) => artifact.path), ["second.txt"]);
+    assert.equal(firstArtifacts[0]?.source, "workspace_diff");
+    assert.equal(secondArtifacts[0]?.source, "workspace_diff");
+  } finally {
+    await rm(firstRoot, { recursive: true, force: true });
+    await rm(secondRoot, { recursive: true, force: true });
+  }
+});
+
+test("disposing an unfinished collector removes it from workspace concurrency tracking", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-artifact-dispose-"));
+  try {
+    const unfinishedTurn = await FileArtifactCollector.start({ cwd: projectRoot });
+    unfinishedTurn.dispose();
+
+    const nextTurn = await FileArtifactCollector.start({ cwd: projectRoot });
+    await writeFile(join(projectRoot, "detected.txt"), "workspace diff remains enabled");
+    nextTurn.observeToolResult(toolResult("bash"));
+
+    const artifacts = await nextTurn.finish("complete");
+
+    assert.deepEqual(artifacts.map((artifact) => artifact.path), ["detected.txt"]);
+    assert.equal(artifacts[0]?.source, "workspace_diff");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

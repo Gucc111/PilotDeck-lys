@@ -32,8 +32,8 @@ import { NetworkFetchError, networkFetch } from '../../../src/network/fetch.js';
 import {
   OFFICE_PREVIEW_SERVICE_BUILTIN,
   OFFICE_PREVIEW_SERVICE_LIBREOFFICE,
+  getConfiguredOfficePreviewSettings,
   getLibreOfficeCandidateStatuses,
-  getConfiguredOfficePreviewService,
   getLibreOfficeStatus,
 } from '../services/officePreview.js';
 
@@ -275,10 +275,13 @@ function extractProbeText(body, providerKind) {
   return choices
     .map((choice) => {
       const content = choice?.message?.content;
-      if (typeof content === 'string') return content;
+      if (typeof content === 'string' && content.trim()) return content;
       if (Array.isArray(content)) {
-        return content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('');
+        const text = content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('');
+        if (text.trim()) return text;
       }
+      const reasoning = choice?.message?.reasoning_content ?? choice?.message?.reasoning;
+      if (typeof reasoning === 'string') return reasoning;
       if (typeof choice?.text === 'string') return choice.text;
       return '';
     })
@@ -396,13 +399,14 @@ router.post('/validate', (req, res) => {
 router.get('/office-preview/status', async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
-    const [libreOffice, candidates, service] = await Promise.all([
+    const configuredPreview = getConfiguredOfficePreviewSettings();
+    const [libreOffice, candidates] = await Promise.all([
       getLibreOfficeStatus({ forceRefresh }),
       getLibreOfficeCandidateStatuses({ forceRefresh }),
-      Promise.resolve(getConfiguredOfficePreviewService()),
     ]);
     res.json({
-      service,
+      service: configuredPreview.service,
+      configuredBinaryPath: configuredPreview.binaryPath,
       libreOffice: {
         ...libreOffice,
         candidates,
@@ -672,16 +676,19 @@ router.post('/models', async (req, res) => {
       (text) => isExpectedModelsJsonBody(protocol, text),
     );
     clearTimeout(timer);
+    if (!response.ok) {
+      let body = {};
+      try {
+        body = responseText ? JSON.parse(responseText) : {};
+      } catch { /* Use the upstream response text below. */ }
+      const message = body?.error?.message || body?.message || responseText || `HTTP ${response.status}`;
+      return res.status(response.status).json({ ok: false, error: message });
+    }
     let body;
     try {
       body = responseText ? JSON.parse(responseText) : {};
     } catch {
       return res.status(502).json({ ok: false, error: `Expected JSON from ${url}, but received non-JSON content.` });
-    }
-
-    if (!response.ok) {
-      const message = body?.error?.message || body?.message || responseText || `HTTP ${response.status}`;
-      return res.status(response.status).json({ ok: false, error: message });
     }
 
     res.json({ ok: true, models: parseModelListResponse(body) });
@@ -778,7 +785,7 @@ router.post('/test-connection', async (req, res) => {
         body: JSON.stringify({
           model,
           max_tokens: 8,
-          messages: [{ role: 'user', content: 'Hi' }],
+          messages: [{ role: 'user', content: 'Reply exactly: OK' }],
         }),
         signal: controller.signal,
       };
