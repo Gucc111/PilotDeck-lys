@@ -700,6 +700,7 @@ export function gatewayEventToFrames(event, sessionId, provider) {
             const detail = event.detail || {};
             if (event.event === 'compact_started') {
                 const compactProgress = {
+                    compaction_id: detail.compactionId,
                     level: detail.level || 1,
                     stage: detail.stage || 'compacting',
                     label: detail.label || detail.stage || 'Compacting',
@@ -723,6 +724,7 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                     createNormalizedMessage({
                         ...base,
                         kind: 'compact_boundary',
+                        compactionId: detail.compactionId,
                         trigger: detail.trigger || 'auto',
                         preTokens: detail.preTokens,
                         postTokens: detail.postTokens,

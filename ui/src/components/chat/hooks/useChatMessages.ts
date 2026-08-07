@@ -286,6 +286,7 @@ function convertSingleMessage(
         timestamp: msg.timestamp,
         ...turnIdentity,
         isCompactBoundary: true,
+        compactionId: msg.compactionId,
         compactTrigger: msg.trigger,
         preTokens: msg.preTokens,
         postTokens: msg.postTokens,

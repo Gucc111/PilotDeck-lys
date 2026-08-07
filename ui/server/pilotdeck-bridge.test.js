@@ -113,6 +113,8 @@ describe('gatewayEventToFrames agent status errors', () => {
             type: 'agent_status',
             event: 'compact_completed',
             detail: {
+                compactionId: 'compact-reactive-1',
+                trigger: 'reactive',
                 preTokens: 76000,
                 postTokens: 12000,
                 messagesSummarized: 8,
@@ -131,6 +133,8 @@ describe('gatewayEventToFrames agent status errors', () => {
         expect(frames).toHaveLength(1);
         expect(frames[0]).toMatchObject({
             kind: 'compact_boundary',
+            compactionId: 'compact-reactive-1',
+            trigger: 'reactive',
             postTokens: 12000,
             tokenBudget: {
                 used: 12000,

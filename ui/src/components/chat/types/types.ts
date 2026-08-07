@@ -112,6 +112,7 @@ export interface ChatMessage {
   activityId?: string;
   runId?: string;
   turnId?: string;
+  compactionId?: string;
   compactTrigger?: string;
   preTokens?: number;
   postTokens?: number;
@@ -148,6 +149,7 @@ export interface ChatMessage {
 }
 
 export interface CompactProgress {
+  compaction_id?: string;
   level: number;
   stage: string;
   label: string;

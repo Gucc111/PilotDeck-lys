@@ -287,6 +287,7 @@ describe('turn-scoped server reconciliation', () => {
       provider: PROVIDER,
       kind: 'compact_boundary',
       runId: 'run-current',
+      compactionId: 'compact-current',
       trigger: 'auto',
       preTokens: 120,
       postTokens: 40,
@@ -302,6 +303,8 @@ describe('turn-scoped server reconciliation', () => {
       ...liveBoundary,
       id: 'persisted-compact',
       turnId: 'run-current',
+      trigger: 'reactive',
+      messagesSummarized: 3,
     };
 
     expect(shouldKeepRealtimeAfterServerRefresh(liveBoundary, staleServer)).toBe(true);
@@ -312,8 +315,81 @@ describe('turn-scoped server reconciliation', () => {
 
     expect(isRealtimeMessageRepresentedOnServer(liveBoundary, [persistedBoundary])).toBe(true);
     expect(shouldKeepRealtimeAfterServerRefresh(liveBoundary, [persistedBoundary])).toBe(false);
+    expect(getUnpersistedRealtimeTurnMessages(
+      [liveBoundary],
+      [persistedBoundary],
+      'run-current',
+    )).toEqual([]);
     expect(computeMerged([persistedBoundary], [liveBoundary]).map((message) => message.id)).toEqual([
       'persisted-compact',
+    ]);
+  });
+
+  it('dedupes legacy compact boundaries despite historical metadata drift', () => {
+    const liveBoundary: NormalizedMessage = {
+      id: 'live-compact',
+      sessionId: 'web:s_test',
+      timestamp: '2026-05-28T00:00:02.000Z',
+      provider: PROVIDER,
+      kind: 'compact_boundary',
+      runId: 'run-current',
+      trigger: 'auto',
+      preTokens: 22994,
+      postTokens: 7290,
+      messagesSummarized: 28,
+    };
+    const persistedBoundary: NormalizedMessage = {
+      ...liveBoundary,
+      id: 'persisted-compact',
+      turnId: 'run-current',
+      runId: undefined,
+      trigger: 'reactive',
+      messagesSummarized: 27,
+    };
+    const finalAnswer = textMessage(
+      'final-answer',
+      'Workbook delivered.',
+      '2026-05-28T00:00:05.000Z',
+      { turnId: 'run-current', runId: 'run-current' },
+    );
+
+    expect(computeMerged(
+      [persistedBoundary, finalAnswer],
+      [liveBoundary],
+    ).map((message) => message.id)).toEqual([
+      'persisted-compact',
+      'final-answer',
+    ]);
+    expect(getUnpersistedRealtimeTurnMessages(
+      [liveBoundary],
+      [persistedBoundary, finalAnswer],
+      'run-current',
+    )).toEqual([]);
+  });
+
+  it('does not merge distinct compactions in the same turn', () => {
+    const firstBoundary: NormalizedMessage = {
+      id: 'compact-1-live',
+      sessionId: 'web:s_test',
+      timestamp: '2026-05-28T00:00:02.000Z',
+      provider: PROVIDER,
+      kind: 'compact_boundary',
+      runId: 'run-current',
+      compactionId: 'compact-1',
+      preTokens: 120,
+      postTokens: 40,
+    };
+    const secondBoundary: NormalizedMessage = {
+      ...firstBoundary,
+      id: 'compact-2-history',
+      turnId: 'run-current',
+      compactionId: 'compact-2',
+    };
+
+    expect(isRealtimeMessageRepresentedOnServer(firstBoundary, [secondBoundary])).toBe(false);
+    expect(computeMerged([secondBoundary], [firstBoundary]).map((message) => message.id)).toEqual([
+      'compact-2-history',
+      'compact-1-live',
     ]);
   });
 });

@@ -125,6 +125,7 @@ export interface NormalizedMessage {
   taskId?: string;
   outputFile?: string;
   taskResult?: string;
+  compactionId?: string;
   trigger?: string;
   preTokens?: number;
   postTokens?: number;
@@ -414,13 +415,30 @@ function hasEquivalentCompactBoundary(
   realtimeMessage: NormalizedMessage,
   candidates: NormalizedMessage[],
 ): boolean {
-  return candidates.some((candidate) => (
-    candidate.kind === 'compact_boundary'
-    && candidate.trigger === realtimeMessage.trigger
-    && candidate.preTokens === realtimeMessage.preTokens
-    && candidate.postTokens === realtimeMessage.postTokens
-    && candidate.messagesSummarized === realtimeMessage.messagesSummarized
-  ));
+  return candidates.some((candidate) => {
+    if (candidate.kind !== 'compact_boundary') return false;
+
+    if (candidate.compactionId && realtimeMessage.compactionId) {
+      return candidate.compactionId === realtimeMessage.compactionId;
+    }
+
+    // Backward compatibility for transcripts written before compactionId was
+    // introduced. Trigger and messagesSummarized are intentionally excluded:
+    // older live/history producers derived those fields differently.
+    if (
+      !Number.isFinite(candidate.preTokens)
+      || candidate.preTokens !== realtimeMessage.preTokens
+      || candidate.postTokens !== realtimeMessage.postTokens
+    ) {
+      return false;
+    }
+
+    const candidateTime = parseTimestampMs(candidate.timestamp);
+    const realtimeTime = parseTimestampMs(realtimeMessage.timestamp);
+    return candidateTime != null
+      && realtimeTime != null
+      && Math.abs(candidateTime - realtimeTime) <= 30_000;
+  });
 }
 
 /**
