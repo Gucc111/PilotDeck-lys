@@ -187,6 +187,28 @@ function pathsReferToSameLocation(left, right) {
   return resolveThroughExistingAncestor(left) === resolveThroughExistingAncestor(right);
 }
 
+function assertDistinctArtifactPaths(artifacts) {
+  const entries = Object.entries(artifacts)
+    .filter(([, filePath]) => filePath !== null && filePath !== undefined && filePath !== "")
+    .map(([role, filePath]) => [role, path.resolve(String(filePath))]);
+  for (let leftIndex = 0; leftIndex < entries.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < entries.length; rightIndex += 1) {
+      const [leftRole, leftPath] = entries[leftIndex];
+      const [rightRole, rightPath] = entries[rightIndex];
+      if (!pathsReferToSameLocation(leftPath, rightPath)) continue;
+      throw blocked(
+        "artifact-path-conflict",
+        `Spreadsheet ${leftRole} and ${rightRole} must use distinct paths`,
+        {
+          [leftRole]: leftPath,
+          [rightRole]: rightPath,
+          next: "Choose a separate path for every input, executable, candidate, report, manifest, and deliverable artifact.",
+        },
+      );
+    }
+  }
+}
+
 function assertInternalArtifactPath(filePath, purpose) {
   const resolved = resolveThroughExistingAncestor(filePath);
   const workDir = pilotDeckWorkDir();
@@ -364,6 +386,70 @@ function elementsByLocalName(root, localName) {
     if (elementLocalName === localName) matches.push(element);
   }
   return matches;
+}
+
+function expectedPackageXmlRoot(entryName) {
+  if (entryName === "[Content_Types].xml") return "Types";
+  if (/[.]rels$/i.test(entryName)) return "Relationships";
+  if (/^xl\/charts\/chart[^/]*[.]xml$/i.test(entryName)) return "chartSpace";
+  if (/^xl\/drawings\/drawing[^/]*[.]xml$/i.test(entryName)) return "wsDr";
+  if (/^xl\/worksheets\/sheet[^/]*[.]xml$/i.test(entryName)) return "worksheet";
+  if (entryName === "xl/workbook.xml") return "workbook";
+  if (entryName === "xl/styles.xml") return "styleSheet";
+  if (entryName === "xl/sharedStrings.xml") return "sst";
+  return null;
+}
+
+async function collectChangedPackageXmlIssues(zip, changedParts) {
+  const issues = [];
+  for (const entryName of changedParts) {
+    if (!/[.](?:xml|rels)$/i.test(entryName)) continue;
+    const entry = zip.file(entryName);
+    if (!entry) continue;
+    const diagnostics = [];
+    let document;
+    try {
+      document = new DOMParser({
+        onError(level, message) {
+          diagnostics.push({ level, message });
+        },
+      }).parseFromString(await entry.async("string"), "application/xml");
+    } catch (error) {
+      diagnostics.push({ level: "fatalError", message: error instanceof Error ? error.message : String(error) });
+    }
+    const parseErrors = diagnostics.filter((item) => item.level === "error" || item.level === "fatalError");
+    if (!document?.documentElement || parseErrors.length > 0) {
+      issues.push({
+        type: "malformed_package_xml",
+        part: entryName,
+        diagnostics: parseErrors.slice(0, 8),
+      });
+      continue;
+    }
+    const actualRoot = document.documentElement.localName ?? document.documentElement.nodeName?.split(":").at(-1);
+    const expectedRoot = expectedPackageXmlRoot(entryName);
+    if (expectedRoot && actualRoot !== expectedRoot) {
+      issues.push({
+        type: "unexpected_package_xml_root",
+        part: entryName,
+        expected: expectedRoot,
+        actual: actualRoot ?? null,
+      });
+      continue;
+    }
+    if (/^xl\/charts\/chart[^/]*[.]xml$/i.test(entryName)) {
+      const hasChart = elementsByLocalName(document, "chart").length > 0;
+      const hasPlotArea = elementsByLocalName(document, "plotArea").length > 0;
+      if (!hasChart || !hasPlotArea) {
+        issues.push({
+          type: "invalid_chart_xml_structure",
+          part: entryName,
+          missing: [!hasChart ? "chart" : null, !hasPlotArea ? "plotArea" : null].filter(Boolean),
+        });
+      }
+    }
+  }
+  return issues;
 }
 
 function normalizeLibreOfficeDataValidations(xml) {
@@ -1646,11 +1732,15 @@ async function buildFromBuilder(builderPath, inputPath) {
 
 async function commandScaffold(options) {
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet builder");
+  const reportPath = options.report
+    ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet scaffold report")
+    : null;
+  assertDistinctArtifactPaths({ builder: outputPath, report: reportPath });
   const starter = path.join(skillRoot, "assets", "starter-workbook.mjs");
   if (await pathExists(outputPath)) throw new Error(`Refusing to overwrite existing builder: ${outputPath}`);
   await ensureParent(outputPath);
   await fs.copyFile(starter, outputPath);
-  await emitReport({ status: "ok", output: path.resolve(outputPath) }, options.report && String(options.report));
+  await emitReport({ status: "ok", output: path.resolve(outputPath) }, reportPath);
 }
 
 function capabilitiesReport() {
@@ -1815,6 +1905,7 @@ async function commandFallbackPatch(options) {
   const scriptPath = assertInternalArtifactPath(requireOption(options, "script"), "Spreadsheet fallback script");
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet fallback candidate");
   const manifestPath = assertInternalArtifactPath(requireOption(options, "manifest"), "Spreadsheet fallback manifest");
+  assertDistinctArtifactPaths({ input: inputPath, script: scriptPath, candidate: outputPath, manifest: manifestPath });
   const reason = requireOption(options, "reason").trim();
   const allowParts = optionValues(options, "allow-part");
   if (!reason) throw new Error("--reason must explain the missing standard capability");
@@ -1911,10 +2002,42 @@ async function commandFallbackPatch(options) {
       return;
     }
     await repackDirectoryToXlsx(packageDir, stagedOutput);
-    const validation = await inspectPackage(stagedOutput);
-    if (validation.compatibility.status !== "ok") throw blocked("fallback-invalid-package", "Fallback produced invalid spreadsheet package relationships", { issues: validation.compatibility.issues });
-    const workbook = await loadXlsx(stagedOutput);
-    if (workbook.worksheets.length === 0) throw new Error("Fallback output has no worksheets");
+    const validationIssues = [];
+    let packageInfo = null;
+    let audit = null;
+    try {
+      const stagedZip = await JSZip.loadAsync(await fs.readFile(stagedOutput));
+      validationIssues.push(...await collectChangedPackageXmlIssues(stagedZip, changedParts));
+      packageInfo = await inspectPackage(stagedOutput);
+      validationIssues.push(...packageInfo.compatibility.issues);
+      if (validationIssues.length === 0) {
+        audit = await auditXlsx(stagedOutput);
+        if (audit.worksheetCount === 0) validationIssues.push({ type: "missing_worksheets" });
+        validationIssues.push(...audit.hardFailures);
+      }
+    } catch (error) {
+      validationIssues.push({
+        type: "package_validation_failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (validationIssues.length > 0) {
+      manifest = {
+        status: "blocked",
+        protocol: "pilotdeck-spreadsheet-fallback/v1",
+        reason,
+        input: inputPath,
+        script: scriptPath,
+        scriptSha256: await fileSha256(scriptPath),
+        allowParts,
+        changedParts,
+        validation: { status: "error", issues: validationIssues },
+        stdout: String(scriptResult.stdout ?? "").slice(0, 8000),
+        stderr: String(scriptResult.stderr ?? "").slice(0, 8000),
+      };
+      await writeJson(manifestPath, manifest);
+      throw blocked("fallback-invalid-package", "Fallback produced an invalid spreadsheet package", manifest);
+    }
     await replaceFileAtomically(stagedOutput, outputPath);
     manifest = {
       status: "ok",
@@ -1928,7 +2051,12 @@ async function commandFallbackPatch(options) {
       changedParts,
       output: outputPath,
       outputSha256: await fileSha256(outputPath),
-      validation: validation.compatibility,
+      validation: {
+        status: "ok",
+        issues: [],
+        compatibility: packageInfo.compatibility,
+        auditStatus: audit.status,
+      },
       stdout: String(scriptResult.stdout ?? "").slice(0, 8000),
       stderr: String(scriptResult.stderr ?? "").slice(0, 8000),
     };
@@ -2104,6 +2232,9 @@ async function commandBuild(options) {
   const reportPath = options.report
     ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet build report")
     : assertInternalArtifactPath(`${outputPath}.build-report.json`, "Spreadsheet build report");
+  const builderPath = assertInternalArtifactPath(requireOption(options, "builder"), "Spreadsheet builder");
+  const inputPath = options.input ? path.resolve(requireOption(options, "input")) : null;
+  assertDistinctArtifactPaths({ builder: builderPath, input: inputPath, candidate: outputPath, report: reportPath });
   try {
     return await commandBuildCore({ ...options, report: reportPath });
   } catch (error) {
@@ -2143,9 +2274,13 @@ async function inspectSpreadsheet(inputPath, options = {}) {
 }
 
 async function commandInspect(options) {
-  const inputPath = requireOption(options, "input");
+  const inputPath = path.resolve(requireOption(options, "input"));
+  const reportPath = options.out
+    ? assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet inspection report")
+    : null;
+  assertDistinctArtifactPaths({ input: inputPath, report: reportPath });
   const report = await inspectSpreadsheet(inputPath, options);
-  await emitReport(report, options.out && String(options.out));
+  await emitReport(report, reportPath);
 }
 
 function readRangeMatrix(workbook, sheetName, rangeRef, { typed = false } = {}) {
@@ -2198,8 +2333,9 @@ async function commandEvaluate(options) {
   const inputPath = assertInternalArtifactPath(requireOption(options, "input"), "Spreadsheet candidate");
   const scriptPath = assertInternalArtifactPath(requireOption(options, "script"), "Spreadsheet evaluator");
   const reportPath = options.out
-    ? assertInternalArtifactPath(String(options.out), "Spreadsheet evaluation report")
+    ? assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet evaluation report")
     : null;
+  assertDistinctArtifactPaths({ input: inputPath, evaluator: scriptPath, report: reportPath });
   const evaluatorUrl = `${pathToFileURL(path.resolve(scriptPath)).href}?pilotdeck=${Date.now()}`;
   const module = await import(evaluatorUrl);
   if (typeof module.default !== "function") throw new Error("The evaluator must export a default async function");
@@ -2241,27 +2377,39 @@ async function commandEvaluate(options) {
 }
 
 async function commandAudit(options) {
-  const inputPath = requireOption(options, "input");
+  const inputPath = path.resolve(requireOption(options, "input"));
+  const reportPath = options.out
+    ? assertInternalArtifactPath(requireOption(options, "out"), "Spreadsheet audit report")
+    : null;
+  assertDistinctArtifactPaths({ input: inputPath, report: reportPath });
   const extension = assertSupportedInput(inputPath);
   const report = await runStage(
     "audit",
     () => extension === ".xlsx" ? auditXlsx(inputPath) : auditDelimited(inputPath),
   );
-  await emitReport(report, options.out && String(options.out));
+  await emitReport(report, reportPath);
   if (report.status === "error") process.exitCode = 1;
 }
 
 async function commandConvertLegacy(options) {
-  const inputPath = requireOption(options, "input");
+  const inputPath = path.resolve(requireOption(options, "input"));
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Converted spreadsheet candidate");
+  const reportPath = options.report
+    ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet conversion report")
+    : null;
+  assertDistinctArtifactPaths({ input: inputPath, candidate: outputPath, report: reportPath });
   const report = await convertLegacyXls(inputPath, outputPath);
-  if (!options.quiet) await emitReport(report, options.report && String(options.report));
-  else if (options.report) await writeJson(String(options.report), report);
+  if (!options.quiet) await emitReport(report, reportPath);
+  else if (reportPath) await writeJson(reportPath, report);
 }
 
 async function commandRecalculate(options) {
-  const inputPath = requireOption(options, "input");
+  const inputPath = path.resolve(requireOption(options, "input"));
   const outputPath = assertInternalArtifactPath(requireOption(options, "out"), "Recalculated spreadsheet candidate");
+  const reportPath = options.report
+    ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet recalculation report")
+    : null;
+  assertDistinctArtifactPaths({ input: inputPath, candidate: outputPath, report: reportPath });
   if (workbookExtension(inputPath) !== ".xlsx" || workbookExtension(outputPath) !== ".xlsx") {
     throw new Error("recalculate accepts .xlsx input and output only");
   }
@@ -2277,7 +2425,7 @@ async function commandRecalculate(options) {
   }
   const result = await runStage("formula_recalculation", () => recalculateWorkbook(inputPath, outputPath));
   const audit = await runStage("audit", () => auditXlsx(outputPath));
-  await emitReport({ status: audit.status, ...result, audit }, options.report && String(options.report));
+  await emitReport({ status: audit.status, ...result, audit }, reportPath);
   if (audit.status === "error") process.exitCode = 1;
 }
 
@@ -2370,17 +2518,19 @@ async function renderWorkbook(inputPath, outputDir, { pdfPath, perSheet = false,
       const workbook = await loadXlsx(xlsxInput);
       const sheetReports = [];
       const allPages = [];
-      const worksheets = Array.isArray(sheetNames)
-        ? sheetNames.map((name) => workbook.getWorksheet(name)).filter(Boolean)
+      const requestedSheetNames = Array.isArray(sheetNames) ? [...new Set(sheetNames)] : null;
+      const worksheets = requestedSheetNames
+        ? requestedSheetNames.map((name) => workbook.getWorksheet(name)).filter(Boolean)
         : workbook.worksheets;
-      if (Array.isArray(sheetNames) && worksheets.length !== new Set(sheetNames).size) {
-        const missing = [...new Set(sheetNames)].filter((name) => !workbook.getWorksheet(name));
+      if (requestedSheetNames && worksheets.length !== requestedSheetNames.length) {
+        const missing = requestedSheetNames.filter((name) => !workbook.getWorksheet(name));
         throw new Error(`Visual review references missing worksheet(s): ${missing.join(", ")}`);
       }
-      for (let index = 0; index < worksheets.length; index += 1) {
-        const worksheet = worksheets[index];
-        const singlePath = path.join(tempRoot, `sheet-${index + 1}.xlsx`);
-        const sheetOutput = path.join(outputDir, `sheet-${String(index + 1).padStart(2, "0")}`);
+      for (const worksheet of worksheets) {
+        const workbookSheetIndex = workbook.worksheets.indexOf(worksheet) + 1;
+        const sheetIdentifier = String(workbookSheetIndex).padStart(2, "0");
+        const singlePath = path.join(tempRoot, `sheet-${sheetIdentifier}.xlsx`);
+        const sheetOutput = path.join(outputDir, `sheet-${sheetIdentifier}`);
         await createSingleSheetPackage(xlsxInput, singlePath, worksheet.name);
         const report = await renderWorkbook(singlePath, sheetOutput, {});
         sheetReports.push({ sheet: worksheet.name, ...report });
@@ -2435,28 +2585,36 @@ async function renderWorkbook(inputPath, outputDir, { pdfPath, perSheet = false,
 }
 
 async function commandRender(options) {
-  const inputPath = requireOption(options, "input");
+  const inputPath = path.resolve(requireOption(options, "input"));
   const outputDir = assertInternalArtifactPath(requireOption(options, "out-dir"), "Spreadsheet render directory");
-  if (options.pdf) assertInternalArtifactPath(String(options.pdf), "Spreadsheet render PDF");
+  const pdfPath = options.pdf
+    ? assertInternalArtifactPath(requireOption(options, "pdf"), "Spreadsheet render PDF")
+    : null;
+  const reportPath = options.report
+    ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet render report")
+    : null;
+  assertDistinctArtifactPaths({ input: inputPath, directory: outputDir, pdf: pdfPath, report: reportPath });
   assertSupportedInput(inputPath, { legacy: true });
   const rendered = await renderWorkbook(inputPath, outputDir, {
-    pdfPath: options.pdf ? String(options.pdf) : undefined,
+    pdfPath: pdfPath ?? undefined,
     perSheet: Boolean(options["per-sheet"]),
   });
   const blankPages = rendered.pageStats.filter((page) => page.blank);
-  await emitReport({ status: blankPages.length > 0 ? "partial" : "ok", input: path.resolve(inputPath), blankPages, ...rendered }, options.report && String(options.report));
+  await emitReport({ status: blankPages.length > 0 ? "partial" : "ok", input: path.resolve(inputPath), blankPages, ...rendered }, reportPath);
 }
 
 async function commandReview(options) {
-  const inputPath = requireOption(options, "input");
+  const inputPath = path.resolve(requireOption(options, "input"));
   const outputDir = assertInternalArtifactPath(requireOption(options, "out-dir"), "Spreadsheet review directory");
   const reportPath = options.report
-    ? assertInternalArtifactPath(String(options.report), "Spreadsheet review report")
+    ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet review report")
     : null;
+  assertDistinctArtifactPaths({ input: inputPath, directory: outputDir, report: reportPath });
   const candidateSha256 = await fileSha256(inputPath);
   const revisionId = `rev-${candidateSha256.slice(0, 12)}`;
-  const revisionDir = assertInternalArtifactPath(path.join(outputDir, revisionId), "Spreadsheet review revision directory");
-  const sheetNames = optionValues(options, "sheet");
+  const evidenceId = `run-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+  const revisionDir = assertInternalArtifactPath(path.join(outputDir, revisionId, evidenceId), "Spreadsheet review revision directory");
+  const sheetNames = [...new Set(optionValues(options, "sheet"))];
   const inspectionOptions = {
     ...(sheetNames[0] ? { sheet: sheetNames[0] } : {}),
     ...(options.range ? { range: String(options.range) } : {}),
@@ -2507,6 +2665,7 @@ async function commandReview(options) {
       id: revisionId,
       sha256: candidateSha256,
       directory: revisionDir,
+      evidenceId,
     },
     inspection,
     render,
@@ -2535,8 +2694,9 @@ async function commandDirectDeliver(options) {
   const inputPath = assertInternalArtifactPath(requireOption(options, "input"), "Spreadsheet candidate");
   const outputPath = assertDeliveryOutputPath(requireOption(options, "out"));
   const reportPath = options.report
-    ? assertInternalArtifactPath(String(options.report), "Spreadsheet delivery report")
+    ? assertInternalArtifactPath(requireOption(options, "report"), "Spreadsheet delivery report")
     : null;
+  assertDistinctArtifactPaths({ input: inputPath, deliverable: outputPath, report: reportPath });
   const inputExtension = assertSupportedInput(inputPath);
   const outputExtension = assertSupportedOutput(outputPath);
   if (inputExtension !== outputExtension) {
@@ -2599,6 +2759,13 @@ async function commandSelfTest(options) {
   const reviewDir = path.join(workDir, "review");
   const evaluatorPath = path.join(workDir, "evaluator.mjs");
   const evaluationPath = path.join(workDir, "evaluation.json");
+  const fallbackScriptPath = path.join(workDir, "break-chart.mjs");
+  const invalidFallbackPath = path.join(workDir, "invalid-fallback.xlsx");
+  const invalidFallbackManifestPath = path.join(workDir, "invalid-fallback.json");
+  const aliasFallbackPath = path.join(workDir, "alias-fallback.xlsx");
+  const validFallbackScriptPath = path.join(workDir, "patch-core-properties.mjs");
+  const validFallbackPath = path.join(workDir, "valid-fallback.xlsx");
+  const validFallbackManifestPath = path.join(workDir, "valid-fallback.json");
   const finalPath = path.join(outputDir, "final-" + Date.now() + ".xlsx");
 
   const builderSource = (label) => [
@@ -2615,6 +2782,10 @@ async function commandSelfTest(options) {
     "  helpers.applyChineseTypography(sheet, { platform: 'cross-platform' });",
     "  sheet.getCell('E1').value = " + JSON.stringify(label) + ";",
     "  helpers.addNativeChart(workbook, { sheet: '销售', type: 'line', title: '销售趋势', categories: 'A2:A4', series: [{ name: '销售额', values: 'B2:B4' }], anchor: { from: 'E2', to: 'L16' } });",
+    "  const notes = workbook.addWorksheet('说明', { pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 1 } });",
+    "  notes.addRows([['说明'], [" + JSON.stringify(label) + "]]);",
+    "  helpers.styleHeader(notes, 'A1:A1');",
+    "  helpers.autoFitColumns(notes, { min: 12, max: 24 });",
     "  return workbook;",
     "}",
     "",
@@ -2634,7 +2805,7 @@ async function commandSelfTest(options) {
     steps.push({ name: "build", status: "ok", formulas: firstBuild.formulaCount, charts: firstBuild.nativeCharts.charts.length });
 
     const inspection = await inspectSpreadsheet(candidatePath, { sheet: "销售", range: "A1:E5", styles: true });
-    if (inspection.workbook.worksheetCount !== 1 || inspection.formulas.count < 1) {
+    if (inspection.workbook.worksheetCount !== 2 || inspection.formulas.count < 1) {
       throw new Error("Inspection did not return workbook structure and formulas");
     }
     steps.push({ name: "inspect", status: "ok", worksheets: inspection.workbook.worksheetCount });
@@ -2657,6 +2828,98 @@ async function commandSelfTest(options) {
       throw new Error("Review evidence is not clean, per-page, and revision-specific");
     }
     steps.push({ name: "review", status: "ok", revisions: [firstReview.revision.id, secondReview.revision.id], pages: secondReview.render.pageCount });
+
+    const salesReview = await commandReview({ input: candidatePath, "out-dir": reviewDir, sheet: "销售", quiet: true });
+    const salesPage = salesReview.render.pages[0];
+    const salesPageSha256 = await fileSha256(salesPage.path);
+    const notesReview = await commandReview({ input: candidatePath, "out-dir": reviewDir, sheet: "说明", quiet: true });
+    if (salesReview.revision.sha256 !== notesReview.revision.sha256
+      || salesReview.revision.directory === notesReview.revision.directory
+      || salesPage.path === notesReview.render.pages[0]?.path
+      || salesPage.sheet !== "销售"
+      || notesReview.render.pages[0]?.sheet !== "说明"
+      || !(await pathExists(salesPage.path))
+      || await fileSha256(salesPage.path) !== salesPageSha256) {
+      throw new Error("Selective review evidence was overwritten or assigned an unstable worksheet path");
+    }
+    steps.push({ name: "review-evidence-isolation", status: "ok", revision: salesReview.revision.id });
+
+    const fallbackScriptSource = [
+      "import fs from 'node:fs/promises';",
+      "import path from 'node:path';",
+      "const packageDir = process.argv[process.argv.indexOf('--package-dir') + 1];",
+      "await fs.writeFile(path.join(packageDir, 'xl', 'charts', 'chart1.xml'), '<broken', 'utf8');",
+      "",
+    ].join("\n");
+    await fs.writeFile(fallbackScriptPath, fallbackScriptSource, "utf8");
+    const candidateSha256BeforeFallback = await fileSha256(candidatePath);
+    let aliasBlocked = false;
+    try {
+      await commandFallbackPatch({
+        input: candidatePath,
+        script: fallbackScriptPath,
+        out: aliasFallbackPath,
+        manifest: aliasFallbackPath,
+        reason: "self-test path alias",
+        "allow-part": "xl/charts/chart*.xml",
+        quiet: true,
+      });
+    } catch (error) {
+      aliasBlocked = error instanceof SpreadsheetProtocolError && error.code === "artifact-path-conflict";
+    }
+    if (!aliasBlocked || await pathExists(aliasFallbackPath) || await fileSha256(candidatePath) !== candidateSha256BeforeFallback) {
+      throw new Error("Aliased fallback output and manifest paths were not blocked before mutation");
+    }
+
+    let invalidPackageBlocked = false;
+    try {
+      await commandFallbackPatch({
+        input: candidatePath,
+        script: fallbackScriptPath,
+        out: invalidFallbackPath,
+        manifest: invalidFallbackManifestPath,
+        reason: "self-test malformed chart XML",
+        "allow-part": "xl/charts/chart*.xml",
+        quiet: true,
+      });
+    } catch (error) {
+      invalidPackageBlocked = error instanceof SpreadsheetProtocolError && error.code === "fallback-invalid-package";
+    }
+    const invalidManifest = JSON.parse(await fs.readFile(invalidFallbackManifestPath, "utf8"));
+    if (!invalidPackageBlocked
+      || await pathExists(invalidFallbackPath)
+      || invalidManifest.status !== "blocked"
+      || !invalidManifest.validation?.issues?.some((issue) => issue.type === "malformed_package_xml")
+      || await fileSha256(candidatePath) !== candidateSha256BeforeFallback) {
+      throw new Error("Malformed fallback chart XML was not rejected without updating the candidate");
+    }
+    const validFallbackScriptSource = [
+      "import fs from 'node:fs/promises';",
+      "import path from 'node:path';",
+      "const packageDir = process.argv[process.argv.indexOf('--package-dir') + 1];",
+      "const target = path.join(packageDir, 'docProps', 'core.xml');",
+      "const xml = await fs.readFile(target, 'utf8');",
+      "await fs.writeFile(target, xml.replace('</cp:coreProperties>', '<cp:keywords>self-test</cp:keywords></cp:coreProperties>'), 'utf8');",
+      "",
+    ].join("\n");
+    await fs.writeFile(validFallbackScriptPath, validFallbackScriptSource, "utf8");
+    await commandFallbackPatch({
+      input: candidatePath,
+      script: validFallbackScriptPath,
+      out: validFallbackPath,
+      manifest: validFallbackManifestPath,
+      reason: "self-test valid core-properties patch",
+      "allow-part": "docProps/core.xml",
+      quiet: true,
+    });
+    const validManifest = JSON.parse(await fs.readFile(validFallbackManifestPath, "utf8"));
+    if (validManifest.status !== "ok"
+      || validManifest.validation?.status !== "ok"
+      || !(await pathExists(validFallbackPath))
+      || (await auditXlsx(validFallbackPath)).status === "error") {
+      throw new Error("A valid controlled fallback did not pass package validation");
+    }
+    steps.push({ name: "fallback-safety", status: "ok", checks: ["path-alias", "malformed-chart-xml", "valid-package"] });
 
     const evaluatorSource = [
       "export default async function evaluate({ candidate, helpers }) {",
