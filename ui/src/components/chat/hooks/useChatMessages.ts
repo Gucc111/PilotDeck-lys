@@ -199,6 +199,7 @@ function convertSingleMessage(
         type: 'assistant',
         content: '',
         timestamp: msg.timestamp,
+        ...turnIdentity,
         isToolUse: true,
         toolName: msg.toolName,
         toolInput: typeof msg.toolInput === 'string' ? msg.toolInput : JSON.stringify(msg.toolInput ?? '', null, 2),

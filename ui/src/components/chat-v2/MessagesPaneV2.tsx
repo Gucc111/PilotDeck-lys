@@ -350,6 +350,7 @@ function MessagesPaneV2({
   const [heightVersion, setHeightVersion] = useState(0);
   const [scrollViewport, setScrollViewport] = useState({ scrollTop: 0, height: 0 });
   const [expandedProcessRows, setExpandedProcessRows] = useState<Map<string, boolean>>(() => new Map());
+  const [expandedToolSections, setExpandedToolSections] = useState<Map<string, boolean>>(() => new Map());
   const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
 
   const handleOpenSubagentDetail = useCallback((subagentId: string) => {
@@ -394,6 +395,21 @@ function MessagesPaneV2({
         nextRows.delete(processKey);
       }
       return nextRows;
+    });
+  }, []);
+
+  const isToolSectionExpanded = useCallback((sectionKey: string, defaultExpanded = false) => (
+    expandedToolSections.get(sectionKey) ?? defaultExpanded
+  ), [expandedToolSections]);
+
+  const handleToolSectionExpandedChange = useCallback((sectionKey: string, expanded: boolean) => {
+    setExpandedToolSections((currentSections) => {
+      if (currentSections.get(sectionKey) === expanded) {
+        return currentSections;
+      }
+      const nextSections = new Map(currentSections);
+      nextSections.set(sectionKey, expanded);
+      return nextSections;
     });
   }, []);
 
@@ -782,6 +798,8 @@ function MessagesPaneV2({
         inlineThinking={inlineThinking}
         isProcessExpanded={isProcessExpanded}
         onProcessExpandedChange={handleProcessExpandedChange}
+        isToolSectionExpanded={isToolSectionExpanded}
+        onToolSectionExpandedChange={handleToolSectionExpandedChange}
         onOpenSubagentDetail={handleOpenSubagentDetail}
         subagentActivityById={subagentActivityById}
         subagentThinkingById={subagentThinkingById}
@@ -793,6 +811,7 @@ function MessagesPaneV2({
     createDiff,
     getMessageKey,
     handleOpenSubagentDetail,
+    handleToolSectionExpandedChange,
     inlineThinking,
     onFileOpen,
     onGrantSessionToolPermission,
@@ -802,6 +821,7 @@ function MessagesPaneV2({
     subagentActivityById,
     subagentThinkingById,
     isProcessExpanded,
+    isToolSectionExpanded,
     handleProcessExpandedChange,
     showRawParameters,
     showThinking,
@@ -928,6 +948,8 @@ function MessagesPaneV2({
             inlineThinking={inlineThinking}
             isProcessExpanded={isProcessExpanded}
             onProcessExpandedChange={handleProcessExpandedChange}
+            isToolSectionExpanded={isToolSectionExpanded}
+            onToolSectionExpandedChange={handleToolSectionExpandedChange}
             onOpenSubagentDetail={handleOpenSubagentDetail}
             subagentActivityById={subagentActivityById}
             subagentThinkingById={subagentThinkingById}
@@ -964,8 +986,10 @@ function MessagesPaneV2({
     handleMeasuredItemHeight,
     handleOpenSubagentDetail,
     handleProcessExpandedChange,
+    handleToolSectionExpandedChange,
     inlineThinking,
     isProcessExpanded,
+    isToolSectionExpanded,
     isAssistantWorking,
     keyedMessageItems,
     renderableMessages,

@@ -53,3 +53,29 @@ describe('compact boundary message conversion', () => {
     });
   });
 });
+
+describe('tool message conversion', () => {
+  it('keeps turn identity for stable expansion state across realtime reconciliation', () => {
+    const messages: NormalizedMessage[] = [{
+      id: 'live-tool-frame',
+      sessionId: 'web:s_tool',
+      timestamp: '2026-08-07T00:00:00.000Z',
+      provider: 'pilotdeck',
+      kind: 'tool_use',
+      runId: 'turn-1',
+      toolId: 'call-stable-1',
+      toolName: 'execute_code',
+      toolInput: { code: 'print(1)' },
+    }];
+
+    const [converted] = normalizedToChatMessages(messages);
+
+    expect(converted).toMatchObject({
+      id: 'live-tool-frame',
+      turnId: 'turn-1',
+      runId: 'turn-1',
+      toolId: 'call-stable-1',
+      isToolUse: true,
+    });
+  });
+});
