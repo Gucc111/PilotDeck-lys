@@ -10,7 +10,7 @@ import type {
   CanonicalUsage,
 } from "../../model/index.js";
 import { flattenToolResultContentText } from "../../model/index.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { TokenAccountingRuntime } from "../budget/TokenAccountingRuntime.js";
 import { TokenBudgetManager } from "../budget/TokenBudgetManager.js";
 import type { ContextDiagnostic } from "../protocol/types.js";
@@ -55,6 +55,8 @@ export type CompactionEngineOptions = {
   /** Tool names whose turns should be preserved verbatim across full compaction. */
   protectedToolNames?: Iterable<string>;
   now?: () => Date;
+  /** Stable identity factory for correlating live and persisted compaction events. */
+  uuid?: () => string;
   eventEmitter?: AgentEventEmitter;
 };
 
@@ -106,9 +108,12 @@ const COMPACT_SUMMARY_END_MARKER =
   "--- END OF CONTEXT SUMMARY - respond to the message below, not the summary above ---";
 
 export type CompactionResult = {
+  compactionId: string;
   trigger: CompactionTrigger;
   preTokens: number;
   postTokens?: number;
+  /** Number of messages actually summarized by this compaction pass. */
+  messagesSummarized: number;
   summaryMessage?: CanonicalMessage;
   boundaryMarker: CanonicalMessage;
   /** Messages preserved verbatim across the boundary (kept tail). */
@@ -173,6 +178,7 @@ export class CompactionEngine {
   }
 
   async run(input: CompactionInput): Promise<CompactionResult> {
+    const compactionId = this.options.uuid?.() ?? randomUUID();
     const checkpoint = splitCheckpointPrefix(input.messages);
     const preTokens = this.estimateMessages(input.messages);
     const tailRatio = clamp(input.keepTailRatio ?? DEFAULT_KEEP_TAIL_RATIO, 0, 1);
@@ -204,7 +210,14 @@ export class CompactionEngine {
         messagesSummarized: messagesToSummarize.length,
       },
     });
-    this.options.eventEmitter?.({ type: "compact_started", sessionId: input.sessionId ?? "", turnId: input.turnId ?? "", trigger: input.trigger, preTokens });
+    this.options.eventEmitter?.({
+      type: "compact_started",
+      sessionId: input.sessionId ?? "",
+      turnId: input.turnId ?? "",
+      compactionId,
+      trigger: input.trigger,
+      preTokens,
+    });
 
     let summaryMessage: CanonicalMessage | undefined;
     let summaryError: string | undefined;
@@ -280,8 +293,10 @@ export class CompactionEngine {
     }
 
     const result: CompactionResult = {
+      compactionId,
       trigger: input.trigger,
       preTokens,
+      messagesSummarized: messagesToSummarize.length,
       summaryMessage,
       boundaryMarker,
       messagesToKeep,
@@ -314,6 +329,8 @@ export class CompactionEngine {
       type: "compact_completed",
       sessionId: input.sessionId ?? "",
       turnId: input.turnId ?? "",
+      compactionId,
+      trigger: input.trigger,
       status: summaryError ? "fallback" : "success",
       preTokens,
       postTokens: result.postTokens,

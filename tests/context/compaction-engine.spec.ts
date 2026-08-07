@@ -16,6 +16,7 @@ import type {
   CanonicalModelEvent,
   CanonicalModelRequest,
 } from "../../src/model/index.js";
+import type { AgentEvent } from "../../src/agent/protocol/events.js";
 
 test("full compaction can disable protected turn preservation", async () => {
   const summaryRequests: CanonicalModelRequest[] = [];
@@ -416,7 +417,7 @@ test("full compaction bounds oversized retained tool output", async () => {
 
 test("auto full compaction summarizes older tool groups inside one user task", async () => {
   const summaryRequests: CanonicalModelRequest[] = [];
-  const events: Array<{ type: string }> = [];
+  const events: AgentEvent[] = [];
   const engine = new CompactionEngine({
     model: {
       async *stream(request: CanonicalModelRequest): AsyncIterable<CanonicalModelEvent> {
@@ -428,6 +429,7 @@ test("auto full compaction summarizes older tool groups inside one user task", a
     },
     provider: "local",
     model_: "local-chat",
+    uuid: () => "compact-single-user-tool-chain",
     eventEmitter: (event) => events.push(event),
   });
   const tokenBudget = new TokenBudgetManager();
@@ -454,6 +456,35 @@ test("auto full compaction summarizes older tool groups inside one user task", a
   assert.equal(findToolResult(result.messages, "old-search-0"), undefined);
   assert.match(summaryText(result.result?.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
   assert.deepEqual(events.map((event) => event.type), ["compact_started", "compact_completed"]);
+  if (events[0]?.type !== "compact_started" || events[1]?.type !== "compact_completed") {
+    assert.fail("expected compact lifecycle events");
+  }
+  const startedEvent = events[0];
+  const completedEvent = events[1];
+  assert.equal(result.result?.compactionId, "compact-single-user-tool-chain");
+  assert.equal(result.result?.messagesSummarized, completedEvent.messagesSummarized);
+  assert.deepEqual(startedEvent, {
+    type: "compact_started",
+    sessionId: "",
+    turnId: "",
+    compactionId: "compact-single-user-tool-chain",
+    trigger: "auto",
+    preTokens: startedEvent.preTokens,
+  });
+  assert.deepEqual(completedEvent, {
+    type: "compact_completed",
+    sessionId: "",
+    turnId: "",
+    compactionId: "compact-single-user-tool-chain",
+    trigger: "auto",
+    status: "success",
+    preTokens: completedEvent.preTokens,
+    postTokens: completedEvent.postTokens,
+    messagesSummarized: completedEvent.messagesSummarized,
+    cacheReset: false,
+    cacheReadTokens: undefined,
+    cacheWriteTokens: undefined,
+  });
 });
 
 test("blocking auto compaction continues to full summary when micro pruning only reaches warning", async () => {

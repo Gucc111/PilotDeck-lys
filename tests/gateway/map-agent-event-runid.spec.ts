@@ -36,4 +36,29 @@ test("mapAgentEvent propagates runId to streaming lifecycle boundaries", () => {
   } as unknown as AgentEvent, runId);
   assert.equal(failed[0]?.type, "error");
   assert.equal(failed[0]?.runId, runId);
+
+  const compactCompleted = mapAgentEvent({
+    type: "compact_completed",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    compactionId: "compact-1",
+    trigger: "reactive",
+    status: "success",
+    preTokens: 120,
+    postTokens: 40,
+    messagesSummarized: 3,
+  }, runId);
+  assert.deepEqual(compactCompleted, [{
+    type: "agent_status",
+    event: "compact_completed",
+    detail: {
+      compactionId: "compact-1",
+      trigger: "reactive",
+      status: "success",
+      preTokens: 120,
+      postTokens: 40,
+      messagesSummarized: 3,
+    },
+    runId,
+  }]);
 });

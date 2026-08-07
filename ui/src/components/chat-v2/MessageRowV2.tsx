@@ -74,6 +74,8 @@ type MessageRowV2Props = {
   inlineThinking?: boolean;
   isProcessExpanded?: (processKey: string, defaultExpanded?: boolean) => boolean;
   onProcessExpandedChange?: (processKey: string, expanded: boolean) => void;
+  isToolSectionExpanded?: (sectionKey: string, defaultExpanded?: boolean) => boolean;
+  onToolSectionExpandedChange?: (sectionKey: string, expanded: boolean) => void;
   onOpenSubagentDetail?: (subagentId: string) => void;
   subagentActivityById?: Map<string, ChatMessage>;
   subagentThinkingById?: Map<string, string>;
@@ -115,6 +117,8 @@ function MessageRowV2({
   inlineThinking,
   isProcessExpanded,
   onProcessExpandedChange,
+  isToolSectionExpanded,
+  onToolSectionExpandedChange,
   onOpenSubagentDetail,
   subagentActivityById,
   subagentThinkingById,
@@ -212,6 +216,8 @@ function MessageRowV2({
           showThinking={showThinking}
           isProcessExpanded={isProcessExpanded}
           onProcessExpandedChange={onProcessExpandedChange}
+          isToolSectionExpanded={isToolSectionExpanded}
+          onToolSectionExpandedChange={onToolSectionExpandedChange}
           onOpenSubagentDetail={onOpenSubagentDetail}
           subagentActivityById={subagentActivityById}
         />
@@ -258,6 +264,8 @@ function MessageRowV2({
           autoExpandTools={autoExpandTools}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
+          isToolSectionExpanded={isToolSectionExpanded}
+          onToolSectionExpandedChange={onToolSectionExpandedChange}
           selectedProject={selectedProject ?? null}
           provider={provider}
           hideHeader

@@ -350,6 +350,7 @@ function MessagesPaneV2({
   const [heightVersion, setHeightVersion] = useState(0);
   const [scrollViewport, setScrollViewport] = useState({ scrollTop: 0, height: 0 });
   const [expandedProcessRows, setExpandedProcessRows] = useState<Map<string, boolean>>(() => new Map());
+  const [expandedToolSections, setExpandedToolSections] = useState<Map<string, boolean>>(() => new Map());
   const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
 
   const handleOpenSubagentDetail = useCallback((subagentId: string) => {
@@ -394,6 +395,21 @@ function MessagesPaneV2({
         nextRows.delete(processKey);
       }
       return nextRows;
+    });
+  }, []);
+
+  const isToolSectionExpanded = useCallback((sectionKey: string, defaultExpanded = false) => (
+    expandedToolSections.get(sectionKey) ?? defaultExpanded
+  ), [expandedToolSections]);
+
+  const handleToolSectionExpandedChange = useCallback((sectionKey: string, expanded: boolean) => {
+    setExpandedToolSections((currentSections) => {
+      if (currentSections.get(sectionKey) === expanded) {
+        return currentSections;
+      }
+      const nextSections = new Map(currentSections);
+      nextSections.set(sectionKey, expanded);
+      return nextSections;
     });
   }, []);
 
@@ -558,6 +574,15 @@ function MessagesPaneV2({
   const windowedMessageItems = shouldVirtualizeMessages
     ? keyedMessageItems.slice(virtualWindow.startIndex, virtualWindow.endIndex)
     : keyedMessageItems;
+  const unanchoredLiveProcessGroups = useMemo(() => {
+    if (liveProcessGroups.length === 0) return [];
+    const renderedAnchorIndices = new Set(
+      keyedMessageItems.map((item) => item.originalIndex),
+    );
+    return liveProcessGroups.filter(
+      (group) => !renderedAnchorIndices.has(group.afterOriginalIndex),
+    );
+  }, [keyedMessageItems, liveProcessGroups]);
   const liveProcessHeaderIndex = useMemo(() => {
     if (!isAssistantWorking) return -1;
     for (let index = keyedMessageItems.length - 1; index >= 0; index -= 1) {
@@ -782,6 +807,8 @@ function MessagesPaneV2({
         inlineThinking={inlineThinking}
         isProcessExpanded={isProcessExpanded}
         onProcessExpandedChange={handleProcessExpandedChange}
+        isToolSectionExpanded={isToolSectionExpanded}
+        onToolSectionExpandedChange={handleToolSectionExpandedChange}
         onOpenSubagentDetail={handleOpenSubagentDetail}
         subagentActivityById={subagentActivityById}
         subagentThinkingById={subagentThinkingById}
@@ -793,6 +820,7 @@ function MessagesPaneV2({
     createDiff,
     getMessageKey,
     handleOpenSubagentDetail,
+    handleToolSectionExpandedChange,
     inlineThinking,
     onFileOpen,
     onGrantSessionToolPermission,
@@ -802,6 +830,7 @@ function MessagesPaneV2({
     subagentActivityById,
     subagentThinkingById,
     isProcessExpanded,
+    isToolSectionExpanded,
     handleProcessExpandedChange,
     showRawParameters,
     showThinking,
@@ -928,6 +957,8 @@ function MessagesPaneV2({
             inlineThinking={inlineThinking}
             isProcessExpanded={isProcessExpanded}
             onProcessExpandedChange={handleProcessExpandedChange}
+            isToolSectionExpanded={isToolSectionExpanded}
+            onToolSectionExpandedChange={handleToolSectionExpandedChange}
             onOpenSubagentDetail={handleOpenSubagentDetail}
             subagentActivityById={subagentActivityById}
             subagentThinkingById={subagentThinkingById}
@@ -964,8 +995,10 @@ function MessagesPaneV2({
     handleMeasuredItemHeight,
     handleOpenSubagentDetail,
     handleProcessExpandedChange,
+    handleToolSectionExpandedChange,
     inlineThinking,
     isProcessExpanded,
+    isToolSectionExpanded,
     isAssistantWorking,
     keyedMessageItems,
     renderableMessages,
@@ -1189,6 +1222,12 @@ function MessagesPaneV2({
 
           {shouldVirtualizeMessages && virtualWindow.bottomPadding > 0 ? (
             <div aria-hidden="true" style={{ height: virtualWindow.bottomPadding }} />
+          ) : null}
+
+          {unanchoredLiveProcessGroups.length > 0 ? (
+            <div className="flex min-w-0 flex-col gap-2">
+              {unanchoredLiveProcessGroups.map(renderLiveProcessGroup)}
+            </div>
           ) : null}
 
           {isAssistantWorking &&

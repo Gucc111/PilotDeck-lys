@@ -165,6 +165,25 @@ describe('MessagesPaneV2 render behavior', () => {
     expect(Number(container?.getAttribute('data-rendered-message-count'))).toBeLessThan(220);
   });
 
+  it('keeps a live process status visible when the process fragment has no renderable anchor', () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = Array.from({ length: 4 }, (_, index) => ({
+      id: `tool-${index}`,
+      type: 'assistant',
+      content: '',
+      timestamp: now,
+      isToolUse: true,
+      toolName: 'Read',
+      toolId: `tool-${index}`,
+      toolInput: JSON.stringify({ file_path: `src/Orphaned-${index}.tsx` }),
+    }));
+
+    const { container } = renderPane({ messages, isAssistantWorking: true });
+
+    expect(container.querySelector('[data-total-message-count]')?.getAttribute('data-total-message-count')).toBe('0');
+    expect(screen.getByText('Reading Orphaned-3.tsx')).toBeTruthy();
+  });
+
   it('resynchronizes a virtual window when the mounted pane changes sessions', async () => {
     const sessionAMessages = Array.from({ length: 220 }, (_, index) => ({
       ...makeMessage(index),
@@ -516,6 +535,81 @@ describe('MessagesPaneV2 render behavior', () => {
     const completedButton = summary.closest('button');
     expect(completedButton?.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('ReadHidden.tsx')).toBeTruthy();
+  });
+
+  it('preserves expanded tool parameters when live ids are replaced by persisted ids', async () => {
+    const now = new Date().toISOString();
+    const liveMessages: ChatMessage[] = [
+      {
+        id: 'live-user-frame',
+        turnId: 'turn-1',
+        runId: 'turn-1',
+        type: 'user',
+        content: '检查代码',
+        timestamp: now,
+      },
+      {
+        id: 'live-assistant-frame',
+        turnId: 'turn-1',
+        runId: 'turn-1',
+        type: 'assistant',
+        content: '我先运行检查。',
+        timestamp: now,
+      },
+      {
+        id: 'live-tool-frame',
+        turnId: 'turn-1',
+        runId: 'turn-1',
+        type: 'assistant',
+        content: '',
+        timestamp: now,
+        isToolUse: true,
+        toolName: 'execute_code',
+        toolId: 'call-stable-1',
+        toolInput: '{"code":"print(1)"}',
+      },
+    ];
+    const { container, rerender } = renderPane({ messages: liveMessages, isAssistantWorking: true });
+
+    const processButton = container.querySelector<HTMLButtonElement>('.process-live-status button');
+    expect(processButton).not.toBeNull();
+    fireEvent.click(processButton as HTMLButtonElement);
+
+    const parametersSummary = screen.getByText('Parameters').closest('summary');
+    const parametersDetails = parametersSummary?.closest('details') as HTMLDetailsElement | null;
+    expect(parametersDetails?.open).toBe(false);
+    fireEvent.click(parametersSummary as HTMLElement);
+    await waitFor(() => expect(parametersDetails?.open).toBe(true));
+
+    const persistedMessages: ChatMessage[] = [
+      {
+        ...liveMessages[0],
+        id: 'persisted-user-entry',
+      },
+      {
+        ...liveMessages[1],
+        id: 'persisted-assistant-entry',
+      },
+      {
+        ...liveMessages[2],
+        id: 'persisted-tool-entry',
+        toolResult: { content: '1', isError: false },
+      },
+      {
+        id: 'persisted-final-answer',
+        turnId: 'turn-1',
+        runId: 'turn-1',
+        type: 'assistant',
+        content: '检查完成。',
+        timestamp: now,
+      },
+    ];
+    rerender(createPaneElement({ messages: persistedMessages }));
+
+    const completedProcessButton = screen.getByText('Ran 1 command').closest('button');
+    expect(completedProcessButton?.getAttribute('aria-expanded')).toBe('true');
+    const persistedParameters = screen.getByText('Parameters').closest('details') as HTMLDetailsElement | null;
+    expect(persistedParameters?.open).toBe(true);
   });
 
   it('does not search hidden completed process detail content', async () => {

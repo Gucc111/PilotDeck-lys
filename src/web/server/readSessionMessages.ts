@@ -782,6 +782,9 @@ function compactBoundaryMetadata(entry: AgentTranscriptEntry & { type: "control_
     "compactMetadata" in entry.boundary
   ) {
     const cm = entry.boundary.compactMetadata as Record<string, unknown>;
+    if (typeof cm.compactionId === "string" && cm.compactionId.length > 0) {
+      meta.compactionId = cm.compactionId;
+    }
     meta.trigger = cm.trigger;
     meta.preTokens = cm.preTokens;
     meta.postTokens = cm.postTokens;
