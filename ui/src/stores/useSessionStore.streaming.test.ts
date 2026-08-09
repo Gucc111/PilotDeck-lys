@@ -13,6 +13,7 @@ import {
   getUnpersistedRealtimeTurnMessages,
   isRealtimeMessageRepresentedOnServer,
   patchMergedStreamingMessage,
+  preserveTerminalAgentActivity,
   shouldKeepRealtimeAfterServerRefresh,
   upsertRealtimeMessages,
   type NormalizedMessage,
@@ -128,6 +129,48 @@ describe('cancelRunningAgentActivities', () => {
     }];
 
     expect(cancelRunningAgentActivities(activities, '2026-08-05T00:02:00.000Z')).toBe(activities);
+  });
+});
+
+describe('preserveTerminalAgentActivity', () => {
+  it('does not reopen a cancelled activity when an older running update is replayed', () => {
+    const cancelled: NormalizedMessage = {
+      id: 'subagent-activity',
+      sessionId: 'cron:task-1',
+      timestamp: '2026-08-05T00:02:00.000Z',
+      provider: PROVIDER,
+      kind: 'agent_activity',
+      activityId: 'subagent:one',
+      state: 'cancelled',
+      endedAt: '2026-08-05T00:02:00.000Z',
+    };
+    const replayedRunning: NormalizedMessage = {
+      ...cancelled,
+      timestamp: '2026-08-05T00:00:00.000Z',
+      state: 'running',
+      endedAt: undefined,
+    };
+
+    expect(preserveTerminalAgentActivity(cancelled, replayedRunning)).toBe(cancelled);
+  });
+
+  it('accepts a newer explicit terminal result', () => {
+    const cancelled: NormalizedMessage = {
+      id: 'subagent-activity',
+      sessionId: 'cron:task-1',
+      timestamp: '2026-08-05T00:02:00.000Z',
+      provider: PROVIDER,
+      kind: 'agent_activity',
+      activityId: 'subagent:one',
+      state: 'cancelled',
+    };
+    const completed: NormalizedMessage = {
+      ...cancelled,
+      timestamp: '2026-08-05T00:03:00.000Z',
+      state: 'completed',
+    };
+
+    expect(preserveTerminalAgentActivity(cancelled, completed)).toBe(completed);
   });
 });
 

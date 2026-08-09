@@ -97,6 +97,8 @@ export interface NormalizedMessage {
    */
   toolResultImages?: Array<{ data: string; mimeType?: string; name?: string }>;
   isError?: boolean;
+  /** True only when an error confirms that the parent turn has ended. */
+  terminal?: boolean;
   /**
    * `PilotDeckToolErrorCode` from the gateway when `kind === 'tool_result'`
    * and `isError === true` — flat on the frame because the bridge merges
@@ -134,6 +136,8 @@ export interface NormalizedMessage {
   compactStageLabel?: string;
   compactMetadata?: unknown;
   runId?: string;
+  /** Parent turn identity for activity rows whose own runId identifies a child. */
+  parentRunId?: string;
   /** Stable transcript turn identity; history maps this to runId as well. */
   turnId?: string;
   activityId?: string;
@@ -201,13 +205,30 @@ export interface SessionSlot {
   _serverLoadingGeneration: number | null;
 }
 
+const TERMINAL_AGENT_ACTIVITY_STATES = new Set(['completed', 'failed', 'cancelled']);
+
+function isTerminalAgentActivity(activity: NormalizedMessage): boolean {
+  return activity.kind === 'agent_activity'
+    && TERMINAL_AGENT_ACTIVITY_STATES.has(String(activity.state || ''));
+}
+
+export function preserveTerminalAgentActivity(
+  existing: NormalizedMessage | undefined,
+  incoming: NormalizedMessage,
+): NormalizedMessage {
+  if (existing && isTerminalAgentActivity(existing) && !isTerminalAgentActivity(incoming)) {
+    return existing;
+  }
+  return incoming;
+}
+
 export function cancelRunningAgentActivities(
   activities: NormalizedMessage[],
   endedAt: string,
 ): NormalizedMessage[] {
   let changed = false;
   const updated = activities.map((activity) => {
-    if (activity.kind !== 'agent_activity' || ['completed', 'failed', 'cancelled'].includes(String(activity.state || ''))) {
+    if (activity.kind !== 'agent_activity' || isTerminalAgentActivity(activity)) {
       return activity;
     }
     changed = true;
@@ -1021,7 +1042,8 @@ export function useSessionStore() {
 
     if (existingIndex >= 0) {
       const updated = [...slot.activityMessages];
-      updated[existingIndex] = msg;
+      updated[existingIndex] = preserveTerminalAgentActivity(updated[existingIndex], msg);
+      if (updated[existingIndex] === slot.activityMessages[existingIndex]) return;
       slot.activityMessages = updated;
     } else {
       slot.activityMessages = [...slot.activityMessages, msg];
@@ -1207,10 +1229,14 @@ export function useSessionStore() {
   const setActivities = useCallback((sessionId: string, msgs: NormalizedMessage[]) => {
     const slot = getSlot(sessionId);
     const byKey = new Map<string, NormalizedMessage>();
+    const existingByKey = new Map(
+      slot.activityMessages.map((activity) => [activity.activityId || activity.id, activity]),
+    );
 
     for (const msg of msgs) {
       if (msg.kind !== 'agent_activity') continue;
-      byKey.set(msg.activityId || msg.id, msg);
+      const key = msg.activityId || msg.id;
+      byKey.set(key, preserveTerminalAgentActivity(existingByKey.get(key), msg));
     }
 
     slot.activityMessages = Array.from(byKey.values());

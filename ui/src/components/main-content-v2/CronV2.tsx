@@ -29,6 +29,8 @@ import {
 } from './cronSchedule';
 
 const POLL_INTERVAL_MS = 15_000;
+const HOUR_MS = 60 * 60 * 1000;
+const TIMEZONE_OFFSET_SAMPLE_HOURS = [-36, -24, -12, 0, 12, 24, 36] as const;
 
 type CronSubTab = 'list' | 'create';
 type ScheduleKind = 'once' | 'cron';
@@ -153,47 +155,161 @@ function isValidTimezone(timezone: string): boolean {
   }
 }
 
-function formatDateTimeLocal(date: Date): string {
+type ZonedDateTimeParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+};
+
+function readDateTimeInTimezone(date: Date, timezone: string): ZonedDateTimeParts | undefined {
+  if (Number.isNaN(date.getTime())) return undefined;
+  try {
+    const values: Record<string, string> = {};
+    const formatter = new Intl.DateTimeFormat('en-CA-u-ca-gregory-nu-latn', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    });
+    for (const part of formatter.formatToParts(date)) {
+      if (part.type !== 'literal') values[part.type] = part.value;
+    }
+    const result = {
+      year: Number.parseInt(values.year, 10),
+      month: Number.parseInt(values.month, 10),
+      day: Number.parseInt(values.day, 10),
+      hour: Number.parseInt(values.hour, 10),
+      minute: Number.parseInt(values.minute, 10),
+    };
+    return Object.values(result).every(Number.isInteger) ? result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatDateTimeInTimezone(date: Date, timezone: string): string {
+  const parts = readDateTimeInTimezone(date, timezone);
+  if (!parts) return '';
   const pad = (value: number) => String(value).padStart(2, '0');
   return [
-    date.getFullYear(),
+    parts.year,
     '-',
-    pad(date.getMonth() + 1),
+    pad(parts.month),
     '-',
-    pad(date.getDate()),
+    pad(parts.day),
     'T',
-    pad(date.getHours()),
+    pad(parts.hour),
     ':',
-    pad(date.getMinutes()),
+    pad(parts.minute),
   ].join('');
 }
 
-function formatDateLocal(date: Date): string {
-  return formatDateTimeLocal(date).slice(0, 10);
+function formatDateInTimezone(date: Date, timezone: string): string {
+  return formatDateTimeInTimezone(date, timezone).slice(0, 10);
 }
 
-function formatTimeLocal(date: Date): string {
-  return formatDateTimeLocal(date).slice(11, 16);
+function formatTimeInTimezone(date: Date, timezone: string): string {
+  return formatDateTimeInTimezone(date, timezone).slice(11, 16);
+}
+
+function parseWallTime(scheduleDate: string, scheduleTime: string): ZonedDateTimeParts | undefined {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(scheduleDate);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(scheduleTime);
+  if (!dateMatch || !timeMatch) return undefined;
+
+  const parts = {
+    year: Number.parseInt(dateMatch[1], 10),
+    month: Number.parseInt(dateMatch[2], 10),
+    day: Number.parseInt(dateMatch[3], 10),
+    hour: Number.parseInt(timeMatch[1], 10),
+    minute: Number.parseInt(timeMatch[2], 10),
+  };
+  const normalized = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute));
+  if (normalized.getUTCFullYear() !== parts.year
+    || normalized.getUTCMonth() + 1 !== parts.month
+    || normalized.getUTCDate() !== parts.day
+    || normalized.getUTCHours() !== parts.hour
+    || normalized.getUTCMinutes() !== parts.minute) {
+    return undefined;
+  }
+  return parts;
+}
+
+function sameWallTime(left: ZonedDateTimeParts, right: ZonedDateTimeParts): boolean {
+  return left.year === right.year
+    && left.month === right.month
+    && left.day === right.day
+    && left.hour === right.hour
+    && left.minute === right.minute;
+}
+
+function wallTimeEpoch(parts: ZonedDateTimeParts): number {
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+}
+
+function timezoneOffsetAt(epochMs: number, timezone: string): number | undefined {
+  const instant = new Date(epochMs);
+  const zoned = readDateTimeInTimezone(instant, timezone);
+  if (!zoned) return undefined;
+  return wallTimeEpoch(zoned) - epochMs;
+}
+
+function resolveWallTimeInTimezone(
+  scheduleDate: string,
+  scheduleTime: string,
+  timezone: string,
+  referenceEpochMs: number,
+): string | undefined {
+  if (!isValidTimezone(timezone)) return undefined;
+  const requested = parseWallTime(scheduleDate, scheduleTime);
+  if (!requested) return undefined;
+
+  const requestedEpoch = wallTimeEpoch(requested);
+  const possibleOffsets = new Set<number>();
+  for (const hours of TIMEZONE_OFFSET_SAMPLE_HOURS) {
+    const offset = timezoneOffsetAt(requestedEpoch + hours * HOUR_MS, timezone);
+    if (offset !== undefined) possibleOffsets.add(offset);
+  }
+
+  const candidates: number[] = [];
+  for (const offset of possibleOffsets) {
+    const candidateEpoch = requestedEpoch - offset;
+    const candidate = readDateTimeInTimezone(new Date(candidateEpoch), timezone);
+    if (candidate && sameWallTime(candidate, requested)) candidates.push(candidateEpoch);
+  }
+  if (candidates.length === 0) return undefined;
+
+  const orderedCandidates = candidates.sort((left, right) => left - right);
+  const selectedCandidate = orderedCandidates.find((candidate) => candidate > referenceEpochMs)
+    ?? orderedCandidates[0];
+
+  // During DST fallback, prefer the earliest occurrence that is still in the
+  // future. If every occurrence has passed, return the earliest one so the
+  // caller can report the normal "must be in the future" validation error.
+  return new Date(selectedCandidate).toISOString();
 }
 
 function resolveOneTimeRunAt(
   editingJob: CronJobOverview | null,
   scheduleDate: string,
   scheduleTime: string,
+  timezone: string,
 ): string | undefined {
-  const candidate = new Date(`${scheduleDate}T${scheduleTime}`);
-  if (Number.isNaN(candidate.getTime())) return undefined;
-
   if (editingJob?.schedule?.type === 'once') {
     const original = new Date(editingJob.schedule.runAt);
     if (!Number.isNaN(original.getTime())
-      && formatDateLocal(original) === scheduleDate
-      && formatTimeLocal(original) === scheduleTime) {
+      && formatDateInTimezone(original, timezone) === scheduleDate
+      && formatTimeInTimezone(original, timezone) === scheduleTime) {
       return editingJob.schedule.runAt;
     }
   }
 
-  return candidate.toISOString();
+  return resolveWallTimeInTimezone(scheduleDate, scheduleTime, timezone, Date.now());
 }
 
 function formatAbsoluteTime(iso: string | number): string {
@@ -211,14 +327,15 @@ function formatAbsoluteTime(iso: string | number): string {
 
 function getDefaultFormValues(): CronFormValues {
   const defaultRunAt = new Date(Date.now() + 60 * 60 * 1000);
-  const scheduleTime = formatTimeLocal(defaultRunAt);
+  const timezone = getBrowserTimezone();
+  const scheduleTime = formatTimeInTimezone(defaultRunAt, timezone);
   return {
     message: '',
     projectKey: '',
     scheduleKind: 'once',
-    scheduleDate: formatDateLocal(defaultRunAt),
+    scheduleDate: formatDateInTimezone(defaultRunAt, timezone),
     scheduleTime,
-    timezone: getBrowserTimezone(),
+    timezone,
     recurrenceMode: 'daily',
     weekday: defaultRunAt.getDay(),
     dayOfMonth: defaultRunAt.getDate(),
@@ -237,13 +354,14 @@ function getFormValues(job: CronJobOverview | null): CronFormValues {
   if (job.schedule.type === 'once') {
     const runAt = new Date(job.schedule.runAt);
     if (Number.isNaN(runAt.getTime())) return defaults;
-    const scheduleTime = formatTimeLocal(runAt);
+    const displayTimezone = isValidTimezone(timezone) ? timezone : defaults.timezone;
+    const scheduleTime = formatTimeInTimezone(runAt, displayTimezone);
     return {
       ...defaults,
       message: job.prompt,
       projectKey: job.projectKey,
       scheduleKind: 'once',
-      scheduleDate: formatDateLocal(runAt),
+      scheduleDate: formatDateInTimezone(runAt, displayTimezone),
       scheduleTime,
       timezone,
       advancedExpression: buildSimpleCronExpression({ mode: 'daily', time: scheduleTime }),
@@ -285,12 +403,18 @@ function getEditDisabledReason(job: CronJobOverview): EditDisabledReason | null 
   return parseSimpleCronExpression(job.schedule.expression) ? null : 'unsupported';
 }
 
-function getNextFutureDateForTime(time: string): string {
+function addCalendarDay(scheduleDate: string): string {
+  const [year, month, day] = scheduleDate.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+}
+
+function getNextFutureDateForTime(time: string, timezone: string): string {
   const now = new Date();
-  const candidate = new Date(`${formatDateLocal(now)}T${time}`);
-  if (Number.isNaN(candidate.getTime())) return formatDateLocal(new Date(now.getTime() + 24 * 60 * 60 * 1000));
-  if (candidate.getTime() <= now.getTime()) candidate.setDate(candidate.getDate() + 1);
-  return formatDateLocal(candidate);
+  const resolvedTimezone = isValidTimezone(timezone) ? timezone : getBrowserTimezone();
+  const today = formatDateInTimezone(now, resolvedTimezone);
+  const candidate = resolveWallTimeInTimezone(today, time, resolvedTimezone, now.getTime());
+  if (!candidate || Date.parse(candidate) <= now.getTime()) return addCalendarDay(today);
+  return today;
 }
 
 export default function CronV2() {
@@ -680,7 +804,7 @@ function CronCreateView({
       setHasRecurringDraft(true);
     } else if (kind === 'once' && !hasOnceDraft) {
       setOnceDraft({
-        scheduleDate: getNextFutureDateForTime(recurringDraft.scheduleTime),
+        scheduleDate: getNextFutureDateForTime(recurringDraft.scheduleTime, timezone.trim()),
         scheduleTime: recurringDraft.scheduleTime,
       });
       setHasOnceDraft(true);
@@ -726,8 +850,16 @@ function CronCreateView({
       if (!onceDraft.scheduleDate) {
         return t('cron.create.validation.dateRequired', { defaultValue: 'Date is required.' });
       }
-      const runAt = resolveOneTimeRunAt(editingJob, onceDraft.scheduleDate, onceDraft.scheduleTime);
-      if (!runAt || Date.parse(runAt) <= Date.now()) {
+      const runAt = resolveOneTimeRunAt(
+        editingJob,
+        onceDraft.scheduleDate,
+        onceDraft.scheduleTime,
+        timezone.trim(),
+      );
+      if (!runAt) {
+        return t('cron.create.validation.runAtInvalid', { defaultValue: 'Run time does not exist in the selected timezone.' });
+      }
+      if (Date.parse(runAt) <= Date.now()) {
         return t('cron.create.validation.runAtFuture', { defaultValue: 'Run time must be in the future.' });
       }
     } else {
@@ -764,9 +896,14 @@ function CronCreateView({
     try {
       let schedule: CronJobSchedule;
       if (scheduleKind === 'once') {
-        const runAt = resolveOneTimeRunAt(editingJob, onceDraft.scheduleDate, onceDraft.scheduleTime);
+        const runAt = resolveOneTimeRunAt(
+          editingJob,
+          onceDraft.scheduleDate,
+          onceDraft.scheduleTime,
+          timezone.trim(),
+        );
         if (!runAt) {
-          setFormError(t('cron.create.validation.runAtFuture', { defaultValue: 'Run time must be in the future.' }));
+          setFormError(t('cron.create.validation.runAtInvalid', { defaultValue: 'Run time does not exist in the selected timezone.' }));
           return;
         }
         schedule = { type: 'once', runAt };
@@ -913,7 +1050,10 @@ function CronCreateView({
               <input
                 type="date"
                 value={onceDraft.scheduleDate}
-                min={formatDateLocal(new Date())}
+                min={formatDateInTimezone(
+                  new Date(),
+                  isValidTimezone(timezone.trim()) ? timezone.trim() : getBrowserTimezone(),
+                )}
                 onChange={(event) => {
                   setOnceDraft((current) => ({ ...current, scheduleDate: event.target.value }));
                   setHasOnceDraft(true);

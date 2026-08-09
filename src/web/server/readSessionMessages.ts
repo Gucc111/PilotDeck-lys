@@ -90,7 +90,8 @@ export async function readWebSessionMessages(
     input.sessionKey,
     input.projectKey,
   );
-  attachSubagentIds(entries, allMessages);
+  const subagentToolUses = attachSubagentIds(entries, allMessages);
+  recoverCompletedSubagentToolResults(entries, allMessages, subagentToolUses);
   if (resolve(effectiveProjectRoot) !== resolve(options.pilotHome)) {
     injectFileArtifactMessages(entries, allMessages, input.sessionKey, input.projectKey);
   }
@@ -997,15 +998,16 @@ function insertWebMessageByTranscriptOrder(
 function attachSubagentIds(
   entries: AgentTranscriptEntry[],
   allMessages: WebMessage[],
-): void {
+): Map<string, WebMessage> {
   const subagentQueue: string[] = [];
+  const toolUseBySubagentId = new Map<string, WebMessage>();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry.type === "subagent_started") {
       subagentQueue.push(entry.subagentId);
     }
   }
-  if (subagentQueue.length === 0) return;
+  if (subagentQueue.length === 0) return toolUseBySubagentId;
 
   let qi = 0;
   for (const msg of allMessages) {
@@ -1013,8 +1015,59 @@ function attachSubagentIds(
     if (msg.kind !== "tool_use") continue;
     const name = String(msg.toolName ?? "").toLowerCase();
     if (name !== "agent" && name !== "task") continue;
-    msg.subagentId = subagentQueue[qi];
+    const subagentId = subagentQueue[qi];
+    msg.subagentId = subagentId;
+    toolUseBySubagentId.set(subagentId, msg);
     qi += 1;
+  }
+  return toolUseBySubagentId;
+}
+
+/**
+ * Concurrent Agent calls project their tool results as a batch. If the parent
+ * turn is aborted after one child has already completed, that child's
+ * `subagent_completed` entry is durable but its parent tool result may never
+ * be written. Recreate only successful missing results so history preserves
+ * the completed child while unfinished/failed siblings still use terminal
+ * parent-state handling.
+ */
+function recoverCompletedSubagentToolResults(
+  entries: AgentTranscriptEntry[],
+  allMessages: WebMessage[],
+  toolUseBySubagentId: Map<string, WebMessage>,
+): void {
+  const existingResults = new Set(
+    allMessages
+      .filter((message) => message.kind === "tool_result" && message.toolCallId)
+      .map((message) => `${message.turnId ?? ""}\u0000${message.toolCallId}`),
+  );
+
+  for (const entry of entries) {
+    if (entry.type !== "subagent_completed" || entry.errored === true) continue;
+    const toolUse = toolUseBySubagentId.get(entry.subagentId);
+    if (!toolUse?.toolCallId) continue;
+
+    const resultKey = `${toolUse.turnId ?? ""}\u0000${toolUse.toolCallId}`;
+    if (existingResults.has(resultKey)) continue;
+
+    insertWebMessageByTranscriptOrder(allMessages, {
+      id: `${toolUse.id}-subagent-result`,
+      sessionKey: toolUse.sessionKey,
+      projectKey: toolUse.projectKey,
+      createdAt: entry.createdAt,
+      provider: "pilotdeck",
+      role: "tool",
+      kind: "tool_result",
+      turnId: toolUse.turnId ?? entry.turnId,
+      sequence: entry.sequence,
+      toolCallId: toolUse.toolCallId,
+      toolName: toolUse.toolName,
+      ok: true,
+      text: entry.summaryPreview,
+      source: "history",
+      ...(entry.entryId ? { entryId: entry.entryId } : {}),
+    });
+    existingResults.add(resultKey);
   }
 }
 

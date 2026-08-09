@@ -2520,6 +2520,13 @@ function handleChatConnection(ws, request) {
                     sessionId,
                     provider: data.provider || 'pilotdeck',
                     isProcessing: activity.isProcessing,
+                    activeRunId: activity.activeRunId,
+                    expectedActiveRunId: typeof data.expectedActiveRunId === 'string' && data.expectedActiveRunId.trim()
+                        ? data.expectedActiveRunId.trim()
+                        : null,
+                    statusRequestId: Number.isSafeInteger(data.statusRequestId)
+                        ? data.statusRequestId
+                        : null,
                     activeTurnMessages: includeActiveTurnMessages ? activity.activeTurnMessages : [],
                     tokenBudget: getSessionTokenBudget(sessionId),
                 });

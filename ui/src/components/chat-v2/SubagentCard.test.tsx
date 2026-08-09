@@ -35,7 +35,7 @@ function createSubagentMessage(): ChatMessage {
 
 describe('SubagentCard', () => {
   it('keeps an unfinished subagent thinking while parent activity is being synchronized', () => {
-    render(<SubagentCard message={createSubagentMessage()} isSessionRunning={false} />);
+    render(<SubagentCard message={createSubagentMessage()} sessionRuntimeState="synchronizing" />);
 
     expect(screen.getByText('思考中')).toBeTruthy();
     expect(screen.queryByText('已停止')).toBeNull();
@@ -45,7 +45,7 @@ describe('SubagentCard', () => {
     render(
       <SubagentCard
         message={createSubagentMessage()}
-        isSessionRunning={false}
+        sessionRuntimeState="synchronizing"
         liveActivity={{
           id: 'subagent:subagent-1',
           type: 'system',
@@ -61,11 +61,58 @@ describe('SubagentCard', () => {
     expect(screen.queryByText('已停止')).toBeNull();
   });
 
-  it('shows stopped after the session receives a confirmed abort event', () => {
+  it('stops an unfinished subagent when the parent session is confirmed inactive', () => {
+    render(<SubagentCard message={createSubagentMessage()} sessionRuntimeState="inactive" />);
+
+    expect(screen.getByText('已停止')).toBeTruthy();
+    expect(screen.queryByText('思考中')).toBeNull();
+  });
+
+  it('does not let a stale running activity override a confirmed inactive parent', () => {
     render(
       <SubagentCard
         message={createSubagentMessage()}
-        isSessionRunning={false}
+        sessionRuntimeState="inactive"
+        liveActivity={{
+          id: 'subagent:subagent-1',
+          type: 'system',
+          timestamp: new Date().toISOString(),
+          isAgentActivity: true,
+          state: 'running',
+          detail: '正在采集',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('已停止')).toBeTruthy();
+    expect(screen.queryByText('思考中')).toBeNull();
+    expect(screen.queryByText('正在采集')).toBeNull();
+  });
+
+  it('keeps an explicit completed activity completed after the parent becomes inactive', () => {
+    render(
+      <SubagentCard
+        message={createSubagentMessage()}
+        sessionRuntimeState="inactive"
+        liveActivity={{
+          id: 'subagent:subagent-1',
+          type: 'system',
+          timestamp: new Date().toISOString(),
+          isAgentActivity: true,
+          state: 'completed',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('已完成')).toBeTruthy();
+    expect(screen.queryByText('已停止')).toBeNull();
+  });
+
+  it('renders an explicit cancelled activity as stopped before refresh', () => {
+    render(
+      <SubagentCard
+        message={createSubagentMessage()}
+        sessionRuntimeState="running"
         liveActivity={{
           id: 'subagent:subagent-1',
           type: 'system',
@@ -77,6 +124,7 @@ describe('SubagentCard', () => {
     );
 
     expect(screen.getByText('已停止')).toBeTruthy();
+    expect(screen.queryByText('已完成')).toBeNull();
     expect(screen.queryByText('思考中')).toBeNull();
   });
 });

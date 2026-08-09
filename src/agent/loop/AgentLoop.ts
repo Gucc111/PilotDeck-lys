@@ -2226,7 +2226,15 @@ export class AgentLoop {
           if (composedAbort.timedOut()) {
             throw new Error(`Subagent timed out after ${timeoutMs}ms.`);
           }
+          if (abortSignal?.aborted) {
+            throw new Error("Subagent aborted before completion.");
+          }
         } catch (err) {
+          const timedOut = composedAbort.timedOut();
+          const aborted = Boolean(abortSignal?.aborted && !timedOut);
+          const failure = timedOut
+            ? new Error(`Subagent timed out after ${timeoutMs}ms.`)
+            : err;
           composedAbort.cleanup();
           errored = true;
           await transcriptHooks?.recordSubagentCompleted?.({
@@ -2234,7 +2242,7 @@ export class AgentLoop {
             turnId: input.turnId,
             subagentId,
             subagentType: def.id,
-            summary: err instanceof Error ? err.message : String(err),
+            summary: failure instanceof Error ? failure.message : String(failure),
             turns: 0,
             durationMs: 0,
             errored: true,
@@ -2251,9 +2259,10 @@ export class AgentLoop {
             subagentId,
             subagentType: def.id,
             success: false,
+            aborted,
             durationMs: 0,
           });
-          throw err;
+          throw failure;
         }
         composedAbort.cleanup();
 

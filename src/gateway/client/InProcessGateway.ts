@@ -1609,7 +1609,13 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
       return [{
         type: "agent_status",
         event: "subagent_completed",
-        detail: { subagentId: event.subagentId, subagentType: event.subagentType, success: event.success, durationMs: event.durationMs },
+        detail: {
+          subagentId: event.subagentId,
+          subagentType: event.subagentType,
+          success: event.success,
+          ...(event.aborted ? { aborted: true } : {}),
+          durationMs: event.durationMs,
+        },
       }];
     case "subagent_model_event":
       return mapSubagentModelEvent(event);

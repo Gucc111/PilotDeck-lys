@@ -216,6 +216,7 @@
         "timeRequired": "Time is required.",
         "timezoneRequired": "Timezone is required.",
         "timezoneInvalid": "Timezone is invalid.",
+        "runAtInvalid": "Run time does not exist in the selected timezone.",
         "runAtFuture": "Run time must be in the future.",
         "expressionInvalid": "Cron expression format is invalid."
       },

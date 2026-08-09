@@ -540,7 +540,7 @@ describe('CronV2', () => {
   });
 
   it('edits a one-time task and keeps the original task id', async () => {
-    const runAt = new Date('2099-01-01T10:30').toISOString();
+    const runAt = '2099-01-01T02:30:00.000Z';
     setup([makeJob({
       id: 'job-once',
       prompt: 'One-time task',
@@ -561,15 +561,15 @@ describe('CronV2', () => {
     await waitFor(() => {
       expect(apiMock.cronUpdate).toHaveBeenCalledWith('job-once', expect.objectContaining({
         expectedRevision: 3,
-        schedule: { type: 'once', runAt: new Date('2099-01-01T11:45').toISOString() },
+        schedule: { type: 'once', runAt: '2099-01-01T03:45:00.000Z' },
       }));
     });
   });
 
   it('preserves seconds and milliseconds when editing only the prompt of a one-time task', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(new Date(2099, 0, 1, 10, 30, 0));
-    const runAt = new Date(2099, 0, 1, 10, 30, 45, 500).toISOString();
+    vi.setSystemTime(new Date('2099-01-01T10:30:00.000Z'));
+    const runAt = '2099-01-01T10:30:45.500Z';
     setup([makeJob({
       id: 'job-once-precision',
       prompt: 'Precise one-time task',
@@ -598,7 +598,7 @@ describe('CronV2', () => {
       id: 'job-once-to-cron',
       prompt: 'Convert to recurring',
       cron: '',
-      schedule: { type: 'once', runAt: new Date('2099-01-01T10:30').toISOString() },
+      schedule: { type: 'once', runAt: '2099-01-01T10:30:00.000Z' },
       recurring: false,
       revision: 2,
     })]);
@@ -625,7 +625,7 @@ describe('CronV2', () => {
 
   it('converts a recurring task to the next future one-time date while preserving time', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(new Date('2026-01-15T12:00:00'));
+    vi.setSystemTime(new Date('2026-01-15T12:00:00.000Z'));
     setup([makeJob({
       id: 'job-cron-to-once',
       prompt: 'Convert to one-time',
@@ -647,15 +647,139 @@ describe('CronV2', () => {
         message: 'Convert to one-time',
         projectKey: '/project/general',
         expectedRevision: 2,
-        schedule: { type: 'once', runAt: new Date('2026-01-15T13:30').toISOString() },
+        schedule: { type: 'once', runAt: '2026-01-15T13:30:00.000Z' },
         timezone: 'UTC',
       });
     });
   });
 
+  it('uses the task timezone date when converting a recurring task to one-time', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-01-15T01:00:00.000Z'));
+    setup([makeJob({
+      id: 'job-cron-to-once-date-boundary',
+      prompt: 'Convert across date boundary',
+      cron: '30 18 * * *',
+      schedule: { type: 'cron', expression: '30 18 * * *', timezone: 'America/Los_Angeles' },
+      timezone: 'America/Los_Angeles',
+      revision: 2,
+    })]);
+
+    await screen.findByText('Convert across date boundary');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'One-time' }));
+
+    expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2026-01-14');
+    expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe('18:30');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      expect(apiMock.cronUpdate).toHaveBeenCalledWith('job-cron-to-once-date-boundary', {
+        message: 'Convert across date boundary',
+        projectKey: '/project/general',
+        expectedRevision: 2,
+        schedule: { type: 'once', runAt: '2026-01-15T02:30:00.000Z' },
+        timezone: 'America/Los_Angeles',
+      });
+    });
+  });
+
+  it('uses the earlier instant when both repeated one-time wall times are in the future', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'));
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByRole('option', { name: 'General' });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'DST fallback task' } });
+    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: '/project/general' } });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-11-01' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '01:30' } });
+    fireEvent.change(screen.getByLabelText('Timezone'), { target: { value: 'America/New_York' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Task' }).at(-1)!);
+
+    await waitFor(() => {
+      expect(apiMock.cronCreate).toHaveBeenCalledWith(expect.objectContaining({
+        schedule: { type: 'once', runAt: '2026-11-01T05:30:00.000Z' },
+        timezone: 'America/New_York',
+      }));
+    });
+  });
+
+  it('uses the later instant when the earlier repeated wall time has already passed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-11-01T06:15:00.000Z'));
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByRole('option', { name: 'General' });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Later DST fallback task' } });
+    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: '/project/general' } });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-11-01' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '01:30' } });
+    fireEvent.change(screen.getByLabelText('Timezone'), { target: { value: 'America/New_York' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Task' }).at(-1)!);
+
+    await waitFor(() => {
+      expect(apiMock.cronCreate).toHaveBeenCalledWith(expect.objectContaining({
+        schedule: { type: 'once', runAt: '2026-11-01T06:30:00.000Z' },
+        timezone: 'America/New_York',
+      }));
+    });
+  });
+
+  it('keeps today when converting a recurring fallback time whose later instant is still future', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-11-01T06:15:00.000Z'));
+    setup([makeJob({
+      id: 'job-cron-to-once-fallback',
+      prompt: 'Convert fallback task',
+      cron: '30 1 * * *',
+      schedule: { type: 'cron', expression: '30 1 * * *', timezone: 'America/New_York' },
+      timezone: 'America/New_York',
+      revision: 4,
+    })]);
+
+    await screen.findByText('Convert fallback task');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'One-time' }));
+
+    expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2026-11-01');
+    expect((screen.getByLabelText('Time') as HTMLInputElement).value).toBe('01:30');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      expect(apiMock.cronUpdate).toHaveBeenCalledWith('job-cron-to-once-fallback', {
+        message: 'Convert fallback task',
+        projectKey: '/project/general',
+        expectedRevision: 4,
+        schedule: { type: 'once', runAt: '2026-11-01T06:30:00.000Z' },
+        timezone: 'America/New_York',
+      });
+    });
+  });
+
+  it('rejects a one-time wall time that does not exist during DST spring-forward', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    setup([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Task' }));
+    await screen.findByRole('option', { name: 'General' });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'DST gap task' } });
+    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: '/project/general' } });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-03-08' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '02:30' } });
+    fireEvent.change(screen.getByLabelText('Timezone'), { target: { value: 'America/New_York' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create Task' }).at(-1)!);
+
+    await screen.findByText('Run time does not exist in the selected timezone.');
+    expect(apiMock.cronCreate).not.toHaveBeenCalled();
+  });
+
   it('keeps separate one-time and recurring drafts while editing a task', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(new Date('2026-01-15T12:00:00'));
+    vi.setSystemTime(new Date('2026-01-15T12:00:00.000Z'));
     setup([makeJob({
       id: 'job-edit-drafts',
       prompt: 'Keep both drafts',
