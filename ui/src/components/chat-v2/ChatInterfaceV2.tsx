@@ -301,7 +301,8 @@ function ChatInterfaceV2({
     // loading indicator, Stop button, and active turn replay reflect reality
     // after reconnect. The session-status handler consumes activeTurnMessages
     // and dedupes replay chunks against existing realtime state.
-    sendMessage(buildReconnectStatusMessage(selectedSession.id, activeRunId));
+    const statusMessage = buildReconnectStatusMessage(selectedSession.id, activeRunId);
+    if (statusMessage) sendMessage(statusMessage);
   }, [
     activeRunId,
     isLoading,

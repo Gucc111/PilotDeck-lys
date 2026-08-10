@@ -15,7 +15,7 @@ import {
 } from '../../../stores/useSessionStore';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import {
-  buildSessionStatusRequest,
+  buildSessionStatusRequestIfIdle,
   invalidateSessionStatusResponses,
   shouldAcceptSessionStatusResponse,
 } from '../sessionStatusProtocol';
@@ -372,12 +372,13 @@ export function useChatRealtimeHandlers({
     if (sessionStatusRetryTimersRef.current.has(sessionId)) return;
     const timer = window.setTimeout(() => {
       sessionStatusRetryTimersRef.current.delete(sessionId);
-      sendMessage(buildSessionStatusRequest({
+      const request = buildSessionStatusRequestIfIdle({
         sessionId,
         provider,
         expectedActiveRunId,
         includeActiveTurnMessages: true,
-      }));
+      });
+      if (request) sendMessage(request);
     }, 1200);
     sessionStatusRetryTimersRef.current.set(sessionId, timer);
   }, [provider, sendMessage]);
@@ -444,7 +445,7 @@ export function useChatRealtimeHandlers({
           ) {
             return;
           }
-          if (msg.isProcessing === null) {
+          if (msg.isProcessing === null && isCurrentSession) {
             scheduleSessionStatusRetry(
               statusSessionId,
               typeof msg.expectedActiveRunId === 'string' && msg.expectedActiveRunId.trim()
@@ -894,12 +895,13 @@ export function useChatRealtimeHandlers({
             setSessionRuntimeState('synchronizing');
           }
           invalidateSessionStatusResponses(sid);
-          sendMessage(buildSessionStatusRequest({
+          const request = buildSessionStatusRequestIfIdle({
             sessionId: sid,
             provider,
             expectedActiveRunId: activeRunIdRef.current,
             includeActiveTurnMessages: true,
-          }));
+          });
+          if (request) sendMessage(request);
           break;
         }
         if (isTerminalForSupersededRun) break;
