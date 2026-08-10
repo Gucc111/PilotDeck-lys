@@ -24,7 +24,8 @@ Adapt the depth of inspection and verification to the task. Treat a Word documen
 Resolve the CLI once:
 
 ```bash
-DOCX="$DOCX_SKILL_ROOT/scripts/docx.sh"
+SKILL_ROOT={{SKILL_ROOT_SHELL}}
+DOCX="$SKILL_ROOT/scripts/docx.sh"
 WORKSPACE="${PILOTDECK_WORK_DIR:?PILOTDECK_WORK_DIR is required}/docx"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/review"
 ```
@@ -44,7 +45,7 @@ Review the source visually before layout-sensitive edits. Inspect package featur
 
 ## Execute
 
-Use one reproducible Python builder for each candidate revision. Patch and rerun that builder instead of creating numbered scripts or project-visible helpers.
+Use the managed builder runner for ordinary creation and editing. Put document-specific logic in one reproducible Python builder, while `docx.sh` owns the builder location, input and output paths, execution, validation, and candidate promotion.
 
 ```bash
 bash "$DOCX" scaffold --out "$WORKSPACE/tmp/document.py"
@@ -53,7 +54,9 @@ bash "$DOCX" build \
   --out "$WORKSPACE/tmp/candidate.docx"
 ```
 
-Add `--input "$INPUT_DOCX"` when editing. Use `context.new_document(locale=...)` for a new document, choosing the locale from the content; use `context.load_document()` for an edit and `context.save(document)` for the candidate. The builder may use `python-docx` and `docxlib.builder` helpers.
+Run `scaffold` first, then edit the exact builder path it returns and execute that builder through `build`. Add `--input "$INPUT_DOCX"` when editing. Do not run the builder directly with `python` or `python3`, and do not choose an output path inside the builder.
+
+Use `context.new_document(locale=...)` for a new document, choosing the locale from the content; use `context.load_document()` for an edit and `context.save(document)` for the candidate. The builder may use the complete `python-docx` API and `docxlib.builder` helpers. Patch and rerun the same builder for each candidate revision instead of creating numbered scripts or project-visible helpers.
 
 Preserve an existing document's styles, sections, recurring content, fields, tables, and visual language unless redesign is requested. Prefer localized edits over reconstruction.
 
