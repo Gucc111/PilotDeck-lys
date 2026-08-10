@@ -77,7 +77,16 @@ export type AgentEvent =
     }
   | { type: "model_recovery_failed"; sessionId: string; turnId: string; provider: string; model: string; error: CanonicalModelError }
   | { type: "subagent_started"; sessionId: string; turnId: string; subagentId: string; subagentType: string; toolCallId?: string }
-  | { type: "subagent_completed"; sessionId: string; turnId: string; subagentId: string; subagentType: string; success: boolean; durationMs: number }
+  | {
+      type: "subagent_completed";
+      sessionId: string;
+      turnId: string;
+      subagentId: string;
+      subagentType: string;
+      success: boolean;
+      aborted?: boolean;
+      durationMs: number;
+    }
   | {
       type: "subagent_status";
       sessionId: string;

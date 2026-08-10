@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
-import type { ChatMessage, ClaudeWorkStatus, PilotDeckWorkStatus } from '../types/types';
+import type {
+  ChatMessage,
+  ClaudeWorkStatus,
+  PilotDeckWorkStatus,
+  SessionRuntimeState,
+} from '../types/types';
 import {
   getSessionRequestParams,
   isReadOnlySession,
@@ -12,6 +17,10 @@ import {
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
 import { parseUserAttachmentNote } from '../utils/attachmentNotes';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
+import {
+  buildSessionStatusRequest,
+  invalidateSessionStatusResponses,
+} from '../sessionStatusProtocol';
 import { normalizedToChatMessages } from './useChatMessages';
 
 const MESSAGES_PER_PAGE = 20;
@@ -280,7 +289,17 @@ export function useChatSessionState({
   pendingViewSessionRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoadingState] = useState(false);
+  const [sessionRuntimeState, setSessionRuntimeState] = useState<SessionRuntimeState>(() => (
+    selectedSession && !isReadOnlySession(selectedSession) ? 'synchronizing' : 'inactive'
+  ));
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const activeRunIdRef = useRef<string | null>(activeRunId);
+  activeRunIdRef.current = activeRunId;
+  const setIsLoading = useCallback((loading: boolean) => {
+    setIsLoadingState(loading);
+    if (loading) setSessionRuntimeState('running');
+  }, []);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
   const [isLoadingMoreMessages] = useState(false);
@@ -693,6 +712,8 @@ export function useChatSessionState({
       setCanAbortSession(false);
       setIsAborting(false);
       setIsLoading(false);
+      setSessionRuntimeState('inactive');
+      setActiveRunId(null);
       setSessionLoadError(null);
       setCurrentSessionId(null);
       messagesOffsetRef.current = 0;
@@ -713,6 +734,20 @@ export function useChatSessionState({
       sessionRequestParams.relativeTranscriptPath ?? '',
       sessionIsReadOnly ? 'readonly' : 'readwrite',
     ]);
+    const isEnteringSession = lastLoadedSessionKeyRef.current !== sessionKey;
+    const sessionChanged = didLoadedSessionChange(lastLoadedSessionKeyRef.current, sessionKey);
+    const isPendingSessionHandoff = pendingViewSessionRef.current?.sessionId === selectedSession.id;
+
+    if (isEnteringSession) {
+      setSessionRuntimeState(
+        sessionIsReadOnly
+          ? 'inactive'
+          : isPendingSessionHandoff && !sessionChanged
+            ? 'running'
+            : 'synchronizing',
+      );
+      if (sessionIsReadOnly) setActiveRunId(null);
+    }
 
     // Skip if already loaded and fresh, or if stale but has live realtime
     // content (re-fetching while streaming would prune in-flight messages).
@@ -726,9 +761,10 @@ export function useChatSessionState({
     // See `didLoadedSessionChange` for why we don't compare `currentSessionId`
     // against `selectedSession.id` here (the render-phase mirror nullifies
     // that check on real session-to-session switches).
-    const sessionChanged = didLoadedSessionChange(lastLoadedSessionKeyRef.current, sessionKey);
     if (sessionChanged) {
       resetStreamingState();
+      activeRunIdRef.current = null;
+      setActiveRunId(null);
       pendingViewSessionRef.current = null;
       setClaudeStatus(null);
       setPilotDeckStatus(null);
@@ -761,12 +797,13 @@ export function useChatSessionState({
 
     // Check session status
     if (ws && !sessionIsReadOnly) {
-      sendMessage({
-        type: 'check-session-status',
+      invalidateSessionStatusResponses(selectedSession.id);
+      sendMessage(buildSessionStatusRequest({
         sessionId: selectedSession.id,
         provider,
+        expectedActiveRunId: activeRunIdRef.current,
         includeActiveTurnMessages: true,
-      });
+      }));
     }
 
     lastLoadedSessionKeyRef.current = sessionKey;
@@ -810,6 +847,7 @@ export function useChatSessionState({
     selectedProject,
     selectedSession,
     sendMessage,
+    setIsLoading,
     ws,
     sessionIsReadOnly,
     sessionRequestParams,
@@ -1038,7 +1076,15 @@ export function useChatSessionState({
       setIsLoading(true);
       setCanAbortSession(true);
     }
-  }, [currentSessionId, isLoading, pendingViewSessionRef, processingSessions, selectedSession?.id, sessionIsReadOnly]);
+  }, [
+    currentSessionId,
+    isLoading,
+    pendingViewSessionRef,
+    processingSessions,
+    selectedSession?.id,
+    sessionIsReadOnly,
+    setIsLoading,
+  ]);
 
   useEffect(() => {
     const pendingSessionId = pendingViewSessionRef.current?.sessionId ?? null;
@@ -1050,12 +1096,12 @@ export function useChatSessionState({
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
     const requestStatus = () => {
-      sendMessage({
-        type: 'check-session-status',
+      sendMessage(buildSessionStatusRequest({
         sessionId: activeViewSessionId,
         provider: 'pilotdeck',
+        expectedActiveRunId: activeRunIdRef.current,
         includeActiveTurnMessages: false,
-      });
+      }));
     };
 
     requestStatus();
@@ -1161,6 +1207,10 @@ export function useChatSessionState({
     rewindMessages,
     isLoading,
     setIsLoading,
+    sessionRuntimeState,
+    setSessionRuntimeState,
+    activeRunId,
+    setActiveRunId,
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,

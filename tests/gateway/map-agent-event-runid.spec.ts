@@ -62,3 +62,26 @@ test("mapAgentEvent propagates runId to streaming lifecycle boundaries", () => {
     runId,
   }]);
 });
+
+test("mapAgentEvent preserves an aborted subagent completion", () => {
+  const [completed] = mapAgentEvent({
+    type: "subagent_completed",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    subagentId: "subagent-1",
+    subagentType: "explore",
+    success: false,
+    aborted: true,
+    durationMs: 10,
+  }, "run-1");
+
+  assert.equal(completed?.type, "agent_status");
+  assert.equal(completed?.runId, "run-1");
+  assert.deepEqual(completed?.type === "agent_status" ? completed.detail : undefined, {
+    subagentId: "subagent-1",
+    subagentType: "explore",
+    success: false,
+    aborted: true,
+    durationMs: 10,
+  });
+});

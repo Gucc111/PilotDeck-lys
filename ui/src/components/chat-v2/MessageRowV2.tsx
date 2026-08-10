@@ -19,6 +19,7 @@ import type {
   ChatMessage,
   PilotDeckPermissionSuggestion,
   SessionPermissionGrantResult,
+  SessionRuntimeState,
 } from '../chat/types/types';
 import MessageComponent from '../chat/view/subcomponents/MessageComponent';
 import ImageLightbox, { type LightboxImage } from '../chat/view/subcomponents/ImageLightbox';
@@ -80,6 +81,7 @@ type MessageRowV2Props = {
   subagentActivityById?: Map<string, ChatMessage>;
   subagentThinkingById?: Map<string, string>;
   isSessionRunning?: boolean;
+  sessionRuntimeState?: SessionRuntimeState;
   onFork?: (message: ChatMessage, carriedMessageCount: number) => void;
   forkCarriedMessageCount?: number;
   forkDisabled?: boolean;
@@ -123,6 +125,7 @@ function MessageRowV2({
   subagentActivityById,
   subagentThinkingById,
   isSessionRunning,
+  sessionRuntimeState,
   onFork,
   forkCarriedMessageCount = 0,
   forkDisabled = false,
@@ -247,7 +250,13 @@ function MessageRowV2({
     const liveActivity = subagentId ? subagentActivityById?.get(subagentId) : undefined;
     const thinkingContent = subagentId ? subagentThinkingById?.get(subagentId) : undefined;
     return withProcessRows(
-      <SubagentCard message={message} liveActivity={liveActivity} onOpenDetail={onOpenSubagentDetail} thinkingContent={thinkingContent} isSessionRunning={isSessionRunning} />,
+      <SubagentCard
+        message={message}
+        liveActivity={liveActivity}
+        onOpenDetail={onOpenSubagentDetail}
+        thinkingContent={thinkingContent}
+        sessionRuntimeState={sessionRuntimeState}
+      />,
     );
   }
 

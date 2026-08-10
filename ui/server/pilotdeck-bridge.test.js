@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    createAlwaysOnTurnEventForwarder,
     gatewayEventToFrames,
     isGatewayUnavailableError,
+    isTerminalAlwaysOnTurnEvent,
 } from './pilotdeck-bridge.js';
 
 describe('gatewayEventToFrames agent status errors', () => {
@@ -54,6 +56,7 @@ describe('gatewayEventToFrames agent status errors', () => {
         expect(frames).toHaveLength(1);
         expect(frames[0]).toMatchObject({
             kind: 'error',
+            terminal: true,
             content: 'The model returned empty content repeatedly.',
             code: 'model_empty_response_exhausted',
             userHint: 'Increase max output tokens.',
@@ -76,6 +79,7 @@ describe('gatewayEventToFrames agent status errors', () => {
         expect(frames).toHaveLength(1);
         expect(frames[0]).toMatchObject({
             kind: 'error',
+            terminal: true,
             content: 'Provider rejected the request.',
             contentI18n: { key: 'chat:agentStatus.modelRequestFailed.message', params: { providerMessage: 'Provider rejected the request.' } },
             code: 'model_request_failed',
@@ -102,6 +106,7 @@ describe('gatewayEventToFrames agent status errors', () => {
         expect(frames).toHaveLength(1);
         expect(frames[0]).toMatchObject({
             kind: 'error',
+            terminal: true,
             content: 'Bridge crashed while streaming.',
             code: 'gateway_bridge_error',
             userHint: 'Check UI server logs.',
@@ -145,6 +150,47 @@ describe('gatewayEventToFrames agent status errors', () => {
         });
     });
 
+    it('preserves the parent run on subagent activity frames', () => {
+        const frames = gatewayEventToFrames({
+            type: 'agent_status',
+            runId: 'run-parent',
+            event: 'subagent_started',
+            detail: {
+                subagentId: 'child-parent-run-test',
+                subagentType: 'general-purpose',
+            },
+        }, 'web:s_test', 'pilotdeck');
+
+        expect(frames.find((frame) => frame.kind === 'agent_activity')).toMatchObject({
+            runId: 'subagent:child-parent-run-test',
+            parentRunId: 'run-parent',
+            activityId: 'subagent:child-parent-run-test',
+        });
+    });
+
+    it('maps an aborted subagent completion to a cancelled activity', () => {
+        const frames = gatewayEventToFrames({
+            type: 'agent_status',
+            runId: 'run-parent',
+            event: 'subagent_completed',
+            detail: {
+                subagentId: 'child-aborted',
+                subagentType: 'general-purpose',
+                success: false,
+                aborted: true,
+                durationMs: 100,
+            },
+        }, 'web:s_test', 'pilotdeck');
+
+        expect(frames.find((frame) => frame.kind === 'agent_activity')).toMatchObject({
+            parentRunId: 'run-parent',
+            activityId: 'subagent:child-aborted',
+            state: 'cancelled',
+            detail: '已停止',
+            title: 'Subagent general-purpose stopped',
+        });
+    });
+
     it('renders gateway unavailable preflight status as an error frame', () => {
         const frames = gatewayEventToFrames({
             type: 'agent_status',
@@ -163,6 +209,7 @@ describe('gatewayEventToFrames agent status errors', () => {
         expect(frames).toHaveLength(1);
         expect(frames[0]).toMatchObject({
             kind: 'error',
+            terminal: true,
             content: 'PilotDeck gateway is unavailable.',
             code: 'gateway_unavailable',
             userHint: 'Start or restart the PilotDeck gateway, then retry this message.',
@@ -180,5 +227,85 @@ describe('isGatewayUnavailableError', () => {
 
     it('does not classify generic bridge failures as gateway unavailable', () => {
         expect(isGatewayUnavailableError(new Error('Unexpected frame payload'))).toBe(false);
+    });
+});
+
+describe('Always-On turn notification forwarding', () => {
+    it('cleans an aborted run so its next run receives session_created again', () => {
+        const forwarded = [];
+        const forward = createAlwaysOnTurnEventForwarder((sessionId, frame) => {
+            forwarded.push({ sessionId, frame });
+        });
+        const payload = (event) => ({
+            sessionKey: 'cron:task-1',
+            channelKey: 'cron',
+            event,
+        });
+
+        forward('always-on:turn-event', payload({
+            type: 'agent_status',
+            event: 'subagent_started',
+            detail: { subagentId: 'child-1', subagentType: 'general-purpose' },
+        }));
+        forward('always-on:turn-event', payload({
+            type: 'error',
+            code: 'agent_aborted',
+            message: 'The run was stopped.',
+            recoverable: true,
+        }));
+        forward('always-on:turn-event', payload({
+            type: 'agent_status',
+            event: 'subagent_started',
+            detail: { subagentId: 'child-2', subagentType: 'general-purpose' },
+        }));
+
+        expect(forwarded.filter(({ frame }) => frame.kind === 'session_created')).toHaveLength(2);
+        expect(forwarded.find(({ frame }) => frame.kind === 'error')?.frame).toMatchObject({
+            code: 'agent_aborted',
+        });
+    });
+
+    it('treats normal completion and top-level errors as terminal', () => {
+        expect(isTerminalAlwaysOnTurnEvent({ type: 'turn_completed' })).toBe(true);
+        expect(isTerminalAlwaysOnTurnEvent({ type: 'error', code: 'agent_aborted' })).toBe(true);
+        expect(isTerminalAlwaysOnTurnEvent({ type: 'error', code: 'session_busy' })).toBe(false);
+        expect(isTerminalAlwaysOnTurnEvent({ type: 'assistant_text_delta', text: 'still running' })).toBe(false);
+    });
+
+    it('marks gateway error frames as confirmed terminal', () => {
+        expect(gatewayEventToFrames({
+            type: 'error',
+            code: 'gateway_disconnected',
+            message: 'The gateway connection was lost.',
+        }, 'cron:task-1', 'pilotdeck')[0]).toMatchObject({
+            kind: 'error',
+            terminal: true,
+        });
+    });
+
+    it('marks session-busy errors as non-terminal because the previous turn is still running', () => {
+        expect(gatewayEventToFrames({
+            type: 'agent_status',
+            event: 'session_busy',
+            detail: {
+                message: 'The session already has an active turn.',
+                code: 'session_busy',
+                visible: true,
+            },
+        }, 'cron:task-1', 'pilotdeck')[0]).toMatchObject({
+            kind: 'error',
+            code: 'session_busy',
+            terminal: false,
+        });
+
+        expect(gatewayEventToFrames({
+            type: 'error',
+            code: 'session_busy',
+            message: 'The session already has an active turn.',
+        }, 'cron:task-1', 'pilotdeck')[0]).toMatchObject({
+            kind: 'error',
+            code: 'session_busy',
+            terminal: false,
+        });
     });
 });

@@ -9,6 +9,7 @@ import type {
   PilotDeckWorkStatus,
   PilotDeckPermissionSuggestion,
   SessionPermissionGrantResult,
+  SessionRuntimeState,
 } from '../chat/types/types';
 import type { SessionStore } from '../../stores/useSessionStore';
 import { getSessionRequestParams, isReadOnlySession, type Project, type ProjectSession, type SessionProvider } from '../../types/app';
@@ -70,6 +71,8 @@ type MessagesPaneV2Props = {
   inlineThinking?: boolean;
   setInput: Dispatch<SetStateAction<string>>;
   isAssistantWorking?: boolean;
+  sessionRuntimeState?: SessionRuntimeState;
+  activeRunId?: string | null;
   workingStatus?: ClaudeWorkStatus | PilotDeckWorkStatus | null;
   runMode?: ChatRunMode;
   planModeActive?: boolean;
@@ -84,6 +87,20 @@ type KeyedRenderableMessageItem = RenderableMessageItem & {
   renderIndex: number;
   estimatedHeight: number;
 };
+
+function isHistoricalSubagentItem(
+  item: Pick<KeyedRenderableMessageItem, 'message' | 'renderIndex'>,
+  activeRunId: string | null,
+  sessionRuntimeState: SessionRuntimeState,
+  liveProcessHeaderIndex: number,
+): boolean {
+  if (!item.message.isSubagentContainer || sessionRuntimeState === 'inactive' || !activeRunId) {
+    return false;
+  }
+  const messageRunId = item.message.turnId || item.message.runId || null;
+  if (messageRunId) return messageRunId !== activeRunId;
+  return liveProcessHeaderIndex >= 0 && item.renderIndex < liveProcessHeaderIndex;
+}
 
 export type VirtualMessageWindow = {
   startIndex: number;
@@ -333,6 +350,8 @@ function MessagesPaneV2({
   inlineThinking,
   setInput,
   isAssistantWorking = false,
+  sessionRuntimeState = 'synchronizing',
+  activeRunId = null,
   workingStatus,
   runMode = 'agent',
   planModeActive = false,
@@ -439,10 +458,7 @@ function MessagesPaneV2({
   const subagentActivityById = useMemo(() => {
     const byId = new Map<string, ChatMessage>();
     for (const activity of subagentActivities) {
-      const rawId = activity.activityId || activity.runId || '';
-      const subagentId = rawId.startsWith('subagent:')
-        ? rawId.slice('subagent:'.length)
-        : '';
+      const subagentId = getSubagentActivityId(activity);
       if (subagentId) {
         byId.set(subagentId, activity);
       }
@@ -479,10 +495,6 @@ function MessagesPaneV2({
   const openSubagentActivity = openSubagentId
     ? subagentActivityById.get(openSubagentId)
     : undefined;
-  const isOpenSubagentRunning = Boolean(
-    openSubagentActivity &&
-      !['completed', 'failed', 'cancelled'].includes(String(openSubagentActivity.state || '')),
-  );
   const sessionRequestParams = useMemo(
     () => getSessionRequestParams(selectedSession),
     [selectedSession],
@@ -592,6 +604,25 @@ function MessagesPaneV2({
     }
     return keyedMessageItems.length > 0 ? 0 : -1;
   }, [isAssistantWorking, keyedMessageItems]);
+  const openSubagentContainerItem = openSubagentId
+    ? keyedMessageItems.find((item) => (
+        item.message.isSubagentContainer && item.message.subagentId === openSubagentId
+      ))
+    : undefined;
+  const isOpenSubagentHistorical = openSubagentContainerItem
+    ? isHistoricalSubagentItem(
+        openSubagentContainerItem,
+        activeRunId,
+        sessionRuntimeState,
+        liveProcessHeaderIndex,
+      )
+    : false;
+  const isOpenSubagentRunning = Boolean(
+    !isOpenSubagentHistorical &&
+      sessionRuntimeState !== 'inactive' &&
+      openSubagentActivity &&
+      !['completed', 'failed', 'cancelled'].includes(String(openSubagentActivity.state || '')),
+  );
   // The current turn's "started at" is anchored to the latest user message's
   // timestamp (set by the composer when the user submits). This is the only
   // signal that survives a page refresh and reliably resets between turns —
@@ -631,10 +662,34 @@ function MessagesPaneV2({
     );
     return !hasContentAfterTool;
   }, [isAssistantWorking, keyedMessageItems, liveProcessHeaderIndex]);
-  const runningSubagentActivity = useMemo(
-    () => [...subagentActivities].reverse().find(isRunningActivity) || null,
-    [subagentActivities],
-  );
+  const currentRunSubagentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of keyedMessageItems) {
+      if (
+        item.message.isSubagentContainer
+        && item.message.subagentId
+        && !isHistoricalSubagentItem(
+          item,
+          activeRunId,
+          sessionRuntimeState,
+          liveProcessHeaderIndex,
+        )
+      ) {
+        ids.add(item.message.subagentId);
+      }
+    }
+    return ids;
+  }, [activeRunId, keyedMessageItems, liveProcessHeaderIndex, sessionRuntimeState]);
+  const runningSubagentActivity = useMemo(() => {
+    if (sessionRuntimeState === 'inactive') return null;
+    return [...subagentActivities].reverse().find((activity) => {
+      if (!isRunningActivity(activity)) return false;
+      if (!activeRunId) return true;
+      if (activity.parentRunId) return activity.parentRunId === activeRunId;
+      const subagentId = getSubagentActivityId(activity);
+      return Boolean(subagentId && currentRunSubagentIds.has(subagentId));
+    }) || null;
+  }, [activeRunId, currentRunSubagentIds, sessionRuntimeState, subagentActivities]);
   const streamingThinkingContent = useMemo(() => {
     if (!showThinking || !isAssistantWorking) {
       return null;
@@ -813,6 +868,7 @@ function MessagesPaneV2({
         subagentActivityById={subagentActivityById}
         subagentThinkingById={subagentThinkingById}
         isSessionRunning={isAssistantWorking}
+        sessionRuntimeState={sessionRuntimeState}
       />
     ))
   ), [
@@ -835,6 +891,7 @@ function MessagesPaneV2({
     showRawParameters,
     showThinking,
     isAssistantWorking,
+    sessionRuntimeState,
   ]);
 
   const renderLiveProcessGroup = useCallback((group: LiveProcessGroup, index: number) => {
@@ -891,6 +948,14 @@ function MessagesPaneV2({
     );
     const anchoredLiveGroups = liveProcessGroupsByAnchor.get(item.originalIndex) || [];
     const rendersLiveHeaderAfterItem = item.renderIndex === liveProcessHeaderIndex - 1;
+    const messageSessionRuntimeState = isHistoricalSubagentItem(
+      item,
+      activeRunId,
+      sessionRuntimeState,
+      liveProcessHeaderIndex,
+    )
+      ? 'inactive'
+      : sessionRuntimeState;
     const showAssistantActions = (() => {
       if (!isRenderableAssistantProse(item.message)) {
         return false;
@@ -963,6 +1028,7 @@ function MessagesPaneV2({
             subagentActivityById={subagentActivityById}
             subagentThinkingById={subagentThinkingById}
             isSessionRunning={isAssistantWorking}
+            sessionRuntimeState={messageSessionRuntimeState}
             onFork={onFork}
             forkCarriedMessageCount={forkCarriedMessageCount}
             forkDisabled={forkDisabled}
@@ -991,6 +1057,7 @@ function MessagesPaneV2({
     );
   }, [
     autoExpandTools,
+    activeRunId,
     createDiff,
     handleMeasuredItemHeight,
     handleOpenSubagentDetail,
@@ -1000,6 +1067,7 @@ function MessagesPaneV2({
     isProcessExpanded,
     isToolSectionExpanded,
     isAssistantWorking,
+    sessionRuntimeState,
     keyedMessageItems,
     renderableMessages,
     nonSubagentLiveActivities,
@@ -1280,6 +1348,13 @@ export default memo(MessagesPaneV2);
 function isSubagentActivity(activity: ChatMessage): boolean {
   const activityId = String(activity.activityId || activity.runId || '');
   return activity.phase === 'subagent' || activityId.startsWith('subagent:');
+}
+
+function getSubagentActivityId(activity: ChatMessage): string {
+  const activityId = String(activity.activityId || activity.runId || '');
+  return activityId.startsWith('subagent:')
+    ? activityId.slice('subagent:'.length)
+    : '';
 }
 
 function isRunningActivity(activity: ChatMessage): boolean {

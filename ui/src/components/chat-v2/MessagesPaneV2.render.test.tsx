@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { FindShortcutProvider } from '../../contexts/FindShortcutContext';
-import type { ChatMessage, ChatRunMode } from '../chat/types/types';
+import type { ChatMessage, ChatRunMode, SessionRuntimeState } from '../chat/types/types';
 import MessagesPaneV2 from './MessagesPaneV2';
 import { getContextStatus } from './ComposerV2';
+
+vi.mock('./SubagentDetailModal', () => ({
+  default: ({ isRunning }: { isRunning?: boolean }) => (
+    <div data-testid="subagent-detail-modal" data-running={isRunning ? 'true' : 'false'} />
+  ),
+}));
 
 beforeAll(() => {
   class ResizeObserverMock {
@@ -56,12 +62,16 @@ function createPaneElement({
   messages,
   activityMessages = [],
   isAssistantWorking = false,
+  sessionRuntimeState = 'synchronizing',
+  activeRunId = null,
   runMode = 'agent',
   planModeActive = false,
 }: {
   messages: ChatMessage[];
   activityMessages?: ChatMessage[];
   isAssistantWorking?: boolean;
+  sessionRuntimeState?: SessionRuntimeState;
+  activeRunId?: string | null;
   runMode?: ChatRunMode;
   planModeActive?: boolean;
 }) {
@@ -91,6 +101,8 @@ function createPaneElement({
         createDiff={() => []}
         setInput={() => {}}
         isAssistantWorking={isAssistantWorking}
+        sessionRuntimeState={sessionRuntimeState}
+        activeRunId={activeRunId}
         runMode={runMode}
         planModeActive={planModeActive}
       />
@@ -102,6 +114,8 @@ function renderPane(options: {
   messages: ChatMessage[];
   activityMessages?: ChatMessage[];
   isAssistantWorking?: boolean;
+  sessionRuntimeState?: SessionRuntimeState;
+  activeRunId?: string | null;
   runMode?: ChatRunMode;
   planModeActive?: boolean;
 }) {
@@ -144,6 +158,208 @@ function SessionPaneHarness({
 }
 
 describe('MessagesPaneV2 render behavior', () => {
+  it('stops an unfinished subagent from an older run while the next run is active', () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = [
+      {
+        id: 'old-user',
+        type: 'user',
+        content: '上一轮',
+        timestamp: now,
+        runId: 'run-old',
+        turnId: 'run-old',
+      },
+      {
+        id: 'old-subagent',
+        type: 'assistant',
+        content: '',
+        timestamp: now,
+        runId: 'run-old',
+        turnId: 'run-old',
+        isToolUse: true,
+        isSubagentContainer: true,
+        toolName: 'Agent',
+        toolId: 'old-subagent',
+        subagentId: 'subagent-old',
+        toolInput: JSON.stringify({ description: 'Historical subagent' }),
+      },
+      {
+        id: 'new-user',
+        type: 'user',
+        content: '新一轮',
+        timestamp: now,
+        runId: 'run-new',
+        turnId: 'run-new',
+      },
+      {
+        id: 'new-assistant',
+        type: 'assistant',
+        content: 'Working on the new turn.',
+        timestamp: now,
+        runId: 'run-new',
+        turnId: 'run-new',
+      },
+    ];
+
+    renderPane({
+      messages,
+      activityMessages: [{
+        id: 'old-subagent-activity',
+        type: 'assistant',
+        timestamp: now,
+        isAgentActivity: true,
+        activityId: 'subagent:subagent-old',
+        parentRunId: 'run-old',
+        phase: 'subagent',
+        state: 'running',
+      }],
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+      activeRunId: 'run-new',
+    });
+
+    const card = screen.getByText('Historical subagent').closest('[role="button"]');
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText('subagent.status.stopped')).toBeTruthy();
+    expect(within(card as HTMLElement).queryByText('subagent.status.thinking')).toBeNull();
+    expect(screen.queryByText('Waiting for subagent')).toBeNull();
+    fireEvent.click(card as HTMLElement);
+    expect(screen.getByTestId('subagent-detail-modal').getAttribute('data-running')).toBe('false');
+  });
+
+  it('keeps an unfinished subagent in the active run running', () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = [
+      {
+        id: 'new-user',
+        type: 'user',
+        content: '新一轮',
+        timestamp: now,
+        runId: 'run-new',
+        turnId: 'run-new',
+      },
+      {
+        id: 'new-subagent',
+        type: 'assistant',
+        content: '',
+        timestamp: now,
+        runId: 'run-new',
+        turnId: 'run-new',
+        isToolUse: true,
+        isSubagentContainer: true,
+        toolName: 'Agent',
+        toolId: 'new-subagent',
+        subagentId: 'subagent-new',
+        toolInput: JSON.stringify({ description: 'Current subagent' }),
+      },
+    ];
+
+    renderPane({
+      messages,
+      activityMessages: [{
+        id: 'new-subagent-activity',
+        type: 'assistant',
+        timestamp: now,
+        isAgentActivity: true,
+        activityId: 'subagent:subagent-new',
+        parentRunId: 'run-new',
+        phase: 'subagent',
+        state: 'running',
+      }],
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+      activeRunId: 'run-new',
+    });
+
+    const card = screen.getByText('Current subagent').closest('[role="button"]');
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText('subagent.status.thinking')).toBeTruthy();
+    expect(within(card as HTMLElement).queryByText('subagent.status.stopped')).toBeNull();
+    fireEvent.click(card as HTMLElement);
+    expect(screen.getByTestId('subagent-detail-modal').getAttribute('data-running')).toBe('true');
+  });
+
+  it('uses a running activity from the active parent run for the live status', () => {
+    const now = new Date().toISOString();
+    renderPane({
+      messages: [{
+        id: 'new-user',
+        type: 'user',
+        content: '新一轮',
+        timestamp: now,
+        runId: 'run-new',
+        turnId: 'run-new',
+      }],
+      activityMessages: [{
+        id: 'new-subagent-activity',
+        type: 'assistant',
+        timestamp: now,
+        isAgentActivity: true,
+        activityId: 'subagent:subagent-new',
+        parentRunId: 'run-new',
+        phase: 'subagent',
+        state: 'running',
+      }],
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+      activeRunId: 'run-new',
+    });
+
+    expect(screen.getByText('Waiting for subagent')).toBeTruthy();
+  });
+
+  it('uses message position for legacy subagents only after an active run is confirmed', () => {
+    const now = new Date().toISOString();
+    const legacyMessages: ChatMessage[] = [
+      {
+        id: 'old-user',
+        type: 'user',
+        content: '上一轮',
+        timestamp: now,
+      },
+      {
+        id: 'legacy-subagent',
+        type: 'assistant',
+        content: '',
+        timestamp: now,
+        isToolUse: true,
+        isSubagentContainer: true,
+        toolName: 'Agent',
+        toolId: 'legacy-subagent',
+        subagentId: 'subagent-legacy',
+        toolInput: JSON.stringify({ description: 'Legacy subagent' }),
+      },
+      {
+        id: 'new-user',
+        type: 'user',
+        content: '新一轮',
+        timestamp: now,
+        runId: 'run-new',
+        turnId: 'run-new',
+      },
+    ];
+
+    const { rerender } = renderPane({
+      messages: legacyMessages,
+      isAssistantWorking: true,
+      sessionRuntimeState: 'synchronizing',
+      activeRunId: null,
+    });
+    let card = screen.getByText('Legacy subagent').closest('[role="button"]');
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText('subagent.status.thinking')).toBeTruthy();
+
+    rerender(createPaneElement({
+      messages: legacyMessages,
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+      activeRunId: 'run-new',
+    }));
+    card = screen.getByText('Legacy subagent').closest('[role="button"]');
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText('subagent.status.stopped')).toBeTruthy();
+  });
+
   it('renders the default 100-message window without virtualization', () => {
     const messages = Array.from({ length: 100 }, (_, index) => makeMessage(index));
 

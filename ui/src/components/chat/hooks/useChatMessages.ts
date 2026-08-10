@@ -304,6 +304,7 @@ function convertSingleMessage(
         timestamp: msg.timestamp,
         isAgentActivity: true,
         runId: msg.runId,
+        parentRunId: msg.parentRunId,
         activityId: msg.activityId,
         phase: msg.phase,
         state: msg.state,
