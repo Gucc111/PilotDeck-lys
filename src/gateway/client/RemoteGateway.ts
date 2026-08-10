@@ -75,6 +75,15 @@ import type {
   CronStopInput,
   CronStopResult,
 } from "../../cron/protocol/types.js";
+import type {
+  LeaderGatewayReadInput,
+  LeaderGatewayWriteInput,
+  LeaderReadResult,
+  LeaderWorkspaceOverrideGetInput,
+  LeaderWorkspaceOverrideSetInput,
+  LeaderWorkspaceOverrideDeleteInput,
+  LeaderWorkspaceOverrideResult,
+} from "../../extension/leader/types.js";
 import { GatewayWsClient, type GatewayWsNotificationHandler } from "./GatewayWsClient.js";
 import { parseReloadConfigResult } from "../protocol/reloadConfigResult.js";
 
@@ -265,6 +274,26 @@ export class RemoteGateway implements Gateway {
       "teammate_workspace_binding_set",
       input,
     )) as TeammateWorkspaceBindingsResult;
+  }
+
+  async leaderRead(input: LeaderGatewayReadInput): Promise<LeaderReadResult | null> {
+    return (await this.client.request("leader_read", input)) as LeaderReadResult | null;
+  }
+
+  async leaderWrite(input: LeaderGatewayWriteInput): Promise<LeaderReadResult> {
+    return (await this.client.request("leader_write", input)) as LeaderReadResult;
+  }
+
+  async leaderWorkspaceOverrideGet(input: LeaderWorkspaceOverrideGetInput): Promise<LeaderWorkspaceOverrideResult> {
+    return (await this.client.request("leader_workspace_override_get", input)) as LeaderWorkspaceOverrideResult;
+  }
+
+  async leaderWorkspaceOverrideSet(input: LeaderWorkspaceOverrideSetInput): Promise<LeaderWorkspaceOverrideResult> {
+    return (await this.client.request("leader_workspace_override_set", input)) as LeaderWorkspaceOverrideResult;
+  }
+
+  async leaderWorkspaceOverrideDelete(input: LeaderWorkspaceOverrideDeleteInput): Promise<LeaderWorkspaceOverrideResult> {
+    return (await this.client.request("leader_workspace_override_delete", input)) as LeaderWorkspaceOverrideResult;
   }
 
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {

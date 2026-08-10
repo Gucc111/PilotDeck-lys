@@ -179,6 +179,11 @@ export type InProcessGatewayOptions = {
     input: TeammateWorkspaceBindingSetInput,
   ) => Promise<TeammateWorkspaceBindingsResult>;
   teamState?: (input: TeamStateInput) => Promise<TeamStateResult>;
+  leaderRead?: (input: import("../../extension/leader/types.js").LeaderGatewayReadInput) => Promise<import("../../extension/leader/types.js").LeaderReadResult | null>;
+  leaderWrite?: (input: import("../../extension/leader/types.js").LeaderGatewayWriteInput) => Promise<import("../../extension/leader/types.js").LeaderReadResult>;
+  leaderWorkspaceOverrideGet?: (input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideGetInput) => Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult>;
+  leaderWorkspaceOverrideSet?: (input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideSetInput) => Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult>;
+  leaderWorkspaceOverrideDelete?: (input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideDeleteInput) => Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult>;
   dispatchHookForSession?: (sessionKey: string, event: string, payload: Record<string, unknown>) => void;
   /** Directory to persist large tool outputs for TUI/Web viewing. */
   toolResultsDir?: string;
@@ -974,6 +979,49 @@ export class InProcessGateway implements Gateway {
       );
     }
     return this.options.teammateManager;
+  }
+
+  async leaderRead(
+    input: import("../../extension/leader/types.js").LeaderGatewayReadInput,
+  ): Promise<import("../../extension/leader/types.js").LeaderReadResult | null> {
+    if (!this.options.leaderRead) return null;
+    return this.options.leaderRead(input);
+  }
+
+  async leaderWrite(
+    input: import("../../extension/leader/types.js").LeaderGatewayWriteInput,
+  ): Promise<import("../../extension/leader/types.js").LeaderReadResult> {
+    if (!this.options.leaderWrite) {
+      throw new Error("Leader management is not configured on this gateway.");
+    }
+    return this.options.leaderWrite(input);
+  }
+
+  async leaderWorkspaceOverrideGet(
+    input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideGetInput,
+  ): Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
+    if (!this.options.leaderWorkspaceOverrideGet) {
+      throw new Error("Leader workspace overrides are not configured on this gateway.");
+    }
+    return this.options.leaderWorkspaceOverrideGet(input);
+  }
+
+  async leaderWorkspaceOverrideSet(
+    input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideSetInput,
+  ): Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
+    if (!this.options.leaderWorkspaceOverrideSet) {
+      throw new Error("Leader workspace overrides are not configured on this gateway.");
+    }
+    return this.options.leaderWorkspaceOverrideSet(input);
+  }
+
+  async leaderWorkspaceOverrideDelete(
+    input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideDeleteInput,
+  ): Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
+    if (!this.options.leaderWorkspaceOverrideDelete) {
+      throw new Error("Leader workspace overrides are not configured on this gateway.");
+    }
+    return this.options.leaderWorkspaceOverrideDelete(input);
   }
 
   async alwaysOnApply(input: AlwaysOnApplyInput): Promise<AlwaysOnApplyResult> {

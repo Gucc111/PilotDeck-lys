@@ -9,7 +9,7 @@ import {
   buildPlanModeViolationMessage,
 } from "../planModeConstraints.js";
 import { getAskModeViolation } from "../askModeConstraints.js";
-import { getTeamModeViolation } from "../teamModeConstraints.js";
+import { getTeamModeViolation, buildTeamModeAllowedTools } from "../teamModeConstraints.js";
 import { isReadOnlyShellCommand } from "../builtin/bash/permissions.js";
 import {
   applyResultSizeLimit,
@@ -111,7 +111,7 @@ export class ToolRuntime {
     }
 
     const teamModeViolation = runtimeContext.runMode === "team"
-      ? getTeamModeViolation(tool)
+      ? getTeamModeViolation(tool, buildTeamModeAllowedTools(runtimeContext.leaderExtraTools))
       : undefined;
     if (teamModeViolation) {
       return this.errorResult(

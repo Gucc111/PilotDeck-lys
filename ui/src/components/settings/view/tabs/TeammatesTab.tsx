@@ -32,7 +32,7 @@ import {
 import TeammateList from './TeammateList';
 import TeammateDetail from './TeammateDetail';
 
-export default function TeammatesTab({ projects = [] }: { projects?: SettingsProject[] }) {
+export default function TeammatesTab({ projects = [], onViewChange }: { projects?: SettingsProject[]; onViewChange?: (isListView: boolean) => void }) {
   const { t } = useTranslation('settings');
   const projectOptions = useMemo(() => buildProjectOptions(projects), [projects]);
 
@@ -168,6 +168,10 @@ export default function TeammatesTab({ projects = [] }: { projects?: SettingsPro
       }
     }
   }, [t]);
+
+  useEffect(() => {
+    onViewChange?.(view.kind === 'list');
+  }, [view.kind, onViewChange]);
 
   useEffect(() => {
     void loadTeammates();

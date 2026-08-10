@@ -19,7 +19,11 @@ import { TeammateSessionRuntime } from "../../src/agent/team/TeammateSessionRunt
 import { createDelegateToTeammateTool } from "../../src/tool/builtin/delegateToTeammate.js";
 import { createSendTeamMessageTool } from "../../src/tool/builtin/sendTeamMessage.js";
 import { createTeamProgressTool } from "../../src/tool/builtin/teamProgress.js";
-import { getTeamModeViolation } from "../../src/tool/teamModeConstraints.js";
+import {
+  getTeamModeViolation,
+  buildTeamModeAllowedTools,
+  TEAM_MODE_CORE_TOOLS,
+} from "../../src/tool/teamModeConstraints.js";
 import { createReadFileTool } from "../../src/tool/builtin/readFile.js";
 import { ToolRegistry } from "../../src/tool/registry/ToolRegistry.js";
 import { ToolRuntime } from "../../src/tool/execution/ToolRuntime.js";
@@ -218,6 +222,34 @@ test("delegate_to_teammate passes an internal stable Team permission snapshot", 
     toolName: "bash",
   }]);
   assert.notEqual(delegated?.permission.rules.deny, runtimeContext.permissionContext.rules.deny);
+});
+
+test("buildTeamModeAllowedTools returns core tools when no extras", () => {
+  const allowed = buildTeamModeAllowedTools();
+  assert.deepEqual(allowed, TEAM_MODE_CORE_TOOLS);
+});
+
+test("buildTeamModeAllowedTools merges extra tools", () => {
+  const allowed = buildTeamModeAllowedTools(["read_file", "grep"]);
+  assert.ok(allowed.has("team_progress"));
+  assert.ok(allowed.has("delegate_to_teammate"));
+  assert.ok(allowed.has("send_team_message"));
+  assert.ok(allowed.has("read_file"));
+  assert.ok(allowed.has("grep"));
+  assert.equal(allowed.size, 5);
+});
+
+test("getTeamModeViolation with extra tools allows configured tools", () => {
+  const allowed = buildTeamModeAllowedTools(["read_file"]);
+  const violation = getTeamModeViolation(createReadFileTool(), allowed);
+  assert.equal(violation, undefined);
+});
+
+test("getTeamModeViolation with extra tools still rejects unconfigured tools", () => {
+  const allowed = buildTeamModeAllowedTools(["grep"]);
+  const violation = getTeamModeViolation(createReadFileTool(), allowed);
+  assert.ok(violation);
+  assert.match(violation, /TEAM_MODE_VIOLATION/);
 });
 
 test("Team mode rejects ordinary implementation tools", () => {

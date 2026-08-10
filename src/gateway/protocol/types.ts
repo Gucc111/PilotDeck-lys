@@ -66,6 +66,15 @@ import type {
   TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
+import type {
+  LeaderGatewayReadInput,
+  LeaderGatewayWriteInput,
+  LeaderReadResult,
+  LeaderWorkspaceOverrideGetInput,
+  LeaderWorkspaceOverrideSetInput,
+  LeaderWorkspaceOverrideDeleteInput,
+  LeaderWorkspaceOverrideResult,
+} from "../../extension/leader/types.js";
 
 export type GatewayChannelKey =
   | "cli" | "tui" | "feishu" | "weixin" | "qq" | "web" | "test"
@@ -549,4 +558,9 @@ export interface Gateway {
     input: TeammateWorkspaceBindingSetInput,
   ): Promise<TeammateWorkspaceBindingsResult>;
   teamState?(input: TeamStateInput): Promise<TeamStateResult>;
+  leaderRead?(input: LeaderGatewayReadInput): Promise<LeaderReadResult | null>;
+  leaderWrite?(input: LeaderGatewayWriteInput): Promise<LeaderReadResult>;
+  leaderWorkspaceOverrideGet?(input: LeaderWorkspaceOverrideGetInput): Promise<LeaderWorkspaceOverrideResult>;
+  leaderWorkspaceOverrideSet?(input: LeaderWorkspaceOverrideSetInput): Promise<LeaderWorkspaceOverrideResult>;
+  leaderWorkspaceOverrideDelete?(input: LeaderWorkspaceOverrideDeleteInput): Promise<LeaderWorkspaceOverrideResult>;
 }

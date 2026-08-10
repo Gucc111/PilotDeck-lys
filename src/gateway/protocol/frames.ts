@@ -62,6 +62,11 @@ export type WsGatewayMethod =
   | "teammate_workspace_bindings_get"
   | "teammate_workspace_binding_set"
   | "team_state"
+  | "leader_read"
+  | "leader_write"
+  | "leader_workspace_override_get"
+  | "leader_workspace_override_set"
+  | "leader_workspace_override_delete"
   | "always_on_apply"
   | "always_on_rerun_plan";
 

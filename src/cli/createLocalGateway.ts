@@ -104,6 +104,13 @@ import {
   type TeammateWorkspaceBinding,
 } from "../extension/teammates/index.js";
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
+import {
+  LeaderManager,
+  LeaderWorkspaceOverrideStore,
+  type ResolvedLeaderConfig,
+  type LeaderDefinition,
+  type LeaderWorkspaceOverride,
+} from "../extension/leader/index.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
 import { TeammateSessionRuntime } from "../agent/team/TeammateSessionRuntime.js";
 import { TeamControlCoordinator } from "../agent/team/TeamControlCoordinator.js";
@@ -404,6 +411,14 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         }),
       };
     },
+    leaderRead: async () => registry.readLeader(),
+    leaderWrite: async ({ document }) => registry.writeLeader(document),
+    leaderWorkspaceOverrideGet: async ({ projectKey }) =>
+      registry.getLeaderWorkspaceOverride(projectKey),
+    leaderWorkspaceOverrideSet: async ({ projectKey, override, expectedRevision }) =>
+      registry.setLeaderWorkspaceOverride(projectKey, override, expectedRevision),
+    leaderWorkspaceOverrideDelete: async ({ projectKey, expectedRevision }) =>
+      registry.deleteLeaderWorkspaceOverride(projectKey, expectedRevision),
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
     readSessionMessages: (input) => {
       const resolvedProjectRoot = input.projectKey ? input.projectKey : fallbackProjectRoot;
@@ -582,6 +597,7 @@ type ProjectRuntime = {
   tools: ToolRegistry;
   teammates: RuntimeTeammateDefinition[];
   teammateDiagnostics: TeammateDiagnostic[];
+  leaderConfig?: import("../extension/leader/types.js").ResolvedLeaderConfig;
   unavailableTools?: PilotDeckUnavailableToolDiagnostic[];
   projectStorage: GatewayProjectStorageOptions;
   /** Per-project background task runtime (shared across sessions). C5. */
@@ -658,10 +674,19 @@ class ProjectRuntimeRegistry {
     now: () => this.options.now().getTime(),
   });
 
+  private readonly leaderManager: LeaderManager;
+  private readonly leaderOverrideStore: LeaderWorkspaceOverrideStore;
+
   constructor(private readonly options: ProjectRuntimeRegistryOptions) {
     this._extraTools = options.extraTools ? [...options.extraTools] : [];
     this._sessionOverrides = options.sessionOverrides;
     this.teammateManager = new TeammateManager({
+      pilotHome: options.pilotHome,
+    });
+    this.leaderManager = new LeaderManager({
+      pilotHome: options.pilotHome,
+    });
+    this.leaderOverrideStore = new LeaderWorkspaceOverrideStore({
       pilotHome: options.pilotHome,
     });
   }
@@ -1671,10 +1696,58 @@ class ProjectRuntimeRegistry {
     return session;
   }
 
+  private async resolveLeaderConfig(
+    runtime: ProjectRuntime,
+  ): Promise<ResolvedLeaderConfig | undefined> {
+    let globalDef: LeaderDefinition | undefined;
+    try {
+      const result = await this.leaderManager.read();
+      globalDef = result?.leader ?? undefined;
+    } catch {
+      // Leader definition file is absent or invalid — fall back to defaults.
+    }
+
+    let wsOverride: LeaderWorkspaceOverride | undefined;
+    try {
+      const snapshot = await this.leaderOverrideStore.getOverride(runtime.projectRoot);
+      wsOverride = snapshot.override;
+    } catch {
+      // No workspace override or read failed — use global definition only.
+    }
+
+    if (!globalDef && !wsOverride) {
+      runtime.leaderConfig = undefined;
+      return undefined;
+    }
+
+    const globalTools = globalDef?.tools ?? [];
+    let extraTools: string[];
+    if (wsOverride?.toolProfile?.mode === "custom") {
+      extraTools = wsOverride.toolProfile.tools;
+    } else {
+      extraTools = globalTools;
+    }
+
+    const resolved: ResolvedLeaderConfig = {
+      model: wsOverride?.model ?? globalDef?.model,
+      maxContextTokens: wsOverride?.maxContextTokens ?? globalDef?.maxContextTokens,
+      maxOutputTokens: wsOverride?.maxOutputTokens ?? globalDef?.maxOutputTokens,
+      extraTools,
+      plugins: wsOverride?.plugins ?? globalDef?.plugins ?? [],
+      skills: wsOverride?.skills ?? globalDef?.skills ?? [],
+      mcpServers: wsOverride?.mcpServers ?? globalDef?.mcpServers ?? [],
+      prompt: wsOverride?.prompt ?? (globalDef?.prompt || undefined),
+    };
+
+    runtime.leaderConfig = resolved;
+    return resolved;
+  }
+
   private async prepareSessionRuntime(context: GatewaySessionContext) {
     const runtime = this.resolve(context.projectKey);
     await runtime.pluginRuntime.refresh();
     await this.ensureMcpReady(runtime);
+    await this.resolveLeaderConfig(runtime);
     await this.resolveWorkspaceTeammates(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
 
@@ -2128,6 +2201,65 @@ class ProjectRuntimeRegistry {
     return this.teammateManager;
   }
 
+  async readLeader() {
+    return this.leaderManager.read();
+  }
+
+  async writeLeader(document: import("../extension/leader/types.js").LeaderDocumentInput) {
+    const result = await this.leaderManager.write(document);
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("leader_config_changed");
+    return result;
+  }
+
+  async getLeaderWorkspaceOverride(projectKey: string): Promise<import("../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
+    const snapshot = await this.leaderOverrideStore.getOverride(projectKey);
+    return {
+      canonicalProjectKey: snapshot.canonicalWorkspace,
+      override: snapshot.override,
+      revision: snapshot.revision,
+      filePath: this.leaderOverrideStore.filePath,
+    };
+  }
+
+  async setLeaderWorkspaceOverride(
+    projectKey: string,
+    override: LeaderWorkspaceOverride,
+    expectedRevision: string,
+  ): Promise<import("../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
+    const snapshot = await this.leaderOverrideStore.setOverride(
+      projectKey,
+      override,
+      expectedRevision,
+    );
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("leader_config_changed");
+    return {
+      canonicalProjectKey: snapshot.canonicalWorkspace,
+      override: snapshot.override,
+      revision: snapshot.revision,
+      filePath: this.leaderOverrideStore.filePath,
+    };
+  }
+
+  async deleteLeaderWorkspaceOverride(
+    projectKey: string,
+    expectedRevision: string,
+  ): Promise<import("../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
+    const snapshot = await this.leaderOverrideStore.deleteOverride(
+      projectKey,
+      expectedRevision,
+    );
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("leader_config_changed");
+    return {
+      canonicalProjectKey: snapshot.canonicalWorkspace,
+      override: snapshot.override,
+      revision: snapshot.revision,
+      filePath: this.leaderOverrideStore.filePath,
+    };
+  }
+
   async listAllTeammates() {
     return this.teammateManager.list();
   }
@@ -2351,11 +2483,17 @@ class ProjectRuntimeRegistry {
   ): CreateAgentSessionOptions["config"] {
     const agent = runtime.snapshot.config.agent;
     const teammateBinding = this.teammateBindings.get(sessionKey);
+    const leaderConfig = runtime.leaderConfig;
+
+    // Model resolution: teammate > leader > agent defaults
     const teammateModel = teammateBinding?.definition.model
       ? parseTeammateModelRef(teammateBinding.definition.model)
       : undefined;
-    const provider = teammateModel?.provider ?? agent.model.provider;
-    const model = teammateModel?.model ?? agent.model.model;
+    const leaderModel = !teammateBinding && leaderConfig?.model
+      ? parseTeammateModelRef(leaderConfig.model)
+      : undefined;
+    const provider = teammateModel?.provider ?? leaderModel?.provider ?? agent.model.provider;
+    const model = teammateModel?.model ?? leaderModel?.model ?? agent.model.model;
     const override = this._sessionOverrides?.get(sessionKey);
     const permissionMode = override?.permissionMode ?? this.options.permissionMode;
     const cwd = override?.cwd ?? runtime.projectRoot;
@@ -2374,7 +2512,10 @@ class ProjectRuntimeRegistry {
     }
     let maxContextTokens: number | undefined;
     let maxOutputTokens: number | undefined;
+
+    // Token limits: teammate > leader > agent > model catalog
     const configuredMaxContextTokens = teammateBinding?.definition.maxContextTokens
+      ?? (!teammateBinding ? leaderConfig?.maxContextTokens : undefined)
       ?? agent.maxContextTokens;
     try {
       const caps = runtime.model.getCapabilities(provider, model);
@@ -2384,6 +2525,7 @@ class ProjectRuntimeRegistry {
     }
     maxOutputTokens = readPositiveIntegerEnv(this.options.env.PILOTDECK_MAX_OUTPUT_TOKENS)
       ?? teammateBinding?.definition.maxOutputTokens
+      ?? (!teammateBinding ? leaderConfig?.maxOutputTokens : undefined)
       ?? agent.maxOutputTokens;
     return {
       provider,
@@ -2396,6 +2538,13 @@ class ProjectRuntimeRegistry {
       maxContextTokens,
       maxOutputTokens,
       thinking: agent.thinking,
+      // Leader-specific config: custom prompt + extra tools
+      ...(!teammateBinding && leaderConfig
+        ? {
+            leaderPrompt: leaderConfig.prompt,
+            leaderExtraTools: leaderConfig.extraTools.length > 0 ? leaderConfig.extraTools : undefined,
+          }
+        : {}),
       ...(teammateBinding
         ? {
             systemPrompt: teammateBinding.systemPrompt,

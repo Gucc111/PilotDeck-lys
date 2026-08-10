@@ -45,9 +45,9 @@ import PilotDeckConfigTab from './tabs/PilotDeckConfigTab';
 import McpServersTab from './tabs/McpServersTab';
 import PermissionsSettingsTab from './tabs/PermissionsSettingsTab';
 import GatewaySettingsTab from './tabs/GatewaySettingsTab';
-import TeammatesTab from './tabs/TeammatesTab';
+import TeamTab from './tabs/TeamTab';
 
-type SettingsPage = 'main' | 'config' | 'mcp' | 'permissions' | 'chatInput' | 'codeEditor' | 'gateway' | 'teammates';
+type SettingsPage = 'main' | 'config' | 'mcp' | 'permissions' | 'chatInput' | 'codeEditor' | 'gateway' | 'team';
 type ThemeMode = 'system' | 'light' | 'dark';
 
 const splitInitialTab = (tab: string) => {
@@ -61,7 +61,7 @@ const pageFromInitialTab = (tab: string): SettingsPage => {
   if (page === 'mcp') return 'mcp';
   if (page === 'permissions') return 'permissions';
   if (page === 'gateway') return 'gateway';
-  if (page === 'teammates') return 'teammates';
+  if (page === 'team' || page === 'teammates') return 'team';
   return 'main';
 };
 
@@ -102,10 +102,10 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'appearance' }:
     chatInput: t('settingsHome.chatInput.title'),
     codeEditor: t('appearanceSettings.codeEditor.title'),
     gateway: t('gateway.title'),
-    teammates: t('teammates.title'),
+    team: t('team.title'),
   }[page];
 
-  const maxWidth = page === 'config' || page === 'teammates' ? 'max-w-[820px]' : 'max-w-[760px]';
+  const maxWidth = page === 'config' || page === 'team' ? 'max-w-[820px]' : 'max-w-[760px]';
 
   return (
     <div className="modal-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm md:p-4">
@@ -152,7 +152,7 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'appearance' }:
             {page === 'mcp' && <McpServersTab projects={projects} />}
             {page === 'permissions' && <PermissionsSettingsTab />}
             {page === 'gateway' && <GatewaySettingsTab />}
-            {page === 'teammates' && <TeammatesTab projects={projects} />}
+            {page === 'team' && <TeamTab projects={projects} />}
             {page === 'chatInput' && <ChatInputSettingsPage />}
             {page === 'codeEditor' && (
               <CodeEditorSettingsPage
@@ -301,9 +301,9 @@ function SettingsHome({ projectSortOrder, onProjectSortOrderChange, onOpenPage }
           />
           <NavigationRow
             icon={Users}
-            title={t('teammates.title')}
-            detail={t('settingsHome.teammates.detail')}
-            onClick={() => onOpenPage('teammates')}
+            title={t('team.title')}
+            detail={t('settingsHome.team.detail')}
+            onClick={() => onOpenPage('team')}
           />
         </GroupedCard>
       </SettingsGroup>

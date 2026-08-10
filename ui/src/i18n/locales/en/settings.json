@@ -100,7 +100,7 @@
     "plugins": "Plugins",
     "router": "Router",
     "config": "Service Config",
-    "teammates": "Teammates",
+    "team": "Team",
     "about": "About"
   },
   "settingsHome": {
@@ -131,8 +131,8 @@
     "codeEditor": {
       "detail": "Word wrap, line numbers, minimap, and font size"
     },
-    "teammates": {
-      "detail": "Manage global teammates and enable them per workspace"
+    "team": {
+      "detail": "Configure the Team Leader and manage teammates"
     },
     "permissions": {
       "detail": "Manage allowed and blocked tool rules"
@@ -310,6 +310,81 @@
       "bindingsLoad": "Failed to load workspace teammate bindings.",
       "bindingsSave": "Failed to save the workspace teammate binding.",
       "revisionConflict": "This workspace binding changed elsewhere. The latest server state has been reloaded; review it before applying your change again."
+    }
+  },
+  "team": {
+    "title": "Team",
+    "leaderCard": {
+      "title": "Team Leader",
+      "description": "Configure the Leader's model, tools, and system prompt for Team mode.",
+      "configured": "Configured",
+      "notConfigured": "Not configured"
+    }
+  },
+  "leader": {
+    "title": "Team Leader",
+    "detail": {
+      "backToList": "Back to list",
+      "definitionTab": "Definition",
+      "workspacesTab": "Workspaces"
+    },
+    "globalSection": "Global Leader Configuration",
+    "globalDescription": "Configure the Team Leader's default model, tools, and system prompt. Tools are appended to the 3 core team tools. The prompt is appended after the hardcoded Leader behavioural constraints.",
+    "fields": {
+      "model": "Model",
+      "modelDefault": "Use agent default",
+      "maxContextTokens": "Max context tokens",
+      "maxContextTokensHelp": "Context window used for the Leader's auto-compaction budget. Leave empty for the global agent or model default.",
+      "maxOutputTokens": "Max output tokens",
+      "maxOutputTokensHelp": "Maximum tokens generated in one Leader reply. Leave empty to avoid an explicit output reserve.",
+      "tools": "Extra tools",
+      "builtinTools": "Built-in tools",
+      "builtinToolsHint": "These tools are always available to the Leader and cannot be removed.",
+      "plugins": "Plugins",
+      "skills": "Skills",
+      "mcpServers": "MCP servers",
+      "prompt": "Custom prompt",
+      "promptPlaceholder": "Additional instructions for the Team Leader...",
+      "tokenPlaceholder": "Leave empty for default"
+    },
+    "placeholders": {
+      "model": "provider/model",
+      "maxOutputTokens": "65536",
+      "maxContextTokens": "128000",
+      "tools": "tool-name",
+      "plugins": "plugin-name",
+      "skills": "skill-name",
+      "mcpServers": "server-name"
+    },
+    "workspace": {
+      "title": "Workspace overrides",
+      "description": "Optionally override Leader settings for a specific workspace. Absent fields fall back to the global definition.",
+      "none": "No workspace with a local path is available.",
+      "hasOverride": "Overridden",
+      "noOverride": "Default",
+      "enableOverride": "Enable workspace-specific Leader override"
+    },
+    "actions": {
+      "cancel": "Cancel",
+      "save": "Save Leader",
+      "saving": "Saving...",
+      "saveOverride": "Save override",
+      "deleteOverride": "Delete override"
+    },
+    "validation": {
+      "positiveInteger": "Enter a positive integer or leave this empty."
+    },
+    "messages": {
+      "saved": "Leader configuration saved.",
+      "overrideSaved": "Workspace override saved.",
+      "overrideDeleted": "Workspace override deleted."
+    },
+    "errors": {
+      "loadFailed": "Failed to load Leader configuration.",
+      "saveFailed": "Failed to save Leader configuration.",
+      "deleteFailed": "Failed to delete workspace override.",
+      "revisionConflict": "This workspace override changed elsewhere. The latest state has been reloaded.",
+      "catalogFailed": "Failed to load capability suggestions."
     }
   },
   "notifications": {

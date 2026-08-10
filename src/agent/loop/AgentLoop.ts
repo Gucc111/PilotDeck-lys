@@ -57,7 +57,7 @@ import {
   ASK_MODE_DESCRIPTION_SUFFIX,
   isAskModeAllowedTool,
 } from "../../tool/askModeConstraints.js";
-import { isTeamModeAllowedTool } from "../../tool/teamModeConstraints.js";
+import { isTeamModeAllowedTool, buildTeamModeAllowedTools } from "../../tool/teamModeConstraints.js";
 import { buildAskModeAgentToolSchema } from "../../tool/builtin/agent.js";
 import { repairToolName } from "../../model/streaming/repairToolName.js";
 import {
@@ -1712,15 +1712,18 @@ export class AgentLoop {
     if (this.config.runMode === "ask") {
       tools = filterAskModeTools(toolDefinitions);
     } else if (this.config.runMode === "team") {
+      const teamAllowedTools = buildTeamModeAllowedTools(this.config.leaderExtraTools);
       tools = filterTeamModeTools(
         toolDefinitions,
         teamDefinitions,
+        teamAllowedTools,
       );
     }
     const teamPrompt = this.config.runMode === "team"
       ? buildTeamLeaderPrompt(
           teamDefinitions,
           this.dependencies.team?.listDiagnostics?.() ?? [],
+          this.config.leaderPrompt,
         )
       : undefined;
     const appendSystemPrompt = [
@@ -1968,6 +1971,7 @@ export class AgentLoop {
       subagentTimeoutMs: this.config.subagentTimeoutMs,
       toolAliases: this.config.toolAliases,
       runMode: this.config.runMode ?? "agent",
+      leaderExtraTools: this.config.leaderExtraTools,
       permissionMode: this.config.permissionMode,
       basePermissionMode: input.basePermissionMode ?? this.config.permissionModeBeforePlan,
       permissionContext,
@@ -2394,9 +2398,10 @@ function filterAskModeTools(tools: PilotDeckToolDefinition[]): CanonicalToolSche
 function filterTeamModeTools(
   tools: PilotDeckToolDefinition[],
   teammates: PilotDeckTeamDefinitionSummary[],
+  allowedTools?: Set<string>,
 ): CanonicalToolSchema[] {
   return tools
-    .filter(isTeamModeAllowedTool)
+    .filter((tool) => isTeamModeAllowedTool(tool, allowedTools))
     .map((tool) => {
       const schema = toolToCanonicalSchema(tool);
       if (tool.name !== "delegate_to_teammate") return schema;
@@ -2429,6 +2434,7 @@ function filterTeamModeTools(
 function buildTeamLeaderPrompt(
   teammates: PilotDeckTeamDefinitionSummary[],
   diagnostics: string[],
+  leaderPrompt?: string,
 ): string {
   const catalog = teammates.length > 0
     ? teammates.map((teammate) =>
@@ -2436,6 +2442,9 @@ function buildTeamLeaderPrompt(
     : "- No globally defined Teammates are enabled and valid for this workspace.";
   const configurationDiagnostics = diagnostics.length > 0
     ? ["", "Configuration diagnostics:", ...diagnostics.map((message) => `- ${message}`)]
+    : [];
+  const customInstructions = leaderPrompt
+    ? ["", "<leader-custom-instructions>", leaderPrompt, "</leader-custom-instructions>"]
     : [];
   return [
     "<team-leader-mode>",
@@ -2457,6 +2466,7 @@ function buildTeamLeaderPrompt(
     "Enabled global Teammates for this workspace:",
     catalog,
     ...configurationDiagnostics,
+    ...customInstructions,
     "</team-leader-mode>",
   ].join("\n");
 }

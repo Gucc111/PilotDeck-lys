@@ -268,6 +268,8 @@ export {
 } from "./askModeConstraints.js";
 export {
   TEAM_MODE_ALLOWED_TOOLS,
+  TEAM_MODE_CORE_TOOLS,
+  buildTeamModeAllowedTools,
   buildTeamModeViolationMessage,
   getTeamModeViolation,
   isTeamModeAllowedTool,

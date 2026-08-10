@@ -8,6 +8,10 @@ import {
   TeammateManagerError,
   TeammateValidationError,
 } from "../../extension/teammates/index.js";
+import {
+  LeaderManagerError,
+  LeaderOverrideStoreError,
+} from "../../extension/leader/index.js";
 
 export type GatewayWsConnectionOptions = {
   gateway: Gateway;
@@ -162,7 +166,9 @@ export class GatewayWsConnection {
       if (
         error instanceof SkillManagerError ||
         error instanceof TeammateManagerError ||
-        error instanceof TeammateEnablementStoreError
+        error instanceof TeammateEnablementStoreError ||
+        error instanceof LeaderManagerError ||
+        error instanceof LeaderOverrideStoreError
       ) {
         this.ws.sendText(
           JSON.stringify({
@@ -302,6 +308,16 @@ export class GatewayWsConnection {
         return requireTeammateMethod(this.options.gateway.teammateWorkspaceBindingSet, this.options.gateway)(frame.params as never);
       case "team_state":
         return requireTeammateMethod(this.options.gateway.teamState, this.options.gateway)(frame.params as never);
+      case "leader_read":
+        return requireLeaderMethod(this.options.gateway.leaderRead, this.options.gateway)(frame.params as never);
+      case "leader_write":
+        return requireLeaderMethod(this.options.gateway.leaderWrite, this.options.gateway)(frame.params as never);
+      case "leader_workspace_override_get":
+        return requireLeaderMethod(this.options.gateway.leaderWorkspaceOverrideGet, this.options.gateway)(frame.params as never);
+      case "leader_workspace_override_set":
+        return requireLeaderMethod(this.options.gateway.leaderWorkspaceOverrideSet, this.options.gateway)(frame.params as never);
+      case "leader_workspace_override_delete":
+        return requireLeaderMethod(this.options.gateway.leaderWorkspaceOverrideDelete, this.options.gateway)(frame.params as never);
       case "always_on_apply":
         if (this.options.gateway.alwaysOnApply) {
           return this.options.gateway.alwaysOnApply(frame.params as never);
@@ -347,6 +363,19 @@ function requireTeammateMethod<TArg, TRet>(
     throw new TeammateManagerError(
       "not_configured",
       "Teammate management is not enabled on this gateway.",
+    );
+  }
+  return method.bind(gateway);
+}
+
+function requireLeaderMethod<TArg, TRet>(
+  method: ((arg: TArg) => Promise<TRet>) | undefined,
+  gateway: Gateway,
+): (arg: TArg) => Promise<TRet> {
+  if (!method) {
+    throw new LeaderManagerError(
+      "not_configured",
+      "Leader management is not enabled on this gateway.",
     );
   }
   return method.bind(gateway);

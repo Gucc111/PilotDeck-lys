@@ -518,6 +518,8 @@ export type PilotDeckToolRuntimeContext = {
   env?: NodeJS.ProcessEnv;
   maxResultBytes?: number;
   runMode?: AgentRunMode;
+  /** Extra tools configured for the Team Leader beyond the 3 core team tools. */
+  leaderExtraTools?: string[];
   /**
    * Optional streaming progress sink. Tools that produce incremental output
    * (e.g. `bash` stdout/stderr chunks) can call this to emit progress events

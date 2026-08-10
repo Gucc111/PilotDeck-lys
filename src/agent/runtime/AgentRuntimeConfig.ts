@@ -55,4 +55,8 @@ export type AgentRuntimeConfig = {
    * post-routing compaction pass when the routed window is smaller.
    */
   maxContextTokens?: number;
+  /** User-defined Leader prompt appended after hardcoded Team Leader behavioural constraints. */
+  leaderPrompt?: string;
+  /** Extra tools appended to the 3 core Team Leader tools. */
+  leaderExtraTools?: string[];
 };

@@ -100,7 +100,7 @@
     "plugins": "插件",
     "router": "路由",
     "config": "服务配置",
-    "teammates": "队友",
+    "team": "Team 模式",
     "about": "关于"
   },
   "settingsHome": {
@@ -131,8 +131,8 @@
     "codeEditor": {
       "detail": "自动换行、行号、缩略图和字号"
     },
-    "teammates": {
-      "detail": "管理全局队友，并按工作区启用"
+    "team": {
+      "detail": "配置 Team Leader 并管理队友"
     },
     "permissions": {
       "detail": "管理允许和禁用的工具规则"
@@ -310,6 +310,81 @@
       "bindingsLoad": "加载工作区队友绑定失败。",
       "bindingsSave": "保存工作区队友绑定失败。",
       "revisionConflict": "此工作区绑定已在其他位置发生变化。已重新加载服务器最新状态，请检查后再应用本次修改。"
+    }
+  },
+  "team": {
+    "title": "Team 模式",
+    "leaderCard": {
+      "title": "Team Leader",
+      "description": "配置 Team 模式下 Leader 的模型、工具和系统提示词。",
+      "configured": "已配置",
+      "notConfigured": "未配置"
+    }
+  },
+  "leader": {
+    "title": "Team Leader",
+    "detail": {
+      "backToList": "返回列表",
+      "definitionTab": "定义",
+      "workspacesTab": "工作区"
+    },
+    "globalSection": "全局 Leader 配置",
+    "globalDescription": "配置 Team Leader 的默认模型、工具和系统提示词。工具会追加到 3 个核心团队工具之上。提示词会追加在硬编码的 Leader 行为约束之后。",
+    "fields": {
+      "model": "模型",
+      "modelDefault": "使用 Agent 默认模型",
+      "maxContextTokens": "最大上下文 Token 数",
+      "maxContextTokensHelp": "Leader 自动压缩预算所使用的上下文窗口大小。留空使用全局 Agent 或模型默认值。",
+      "maxOutputTokens": "最大输出 Token 数",
+      "maxOutputTokensHelp": "Leader 单次回复的最大生成 Token 数。留空不设置显式输出保留。",
+      "tools": "额外工具",
+      "builtinTools": "内置工具",
+      "builtinToolsHint": "这些工具始终对 Leader 可用，不可移除。",
+      "plugins": "插件",
+      "skills": "技能",
+      "mcpServers": "MCP 服务器",
+      "prompt": "自定义提示词",
+      "promptPlaceholder": "为 Team Leader 添加额外的指示...",
+      "tokenPlaceholder": "留空使用默认值"
+    },
+    "placeholders": {
+      "model": "provider/model",
+      "maxOutputTokens": "65536",
+      "maxContextTokens": "128000",
+      "tools": "tool-name",
+      "plugins": "plugin-name",
+      "skills": "skill-name",
+      "mcpServers": "server-name"
+    },
+    "workspace": {
+      "title": "工作区覆写",
+      "description": "可选地为特定工作区覆写 Leader 设置。未配置的字段回退到全局定义。",
+      "none": "没有可用的本地路径工作区。",
+      "hasOverride": "已覆写",
+      "noOverride": "默认",
+      "enableOverride": "启用工作区级别的 Leader 覆写"
+    },
+    "actions": {
+      "cancel": "取消",
+      "save": "保存 Leader",
+      "saving": "保存中...",
+      "saveOverride": "保存覆写",
+      "deleteOverride": "删除覆写"
+    },
+    "validation": {
+      "positiveInteger": "请输入正整数或留空。"
+    },
+    "messages": {
+      "saved": "Leader 配置已保存。",
+      "overrideSaved": "工作区覆写已保存。",
+      "overrideDeleted": "工作区覆写已删除。"
+    },
+    "errors": {
+      "loadFailed": "加载 Leader 配置失败。",
+      "saveFailed": "保存 Leader 配置失败。",
+      "deleteFailed": "删除工作区覆写失败。",
+      "revisionConflict": "此工作区覆写已在其他位置发生变化，已重新加载最新状态。",
+      "catalogFailed": "加载能力建议失败。"
     }
   },
   "notifications": {

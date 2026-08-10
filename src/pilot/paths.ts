@@ -10,6 +10,8 @@ export const DEFAULT_PILOT_HOME = "~/.pilotdeck";
 export const PILOT_CONFIG_FILE_NAME = "pilotdeck.yaml";
 export const PILOT_PROJECT_DIR_NAME = ".pilotdeck";
 export const TEAMMATE_ENABLEMENT_FILE_NAME = "workspace-enablement.json";
+export const LEADER_DEFINITION_FILE_NAME = "leader.md";
+export const LEADER_WORKSPACE_OVERRIDES_FILE_NAME = "leader-workspace-overrides.json";
 
 export type PilotExtensionPaths = {
   globalPluginsDir: string;
@@ -41,6 +43,14 @@ export function getPilotTeammatesDir(pilotHome: string): string {
 
 export function getPilotTeammateEnablementFilePath(pilotHome: string): string {
   return resolve(getPilotTeammatesDir(pilotHome), TEAMMATE_ENABLEMENT_FILE_NAME);
+}
+
+export function getPilotLeaderDefinitionFilePath(pilotHome: string): string {
+  return resolve(pilotHome, LEADER_DEFINITION_FILE_NAME);
+}
+
+export function getPilotLeaderWorkspaceOverridesFilePath(pilotHome: string): string {
+  return resolve(getPilotTeammatesDir(pilotHome), LEADER_WORKSPACE_OVERRIDES_FILE_NAME);
 }
 
 export function getPilotProjectChatDir(projectRoot: string, pilotHome: string): string {
