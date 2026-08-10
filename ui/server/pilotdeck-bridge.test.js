@@ -9,9 +9,9 @@ import {
 } from './pilotdeck-bridge.js';
 
 describe('session activity fallback', () => {
-    it('preserves a locally known active run when the gateway snapshot is unavailable', () => {
+    it('reports unknown while preserving a locally known run id', () => {
         expect(getFallbackSessionActivity({ active: true, runId: 'run-local' })).toEqual({
-            isProcessing: true,
+            isProcessing: null,
             activeRunId: 'run-local',
             activeTurnMessages: [],
         });

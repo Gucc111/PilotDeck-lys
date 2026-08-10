@@ -325,7 +325,8 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setActiveRunId).toHaveBeenLastCalledWith(null);
   });
 
-  it('keeps active UI state while session activity is unknown', () => {
+  it('keeps active UI state and retries while session activity is unknown', () => {
+    vi.useFakeTimers();
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
     const setIsLoading = vi.fn();
@@ -333,7 +334,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     const setActiveRunId = vi.fn();
     const onSessionInactive = vi.fn();
     const onSessionNotProcessing = vi.fn();
-    renderHook(() => useChatRealtimeHandlers({
+    const { unmount } = renderHook(() => useChatRealtimeHandlers({
       provider,
       selectedProject: { name: 'project', fullPath: '/tmp/project' } as unknown as Project,
       selectedSession: { id: 'cron:task-1' } as unknown as ProjectSession,
@@ -371,6 +372,21 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setCanAbortSession).not.toHaveBeenCalled();
     expect(onSessionInactive).not.toHaveBeenCalled();
     expect(onSessionNotProcessing).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(mocks.sendMessage).toHaveBeenCalledWith({
+      type: 'check-session-status',
+      sessionId: 'cron:task-1',
+      provider: 'pilotdeck',
+      expectedActiveRunId: 'run-current',
+      includeActiveTurnMessages: true,
+      statusRequestId: 1,
+    });
+
+    unmount();
+    vi.useRealTimers();
   });
 
   it('ignores an inactive status response requested for a superseded run', () => {

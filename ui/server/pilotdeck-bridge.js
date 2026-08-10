@@ -1397,10 +1397,9 @@ export function isSessionActiveViaGateway(sessionId) {
 }
 
 export function getFallbackSessionActivity(localState) {
-    const isProcessing = localState?.active === true ? true : null;
     return {
-        isProcessing,
-        activeRunId: isProcessing && typeof localState?.runId === 'string'
+        isProcessing: null,
+        activeRunId: localState?.active === true && typeof localState?.runId === 'string'
             ? localState.runId
             : null,
         activeTurnMessages: [],
@@ -1433,6 +1432,9 @@ export async function getSessionActivityViaGateway(sessionId, provider = 'pilotd
         };
     } catch (error) {
         console.warn('[pilotdeck-bridge] failed to read active turn snapshot:', error?.message || error);
+        if (isGatewayUnavailableError(error)) {
+            resetGatewayConnection();
+        }
         return getFallbackSessionActivity(localState);
     }
 }
