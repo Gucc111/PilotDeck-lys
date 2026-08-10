@@ -2,7 +2,6 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type { SessionStore } from '../../../stores/useSessionStore';
-import { createAlwaysOnTurnEventForwarder } from '../../../../server/pilotdeck-bridge.js';
 import {
   buildSessionStatusRequest,
   resetSessionStatusProtocolForTests,
@@ -46,7 +45,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     });
   });
 
-  it('cancels running subagents when the bridge forwards agent_aborted', () => {
+  it('cancels running subagents for a terminal agent_aborted frame', () => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
     renderHook(() => useChatRealtimeHandlers({
@@ -70,18 +69,12 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     }));
 
     act(() => {
-      const forward = createAlwaysOnTurnEventForwarder((_sessionId, frame) => {
-        mocks.listener?.(frame);
-      });
-      forward('always-on:turn-event', {
-        sessionKey: 'cron:task-1',
-        channelKey: 'cron',
-        event: {
-          type: 'error',
-          code: 'agent_aborted',
-          message: 'The run was stopped.',
-          recoverable: true,
-        },
+      mocks.listener?.({
+        kind: 'error',
+        sessionId: 'cron:task-1',
+        code: 'agent_aborted',
+        content: 'The run was stopped.',
+        terminal: true,
       });
     });
 
@@ -332,6 +325,108 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setActiveRunId).toHaveBeenLastCalledWith(null);
   });
 
+  it('keeps active UI state and retries while session activity is unknown', () => {
+    vi.useFakeTimers();
+    const sessionStore = createSessionStore();
+    const setSessionRuntimeState = vi.fn();
+    const setIsLoading = vi.fn();
+    const setCanAbortSession = vi.fn();
+    const setActiveRunId = vi.fn();
+    const onSessionInactive = vi.fn();
+    const onSessionNotProcessing = vi.fn();
+    const { unmount } = renderHook(() => useChatRealtimeHandlers({
+      provider,
+      selectedProject: { name: 'project', fullPath: '/tmp/project' } as unknown as Project,
+      selectedSession: { id: 'cron:task-1' } as unknown as ProjectSession,
+      currentSessionId: 'cron:task-1',
+      setCurrentSessionId: noop,
+      setIsLoading,
+      setSessionRuntimeState,
+      activeRunId: 'run-current',
+      setActiveRunId,
+      setCanAbortSession,
+      setIsAborting: noop,
+      setClaudeStatus: noop,
+      setPilotDeckStatus: noop,
+      setTokenBudget: noop,
+      setPendingPermissionRequests: noop,
+      pendingViewSessionRef: { current: null },
+      onSessionInactive,
+      onSessionNotProcessing,
+      sessionStore,
+    }));
+
+    act(() => {
+      mocks.listener?.({
+        type: 'session-status',
+        sessionId: 'cron:task-1',
+        expectedActiveRunId: 'run-current',
+        isProcessing: null,
+      });
+    });
+
+    expect(setSessionRuntimeState).toHaveBeenLastCalledWith('synchronizing');
+    expect(sessionStore.cancelRunningActivities).not.toHaveBeenCalled();
+    expect(setActiveRunId).not.toHaveBeenCalled();
+    expect(setIsLoading).not.toHaveBeenCalled();
+    expect(setCanAbortSession).not.toHaveBeenCalled();
+    expect(onSessionInactive).not.toHaveBeenCalled();
+    expect(onSessionNotProcessing).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(mocks.sendMessage).toHaveBeenCalledWith({
+      type: 'check-session-status',
+      sessionId: 'cron:task-1',
+      provider: 'pilotdeck',
+      expectedActiveRunId: 'run-current',
+      includeActiveTurnMessages: true,
+      statusRequestId: 1,
+    });
+
+    unmount();
+    vi.useRealTimers();
+  });
+
+  it('does not keep retrying an unknown status after the session is no longer active', () => {
+    vi.useFakeTimers();
+    const sessionStore = createSessionStore();
+    const { unmount } = renderHook(() => useChatRealtimeHandlers({
+      provider,
+      selectedProject: { name: 'project', fullPath: '/tmp/project' } as unknown as Project,
+      selectedSession: { id: 'cron:task-2' } as unknown as ProjectSession,
+      currentSessionId: 'cron:task-2',
+      setCurrentSessionId: noop,
+      setIsLoading: noop,
+      setSessionRuntimeState: noop,
+      activeRunId: null,
+      setActiveRunId: noop,
+      setCanAbortSession: noop,
+      setIsAborting: noop,
+      setClaudeStatus: noop,
+      setPilotDeckStatus: noop,
+      setTokenBudget: noop,
+      setPendingPermissionRequests: noop,
+      pendingViewSessionRef: { current: null },
+      sessionStore,
+    }));
+
+    act(() => {
+      mocks.listener?.({
+        type: 'session-status',
+        sessionId: 'cron:task-1',
+        isProcessing: null,
+      });
+      vi.advanceTimersByTime(1200);
+    });
+
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+
+    unmount();
+    vi.useRealTimers();
+  });
+
   it('ignores an inactive status response requested for a superseded run', () => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
@@ -527,5 +622,71 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setSessionRuntimeState).not.toHaveBeenCalledWith('running');
     expect(setActiveRunId).toHaveBeenCalledTimes(1);
     expect(setActiveRunId).toHaveBeenCalledWith(null);
+  });
+
+  it('ignores an older inactive response even when it arrives before the latest response', () => {
+    const sessionStore = createSessionStore();
+    const setActiveRunId = vi.fn();
+    const setSessionRuntimeState = vi.fn();
+    renderHook(() => useChatRealtimeHandlers({
+      provider,
+      selectedProject: { name: 'project', fullPath: '/tmp/project' } as unknown as Project,
+      selectedSession: { id: 'cron:task-1' } as unknown as ProjectSession,
+      currentSessionId: 'cron:task-1',
+      setCurrentSessionId: noop,
+      setIsLoading: noop,
+      setSessionRuntimeState,
+      activeRunId: 'run-current',
+      setActiveRunId,
+      setCanAbortSession: noop,
+      setIsAborting: noop,
+      setClaudeStatus: noop,
+      setPilotDeckStatus: noop,
+      setTokenBudget: noop,
+      setPendingPermissionRequests: noop,
+      pendingViewSessionRef: { current: null },
+      sessionStore,
+    }));
+    const olderRequest = buildSessionStatusRequest({
+      sessionId: 'cron:task-1',
+      provider,
+      expectedActiveRunId: 'run-current',
+      includeActiveTurnMessages: false,
+    });
+    const latestRequest = buildSessionStatusRequest({
+      sessionId: 'cron:task-1',
+      provider,
+      expectedActiveRunId: 'run-current',
+      includeActiveTurnMessages: false,
+    });
+
+    act(() => {
+      mocks.listener?.({
+        type: 'session-status',
+        sessionId: 'cron:task-1',
+        statusRequestId: olderRequest.statusRequestId,
+        expectedActiveRunId: 'run-current',
+        isProcessing: false,
+      });
+    });
+
+    expect(sessionStore.cancelRunningActivities).not.toHaveBeenCalled();
+    expect(setSessionRuntimeState).not.toHaveBeenCalledWith('inactive');
+    expect(setActiveRunId).not.toHaveBeenCalledWith(null);
+
+    act(() => {
+      mocks.listener?.({
+        type: 'session-status',
+        sessionId: 'cron:task-1',
+        statusRequestId: latestRequest.statusRequestId,
+        expectedActiveRunId: 'run-current',
+        isProcessing: true,
+        activeRunId: 'run-current',
+      });
+    });
+
+    expect(sessionStore.cancelRunningActivities).not.toHaveBeenCalled();
+    expect(setSessionRuntimeState).toHaveBeenLastCalledWith('running');
+    expect(setActiveRunId).toHaveBeenLastCalledWith('run-current');
   });
 });

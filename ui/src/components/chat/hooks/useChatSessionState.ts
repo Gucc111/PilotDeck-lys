@@ -18,7 +18,7 @@ import type { SessionStore, NormalizedMessage } from '../../../stores/useSession
 import { parseUserAttachmentNote } from '../utils/attachmentNotes';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 import {
-  buildSessionStatusRequest,
+  buildSessionStatusRequestIfIdle,
   invalidateSessionStatusResponses,
 } from '../sessionStatusProtocol';
 import { normalizedToChatMessages } from './useChatMessages';
@@ -798,12 +798,13 @@ export function useChatSessionState({
     // Check session status
     if (ws && !sessionIsReadOnly) {
       invalidateSessionStatusResponses(selectedSession.id);
-      sendMessage(buildSessionStatusRequest({
+      const request = buildSessionStatusRequestIfIdle({
         sessionId: selectedSession.id,
         provider,
         expectedActiveRunId: activeRunIdRef.current,
         includeActiveTurnMessages: true,
-      }));
+      });
+      if (request) sendMessage(request);
     }
 
     lastLoadedSessionKeyRef.current = sessionKey;
@@ -1096,12 +1097,13 @@ export function useChatSessionState({
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
     const requestStatus = () => {
-      sendMessage(buildSessionStatusRequest({
+      const request = buildSessionStatusRequestIfIdle({
         sessionId: activeViewSessionId,
         provider: 'pilotdeck',
         expectedActiveRunId: activeRunIdRef.current,
         includeActiveTurnMessages: false,
-      }));
+      });
+      if (request) sendMessage(request);
     };
 
     requestStatus();

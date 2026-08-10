@@ -187,6 +187,8 @@ const WEB_DEFAULT_PERMISSION_MODE =
 // ESM rewriting on fresh installs.
 /** @type {ReturnType<typeof createRemoteGateway> | null} */
 let gatewayPromise = null;
+/** @type {Awaited<ReturnType<typeof createRemoteGateway>> | null} */
+let gatewayInstance = null;
 
 async function readGatewayToken() {
     try {
@@ -230,19 +232,31 @@ async function connectWithRetry() {
 
 function ensureGateway() {
     if (!gatewayPromise) {
-        gatewayPromise = connectWithRetry().catch((error) => {
-            // Reset so the next caller retries instead of cementing the
-            // failure forever. The deadline inside connectWithRetry()
-            // already bounds individual attempts.
-            gatewayPromise = null;
-            throw error;
-        });
+        const pending = connectWithRetry()
+            .then((gateway) => {
+                if (gatewayPromise === pending) {
+                    gatewayInstance = gateway;
+                }
+                return gateway;
+            })
+            .catch((error) => {
+                // Reset only if this failed attempt is still current. A newer
+                // caller may already have started a replacement connection.
+                if (gatewayPromise === pending) {
+                    gatewayPromise = null;
+                    gatewayInstance = null;
+                }
+                throw error;
+            });
+        gatewayPromise = pending;
     }
     return gatewayPromise;
 }
 
-function resetGatewayConnection() {
+function resetGatewayConnection(expectedGateway) {
+    if (expectedGateway && gatewayInstance !== expectedGateway) return;
     gatewayPromise = null;
+    gatewayInstance = null;
 }
 
 export function isGatewayUnavailableError(error) {
@@ -1274,8 +1288,8 @@ export async function runChatViaGateway(
     } catch (error) {
         const rawMessage = error instanceof Error ? error.message : String(error);
         const gatewayUnavailable = !gw || isGatewayUnavailableError(error);
-        if (gatewayUnavailable) {
-            resetGatewayConnection();
+        if (gatewayUnavailable && gw) {
+            resetGatewayConnection(gw);
         }
         const message = gatewayUnavailable ? 'PilotDeck gateway is unavailable.' : rawMessage;
         const statusEvent = gatewayUnavailable
@@ -1396,32 +1410,31 @@ export function isSessionActiveViaGateway(sessionId) {
     return Boolean(sessionState.get(sessionId)?.active);
 }
 
+export function getFallbackSessionActivity(localState) {
+    return {
+        isProcessing: null,
+        activeRunId: localState?.active === true && typeof localState?.runId === 'string'
+            ? localState.runId
+            : null,
+        activeTurnMessages: [],
+    };
+}
+
 export async function getSessionActivityViaGateway(sessionId, provider = 'pilotdeck', includeActiveTurnMessages = true) {
     if (!isPilotDeckSessionKey(sessionId)) {
         return { isProcessing: false, activeRunId: null, activeTurnMessages: [] };
     }
 
     const localState = sessionState.get(sessionId);
-    const localIsProcessing = Boolean(localState?.active);
-    const localActiveRunId = localIsProcessing && typeof localState?.runId === 'string'
-        ? localState.runId
-        : null;
+    let gw = null;
     try {
-        const gw = await ensureGateway();
+        gw = await ensureGateway();
         if (typeof gw.getActiveTurnSnapshot !== 'function') {
-            return {
-                isProcessing: localIsProcessing,
-                activeRunId: localActiveRunId,
-                activeTurnMessages: [],
-            };
+            return getFallbackSessionActivity(localState);
         }
         const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId, includeEvents: includeActiveTurnMessages });
         if (!snapshot || typeof snapshot.active !== 'boolean') {
-            return {
-                isProcessing: localIsProcessing,
-                activeRunId: localActiveRunId,
-                activeTurnMessages: [],
-            };
+            return getFallbackSessionActivity(localState);
         }
         return {
             isProcessing: snapshot.active,
@@ -1434,11 +1447,10 @@ export async function getSessionActivityViaGateway(sessionId, provider = 'pilotd
         };
     } catch (error) {
         console.warn('[pilotdeck-bridge] failed to read active turn snapshot:', error?.message || error);
-        return {
-            isProcessing: localIsProcessing,
-            activeRunId: localActiveRunId,
-            activeTurnMessages: [],
-        };
+        if (gw && isGatewayUnavailableError(error)) {
+            resetGatewayConnection(gw);
+        }
+        return getFallbackSessionActivity(localState);
     }
 }
 

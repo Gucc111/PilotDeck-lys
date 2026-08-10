@@ -15,7 +15,7 @@ import {
 } from '../../../stores/useSessionStore';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import {
-  buildSessionStatusRequest,
+  buildSessionStatusRequestIfIdle,
   invalidateSessionStatusResponses,
   shouldAcceptSessionStatusResponse,
 } from '../sessionStatusProtocol';
@@ -43,7 +43,7 @@ type LatestChatMessage = {
   toolId?: string;
   result?: any;
   exitCode?: number;
-  isProcessing?: boolean;
+  isProcessing?: boolean | null;
   activeRunId?: string | null;
   expectedActiveRunId?: string | null;
   statusRequestId?: number | null;
@@ -352,12 +352,43 @@ export function useChatRealtimeHandlers({
   const thinkingBySessionRef = useRef<Map<string, boolean>>(new Map());
   // Dedup volatile active-turn replay chunks across reconnect/status polls.
   const activeTurnReplaySignatureRef = useRef<Map<string, string>>(new Map());
+  const sessionStatusRetryTimersRef = useRef<Map<string, number>>(new Map());
   const activeRunIdRef = useRef<string | null>(activeRunId);
   activeRunIdRef.current = activeRunId;
   const updateActiveRunId = useCallback((runId: string | null) => {
     activeRunIdRef.current = runId;
     setActiveRunId(runId);
   }, [setActiveRunId]);
+  const clearSessionStatusRetry = useCallback((sessionId: string) => {
+    const timer = sessionStatusRetryTimersRef.current.get(sessionId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    sessionStatusRetryTimersRef.current.delete(sessionId);
+  }, []);
+  const scheduleSessionStatusRetry = useCallback((
+    sessionId: string,
+    expectedActiveRunId: string | null,
+  ) => {
+    if (sessionStatusRetryTimersRef.current.has(sessionId)) return;
+    const timer = window.setTimeout(() => {
+      sessionStatusRetryTimersRef.current.delete(sessionId);
+      const request = buildSessionStatusRequestIfIdle({
+        sessionId,
+        provider,
+        expectedActiveRunId,
+        includeActiveTurnMessages: true,
+      });
+      if (request) sendMessage(request);
+    }, 1200);
+    sessionStatusRetryTimersRef.current.set(sessionId, timer);
+  }, [provider, sendMessage]);
+
+  useEffect(() => () => {
+    for (const timer of sessionStatusRetryTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    sessionStatusRetryTimersRef.current.clear();
+  }, []);
 
   const handleMessage = useCallback((latestMessage: LatestChatMessage, fallbackSessionId?: string | null) => {
     if (!latestMessage) return;
@@ -372,7 +403,7 @@ export function useChatRealtimeHandlers({
     /*  Legacy messages (no `kind` field) — handle and return           */
     /* ---------------------------------------------------------------- */
 
-    const msg = latestMessage as any;
+    const msg: LatestChatMessage = latestMessage;
     const clearAccumulators = () => {
       thinkingBySessionRef.current.clear();
     };
@@ -383,6 +414,10 @@ export function useChatRealtimeHandlers({
       switch (messageType) {
         case 'websocket-reconnected':
           clearAccumulators();
+          for (const timer of sessionStatusRetryTimersRef.current.values()) {
+            window.clearTimeout(timer);
+          }
+          sessionStatusRetryTimersRef.current.clear();
           if (activeViewSessionId) {
             invalidateSessionStatusResponses(activeViewSessionId);
           }
@@ -409,6 +444,16 @@ export function useChatRealtimeHandlers({
             && msg.expectedActiveRunId !== activeRunIdRef.current
           ) {
             return;
+          }
+          if (msg.isProcessing === null && isCurrentSession) {
+            scheduleSessionStatusRetry(
+              statusSessionId,
+              typeof msg.expectedActiveRunId === 'string' && msg.expectedActiveRunId.trim()
+                ? msg.expectedActiveRunId.trim()
+                : null,
+            );
+          } else {
+            clearSessionStatusRetry(statusSessionId);
           }
           const statusActiveRunId = getSessionStatusActiveRunId(msg);
 
@@ -504,6 +549,12 @@ export function useChatRealtimeHandlers({
               setSessionRuntimeState('running');
               setIsLoading(true);
               setCanAbortSession(true);
+            }
+            return;
+          }
+          if (msg.isProcessing === null) {
+            if (isCurrentSession) {
+              setSessionRuntimeState('synchronizing');
             }
             return;
           }
@@ -750,6 +801,7 @@ export function useChatRealtimeHandlers({
       case 'complete': {
         if (isTerminalForSupersededRun) break;
         if (sid) {
+          clearSessionStatusRetry(sid);
           invalidateSessionStatusResponses(sid);
           activeTurnReplaySignatureRef.current.delete(sid);
           // Finalize both thinking and content streams
@@ -843,16 +895,18 @@ export function useChatRealtimeHandlers({
             setSessionRuntimeState('synchronizing');
           }
           invalidateSessionStatusResponses(sid);
-          sendMessage(buildSessionStatusRequest({
+          const request = buildSessionStatusRequestIfIdle({
             sessionId: sid,
             provider,
             expectedActiveRunId: activeRunIdRef.current,
             includeActiveTurnMessages: true,
-          }));
+          });
+          if (request) sendMessage(request);
           break;
         }
         if (isTerminalForSupersededRun) break;
         if (sid) {
+          clearSessionStatusRetry(sid);
           invalidateSessionStatusResponses(sid);
           sessionStore.cancelRunningActivities(sid);
         }
@@ -875,14 +929,15 @@ export function useChatRealtimeHandlers({
       }
 
       case 'permission_request': {
-        if (!msg.requestId) break;
+        const requestId = msg.requestId;
+        if (!requestId) break;
         const isForCurrentSession = isForActiveView;
         if (!isForCurrentSession) break;
         onSessionProcessing?.(sid);
         setPendingPermissionRequests((prev) => {
-          if (prev.some((r: PendingPermissionRequest) => r.requestId === msg.requestId)) return prev;
+          if (prev.some((r: PendingPermissionRequest) => r.requestId === requestId)) return prev;
           return [...prev, {
-            requestId: msg.requestId,
+            requestId,
             toolName: msg.toolName || 'UnknownTool',
             input: msg.input,
             context: msg.context,
@@ -906,16 +961,17 @@ export function useChatRealtimeHandlers({
       }
 
       case 'status': {
+        if (msg.text === 'started' && msgRunId) {
+          clearSessionStatusRetry(sid);
+          invalidateSessionStatusResponses(sid);
+          if (isForActiveView) {
+            updateActiveRunId(msgRunId);
+          }
+        }
         if (msg.text && msg.text !== 'token_budget' && msg.text !== 'clear_status') {
           onSessionProcessing?.(sid);
         }
         if (!isForActiveView) break;
-        if (msg.text === 'started' && msgRunId) {
-          if (activeRunIdRef.current !== msgRunId) {
-            invalidateSessionStatusResponses(sid);
-          }
-          updateActiveRunId(msgRunId);
-        }
         if (msg.text === 'token_budget' && msg.tokenBudget) {
           setTokenBudget(msg.tokenBudget as Record<string, unknown>);
         } else if (msg.text === 'clear_status') {
@@ -963,6 +1019,8 @@ export function useChatRealtimeHandlers({
   }, [
     provider,
     sendMessage,
+    clearSessionStatusRetry,
+    scheduleSessionStatusRetry,
     selectedSession,
     currentSessionId,
     setCurrentSessionId,

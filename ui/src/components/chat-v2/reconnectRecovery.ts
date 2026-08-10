@@ -1,4 +1,4 @@
-import { buildSessionStatusRequest } from '../chat/sessionStatusProtocol';
+import { buildSessionStatusRequestIfIdle } from '../chat/sessionStatusProtocol';
 
 export function shouldRefreshSessionOnReconnect({
   isLoading,
@@ -13,7 +13,7 @@ export function shouldRefreshSessionOnReconnect({
 }
 
 export function buildReconnectStatusMessage(sessionId: string, expectedActiveRunId: string | null) {
-  return buildSessionStatusRequest({
+  return buildSessionStatusRequestIfIdle({
     sessionId,
     provider: 'pilotdeck',
     expectedActiveRunId,

@@ -7,12 +7,14 @@ type SessionStatusRequestOptions = {
 
 type SessionStatusSequence = {
   latestIssued: number;
+  latestIssuedAt: number;
   invalidThrough: number;
   lastHandled: number;
 };
 
 const statusSequenceBySession = new Map<string, SessionStatusSequence>();
 let nextStatusRequestId = 0;
+const STATUS_REQUEST_STALE_AFTER_MS = 15_000;
 
 function getOrCreateStatusSequence(sessionId: string): SessionStatusSequence {
   const existing = statusSequenceBySession.get(sessionId);
@@ -20,6 +22,7 @@ function getOrCreateStatusSequence(sessionId: string): SessionStatusSequence {
 
   const created = {
     latestIssued: 0,
+    latestIssuedAt: 0,
     invalidThrough: 0,
     lastHandled: 0,
   };
@@ -36,6 +39,7 @@ export function buildSessionStatusRequest({
   nextStatusRequestId += 1;
   const sequence = getOrCreateStatusSequence(sessionId);
   sequence.latestIssued = nextStatusRequestId;
+  sequence.latestIssuedAt = Date.now();
 
   return {
     type: 'check-session-status',
@@ -45,6 +49,19 @@ export function buildSessionStatusRequest({
     includeActiveTurnMessages,
     statusRequestId: nextStatusRequestId,
   };
+}
+
+export function buildSessionStatusRequestIfIdle(options: SessionStatusRequestOptions) {
+  const sequence = getOrCreateStatusSequence(options.sessionId);
+  const hasPendingRequest = sequence.latestIssued > sequence.invalidThrough
+    && sequence.latestIssued > sequence.lastHandled;
+  if (hasPendingRequest && Date.now() - sequence.latestIssuedAt < STATUS_REQUEST_STALE_AFTER_MS) {
+    return null;
+  }
+  if (hasPendingRequest) {
+    sequence.invalidThrough = Math.max(sequence.invalidThrough, sequence.latestIssued);
+  }
+  return buildSessionStatusRequest(options);
 }
 
 export function shouldAcceptSessionStatusResponse(
@@ -61,7 +78,7 @@ export function shouldAcceptSessionStatusResponse(
 
   const requestId = statusRequestId as number;
   if (
-    requestId > sequence.latestIssued
+    requestId !== sequence.latestIssued
     || requestId <= sequence.invalidThrough
     || requestId <= sequence.lastHandled
   ) {
