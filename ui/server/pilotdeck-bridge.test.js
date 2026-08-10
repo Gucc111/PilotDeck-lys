@@ -3,9 +3,33 @@ import { describe, expect, it } from 'vitest';
 import {
     createAlwaysOnTurnEventForwarder,
     gatewayEventToFrames,
+    getFallbackSessionActivity,
     isGatewayUnavailableError,
     isTerminalAlwaysOnTurnEvent,
 } from './pilotdeck-bridge.js';
+
+describe('session activity fallback', () => {
+    it('preserves a locally known active run when the gateway snapshot is unavailable', () => {
+        expect(getFallbackSessionActivity({ active: true, runId: 'run-local' })).toEqual({
+            isProcessing: true,
+            activeRunId: 'run-local',
+            activeTurnMessages: [],
+        });
+    });
+
+    it('reports unknown instead of false when local state cannot prove inactivity', () => {
+        expect(getFallbackSessionActivity(undefined)).toEqual({
+            isProcessing: null,
+            activeRunId: null,
+            activeTurnMessages: [],
+        });
+        expect(getFallbackSessionActivity({ active: false, runId: undefined })).toEqual({
+            isProcessing: null,
+            activeRunId: null,
+            activeTurnMessages: [],
+        });
+    });
+});
 
 describe('gatewayEventToFrames agent status errors', () => {
     it('maps tool result detail availability to a mergeable tool_result frame', () => {
@@ -262,6 +286,7 @@ describe('Always-On turn notification forwarding', () => {
         expect(forwarded.filter(({ frame }) => frame.kind === 'session_created')).toHaveLength(2);
         expect(forwarded.find(({ frame }) => frame.kind === 'error')?.frame).toMatchObject({
             code: 'agent_aborted',
+            terminal: true,
         });
     });
 

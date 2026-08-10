@@ -1396,32 +1396,31 @@ export function isSessionActiveViaGateway(sessionId) {
     return Boolean(sessionState.get(sessionId)?.active);
 }
 
+export function getFallbackSessionActivity(localState) {
+    const isProcessing = localState?.active === true ? true : null;
+    return {
+        isProcessing,
+        activeRunId: isProcessing && typeof localState?.runId === 'string'
+            ? localState.runId
+            : null,
+        activeTurnMessages: [],
+    };
+}
+
 export async function getSessionActivityViaGateway(sessionId, provider = 'pilotdeck', includeActiveTurnMessages = true) {
     if (!isPilotDeckSessionKey(sessionId)) {
         return { isProcessing: false, activeRunId: null, activeTurnMessages: [] };
     }
 
     const localState = sessionState.get(sessionId);
-    const localIsProcessing = Boolean(localState?.active);
-    const localActiveRunId = localIsProcessing && typeof localState?.runId === 'string'
-        ? localState.runId
-        : null;
     try {
         const gw = await ensureGateway();
         if (typeof gw.getActiveTurnSnapshot !== 'function') {
-            return {
-                isProcessing: localIsProcessing,
-                activeRunId: localActiveRunId,
-                activeTurnMessages: [],
-            };
+            return getFallbackSessionActivity(localState);
         }
         const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId, includeEvents: includeActiveTurnMessages });
         if (!snapshot || typeof snapshot.active !== 'boolean') {
-            return {
-                isProcessing: localIsProcessing,
-                activeRunId: localActiveRunId,
-                activeTurnMessages: [],
-            };
+            return getFallbackSessionActivity(localState);
         }
         return {
             isProcessing: snapshot.active,
@@ -1434,11 +1433,7 @@ export async function getSessionActivityViaGateway(sessionId, provider = 'pilotd
         };
     } catch (error) {
         console.warn('[pilotdeck-bridge] failed to read active turn snapshot:', error?.message || error);
-        return {
-            isProcessing: localIsProcessing,
-            activeRunId: localActiveRunId,
-            activeTurnMessages: [],
-        };
+        return getFallbackSessionActivity(localState);
     }
 }
 

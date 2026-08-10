@@ -43,7 +43,7 @@ type LatestChatMessage = {
   toolId?: string;
   result?: any;
   exitCode?: number;
-  isProcessing?: boolean;
+  isProcessing?: boolean | null;
   activeRunId?: string | null;
   expectedActiveRunId?: string | null;
   statusRequestId?: number | null;
@@ -504,6 +504,12 @@ export function useChatRealtimeHandlers({
               setSessionRuntimeState('running');
               setIsLoading(true);
               setCanAbortSession(true);
+            }
+            return;
+          }
+          if (msg.isProcessing === null) {
+            if (isCurrentSession) {
+              setSessionRuntimeState('synchronizing');
             }
             return;
           }
