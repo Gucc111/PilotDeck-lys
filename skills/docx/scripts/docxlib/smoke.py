@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +19,15 @@ from .render import find_soffice
 from .review import review_candidate
 
 
-BUILDER_SOURCE = '''from docxlib.builder import BuildContext, add_table
+BUILDER_SOURCE = '''from docxlib.builder import BuildContext, add_table, add_toc
 
 
 def build(context: BuildContext) -> None:
     document = context.new_document(locale="zh-CN")
     document.add_heading("项目简报", level=0)
     document.add_paragraph("这是用于验证轻量 DOCX builder 的正文。")
+    document.add_heading("目录", level=1)
+    add_toc(document, document.add_paragraph(), placeholder="在 Word 中更新目录")
     document.add_heading("进展", level=1)
     add_table(document, ["事项", "状态"], [["结构", "完成"], ["视觉", "待检查"]], widths=[3, 1])
     context.save(document)
@@ -39,6 +42,19 @@ def build(context: BuildContext) -> None:
     affected = replace_text(document, "待检查", "完成")
     if affected != 1:
         raise RuntimeError(f"expected one replacement, got {affected}")
+    context.save(document)
+'''
+
+
+DROP_TOC_BUILDER_SOURCE = '''from docxlib.builder import BuildContext
+
+
+def build(context: BuildContext) -> None:
+    document = context.load_document()
+    for paragraph in list(document.paragraphs):
+        instructions = paragraph._p.xpath(".//w:instrText")
+        if any((node.text or "").strip().startswith("TOC ") for node in instructions):
+            paragraph._element.getparent().remove(paragraph._element)
     context.save(document)
 '''
 
@@ -112,10 +128,22 @@ def run_smoke_test() -> dict[str, Any]:
             inspected = inspect_docx(candidate)
             assert any(item["text"] == "项目简报" for item in inspected["paragraphs"])
             assert inspected["table_count"] == 1
+            assert any(
+                item["instruction"].startswith('TOC \\o "1-3" \\h \\z \\u')
+                for item in inspected["fields"]
+            )
+            with zipfile.ZipFile(candidate) as archive:
+                document_xml = archive.read("word/document.xml")
+                settings_xml = archive.read("word/settings.xml")
+            assert b'w:dirty="true"' in document_xml
+            assert b"w:updateFields" in settings_xml
+            assert b'w:val="true"' in settings_xml
             accessibility = inspect_accessibility(candidate)
             assert accessibility["status"] == "ok"
             assert "passed" not in accessibility
-            checks.extend(("scaffold-build", "inspect-structure", "accessibility-evidence"))
+            checks.extend(
+                ("scaffold-build", "inspect-structure", "toc-field", "accessibility-evidence")
+            )
 
             evaluation_script = work / "docx" / "tmp" / "evaluator.py"
             evaluation_output = work / "docx" / "review" / "evaluation.json"
@@ -152,10 +180,28 @@ def run_smoke_test() -> dict[str, Any]:
             comparison_path = work / "docx" / "review" / "comparison.json"
             comparison = compare_docx(candidate, edited, comparison_path)
             assert comparison["diff"]
+            assert comparison["fields_removed"] == []
+            assert comparison["fields_added"] == []
+
+            drop_toc_builder = work / "docx" / "tmp" / "drop_toc.py"
+            _write(drop_toc_builder, DROP_TOC_BUILDER_SOURCE)
+            without_toc = work / "docx" / "tmp" / "without_toc.docx"
+            run_builder(drop_toc_builder, without_toc, input_path=candidate)
+            field_comparison_path = work / "docx" / "review" / "field-comparison.json"
+            field_comparison = compare_docx(candidate, without_toc, field_comparison_path)
+            assert field_comparison["fields_added"] == []
+            assert field_comparison["fields_removed"] == [
+                {
+                    "part": "word/document.xml",
+                    "instruction": 'TOC \\o "1-3" \\h \\z \\u',
+                    "form": "complex",
+                    "count": 1,
+                }
+            ]
             sanitized = work / "docx" / "tmp" / "sanitized.docx"
             sanitize_docx(edited, sanitized)
             assert_valid_docx(sanitized)
-            checks.extend(("compare", "sanitize"))
+            checks.extend(("compare", "field-delta", "sanitize"))
 
             annotation_spec = work / "docx" / "tmp" / "annotations.json"
             annotation_spec.write_text(

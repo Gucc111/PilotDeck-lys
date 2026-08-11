@@ -184,6 +184,7 @@ def add_field(paragraph: Any, instruction: str, placeholder: str = "") -> None:
     run = paragraph.add_run()
     begin = OxmlElement("w:fldChar")
     begin.set(qn("w:fldCharType"), "begin")
+    begin.set(qn("w:dirty"), "true")
     text = OxmlElement("w:instrText")
     text.set(qn("xml:space"), "preserve")
     text.text = instruction
@@ -196,6 +197,32 @@ def add_field(paragraph: Any, instruction: str, placeholder: str = "") -> None:
         run._r.append(OxmlElement("w:t"))
         run._r[-1].text = placeholder
     run._r.append(end)
+
+
+def add_toc(
+    document: DocumentObject,
+    paragraph: Any,
+    *,
+    levels: tuple[int, int] = (1, 3),
+    placeholder: str = "Open in Microsoft Word to update the table of contents.",
+) -> Any:
+    """Insert a real Word TOC field and request a field refresh on open."""
+
+    start, end = levels
+    if not (1 <= start <= end <= 9):
+        raise ValueError("levels must be an inclusive range between 1 and 9")
+    add_field(
+        paragraph,
+        f'TOC \\o "{start}-{end}" \\h \\z \\u',
+        placeholder=placeholder,
+    )
+    settings = document.settings.element
+    update_fields = settings.find(qn("w:updateFields"))
+    if update_fields is None:
+        update_fields = OxmlElement("w:updateFields")
+        settings.append(update_fields)
+    update_fields.set(qn("w:val"), "true")
+    return paragraph
 
 
 def replace_text(document: DocumentObject, match: str, replacement: str) -> int:

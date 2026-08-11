@@ -35,6 +35,6 @@ Use `finalize --accept-changes` or `--reject-changes`, optionally with `--remove
 
 ## Compare and sanitize
 
-`compare` reports paragraph text differences plus metadata, counts, sections, fields, images, package-feature changes, and inspection coverage. It is not a visual diff or Microsoft Word legal redline.
+`compare` reports paragraph text differences plus metadata, counts, sections, field additions and removals, images, package-feature changes, and inspection coverage. It is not a visual diff or Microsoft Word legal redline.
 
 `sanitize` removes core author fields, custom properties, Word revision identifiers, and optionally comments. It does not redact visible names, prose, images, external links, embedded files, or arbitrary custom XML. Evaluate visible content separately when privacy or redaction is the actual goal.

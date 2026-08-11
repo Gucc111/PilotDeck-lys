@@ -36,6 +36,7 @@ from docxlib.builder import (
     add_field,
     add_image,
     add_table,
+    add_toc,
     apply_neutral_styles,
     replace_text,
 )
@@ -47,6 +48,7 @@ from docxlib.builder import (
 - `add_table(document, headers, rows, widths=None, repeat_header=True)` creates a simple real Word table.
 - `add_image(document, path, width_inches=5.8, caption=None, alt_text=None)` inserts a centered local image.
 - `add_field(paragraph, instruction, placeholder="")` inserts a Word field such as `PAGE`, `DATE`, or `TOC`. Cached values may remain stale until the user updates fields in Microsoft Word; do not invent cached page numbers.
+- `add_toc(document, paragraph, levels=(1, 3), placeholder=...)` inserts a real, hyperlinked Word TOC field and requests a field refresh when the document opens. It does not choose placement or fabricate cached entries.
 - `replace_text(document, match, replacement)` replaces matches across adjacent runs and returns the number changed.
 - `apply_neutral_styles(document, locale=..., ...)` can initialize neutral styles on a document created outside the context helper.
 
@@ -60,6 +62,11 @@ document.add_paragraph("Proceed after the final review.")
 
 for item in ["Confirm owner", "Confirm date"]:
     document.add_paragraph(item, style="List Bullet")
+```
+
+```python
+document.add_heading("Contents", level=1)
+add_toc(document, document.add_paragraph())
 ```
 
 ```python

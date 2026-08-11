@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -558,6 +559,35 @@ def compare_docx(before_path: str | Path, after_path: str | Path, output_json: s
             lineterm="",
         )
     )
+    before_fields = before.get("fields", [])
+    after_fields = after.get("fields", [])
+
+    def field_counter(fields: list[dict[str, str]]) -> Counter[tuple[str, str, str]]:
+        return Counter(
+            (
+                str(field.get("part", "")),
+                str(field.get("instruction", "")),
+                str(field.get("form", "")),
+            )
+            for field in fields
+        )
+
+    def field_changes(
+        source: Counter[tuple[str, str, str]],
+        target: Counter[tuple[str, str, str]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "part": part,
+                "instruction": instruction,
+                "form": form,
+                "count": count,
+            }
+            for (part, instruction, form), count in sorted((source - target).items())
+        ]
+
+    before_field_counter = field_counter(before_fields)
+    after_field_counter = field_counter(after_fields)
     result = {
         "status": "ok" if coverage_complete else "partial",
         "before": str(before_source),
@@ -571,8 +601,10 @@ def compare_docx(before_path: str | Path, after_path: str | Path, output_json: s
         "heading_count_after": len(after["headings"]),
         "section_count_before": len(before["sections"]),
         "section_count_after": len(after["sections"]),
-        "field_count_before": len(before.get("fields", [])),
-        "field_count_after": len(after.get("fields", [])),
+        "field_count_before": len(before_fields),
+        "field_count_after": len(after_fields),
+        "fields_removed": field_changes(before_field_counter, after_field_counter),
+        "fields_added": field_changes(after_field_counter, before_field_counter),
         "image_count_before": before.get("image_parts", 0),
         "image_count_after": after.get("image_parts", 0),
         "package_feature_changes": {
