@@ -65,7 +65,7 @@ import { loadPilotConfig, resolvePilotHome, type PilotProxyConfig } from "../pil
 import { createPilotConfigStoreSync, type PilotConfigStore } from "../pilot/config/PilotConfigStore.js";
 import type { PilotAgentModelSelection, PilotConfigSnapshot } from "../pilot/config/types.js";
 import { DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_ALLOWED_TOOLS, DEFAULT_TRIGGER_TIERS, type RouterConfig } from "../router/config/schema.js";
-import { createAgentProjectSessionStorage, listProjectSessions, resumeAgentSession } from "../session/index.js";
+import { createAgentProjectSessionStorage, listProjectSessions, readTranscript, replayTranscriptEntries, resumeAgentSession } from "../session/index.js";
 import { sanitizeSessionIdForPath } from "../session/storage/ProjectSessionStorage.js";
 import { createSessionTitleGenerator } from "../session/title/SessionTitleGenerator.js";
 import { readWebSessionMessages, readSubagentWebMessages } from "../web/server/readSessionMessages.js";
@@ -87,6 +87,11 @@ import { loadBuiltinPlugins } from "../extension/plugins/builtin/loadBuiltinPlug
 import { SkillManager, migrateLegacyBundledSkillCopies } from "../extension/skills/index.js";
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
+import { UploadStore } from "../gateway/dialog/UploadStore.js";
+import { DialogGatewayError } from "../gateway/dialog/errors.js";
+import { listModelCatalog, validateExplicitModelSelection, validateModelSelection } from "../gateway/dialog/modelCatalog.js";
+import type { SessionModelSelection } from "../gateway/protocol/types.js";
+import { listCommands } from "../gateway/dialog/commands.js";
 
 export type CreateLocalGatewayOptions = {
   projectRoot?: string;
@@ -281,6 +286,49 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       : undefined,
   });
   const skillManager = new SkillManager({ pilotHome, builtinSkillsRoot });
+  const uploadStore = new UploadStore({
+    async listProjects() {
+      return (await listWebProjects({ pilotHome })).projects.map((project) => project.projectKey);
+    },
+    async resolveProject(projectKey) {
+      const projects = (await listWebProjects({ pilotHome })).projects;
+      const match = projects.find((project) => resolve(project.projectKey) === resolve(projectKey));
+      if (!match) throw new DialogGatewayError("PROJECT_NOT_FOUND", `Unknown projectKey: ${projectKey}`);
+      return match.projectKey;
+    },
+  });
+  const requireRegisteredProject = async (projectKey: string): Promise<string> => {
+    const projects = (await listWebProjects({ pilotHome })).projects;
+    const match = projects.find((project) => resolve(project.projectKey) === resolve(projectKey));
+    if (!match) throw new DialogGatewayError("PROJECT_NOT_FOUND", `Unknown projectKey: ${projectKey}`);
+    return match.projectKey;
+  };
+  const readSavedModel = async (projectKey: string, sessionKey: string): Promise<SessionModelSelection | undefined> => {
+    if (!sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
+    const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: sessionKey, now });
+    const replay = replayTranscriptEntries((await readTranscript(storage.transcriptPath)).entries);
+    return replay.metadata.modelSelection ?? undefined;
+  };
+  const modelResult = async (projectKey: string, sessionKey: string, saved?: SessionModelSelection) => {
+    const snapshot = loadPilotConfig({ projectRoot: projectKey, env }).config;
+    const explicit = saved?.mode === "model" ? saved : undefined;
+    return {
+      projectKey,
+      sessionKey,
+      ...(saved ? { saved } : {}),
+      effective: explicit ? {
+        provider: explicit.provider,
+        model: explicit.model,
+        source: "session" as const,
+        reasoning: explicit.reasoning,
+        temperature: explicit.temperature,
+      } : {
+        provider: snapshot.agent.model.provider,
+        model: snapshot.agent.model.model,
+        source: snapshot.router?.enabled ? "router" as const : "default" as const,
+      },
+    };
+  };
   const gateway = new InProcessGateway(router, {
     now,
     serverInfo: { mode: "in_process", projectKey: projectRoot },
@@ -288,6 +336,75 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     toolResultsDir: resolve(tmpdir(), "pilotdeck-tool-output", process.pid.toString()),
     cron: options.cron,
     skillManager,
+    async commandsList(input) {
+      const projectKey = await requireRegisteredProject(input.projectKey);
+      return listCommands({ ...input, projectKey }, pilotHome);
+    },
+    async modelCatalogList(input) {
+      const projectKey = await requireRegisteredProject(input.projectKey);
+      return listModelCatalog({ ...input, projectKey }, env);
+    },
+    async sessionModelGet(input) {
+      const projectKey = await requireRegisteredProject(input.projectKey);
+      return modelResult(projectKey, input.sessionKey, await readSavedModel(projectKey, input.sessionKey));
+    },
+    async sessionModelSet(input) {
+      const projectKey = await requireRegisteredProject(input.projectKey);
+      if (router.hasActiveTurn(input.sessionKey)) throw new DialogGatewayError("SESSION_BUSY", "Cannot change the model during an active turn.");
+      if (!input.selection || typeof input.selection !== "object") throw new DialogGatewayError("INVALID_MODEL_OVERRIDE", "selection is required.");
+      validateModelSelection(projectKey, input.selection, env);
+      const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: input.sessionKey, now });
+      await storage.transcript.recordSessionMetadata(input.sessionKey, "model-selection", {
+        modelSelection: input.selection,
+        updatedAt: now().toISOString(),
+      });
+      await router.close(input.sessionKey);
+      return modelResult(projectKey, input.sessionKey, input.selection);
+    },
+    async sessionModelClear(input) {
+      const projectKey = await requireRegisteredProject(input.projectKey);
+      if (!input.sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
+      if (router.hasActiveTurn(input.sessionKey)) throw new DialogGatewayError("SESSION_BUSY", "Cannot clear the model during an active turn.");
+      const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: input.sessionKey, now });
+      await storage.transcript.recordSessionMetadata(input.sessionKey, "model-selection-clear", {
+        modelSelection: null,
+        updatedAt: now().toISOString(),
+      });
+      await router.close(input.sessionKey);
+    },
+    async resolveTurnModelSelection(input) {
+      const projectKey = await requireRegisteredProject(input.projectKey ?? fallbackProjectRoot);
+      if (input.modelOverride) {
+        validateExplicitModelSelection(projectKey, input.modelOverride, env);
+        return { selection: input.modelOverride, source: "turn" as const };
+      }
+      const saved = await readSavedModel(projectKey, input.sessionKey);
+      if (saved?.mode === "model") {
+        validateExplicitModelSelection(projectKey, saved, env);
+        return { selection: saved, source: "session" as const };
+      }
+      const config = loadPilotConfig({ projectRoot: projectKey, env }).config;
+      return { source: config.router?.enabled ? "router" as const : "default" as const };
+    },
+    async resolveUploadedAttachments(input) {
+      const resolved = await Promise.all(input.uploads.map(async (upload) => ({
+        uploadId: upload.uploadId,
+        attachments: await uploadStore.verifyAttachment(upload.uploadId, input.projectKey, upload.attachmentIds),
+      })));
+      return resolved.flatMap(({ uploadId, attachments }) => attachments.map((attachment) => ({
+          type: attachment.mimeType?.startsWith("image/") ? "image" as const : "file" as const,
+          name: attachment.name,
+          path: attachment.path,
+          mimeType: attachment.mimeType,
+          bytes: attachment.bytes,
+          metadata: {
+            uploadId,
+            attachmentId: attachment.attachmentId,
+            relativePath: attachment.relativePath,
+            sha256: attachment.sha256,
+          },
+        })));
+    },
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
     readSessionMessages: (input) =>
       readWebSessionMessages(input, {
