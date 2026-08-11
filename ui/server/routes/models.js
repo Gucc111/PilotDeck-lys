@@ -56,7 +56,7 @@ function unavailable(res, capability) { return res.status(501).json({ error: { c
 function sendError(res, error, requestId) {
   const code = typeof error?.code === 'string' ? error.code : 'gateway_request_failed';
   const statuses = {
-    PROJECT_NOT_FOUND: 404, INVALID_SESSION_KEY: 400, INVALID_MODEL_OVERRIDE: 400, UNSUPPORTED_MODEL_PARAMETER: 400,
+    PROJECT_NOT_FOUND: 404, INVALID_SESSION_KEY: 400, INVALID_MODEL_OVERRIDE: 400, UNSUPPORTED_MODEL_PARAMETER: 422,
     ROUTER_AUTO_UNAVAILABLE: 409, SESSION_BUSY: 409, CAPABILITY_UNAVAILABLE: 501,
   };
   return res.status(statuses[code] || 500).json({ error: {

@@ -53,3 +53,35 @@ test("upload creation enforces the per-project concurrency limit atomically", as
   const rejected = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
   assert.equal(rejected.reason.code, "UPLOAD_CONCURRENCY_LIMIT");
 });
+
+test("attachment verification returns stable project and expiry errors", async (t) => {
+  const project = await mkdtemp(join(tmpdir(), "pilotdeck-upload-owner-"));
+  const otherProject = await mkdtemp(join(tmpdir(), "pilotdeck-upload-other-"));
+  t.after(() => Promise.all([
+    rm(project, { recursive: true, force: true }),
+    rm(otherProject, { recursive: true, force: true }),
+  ]));
+  let now = new Date("2026-08-11T00:00:00.000Z");
+  const store = new UploadStore({
+    resolveProject: async (projectKey) => projectKey,
+    listProjects: async () => [project, otherProject],
+    now: () => now,
+    retentionMs: 1_000,
+  });
+  const created = await store.create(project, [
+    { clientFileId: "one", name: "one.txt", relativePath: "one.txt", size: 5 },
+  ]);
+  await store.writePart(created.uploadId, "one", Readable.from([Buffer.from("hello")]));
+  await store.complete(created.uploadId);
+
+  await assert.rejects(
+    store.verifyAttachment(created.uploadId, otherProject),
+    (error: unknown) => (error as { code?: string }).code === "PROJECT_PATH_FORBIDDEN",
+  );
+
+  now = new Date("2026-08-11T00:00:02.000Z");
+  await assert.rejects(
+    store.verifyAttachment(created.uploadId, project),
+    (error: unknown) => (error as { code?: string }).code === "ATTACHMENT_EXPIRED",
+  );
+});

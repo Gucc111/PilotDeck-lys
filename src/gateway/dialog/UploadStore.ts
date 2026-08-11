@@ -248,7 +248,8 @@ export class UploadStore {
   async verifyAttachment(uploadId: string, projectKey: string, attachmentIds?: string[]): Promise<UploadedAttachment[]> {
     const record = await this.get(uploadId);
     const canonicalProject = await realpath(await this.options.resolveProject(projectKey));
-    if (record.projectKey !== canonicalProject) throw new DialogGatewayError("UPLOAD_PROJECT_MISMATCH", "Upload belongs to another project.");
+    if (record.projectKey !== canonicalProject) throw new DialogGatewayError("PROJECT_PATH_FORBIDDEN", "Upload belongs to another project.");
+    if (record.status === "expired") throw new DialogGatewayError("ATTACHMENT_EXPIRED", "Upload expired.");
     if (record.status !== "completed") throw new DialogGatewayError("UPLOAD_NOT_COMPLETED", `Upload is ${record.status}.`);
     const wanted = attachmentIds ? new Set(attachmentIds) : undefined;
     const attachments = (record.attachments ?? []).filter((item) => !wanted || wanted.has(item.attachmentId));

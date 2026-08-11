@@ -87,21 +87,31 @@ router.post('/:uploadId/content', (req, res) => {
 });
 
 router.get('/:uploadId/events', async (req, res) => {
+  let pendingRecord;
+  let ready = false;
+  let unsubscribe = () => {};
   try {
+    unsubscribe = store.subscribe(req.params.uploadId, (record) => {
+      if (!ready) {
+        pendingRecord = record;
+        return;
+      }
+      sendEvent(res, eventName(record), record);
+      if (isTerminal(record.status)) { unsubscribe(); res.end(); }
+    });
     const snapshot = await store.get(req.params.uploadId);
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
-    sendEvent(res, eventName(snapshot), snapshot);
-    if (isTerminal(snapshot.status)) return res.end();
-    const unsubscribe = store.subscribe(req.params.uploadId, (record) => {
-      sendEvent(res, eventName(record), record);
-      if (isTerminal(record.status)) { unsubscribe(); res.end(); }
-    });
+    ready = true;
+    const current = pendingRecord ?? snapshot;
+    sendEvent(res, eventName(current), current);
+    if (isTerminal(current.status)) { unsubscribe(); return res.end(); }
     req.on('close', unsubscribe);
   } catch (error) {
+    unsubscribe();
     return sendError(res, error, req.id);
   }
 });
@@ -112,7 +122,7 @@ router.get('/:uploadId', async (req, res) => {
 });
 
 router.delete('/:uploadId', async (req, res) => {
-  try { return res.json(publicRecord(await store.cancel(req.params.uploadId))); }
+  try { await store.cancel(req.params.uploadId); return res.status(204).end(); }
   catch (error) { return sendError(res, error, req.id); }
 });
 
@@ -148,6 +158,8 @@ function sendError(res, error, requestId) {
     UPLOAD_MANIFEST_INVALID: 400, UPLOAD_MANIFEST_MISMATCH: 400,
     UPLOAD_FILE_TOO_LARGE: 413, UPLOAD_TASK_TOO_LARGE: 413,
     UPLOAD_INTEGRITY_MISMATCH: 422, UPLOAD_INVALID_STATE: 409, UPLOAD_ALREADY_COMPLETED: 409,
+    UPLOAD_NOT_COMPLETED: 409, ATTACHMENT_EXPIRED: 410, PROJECT_PATH_FORBIDDEN: 403,
+    ATTACHMENT_NOT_FOUND: 404, ATTACHMENT_TAMPERED: 422,
   };
   return res.status(statuses[code] || 500).json({ error: {
     code, message: error instanceof Error ? error.message : String(error),
