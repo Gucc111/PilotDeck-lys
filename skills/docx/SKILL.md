@@ -105,6 +105,8 @@ Use only when requested or materially relevant:
 - `accessibility` for semantic accessibility evidence, not a compliance verdict.
 - `fallback-patch` for a narrow, controlled OOXML change.
 
+Treat outputs from `annotate`, `finalize`, and `fallback-patch` as internal candidates. Never attach or copy them directly; review the latest candidate, then publish it with `deliver`.
+
 Word fields such as a TOC may require the user to update fields in Microsoft Word. Do not fabricate cached page numbers when a native field update is unavailable.
 
 ## Deliver
