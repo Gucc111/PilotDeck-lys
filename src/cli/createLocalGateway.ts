@@ -85,6 +85,7 @@ import type { RouterEventBus, RouterEvent } from "../router/protocol/events.js";
 import type { EdgeClawMemoryProvider } from "../context/index.js";
 import { loadBuiltinPlugins } from "../extension/plugins/builtin/loadBuiltinPlugins.js";
 import { SkillManager, migrateLegacyBundledSkillCopies } from "../extension/skills/index.js";
+import { patchProjectScopedMcpSpec } from "../mcp/runtime/projectMcpSpec.js";
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
 import { UploadStore } from "../gateway/dialog/UploadStore.js";
@@ -948,7 +949,12 @@ class ProjectRuntimeRegistry {
           ...runtime.pluginRuntime.mcpServers(),
           ...configServers.servers,
         };
-        const { servers } = parsePluginMcpServers(rawServers);
+        const { servers: parsedServers } = parsePluginMcpServers(rawServers);
+        const servers = parsedServers.map((server) => patchProjectScopedMcpSpec(
+          server,
+          runtime.projectRoot,
+          this.options.pilotHome,
+        ));
         if (servers.length === 0) return;
 
         const sharedServers = servers.filter((s) => s.transport !== "stdio" || !s.perSession);
@@ -959,7 +965,16 @@ class ProjectRuntimeRegistry {
         if (sharedServers.length > 0) {
           const mcp = new McpRuntime(sharedServers);
           runtime.mcpRuntime = mcp;
-          await mcp.start();
+          const statuses = await mcp.start();
+          for (const status of statuses) {
+            if (status.status === "error") {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `[pilotdeck] ${status.serverId === "funasr" ? "ASR unavailable" : "MCP server unavailable"} ` +
+                `(server=${status.serverId}): ${status.error ?? "unknown error"}`,
+              );
+            }
+          }
           const defs = await createMcpToolDefinitionsFromRuntime(mcp);
           for (const def of defs) {
             if (!runtime.tools.has(def.name)) runtime.tools.register(def);
@@ -1055,7 +1070,16 @@ class ProjectRuntimeRegistry {
       const sessionMcp = new McpRuntime(patchedPerSpecs);
       this.sessionMcpRuntimes.set(context.sessionKey, sessionMcp);
       try {
-        await sessionMcp.start();
+        const statuses = await sessionMcp.start();
+        for (const status of statuses) {
+          if (status.status === "error") {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[pilotdeck] ${status.serverId === "funasr" ? "ASR unavailable" : "Per-session MCP unavailable"} ` +
+              `(server=${status.serverId}, session=${context.sessionKey}): ${status.error ?? "unknown error"}`,
+            );
+          }
+        }
         const defs = await createMcpToolDefinitionsFromRuntime(sessionMcp);
         if (defs.length > 0) {
           sessionTools = runtime.tools.clone();
@@ -1078,7 +1102,7 @@ class ProjectRuntimeRegistry {
       // eslint-disable-next-line no-console
       console.warn(
         `[pilotdeck] Per-session MCP limit reached (${maxInstances}). ` +
-        `Session ${context.sessionKey} will share the project-level browser instance.`,
+        `Session ${context.sessionKey} will not start: ${perSpecs.map((spec) => spec.id).join(", ")}.`,
       );
     }
 
