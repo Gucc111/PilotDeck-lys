@@ -479,6 +479,30 @@ describe('turn-scoped server reconciliation', () => {
       'compact-1-live',
     ]);
   });
+
+  it('upserts replayed compact boundaries by turn and compaction id', () => {
+    const firstBoundary: NormalizedMessage = {
+      id: 'compact-live-random-id',
+      sessionId: 'web:s_test',
+      timestamp: '2026-05-28T00:00:02.000Z',
+      provider: PROVIDER,
+      kind: 'compact_boundary',
+      runId: 'run-current',
+      compactionId: 'compact-1',
+      preTokens: 120,
+      postTokens: 40,
+    };
+    const replayedBoundary: NormalizedMessage = {
+      ...firstBoundary,
+      id: 'compact-replay-new-random-id',
+      timestamp: '2026-05-28T00:01:00.000Z',
+    };
+
+    const upserted = upsertRealtimeMessages([firstBoundary], [replayedBoundary]);
+
+    expect(upserted).toHaveLength(1);
+    expect(upserted[0]).toBe(replayedBoundary);
+  });
 });
 
 describe('getDuplicateAssistantStreamTextState', () => {
@@ -582,6 +606,30 @@ describe('getDuplicateAssistantStreamTextState', () => {
 });
 
 describe('getActiveTurnReplayMessagesToApply', () => {
+  it('drops a replayed compact boundary already represented in realtime state', () => {
+    const renderedBoundary: NormalizedMessage = {
+      id: 'compact-live',
+      sessionId: 'web:s_test',
+      timestamp: '2026-05-28T00:00:02.000Z',
+      provider: PROVIDER,
+      kind: 'compact_boundary',
+      runId: 'run-1',
+      compactionId: 'compact-1',
+      preTokens: 120,
+      postTokens: 40,
+    };
+    const replayedBoundary = {
+      ...renderedBoundary,
+      id: 'compact-replayed-with-new-id',
+      timestamp: '2026-05-28T00:01:00.000Z',
+    };
+
+    expect(getActiveTurnReplayMessagesToApply(
+      [replayedBoundary],
+      { realtimeMessages: [renderedBoundary] },
+    )).toEqual([]);
+  });
+
   it('skips active-turn stream replay already represented by finalized realtime text', () => {
     const activeTurnMessages = [
       {
