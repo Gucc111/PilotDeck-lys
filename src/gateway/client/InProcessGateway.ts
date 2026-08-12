@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
-import { extname, resolve } from "node:path";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentEvent, AgentInput, AgentTurnResult } from "../../agent/index.js";
 import {
@@ -75,6 +75,7 @@ import type {
 import { permissionEntryToRule, permissionSettingsToRuleSet, readPermissionSettings } from "../../permission/index.js";
 import type { PermissionRule } from "../../permission/index.js";
 import { SkillManagerError, type SkillManager } from "../../extension/skills/index.js";
+import { getPilotDeckInstallCommand } from "../../mcp/runtime/projectMcpSpec.js";
 import { AttachmentResolver, type AttachmentRequest } from "../../context/attachments/AttachmentResolver.js";
 import type {
   SkillAddressInput,
@@ -105,6 +106,8 @@ const MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS = 20_000;
 const MAX_GATEWAY_TOOL_DATA_STRING_CHARS = 4_000;
 
 export type InProcessGatewayOptions = {
+  /** Absolute command used by the model to install bundled FunASR assets. */
+  funasrInstallCommand?: string;
   now?: () => Date;
   uuid?: () => string;
   serverInfo?: Partial<GatewayServerInfo>;
@@ -478,6 +481,8 @@ export class InProcessGateway implements Gateway {
           input.message,
           attachments,
           allowedReadFiles,
+          input.projectKey,
+          this.options.funasrInstallCommand ?? getPilotDeckInstallCommand(),
         );
         const syntheticMessages: CanonicalMessage[] = (input.syntheticMessages ?? []).map((s) => ({
           role: "user" as const,
@@ -2057,6 +2062,8 @@ async function buildAgentInputWithAttachments(
   message: string,
   attachments: ChannelAttachment[] | undefined,
   allowedReadFiles: string[],
+  projectRoot?: string,
+  funasrInstallCommand?: string,
 ): Promise<AgentInput> {
   const resolvedAttachments = await attachmentsToContentBlocks(attachments);
   const attachmentBlocks = resolvedAttachments.blocks;
@@ -2065,6 +2072,8 @@ async function buildAgentInputWithAttachments(
     new Set(allowedReadFiles),
     resolvedAttachments.directContentPaths,
     resolvedAttachments.hasDiagnostics,
+    projectRoot,
+    funasrInstallCommand,
   );
   if (attachmentBlocks.length === 0 && !pathNote) {
     return { type: "text", text: message };
@@ -2087,6 +2096,8 @@ function buildAttachmentPathNote(
   allowedReadFiles: Set<string>,
   directContentPaths: Set<string>,
   hasDiagnostics: boolean,
+  projectRoot?: string,
+  installCommand = "npm run install:asr",
 ): CanonicalContentBlock | undefined {
   if (!attachments || attachments.length === 0) return undefined;
   const seen = new Set<string>();
@@ -2105,8 +2116,8 @@ function buildAttachmentPathNote(
   }
 
   if (lines.length === 0) return undefined;
-  const guidance = hasDiagnostics
-    ? attachmentDiagnosticsGuidance(attachments, allowedReadFiles)
+  const guidance = hasDiagnostics || attachments.some(isAudioAttachment)
+    ? attachmentDiagnosticsGuidance(attachments, allowedReadFiles, projectRoot, installCommand)
     : "These are path references for reuse. If an image/PDF is already visible in this turn, do not call read_file just to view it.";
   return {
     type: "text",
@@ -2117,7 +2128,20 @@ function buildAttachmentPathNote(
 function attachmentDiagnosticsGuidance(
   attachments: ChannelAttachment[],
   allowedReadFiles: Set<string>,
+  projectRoot?: string,
+  installCommand = "npm run install:asr",
 ): string {
+  const audioAttachments = attachments.filter((attachment) => isAudioAttachment(attachment));
+  if (audioAttachments.length > 0) {
+    const audioPaths = audioAttachments
+      .map((attachment) => attachment.path && mapAudioPathForFunAsr(attachment.path, projectRoot))
+      .filter((path): path is string => Boolean(path));
+    const mappedHint = audioPaths.length > 0
+      ? ` Pass the registered project-local path${audioPaths.length === 1 ? ` ${audioPaths[0]}` : "s " + audioPaths.join(", ")} to transcribe_audio.`
+      : " Pass a project-local host path to transcribe_audio; paths outside this project are rejected.";
+    return `Audio attachments are not readable with read_file. When the user asks for transcription, subtitles, or audio analysis, use the funasr MCP server's mcp__funasr__transcribe_audio tool.${mappedHint} If that tool reports that its runtime is missing, run ${installCommand} and retry the tool in this session.`;
+  }
+
   const hasInspectableAttachment = attachments.some((attachment) => {
     if (!attachment.path) return false;
     if (!safeAllowedAttachmentPath(attachment.path, allowedReadFiles)) return false;
@@ -2201,6 +2225,12 @@ async function attachmentsToContentBlocks(
     }
 
     if (!att.path) continue;
+    if (isAudioAttachment(att)) {
+      // Keep audio as a registered path reference. The ASR Skill invokes the
+      // FunASR MCP tool on demand, so audio should not be sent through the
+      // text/image/PDF attachment resolver.
+      continue;
+    }
     if (att.type === "image" || att.mimeType?.startsWith("image/")) {
       resolverRequests.push({ type: "image", path: att.path, mimeType: att.mimeType });
       resolverRequestPaths.push(resolve(att.path));
@@ -2236,6 +2266,23 @@ async function attachmentsToContentBlocks(
   }
 
   return { blocks, directContentPaths, hasDiagnostics: diagnostics.length > 0 };
+}
+
+function isAudioAttachment(attachment: ChannelAttachment): boolean {
+  if (attachment.mimeType?.toLowerCase().startsWith("audio/")) return true;
+  const pathOrName = attachment.path || attachment.name || "";
+  return /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav|webm)$/iu.test(pathOrName);
+}
+
+function mapAudioPathForFunAsr(audioPath: string, projectRoot?: string): string | undefined {
+  if (!projectRoot) return undefined;
+  const absoluteRoot = resolve(projectRoot);
+  const absolutePath = resolve(audioPath);
+  const relativePath = relative(absoluteRoot, absolutePath);
+  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    return undefined;
+  }
+  return absolutePath;
 }
 
 function sanitizeAttachmentName(name: string): string {
