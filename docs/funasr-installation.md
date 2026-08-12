@@ -36,7 +36,7 @@ When `PILOT_HOME` is unset, PilotDeck uses `~/.pilotdeck` (or the platform-equiv
 
 ## Failure Diagnostics
 
-The installer prints the failed stage and source URL. A runtime failure distinguishes download, SHA-256 verification, unpacking, and missing executable errors. A model failure reports the independent ModelScope and Hugging Face causes, which usually identifies DNS, TLS, proxy, rate-limit, or blocked-source problems.
+The installer prints the failed stage and source URL. A runtime failure distinguishes download, SHA-256 verification, unpacking, and missing executable errors. A model failure reports the independent ModelScope and Hugging Face causes, which usually identifies DNS, TLS, proxy, rate-limit, or blocked-source problems. Downloads honor `PILOTDECK_PROXY`/`HTTPS_PROXY` first, then `proxy.url` and `proxy.noProxy` in `$PILOT_HOME/pilotdeck.yaml`.
 
 No half-downloaded runtime or model is used. Re-run `npm run install:asr` after correcting network or proxy settings. Existing complete cache entries are reused.
 

@@ -75,6 +75,7 @@ import type {
 import { permissionEntryToRule, permissionSettingsToRuleSet, readPermissionSettings } from "../../permission/index.js";
 import type { PermissionRule } from "../../permission/index.js";
 import { SkillManagerError, type SkillManager } from "../../extension/skills/index.js";
+import { getPilotDeckInstallCommand } from "../../mcp/runtime/projectMcpSpec.js";
 import { AttachmentResolver, type AttachmentRequest } from "../../context/attachments/AttachmentResolver.js";
 import type {
   SkillAddressInput,
@@ -105,6 +106,8 @@ const MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS = 20_000;
 const MAX_GATEWAY_TOOL_DATA_STRING_CHARS = 4_000;
 
 export type InProcessGatewayOptions = {
+  /** Absolute command used by the model to install bundled FunASR assets. */
+  funasrInstallCommand?: string;
   now?: () => Date;
   uuid?: () => string;
   serverInfo?: Partial<GatewayServerInfo>;
@@ -479,6 +482,7 @@ export class InProcessGateway implements Gateway {
           attachments,
           allowedReadFiles,
           input.projectKey,
+          this.options.funasrInstallCommand ?? getPilotDeckInstallCommand(),
         );
         const syntheticMessages: CanonicalMessage[] = (input.syntheticMessages ?? []).map((s) => ({
           role: "user" as const,
@@ -2059,6 +2063,7 @@ async function buildAgentInputWithAttachments(
   attachments: ChannelAttachment[] | undefined,
   allowedReadFiles: string[],
   projectRoot?: string,
+  funasrInstallCommand?: string,
 ): Promise<AgentInput> {
   const resolvedAttachments = await attachmentsToContentBlocks(attachments);
   const attachmentBlocks = resolvedAttachments.blocks;
@@ -2068,6 +2073,7 @@ async function buildAgentInputWithAttachments(
     resolvedAttachments.directContentPaths,
     resolvedAttachments.hasDiagnostics,
     projectRoot,
+    funasrInstallCommand,
   );
   if (attachmentBlocks.length === 0 && !pathNote) {
     return { type: "text", text: message };
@@ -2091,6 +2097,7 @@ function buildAttachmentPathNote(
   directContentPaths: Set<string>,
   hasDiagnostics: boolean,
   projectRoot?: string,
+  installCommand = "npm run install:asr",
 ): CanonicalContentBlock | undefined {
   if (!attachments || attachments.length === 0) return undefined;
   const seen = new Set<string>();
@@ -2110,7 +2117,7 @@ function buildAttachmentPathNote(
 
   if (lines.length === 0) return undefined;
   const guidance = hasDiagnostics || attachments.some(isAudioAttachment)
-    ? attachmentDiagnosticsGuidance(attachments, allowedReadFiles, projectRoot)
+    ? attachmentDiagnosticsGuidance(attachments, allowedReadFiles, projectRoot, installCommand)
     : "These are path references for reuse. If an image/PDF is already visible in this turn, do not call read_file just to view it.";
   return {
     type: "text",
@@ -2122,6 +2129,7 @@ function attachmentDiagnosticsGuidance(
   attachments: ChannelAttachment[],
   allowedReadFiles: Set<string>,
   projectRoot?: string,
+  installCommand = "npm run install:asr",
 ): string {
   const audioAttachments = attachments.filter((attachment) => isAudioAttachment(attachment));
   if (audioAttachments.length > 0) {
@@ -2131,7 +2139,7 @@ function attachmentDiagnosticsGuidance(
     const mappedHint = audioPaths.length > 0
       ? ` Pass the registered project-local path${audioPaths.length === 1 ? ` ${audioPaths[0]}` : "s " + audioPaths.join(", ")} to transcribe_audio.`
       : " Pass a project-local host path to transcribe_audio; paths outside this project are rejected.";
-    return `Audio attachments are not readable with read_file. When the user asks for transcription, subtitles, or audio analysis, use the funasr MCP server's mcp__funasr__transcribe_audio tool.${mappedHint} If that tool reports that its runtime is missing, run npm run install:asr and retry the tool in this session.`;
+    return `Audio attachments are not readable with read_file. When the user asks for transcription, subtitles, or audio analysis, use the funasr MCP server's mcp__funasr__transcribe_audio tool.${mappedHint} If that tool reports that its runtime is missing, run ${installCommand} and retry the tool in this session.`;
   }
 
   const hasInspectableAttachment = attachments.some((attachment) => {

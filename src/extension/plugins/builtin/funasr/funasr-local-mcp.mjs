@@ -9,6 +9,7 @@ import { runtimePaths } from "./funasr-runtime.mjs";
 const args = parseArgs(process.argv.slice(2));
 const projectRootArg = args["project-root"];
 const runtimeRoot = args["runtime-root"];
+const installCommand = args["install-command"] || "npm run install:asr";
 
 function parseArgs(values) {
   const out = {};
@@ -74,7 +75,7 @@ function toolError(message) {
 }
 
 async function runTranscription(input) {
-  if (!runtimeRoot) return toolError("FunASR local runtime is not configured. Run npm run install:asr, then retry this tool.");
+  if (!runtimeRoot) return toolError(`FunASR local runtime is not configured. Run ${installCommand}, then retry this tool.`);
   if (input?.language !== undefined && input.language !== "auto") {
     return toolError('language only supports "auto" for the local SenseVoice runtime.');
   }
@@ -91,7 +92,7 @@ async function runTranscription(input) {
     return toolError(error instanceof Error ? error.message : String(error));
   }
   if (!paths.binary || !(await fileExists(paths.model)) || !(await fileExists(paths.vad))) {
-    return toolError("FunASR local runtime or models are not installed. Run npm run install:asr, then retry mcp__funasr__transcribe_audio in this session.");
+    return toolError(`FunASR local runtime or models are not installed. Run ${installCommand}, then retry mcp__funasr__transcribe_audio in this session.`);
   }
   const commandArgs = ["-m", paths.model, "--vad", paths.vad, "-a", audio, "--srt"];
   const completed = await run(paths.binary, commandArgs);

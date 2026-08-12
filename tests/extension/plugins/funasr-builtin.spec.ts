@@ -9,6 +9,7 @@ import { PluginRuntime } from "../../../src/extension/plugins/runtime/PluginRunt
 import { parsePluginMcpServers } from "../../../src/mcp/runtime/parsePluginMcpServers.js";
 import {
   patchProjectScopedMcpSpec,
+  PILOTDECK_FUNASR_INSTALL_COMMAND_MARKER,
   PILOTDECK_FUNASR_MCP_ENTRYPOINT_MARKER,
   PILOTDECK_FUNASR_RUNTIME_ROOT_MARKER,
   PILOTDECK_NODE_EXECUTABLE_MARKER,
@@ -31,6 +32,7 @@ test("built-in FunASR plugin exposes a local per-session Node MCP", () => {
   assert.ok(servers[0]?.args?.includes(PILOTDECK_FUNASR_MCP_ENTRYPOINT_MARKER));
   assert.ok(servers[0]?.args?.includes(PILOTDECK_PROJECT_ROOT_MARKER));
   assert.ok(servers[0]?.args?.includes(PILOTDECK_FUNASR_RUNTIME_ROOT_MARKER));
+  assert.ok(servers[0]?.args?.includes(PILOTDECK_FUNASR_INSTALL_COMMAND_MARKER));
 });
 
 test("FunASR MCP receives Node, project-root, runtime-root, and entrypoint markers", () => {
@@ -45,6 +47,8 @@ test("FunASR MCP receives Node, project-root, runtime-root, and entrypoint marke
         PILOTDECK_PROJECT_ROOT_MARKER,
         "--runtime-root",
         PILOTDECK_FUNASR_RUNTIME_ROOT_MARKER,
+        "--install-command",
+        PILOTDECK_FUNASR_INSTALL_COMMAND_MARKER,
       ],
     },
     "/tmp/pilotdeck-project",
@@ -55,10 +59,11 @@ test("FunASR MCP receives Node, project-root, runtime-root, and entrypoint marke
   if (patched.transport !== "stdio") throw new Error("expected stdio MCP spec");
   assert.equal(patched.command, process.execPath);
   assert.equal(patched.cwd, "/tmp/pilotdeck-project");
-  assert.deepEqual(patched.args?.slice(1), [
+  assert.deepEqual(patched.args?.slice(1, 5), [
     "--project-root", "/tmp/pilotdeck-project", "--runtime-root", "/tmp/pilotdeck-home/funasr",
   ]);
   assert.match(patched.args?.[0] ?? "", /funasr-local-mcp\.mjs$/);
+  assert.match(patched.args?.[6] ?? "", /npm --prefix/);
 });
 
 test("FunASR can be disabled through builtinPluginsEnabled", async () => {
@@ -79,7 +84,7 @@ test("FunASR can be disabled through builtinPluginsEnabled", async () => {
 
 test("audio-transcription Skill documents local runtime installation and same-session retry", async () => {
   const skill = await readFile(join(process.cwd(), "skills", "audio-transcription", "SKILL.md"), "utf8");
-  assert.match(skill, /npm run install:asr/);
+  assert.match(skill, /install:asr/);
   assert.match(skill, /same session/i);
   assert.match(skill, /mcp__funasr__transcribe_audio/);
   assert.match(skill, /project-local host path/);

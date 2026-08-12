@@ -107,6 +107,7 @@ test("registered audio attachments advertise FunASR paths instead of read_file c
     assert.match(text, /transcribe_audio/);
     assert.match(text, new RegExp(audioPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(text, /retry the tool in this session/);
+    assert.match(text, /npm --prefix/);
     assert.doesNotMatch(text, /not directly inspectable with read_file/);
   } finally {
     await rm(root, { recursive: true, force: true });

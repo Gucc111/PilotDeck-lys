@@ -85,7 +85,7 @@ import type { RouterEventBus, RouterEvent } from "../router/protocol/events.js";
 import type { EdgeClawMemoryProvider } from "../context/index.js";
 import { loadBuiltinPlugins } from "../extension/plugins/builtin/loadBuiltinPlugins.js";
 import { SkillManager, migrateLegacyBundledSkillCopies } from "../extension/skills/index.js";
-import { patchProjectScopedMcpSpec } from "../mcp/runtime/projectMcpSpec.js";
+import { getPilotDeckInstallCommand, patchProjectScopedMcpSpec } from "../mcp/runtime/projectMcpSpec.js";
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
 import { UploadStore } from "../gateway/dialog/UploadStore.js";
@@ -331,6 +331,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     };
   };
   const gateway = new InProcessGateway(router, {
+    funasrInstallCommand: getPilotDeckInstallCommand(),
     now,
     serverInfo: { mode: "in_process", projectKey: projectRoot },
     telemetry,

@@ -10,7 +10,9 @@
         "--project-root",
         "__PILOTDECK_PROJECT_ROOT__",
         "--runtime-root",
-        "__PILOTDECK_FUNASR_RUNTIME_ROOT__"
+        "__PILOTDECK_FUNASR_RUNTIME_ROOT__",
+        "--install-command",
+        "__PILOTDECK_FUNASR_INSTALL_COMMAND__"
       ],
       "perSession": true,
       "callTimeoutMs": 300000

@@ -60,7 +60,7 @@ test("local FunASR MCP handshakes, exposes auto-only schema, and reports missing
       assert.match(JSON.stringify(tools), /transcribe_audio/);
       assert.match(JSON.stringify(tools), /"auto"/);
       const missing = await mcp.request(3, "tools/call", { name: "transcribe_audio", arguments: { audio_path: "meeting.wav" } });
-      assert.match(JSON.stringify(missing), /Run npm run install:asr/);
+      assert.match(JSON.stringify(missing), /Run .*install:asr/);
     } finally { mcp.child.kill(); }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

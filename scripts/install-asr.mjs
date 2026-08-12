@@ -2,7 +2,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, readFileSync } from "node:fs";
 import {
   chmod, mkdir, rename, rm, stat,
 } from "node:fs/promises";
@@ -10,6 +10,8 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parse as parseYaml } from "yaml";
+import { Agent, EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const funasrDir = existsSync(join(ROOT, "dist", "src", "extension", "plugins", "builtin", "funasr", "funasr-runtime.mjs"))
@@ -31,6 +33,34 @@ const modelSources = [
   },
 ];
 const models = runtime.FUNASR_MODELS;
+
+export function resolveInstallerProxy({ env = process.env, configText } = {}) {
+  const envProxy = env.PILOTDECK_PROXY || env.https_proxy || env.HTTPS_PROXY || env.http_proxy || env.HTTP_PROXY;
+  if (envProxy) return { url: envProxy, noProxy: env.no_proxy || env.NO_PROXY || "", source: "env" };
+  let config;
+  if (configText) {
+    try { config = parseYaml(configText); } catch { config = undefined; }
+  }
+  const proxy = config?.proxy;
+  const url = typeof proxy === "string" ? proxy : proxy?.url;
+  if (typeof url === "string" && url.trim()) {
+    return { url: url.trim(), noProxy: typeof proxy?.noProxy === "string" ? proxy.noProxy : "", source: "config" };
+  }
+  return undefined;
+}
+
+function installInstallerProxy() {
+  let configText;
+  try { configText = readFileSync(join(pilotHome, "pilotdeck.yaml"), "utf8"); } catch { /* optional */ }
+  const proxy = resolveInstallerProxy({ configText });
+  const noProxy = [proxy?.noProxy, process.env.no_proxy, process.env.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",");
+  if (proxy?.url) {
+    setGlobalDispatcher(new EnvHttpProxyAgent({ httpProxy: proxy.url, httpsProxy: proxy.url, noProxy }));
+    log(`Using ${proxy.source} proxy for downloads (noProxy: ${noProxy || "none"}).`);
+  } else {
+    setGlobalDispatcher(new Agent({ headersTimeout: 10 * 60_000, bodyTimeout: 10 * 60_000 }));
+  }
+}
 
 function log(message) { console.log(`[pilotdeck-asr] ${message}`); }
 function fail(message) { console.error(`[pilotdeck-asr] ${message}`); }
@@ -176,6 +206,7 @@ export function runMcpSmoke({ projectRoot = process.cwd(), runtimeRoot = cacheRo
 
 async function main() {
   log(`Installing local FunASR llama.cpp runtime into ${cacheRoot}`);
+  installInstallerProxy();
   let asset;
   try {
     asset = runtime.resolveRuntimeAsset();
