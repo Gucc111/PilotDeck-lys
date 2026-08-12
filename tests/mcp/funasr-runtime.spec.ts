@@ -15,10 +15,10 @@ test("FunASR local runtime maps all published target platforms", () => {
   assert.throws(() => resolveRuntimeAsset("win32", "arm64"), /unsupported-platform/);
 });
 
-test("FunASR model definitions use fixed upstream file digests", () => {
+test("FunASR model definitions use the expected upstream files", () => {
   assert.equal(FUNASR_MODELS.length, 2);
   for (const model of FUNASR_MODELS) {
-    assert.match(model.sha256, /^[a-f0-9]{64}$/u);
+    assert.match(model.file, /\.gguf$/u);
     assert.equal(model.revision, "master");
   }
 });

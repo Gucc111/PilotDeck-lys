@@ -1,7 +1,6 @@
 export type FunAsrRuntimeAsset = {
   key: string;
   file: string;
-  sha256: string;
   format: "tar.gz" | "zip";
   url: string;
 };
@@ -10,7 +9,6 @@ export type FunAsrModel = {
   repo: string;
   file: string;
   revision: string;
-  sha256: string;
 };
 
 export const FUNASR_RUNTIME_VERSION: string;

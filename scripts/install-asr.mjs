@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync, readFileSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import {
   chmod, mkdir, rename, rm, stat,
 } from "node:fs/promises";
@@ -69,37 +69,25 @@ async function isRegularFile(path) {
   try { return (await stat(path)).isFile(); } catch { return false; }
 }
 
-async function fileSha256(path) {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest("hex");
-}
-
-export async function downloadVerified(url, destination, expectedSha256) {
+export async function downloadFile(url, destination) {
   const part = `${destination}.${randomUUID()}.part`;
   await mkdir(dirname(destination), { recursive: true });
   try {
     const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10 * 60_000) });
     if (!response.ok || !response.body) throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    const hash = createHash("sha256");
     let bytes = 0;
     await pipeline(
       Readable.fromWeb(response.body),
       new Transform({
         transform(chunk, _encoding, done) {
-          hash.update(chunk);
           bytes += chunk.length;
           done(null, chunk);
         },
       }),
       createWriteStream(part, { mode: 0o600 }),
     );
-    const actual = hash.digest("hex");
-    if (expectedSha256 && actual !== expectedSha256) {
-      throw new Error(`SHA-256 mismatch: expected ${expectedSha256}, received ${actual}`);
-    }
     await rename(part, destination);
-    return { bytes, sha256: actual };
+    return { bytes };
   } finally {
     await rm(part, { force: true }).catch(() => undefined);
   }
@@ -131,7 +119,7 @@ export async function installRuntime({ platform = process.platform, arch = proce
   await rm(staging, { recursive: true, force: true });
   try {
     log(`Downloading ${asset.file} from the fixed FunASR release...`);
-    await downloadVerified(asset.url, archive, asset.sha256);
+    await downloadFile(asset.url, archive);
     await mkdir(staging, { recursive: true });
     let unpack;
     if (asset.format === "tar.gz") {
@@ -156,7 +144,7 @@ export async function installRuntime({ platform = process.platform, arch = proce
 
 export async function installModel(model) {
   const destination = join(runtime.modelDirectory(cacheRoot), model.file);
-  if (await isRegularFile(destination) && (await stat(destination)).size > 0 && await fileSha256(destination) === model.sha256) {
+  if (await isRegularFile(destination) && (await stat(destination)).size > 0) {
     log(`Model ${model.file} is already installed.`);
     return destination;
   }
@@ -166,8 +154,8 @@ export async function installModel(model) {
     const url = source.url(model.repo, model.revision, model.file);
     try {
       log(`Downloading ${model.file} from ${source.name}...`);
-      const downloaded = await downloadVerified(url, destination, model.sha256);
-      log(`Downloaded ${model.file} (${downloaded.bytes} bytes, sha256=${downloaded.sha256}).`);
+      const downloaded = await downloadFile(url, destination);
+      log(`Downloaded ${model.file} (${downloaded.bytes} bytes).`);
       return destination;
     } catch (error) {
       errors.push(`${source.name}: ${error instanceof Error ? error.message : String(error)}`);

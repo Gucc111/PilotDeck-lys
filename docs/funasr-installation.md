@@ -21,7 +21,7 @@ Run this from the PilotDeck source checkout or installed app directory:
 npm run install:asr
 ```
 
-The command downloads the fixed `runtime-llamacpp-v0.2.0` archive, verifies its release SHA-256 before extraction, and installs SenseVoiceSmall q8 plus FSMN-VAD. Model downloads try ModelScope first and Hugging Face second, and must match the pinned upstream LFS SHA-256 before installation. Downloads use a temporary `.part` file and are renamed into place only after a complete response, so it is safe to rerun after a network interruption.
+The command downloads the fixed `runtime-llamacpp-v0.2.0` archive and installs SenseVoiceSmall q8 plus FSMN-VAD. Model downloads try ModelScope first and Hugging Face second. Downloads use a temporary `.part` file and are renamed into place only after a complete response, so it is safe to rerun after a network interruption.
 
 The cache is user-local:
 
@@ -36,7 +36,7 @@ When `PILOT_HOME` is unset, PilotDeck uses `~/.pilotdeck` (or the platform-equiv
 
 ## Failure Diagnostics
 
-The installer prints the failed stage and source URL. A runtime failure distinguishes download, SHA-256 verification, unpacking, and missing executable errors. A model failure reports the independent ModelScope and Hugging Face causes, which usually identifies DNS, TLS, proxy, rate-limit, or blocked-source problems. Downloads honor `PILOTDECK_PROXY`/`HTTPS_PROXY` first, then `proxy.url` and `proxy.noProxy` in `$PILOT_HOME/pilotdeck.yaml`.
+The installer prints the failed stage and source URL. A runtime failure distinguishes download, unpacking, and missing executable errors. A model failure reports the independent ModelScope and Hugging Face causes, which usually identifies DNS, TLS, proxy, rate-limit, or blocked-source problems. Downloads honor `PILOTDECK_PROXY`/`HTTPS_PROXY` first, then `proxy.url` and `proxy.noProxy` in `$PILOT_HOME/pilotdeck.yaml`.
 
 No half-downloaded runtime or model is used. Re-run `npm run install:asr` after correcting network or proxy settings. Existing complete cache entries are reused.
 
