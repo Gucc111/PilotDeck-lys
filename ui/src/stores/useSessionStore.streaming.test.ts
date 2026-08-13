@@ -212,6 +212,26 @@ describe('patchMergedStreamingMessage', () => {
 });
 
 describe('computeMerged', () => {
+  it('deduplicates a persisted gateway failure from its same-turn realtime status', () => {
+    const persisted: NormalizedMessage = {
+      id: 'persisted-gateway-failure',
+      sessionId: 'web:s_test',
+      timestamp: '2026-08-13T00:00:01.000Z',
+      provider: PROVIDER,
+      kind: 'error',
+      content: 'Unknown projectKey: /Users/example/.pilotdeck',
+      turnId: 'run-failure',
+      runId: 'run-failure',
+    };
+    const realtime: NormalizedMessage = {
+      ...persisted,
+      id: 'realtime-gateway-failure',
+      timestamp: '2026-08-13T00:00:00.000Z',
+    };
+
+    expect(computeMerged([persisted], [realtime])).toEqual([persisted]);
+  });
+
   it('keeps finalized realtime assistant text until an equivalent same-turn server text is persisted', () => {
     const server = [
       textMessage('tail-before-turn', 'Previous answer', '2026-05-28T00:00:00.000Z'),
