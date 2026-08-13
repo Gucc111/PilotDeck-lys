@@ -5,7 +5,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from docx import Document
 from docx.document import Document as DocumentObject
@@ -14,6 +14,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
+from docx.text.hyperlink import Hyperlink
+from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 
 from .common import (
     DocxSkillError,
@@ -225,6 +228,16 @@ def add_toc(
     return paragraph
 
 
+def _iter_paragraph_runs(paragraph: Paragraph) -> Iterator[Run]:
+    """Yield direct and hyperlink runs in their paragraph text order."""
+
+    for content in paragraph.iter_inner_content():
+        if isinstance(content, Run):
+            yield content
+        elif isinstance(content, Hyperlink):
+            yield from content.runs
+
+
 def replace_text(document: DocumentObject, match: str, replacement: str) -> int:
     """Replace text across adjacent runs while preserving surrounding formatting."""
 
@@ -242,7 +255,7 @@ def replace_text(document: DocumentObject, match: str, replacement: str) -> int:
             end = start + len(match)
             cursor = 0
             first_run = None
-            for run in paragraph.runs:
+            for run in _iter_paragraph_runs(paragraph):
                 run_start = cursor
                 run_end = cursor + len(run.text)
                 cursor = run_end
@@ -256,6 +269,12 @@ def replace_text(document: DocumentObject, match: str, replacement: str) -> int:
                     local_start = max(0, start - run_start)
                     local_end = min(len(run.text), end - run_start)
                     run.text = run.text[:local_start] + run.text[local_end:]
+            if first_run is None:
+                # paragraph.text should be composed from the runs above. If an
+                # unsupported OOXML container contributes text, skip it without
+                # reporting a replacement or repeatedly matching the same text.
+                search_from = end
+                continue
             affected += 1
             # Continue after the inserted replacement. Searching the mutated
             # paragraph from the beginning would repeatedly match replacement

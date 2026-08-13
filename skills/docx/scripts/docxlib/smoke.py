@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from .accessibility import inspect_accessibility
 from .annotations import annotate_docx, finalize_docx
@@ -76,6 +78,17 @@ result = {"passed": "项目简报" in text and "进展" in text}
 with open(args.out, "w", encoding="utf-8") as handle:
     json.dump(result, handle, ensure_ascii=False)
 '''
+
+
+def _append_hyperlink_run(paragraph: Any, text: str) -> None:
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), "replacement-test")
+    run = OxmlElement("w:r")
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    run.append(text_element)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
 
 
 PATCH_SOURCE = '''import argparse
@@ -183,7 +196,31 @@ def run_smoke_test() -> dict[str, Any]:
             assert replacement_paragraph.text == "foobar foobar"
             assert replace_text(replacement_document, "foobar", "foobar") == 2
             assert replacement_paragraph.text == "foobar foobar"
-            checks.extend(("source-preserving-edit", "replacement-forward-progress"))
+
+            hyperlink_document = Document()
+            hyperlink_paragraph = hyperlink_document.add_paragraph()
+            _append_hyperlink_run(hyperlink_paragraph, "foo")
+            assert replace_text(hyperlink_document, "foo", "bar") == 1
+            assert hyperlink_paragraph.text == "bar"
+
+            boundary_document = Document()
+            boundary_paragraph = boundary_document.add_paragraph("fo")
+            _append_hyperlink_run(boundary_paragraph, "o")
+            assert replace_text(boundary_document, "foo", "bar") == 1
+            assert boundary_paragraph.text == "bar"
+
+            empty_document = Document()
+            empty_paragraph = empty_document.add_paragraph()
+            _append_hyperlink_run(empty_paragraph, "foo")
+            assert replace_text(empty_document, "foo", "") == 1
+            assert empty_paragraph.text == ""
+            checks.extend(
+                (
+                    "source-preserving-edit",
+                    "replacement-forward-progress",
+                    "replacement-hyperlink-runs",
+                )
+            )
 
             comparison_path = work / "docx" / "review" / "comparison.json"
             comparison = compare_docx(candidate, edited, comparison_path)
