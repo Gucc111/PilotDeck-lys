@@ -23,6 +23,16 @@ test("skill root placeholder is safe for shell paths containing spaces and quote
   );
 });
 
+test("escaped skill root placeholders remain literal in authoring guidance", () => {
+  assert.equal(
+    renderSkillContent(
+      "Use {{!SKILL_ROOT_SHELL}}; runtime={{SKILL_ROOT_SHELL}}",
+      "/opt/pilotdeck/skills/skill-creator/SKILL.md",
+    ),
+    "Use {{SKILL_ROOT_SHELL}}; runtime='/opt/pilotdeck/skills/skill-creator'",
+  );
+});
+
 test("skill content without the placeholder remains unchanged", () => {
   const content = "# Guidance-only skill\n\nUse judgment.";
   assert.equal(renderSkillContent(content, "/skills/guidance/SKILL.md"), content);

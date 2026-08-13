@@ -7,9 +7,11 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from docx import Document
+
 from .accessibility import inspect_accessibility
 from .annotations import annotate_docx, finalize_docx
-from .builder import run_builder, scaffold_builder
+from .builder import replace_text, run_builder, scaffold_builder
 from .common import assert_valid_docx, file_sha256
 from .core import compare_docx, inspect_docx, sanitize_docx
 from .delivery import deliver_docx
@@ -175,7 +177,13 @@ def run_smoke_test() -> dict[str, Any]:
             run_builder(edit_builder, edited, input_path=final)
             assert file_sha256(final) == source_hash
             assert "完成" in "\n".join(item["text"] for item in inspect_docx(edited)["paragraphs"])
-            checks.append("source-preserving-edit")
+            replacement_document = Document()
+            replacement_paragraph = replacement_document.add_paragraph("foo foo")
+            assert replace_text(replacement_document, "foo", "foobar") == 2
+            assert replacement_paragraph.text == "foobar foobar"
+            assert replace_text(replacement_document, "foobar", "foobar") == 2
+            assert replacement_paragraph.text == "foobar foobar"
+            checks.extend(("source-preserving-edit", "replacement-forward-progress"))
 
             comparison_path = work / "docx" / "review" / "comparison.json"
             comparison = compare_docx(candidate, edited, comparison_path)

@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { PermissionResult, PermissionRule } from "../../permission/index.js";
 import type { PilotDeckToolDefinition, PilotDeckToolRuntimeContext } from "../protocol/types.js";
@@ -63,7 +63,7 @@ export function createSendAttachmentTool(): PilotDeckToolDefinition<SendAttachme
     isReadOnly: () => true,
     isConcurrencySafe: () => false,
     validateInput: async (input, context) => {
-      const internalRoot = findInternalWorkRoot(input.file_path, context);
+      const internalRoot = await findInternalWorkRoot(input.file_path, context);
       if (internalRoot) {
         return {
           ok: false,
@@ -79,7 +79,7 @@ export function createSendAttachmentTool(): PilotDeckToolDefinition<SendAttachme
     checkPermissions: async (input, context): Promise<PermissionResult> =>
       checkSendAttachmentPermission(input.file_path, context),
     execute: async (input, context) => {
-      const internalRoot = findInternalWorkRoot(input.file_path, context);
+      const internalRoot = await findInternalWorkRoot(input.file_path, context);
       if (internalRoot) {
         throw new PilotDeckToolRuntimeError(
           "invalid_tool_input",
@@ -123,7 +123,10 @@ export function createSendAttachmentTool(): PilotDeckToolDefinition<SendAttachme
   };
 }
 
-function findInternalWorkRoot(inputPath: string, context: PilotDeckToolRuntimeContext): string | undefined {
+async function findInternalWorkRoot(
+  inputPath: string,
+  context: PilotDeckToolRuntimeContext,
+): Promise<string | undefined> {
   const absolutePath = path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(context.cwd, inputPath));
   const configuredWorkDir = context.env?.PILOTDECK_WORK_DIR?.trim();
   const roots = [
@@ -132,7 +135,24 @@ function findInternalWorkRoot(inputPath: string, context: PilotDeckToolRuntimeCo
       ? [path.resolve(path.isAbsolute(configuredWorkDir) ? configuredWorkDir : path.join(context.cwd, configuredWorkDir))]
       : []),
   ];
-  return roots.find((root) => isPathWithinRoot(absolutePath, root));
+  const lexicalMatch = roots.find((root) => isPathWithinRoot(absolutePath, root));
+  if (lexicalMatch) return lexicalMatch;
+
+  const realCandidate = await tryRealpath(absolutePath);
+  if (!realCandidate) return undefined;
+  const realRoots = await Promise.all(roots.map((root) => tryRealpath(root)));
+  const realMatchIndex = realRoots.findIndex(
+    (root): root is string => Boolean(root && isPathWithinRoot(realCandidate, root)),
+  );
+  return realMatchIndex >= 0 ? roots[realMatchIndex] : undefined;
+}
+
+async function tryRealpath(value: string): Promise<string | undefined> {
+  try {
+    return await realpath(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function internalAttachmentMessage(inputPath: string, internalRoot: string): string {

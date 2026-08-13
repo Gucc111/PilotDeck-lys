@@ -234,8 +234,11 @@ def replace_text(document: DocumentObject, match: str, replacement: str) -> int:
 
     affected = 0
     for _, paragraph in iter_document_paragraphs(document):
-        while match in paragraph.text:
-            start = paragraph.text.index(match)
+        search_from = 0
+        while True:
+            start = paragraph.text.find(match, search_from)
+            if start < 0:
+                break
             end = start + len(match)
             cursor = 0
             first_run = None
@@ -254,6 +257,10 @@ def replace_text(document: DocumentObject, match: str, replacement: str) -> int:
                     local_end = min(len(run.text), end - run_start)
                     run.text = run.text[:local_start] + run.text[local_end:]
             affected += 1
+            # Continue after the inserted replacement. Searching the mutated
+            # paragraph from the beginning would repeatedly match replacement
+            # text that contains `match` (including an unchanged replacement).
+            search_from = start + len(replacement)
     return affected
 
 

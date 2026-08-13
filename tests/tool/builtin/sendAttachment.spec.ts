@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -72,6 +72,32 @@ test("send_attachment also rejects a configured work directory outside workspace
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(configuredWorkDir, { recursive: true, force: true });
+  }
+});
+
+test("send_attachment rejects symlinks that resolve into an internal work directory", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-send-attachment-symlink-"));
+  try {
+    const workDir = join(projectRoot, ".pilotdeck", "work", "session", "turn");
+    const candidate = join(workDir, "candidate.docx");
+    const publishedAlias = join(projectRoot, "final.docx");
+    await mkdir(workDir, { recursive: true });
+    await writeFile(candidate, "unreviewed candidate");
+    await symlink(candidate, publishedAlias);
+
+    const tool = createSendAttachmentTool();
+    const validation = await tool.validateInput?.(
+      { file_path: publishedAlias },
+      context(projectRoot, workDir),
+    );
+
+    assert.equal(validation?.ok, false);
+    await assert.rejects(
+      () => tool.execute({ file_path: publishedAlias }, context(projectRoot, workDir)),
+      /inside PilotDeck's internal work directory/,
+    );
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
   }
 });
 
