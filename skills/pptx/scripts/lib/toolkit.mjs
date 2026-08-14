@@ -1,53 +1,5 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { loadDependencies, skillRoot } from './runtime.mjs';
-
-let cachedTokens;
-let cachedLayouts;
-
-async function tokens() {
-  if (!cachedTokens) {
-    cachedTokens = JSON.parse(await fs.readFile(path.join(skillRoot(), 'assets/layout-library/design-tokens.json'), 'utf8'));
-  }
-  return cachedTokens;
-}
-
-function merge(base, override) {
-  const result = { ...base };
-  for (const [key, value] of Object.entries(override ?? {})) {
-    if (value && typeof value === 'object' && !Array.isArray(value) && base?.[key] && typeof base[key] === 'object') {
-      result[key] = merge(base[key], value);
-    } else {
-      result[key] = value;
-    }
-  }
-  return result;
-}
-
-export async function resolveDesignTokens(options = {}) {
-  const base = await tokens();
-  const language = options.lang ?? 'zh-CN';
-  const inferredProfile = /^zh(?:-|$)/i.test(language) ? 'cross-platform-zh' : 'cross-platform-en';
-  const profileName = options.profile ?? inferredProfile;
-  const profile = base.typography.profiles?.[profileName];
-  if (!profile) throw new Error(`Unknown typography profile: ${profileName}`);
-  const densityName = options.density ?? 'presentation';
-  const density = base.typography.densityProfiles?.[densityName];
-  if (!density) throw new Error(`Unknown typography density: ${densityName}`);
-  const typography = merge(merge(base.typography, profile), density);
-  typography.profile = profileName;
-  typography.density = densityName;
-  typography.lang = options.lang ?? profile.lang ?? language;
-  return { ...base, typography };
-}
-
-async function layouts() {
-  if (!cachedLayouts) {
-    cachedLayouts = await import(pathToFileURL(path.join(skillRoot(), 'assets/layout-library/layouts/core.mjs')).href);
-  }
-  return cachedLayouts;
-}
+import { loadDependencies } from './runtime.mjs';
 
 export async function imageSizingCrop(imagePath, x, y, w, h) {
   const { sharp } = loadDependencies();
@@ -82,34 +34,73 @@ export async function imageSizingContain(imagePath, x, y, w, h) {
 
 export async function createDeck(options = {}) {
   const { PptxGenJS } = loadDependencies();
-  const deckTokens = options.tokens ?? await resolveDesignTokens({
-    lang: options.lang,
-    profile: options.typographyProfile,
-    density: options.density,
-  });
   const pptx = new PptxGenJS();
-  pptx.layout = options.layout ?? deckTokens.canvas.layout;
-  pptx.author = options.author ?? 'PilotDeck';
-  pptx.company = options.company ?? 'PilotDeck';
-  pptx.subject = options.subject ?? '';
-  pptx.title = options.title ?? '';
-  pptx.lang = options.lang ?? deckTokens.typography.lang ?? 'zh-CN';
+  pptx.layout = options.layout ?? 'LAYOUT_WIDE';
+  if (options.author) pptx.author = options.author;
+  if (options.company) pptx.company = options.company;
+  if (options.subject) pptx.subject = options.subject;
+  if (options.title) pptx.title = options.title;
+  const lang = options.lang ?? 'en-US';
+  const headFontFace = options.headFontFace ?? 'Arial';
+  const bodyFontFace = options.bodyFontFace ?? headFontFace;
+  pptx.lang = lang;
   pptx.theme = {
-    headFontFace: options.headFontFace ?? deckTokens.typography.headFontFace,
-    bodyFontFace: options.bodyFontFace ?? deckTokens.typography.bodyFontFace,
-    lang: options.lang ?? deckTokens.typography.lang ?? 'zh-CN',
+    headFontFace,
+    bodyFontFace,
+    lang,
   };
   return pptx;
 }
 
-export async function buildToolkit() {
+export async function createTemplatePresentation(inputPath, options = {}) {
+  if (!inputPath) throw new Error('Template editing requires build --input source.pptx');
+  if (!options.outputPath) throw new Error('Template presentation output context is unavailable');
+  const { Automizer, automizerModule } = loadDependencies();
+  const source = path.resolve(inputPath);
+  const output = path.resolve(options.outputPath);
+  const sourceAlias = options.alias ?? '__pilotdeck_source__';
+  const presentation = new Automizer({
+    templateDir: path.dirname(source),
+    outputDir: path.dirname(output),
+    mediaDir: path.dirname(source),
+    autoImportSlideMasters: true,
+    removeExistingSlides: true,
+    cleanup: false,
+    cleanupPlaceholders: false,
+    useCreationIds: false,
+    verbosity: options.verbose ? 1 : 0,
+  })
+    .loadRoot(path.basename(source))
+    .load(path.basename(source), sourceAlias);
+  return {
+    presentation,
+    sourceAlias,
+    source,
+    loadMedia(filePath, name = path.basename(filePath)) {
+      presentation.loadMedia(name, path.dirname(path.resolve(filePath)));
+      return name;
+    },
+    addSlide(slideNumber, modifySlide) {
+      presentation.addSlide(sourceAlias, slideNumber, modifySlide);
+      return presentation;
+    },
+    automizer: automizerModule,
+    ModifyTextHelper: automizerModule.ModifyTextHelper,
+    ModifyImageHelper: automizerModule.ModifyImageHelper,
+    modify: automizerModule.modify,
+  };
+}
+
+export async function buildToolkit(options = {}) {
   const deps = loadDependencies();
   return {
     createDeck,
-    resolveDesignTokens,
-    layouts: await layouts(),
-    tokens: await tokens(),
     pptxgenjs: deps.PptxGenJS,
+    inputPath: options.inputPath ? path.resolve(options.inputPath) : null,
+    createTemplatePresentation: (templatePath = options.inputPath, templateOptions = {}) => createTemplatePresentation(
+      templatePath,
+      { ...templateOptions, outputPath: options.outputPath },
+    ),
     imageSizingCrop,
     imageSizingContain,
   };

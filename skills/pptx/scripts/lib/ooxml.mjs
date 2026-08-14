@@ -224,7 +224,7 @@ export async function inspectPptx(inputPath) {
   const { JSZip } = loadDependencies();
   const legacyMagic = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
   if (buffer.length >= legacyMagic.length && buffer.subarray(0, legacyMagic.length).equals(legacyMagic)) {
-    throw new Error('Legacy binary .ppt is not OOXML. Run `pptx.sh convert --input source.ppt --out source-converted.pptx --qa-dir conversion-qa` first.');
+    throw new Error('Legacy binary .ppt is not OOXML. Run `pptx.sh convert-legacy --input source.ppt --out source-converted.pptx --qa-dir conversion-qa` first.');
   }
   let zip;
   try {
@@ -291,11 +291,4 @@ export async function inspectPptx(inputPath) {
     fontUsage,
     slides,
   };
-}
-
-export async function writeManifest(inputPath, outputPath) {
-  const manifest = await inspectPptx(inputPath);
-  await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
-  await fs.writeFile(path.resolve(outputPath), `${JSON.stringify(manifest, null, 2)}\n`);
-  return manifest;
 }
