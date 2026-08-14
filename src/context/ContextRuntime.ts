@@ -65,5 +65,8 @@ export type AgentContextRuntime = {
     reservedOutputTokens?: number;
     lastUsage?: CanonicalUsage;
     budgetEvaluator?: (messages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>;
+    sessionId?: string;
+    turnId?: string;
+    allowFallbackOnFailure?: boolean;
   }): Promise<AutoCompactResult>;
 };

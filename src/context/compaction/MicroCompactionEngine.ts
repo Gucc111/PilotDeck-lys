@@ -22,6 +22,15 @@ export type MicroCompactionInput = {
   idleMs?: number;
   /** Max bytes per tool_result allowed to remain after rewrite (legacy default ~512). */
   trimToBytes?: number;
+  /** Token-level trim budget. When set, converted to an approximate byte limit (×4). */
+  trimToTokens?: number;
+  /** Override the default keepLatest count for this call. */
+  keepLatest?: number;
+  /**
+   * Override protected tool names for this call. Pass `null` to disable all
+   * protection (used by emergency compaction).
+   */
+  protectedToolNames?: Iterable<string> | null;
 };
 
 export type MicroCompactionEngineOptions = {
@@ -53,8 +62,16 @@ export class MicroCompactionEngine {
   }
 
   apply(input: MicroCompactionInput): MicroCompactionResult {
-    const trimToBytes = input.trimToBytes ?? this.options.trimToBytes ?? 1536;
-    const keepLatest = this.options.keepLatest ?? 1;
+    const trimToBytes = input.trimToTokens != null
+      ? input.trimToTokens * 4
+      : (input.trimToBytes ?? this.options.trimToBytes ?? 1536);
+    const keepLatest = input.keepLatest ?? this.options.keepLatest ?? 1;
+    const skipProtection = input.protectedToolNames === null;
+    const effectiveProtectedNames = skipProtection
+      ? new Set<string>()
+      : (input.protectedToolNames != null
+        ? protectedToolNameSet(input.protectedToolNames)
+        : this.protectedToolNames);
 
     const toolNamesByCallId = collectToolNamesByCallId(input.messages);
     const compactableCallIds = this.collectCompactableToolCallIds(input.messages);
@@ -99,7 +116,7 @@ export class MicroCompactionEngine {
         if (!compactableCallIds.has(block.toolCallId)) {
           return block;
         }
-        if (isProtectedToolCallId(block.toolCallId, toolNamesByCallId, this.protectedToolNames)) {
+        if (!skipProtection && isProtectedToolCallId(block.toolCallId, toolNamesByCallId, effectiveProtectedNames)) {
           return block;
         }
         const size = this.estimateToolResultSize(block as CanonicalToolResultBlock);

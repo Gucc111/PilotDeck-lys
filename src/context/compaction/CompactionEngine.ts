@@ -105,6 +105,15 @@ export type CompactionInput = {
   signal?: AbortSignal;
   sessionId?: string;
   turnId?: string;
+  /**
+   * Override protected tool names for this run. Pass `null` to skip all
+   * protection filtering (used by emergency compaction).
+   */
+  protectedToolNames?: Iterable<string> | null;
+  /** Override max output tokens for the summary LLM call. */
+  maxOutputTokens?: number;
+  /** When true, suppress cache-breaking behavior for emergency calls. */
+  cacheReset?: boolean;
 };
 
 const DEFAULT_KEEP_TAIL_RATIO = 0.35;
@@ -130,10 +139,14 @@ export class CompactionEngine {
     const preTokens = this.estimateMessages(input.messages);
     const tailRatio = clamp(input.keepTailRatio ?? DEFAULT_KEEP_TAIL_RATIO, 0, 1);
     const keepCount = Math.max(1, Math.floor(input.messages.length * tailRatio));
+    const skipProtection = input.protectedToolNames === null;
+    const effectiveProtectedNames = skipProtection
+      ? undefined
+      : (input.protectedToolNames ?? this.protectedToolNames);
     const compactPlan = planFullCompactionMessages(
       input.messages,
       keepCount,
-      this.protectedToolNames,
+      effectiveProtectedNames,
     );
     const messagesToSummarize = compactPlan.messagesToSummarize;
     const messagesToKeep = compactPlan.messagesToKeep;
@@ -157,7 +170,12 @@ export class CompactionEngine {
       // the intent, but no model call happens.
     } else {
       try {
-        const result = await this.summarize(messagesToSummarize, input.userInstruction, input.signal);
+        const result = await this.summarize(
+          messagesToSummarize,
+          input.userInstruction,
+          input.signal,
+          input.maxOutputTokens,
+        );
         summaryMessage = result.message;
         summaryUsage = result.usage;
       } catch (error) {
@@ -232,6 +250,7 @@ export class CompactionEngine {
     messages: CanonicalMessage[],
     userInstruction: string | undefined,
     signal: AbortSignal | undefined,
+    maxOutputTokensOverride?: number,
   ): Promise<{ message: CanonicalMessage; usage?: CanonicalUsage }> {
     const trailingPrompt: CanonicalMessage = {
       role: "user",
@@ -247,7 +266,7 @@ export class CompactionEngine {
       model: this.options.model_,
       messages: [...stripMultimediaFromMessages(messages), trailingPrompt],
       systemPrompt: this.options.systemPrompt ?? COMPACT_SYSTEM_PROMPT_DEFAULT,
-      maxOutputTokens: this.options.maxOutputTokens ?? COMPACT_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: maxOutputTokensOverride ?? this.options.maxOutputTokens ?? COMPACT_MAX_OUTPUT_TOKENS,
       stream: true,
       thinking: { enabled: false },
     };
@@ -352,6 +371,32 @@ export function truncateHead(messages: CanonicalMessage[], keepRatio: number): C
   const ratio = clamp(keepRatio, 0.05, 1);
   const keep = Math.max(1, Math.floor(messages.length * ratio));
   return messages.slice(-keep);
+}
+
+/**
+ * Head truncation that preserves any checkpoint / compact boundary at the
+ * start of the conversation. If the first message looks like a boundary
+ * marker (`<compact-boundary` or `<snip-boundary`), it is kept and the
+ * truncation ratio applies to the remaining messages only.
+ */
+export function truncateHeadPreservingCheckpoint(
+  messages: CanonicalMessage[],
+  keepRatio: number,
+): CanonicalMessage[] {
+  if (messages.length <= 1) return messages;
+  const first = messages[0]!;
+  const isCheckpoint =
+    first.role === "user" &&
+    first.content.length === 1 &&
+    first.content[0]!.type === "text" &&
+    (first.content[0]!.text.startsWith("<compact-boundary") ||
+      first.content[0]!.text.startsWith("<snip-boundary"));
+  if (!isCheckpoint) {
+    return truncateHead(messages, keepRatio);
+  }
+  const rest = messages.slice(1);
+  const kept = truncateHead(rest, keepRatio);
+  return [first, ...kept];
 }
 
 function clamp(value: number, min: number, max: number): number {

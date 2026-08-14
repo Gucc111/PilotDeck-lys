@@ -1,4 +1,5 @@
 import type { CanonicalMessage } from "../../model/index.js";
+import { TokenBudgetManager } from "../budget/TokenBudgetManager.js";
 import {
   collectToolCallIds,
   collectToolResultIds,
@@ -93,11 +94,75 @@ export class SnipEngine {
     this.protectedToolNames = protectedToolNameSet(options.protectedToolNames);
   }
 
-  snip(messages: CanonicalMessage[]): SnipResult {
+  private snipByTokenBudget(
+    messages: CanonicalMessage[],
+    turns: CanonicalMessage[][],
+    targetTokens: number,
+  ): SnipResult {
+    const budgetManager = new TokenBudgetManager();
+    const keepIndexes = new Set<number>();
+
+    // Always keep head turns.
+    for (let i = 0; i < Math.min(this.keepHeadTurns, turns.length); i += 1) {
+      keepIndexes.add(i);
+    }
+
+    // Walk from the tail, adding turns until the token budget is exhausted.
+    let tailTokens = 0;
+    for (let i = turns.length - 1; i >= this.keepHeadTurns; i -= 1) {
+      const turnTokens = turns[i]!.reduce(
+        (sum, msg) => sum + budgetManager.estimateForMessage(msg),
+        0,
+      );
+      if (tailTokens + turnTokens > targetTokens && keepIndexes.size > this.keepHeadTurns) {
+        break;
+      }
+      keepIndexes.add(i);
+      tailTokens += turnTokens;
+    }
+
+    // Also keep protected turns.
+    for (const idx of collectProtectedTurnIndexes(messages, {
+      protectedToolNames: this.protectedToolNames,
+    })) {
+      keepIndexes.add(idx);
+    }
+
+    if (keepIndexes.size >= turns.length) {
+      return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
+    }
+
+    const turnsSnipped = turns.length - keepIndexes.size;
+    const projected = stitchKeptTurnsWithBoundaries(turns, keepIndexes, this.keepHeadTurns, this.keepTailTurns);
+
+    const toolResultIds = collectToolResultIds(projected);
+    const toolCallIds = collectToolCallIds(projected);
+    const withoutDanglingCalls = stripUnpairedToolCalls(projected, toolResultIds);
+    const pairedToolCallIds = collectToolCallIds(withoutDanglingCalls);
+    const cleaned = stripUnpairedToolResults(withoutDanglingCalls, pairedToolCallIds);
+
+    const dangling = Array.from(toolCallIds).filter((id) => !toolResultIds.has(id));
+
+    return {
+      messages: ensureTrailingUserMessage(cleaned),
+      applied: true,
+      turnsSnipped,
+      danglingToolCallIds: dangling,
+    };
+  }
+
+  snip(messages: CanonicalMessage[], options?: { targetTokens?: number }): SnipResult {
     if (!this.enabled) {
       return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
     }
     const turns = splitIntoTurns(messages);
+
+    // When targetTokens is provided, select tail turns by token budget
+    // instead of the fixed keepTailTurns count.
+    if (options?.targetTokens != null && options.targetTokens > 0) {
+      return this.snipByTokenBudget(messages, turns, options.targetTokens);
+    }
+
     if (turns.length <= this.keepHeadTurns + this.keepTailTurns) {
       return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
     }

@@ -209,6 +209,29 @@ export class AgentLoop {
      * fall through to fallback / fail (legacy single-shot semantics).
      */
     let hasAttemptedCompact = false;
+
+    const buildContextOverflowFailure = () => {
+      const errorMsg =
+        "Context is still over budget after all emergency compaction strategies. " +
+        "The conversation is too large for the current model's context window.";
+      const err = agentError(
+        "agent_context_recovery_failed",
+        errorMsg,
+        undefined,
+        "All compaction strategies have been exhausted. Start a new session (/new) or switch to a model with a larger context window.",
+      );
+      const result = this.createTurnResult(input, {
+        type: "error",
+        stopReason: "prompt_too_long",
+        usage,
+        permissionDenials,
+        turns: turnCount,
+        startedAt,
+        finalMessage,
+        errors: [err],
+      });
+      return { errorMsg, err, result };
+    };
     /**
      * Single-shot guard for `max_output_reached` retries. The loop only bumps
      * an explicitly configured cap; catalog-default requests are already sent
@@ -373,6 +396,16 @@ export class AgentLoop {
               turnId: input.turnId,
               reason: "auto_compact",
             };
+            if (compact.error) {
+              const failure = buildContextOverflowFailure();
+              await this.dispatchLifecycle(input, "StopFailure", { error: failure.errorMsg });
+              yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.errorMsg };
+              yield await emitStatus(createModelRequestFailedStatus({ error: failure.err }));
+              yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure.err };
+              await captureTurn(true);
+              yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: failure.result };
+              return { result: failure.result, messages };
+            }
           }
           pendingContextBudget = compact.snapshot;
         } catch {
@@ -461,6 +494,16 @@ export class AgentLoop {
                 turnId: input.turnId,
                 reason: "auto_compact",
               };
+              if (recompact.error) {
+                const failure = buildContextOverflowFailure();
+                await this.dispatchLifecycle(input, "StopFailure", { error: failure.errorMsg });
+                yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.errorMsg };
+                yield await emitStatus(createModelRequestFailedStatus({ error: failure.err }));
+                yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure.err };
+                await captureTurn(true);
+                yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: failure.result };
+                return { result: failure.result, messages };
+              }
             }
             yield {
               type: "context_budget",
@@ -985,6 +1028,16 @@ export class AgentLoop {
               });
               if (compact.type === "compacted") {
                 messages = compact.messages;
+                if (compact.error) {
+                  const failure = buildContextOverflowFailure();
+                  await this.dispatchLifecycle(input, "StopFailure", { error: failure.errorMsg });
+                  yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.errorMsg };
+                  yield await emitStatus(createModelRequestFailedStatus({ error: failure.err }));
+                  yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure.err };
+                  await captureTurn(true);
+                  yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: failure.result };
+                  return { result: failure.result, messages };
+                }
               } else {
                 messages = truncateHeadKeepRatio(messages, 0.5);
               }
@@ -2976,6 +3029,10 @@ export function modelFailureAction(error: CanonicalModelError | undefined): {
   if (error.code === "billing") {
     const hint = `Top up billing/quota on the provider API side, or switch to another provider/model in Settings.`;
     return modelFailureActionResult(hint, "provider", "billing");
+  }
+  if (error.code === "context_overflow_after_emergency_compaction") {
+    const hint = "All compaction strategies have been exhausted. Start a new session (/new) or switch to a model with a larger context window.";
+    return modelFailureActionResult(hint, "prompt", "contextOverflowAfterEmergency");
   }
   if (error.code === "prompt_too_long" || error.code === "context_overflow") {
     const hint = "Run /compact, start a new session, remove large attachments, or switch to a larger-context model in Settings.";

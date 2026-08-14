@@ -6,6 +6,7 @@ import {
   type CompactionEngine,
   type CompactionResult,
   buildPostCompactMessages,
+  truncateHeadPreservingCheckpoint,
 } from "./compaction/CompactionEngine.js";
 import type { CachedMicroCompactionEngine } from "./compaction/CachedMicroCompactionEngine.js";
 import type { MicroCompactionEngine } from "./compaction/MicroCompactionEngine.js";
@@ -40,6 +41,7 @@ export type AutoCompactResult =
       tier: CompactionTier;
       snapshot: TokenBudgetSnapshot;
       result?: CompactionResult;
+      error?: "context_overflow_after_emergency_compaction";
     };
 
 export type DefaultContextRuntimeOptions = {
@@ -91,6 +93,11 @@ const DEFAULT_MAX_CONTEXT_TOKENS = 8192;
 const DEFAULT_TRUNCATE_FIRST_RATIO = 0.5;
 const DEFAULT_TRUNCATE_SECOND_RATIO = 0.25;
 const DEFAULT_MEMORY_RETRIEVAL_TIMEOUT_MS = 30_000;
+
+const EMERGENCY_KEEP_TAIL_RATIO = 0.05;
+const EMERGENCY_TOOL_RESULT_TOKENS = 256;
+const EMERGENCY_HEAD_KEEP_RATIO = 0.10;
+const EMERGENCY_SUMMARY_MAX_OUTPUT_TOKENS = 1_536;
 
 export class DefaultContextRuntime implements ContextRuntime {
   private readonly extension: ExtensionResolver;
@@ -304,6 +311,9 @@ export class DefaultContextRuntime implements ContextRuntime {
     reservedOutputTokens?: number;
     lastUsage?: CanonicalUsage;
     budgetEvaluator?: (messages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>;
+    sessionId?: string;
+    turnId?: string;
+    allowFallbackOnFailure?: boolean;
   }): Promise<AutoCompactResult> {
     const effectiveMaxContextTokens = input.maxContextTokens ?? this.maxContextTokens;
     if (!this.autoCompactionPolicy || !this.tokenBudget) {
@@ -338,22 +348,29 @@ export class DefaultContextRuntime implements ContextRuntime {
     // Tier 1: MicroCompaction — truncate old tool_result content.
     if (this.microCompaction) {
       const r = this.microCompaction.apply({ messages });
-      if (r.rewritten > 0) {
-        messages = r.messages;
-        const snap = await evaluateBudget(messages);
-        if (snap.state !== "blocking") {
-          return {
-            type: "compacted",
-            messages: ensureTrailingUserMessage(messages),
-            tier: "micro",
-            snapshot: snap,
-          };
-        }
+      messages = r.messages;
+      const snap = await evaluateBudget(messages);
+      if (snap.ratio < 0.90) {
+        return {
+          type: "compacted",
+          messages: ensureTrailingUserMessage(messages),
+          tier: "micro",
+          snapshot: snap,
+        };
       }
     }
 
-    if (decision.reason === "warning_threshold") {
-      return { type: "skipped", snapshot: decision.snapshot };
+    // Guard: only proceed to Tier 2+ when ratio >= 0.90 (blocking territory).
+    {
+      const snap = await evaluateBudget(messages);
+      if (snap.ratio < 0.90) {
+        return {
+          type: "compacted",
+          messages: ensureTrailingUserMessage(messages),
+          tier: "micro",
+          snapshot: snap,
+        };
+      }
     }
 
     // Tier 2: SnipEngine — prune middle turns, keep head + tail.
@@ -362,7 +379,7 @@ export class DefaultContextRuntime implements ContextRuntime {
       if (r.applied) {
         messages = r.messages;
         const snap = await evaluateBudget(messages);
-        if (snap.state !== "blocking") {
+        if (snap.ratio < 0.90) {
           return {
             type: "compacted",
             messages: ensureTrailingUserMessage(messages),
@@ -374,30 +391,130 @@ export class DefaultContextRuntime implements ContextRuntime {
     }
 
     // Tier 3: CompactionEngine — full summarization via model call.
+    let compactionResult: CompactionResult | undefined;
     if (this.compactionEngine) {
       const result = await this.compactionEngine.run({
         trigger: "auto",
         messages,
         signal: input.abortSignal,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
       });
-      if (result.error || !result.summaryMessage) {
-        return { type: "skipped", snapshot: decision.snapshot };
+      compactionResult = result;
+      if (!result.error && result.summaryMessage) {
+        messages = ensureTrailingUserMessage(buildPostCompactMessages(result));
+        const snap = await evaluateBudget(messages);
+        if (snap.ratio < 0.90) {
+          return {
+            type: "compacted",
+            messages,
+            tier: "full",
+            snapshot: snap,
+            result,
+          };
+        }
+
+        // Post-summary snip: if still blocking after full compact, try snipping again.
+        if (this.snipEngine) {
+          const snipResult = this.snipEngine.snip(messages, {
+            targetTokens: Math.floor(effectiveMaxContextTokens * 0.85),
+          });
+          if (snipResult.applied) {
+            messages = ensureTrailingUserMessage(snipResult.messages);
+            const postSnipSnap = await evaluateBudget(messages);
+            if (postSnipSnap.ratio < 0.90) {
+              return {
+                type: "compacted",
+                messages,
+                tier: "full",
+                snapshot: postSnipSnap,
+                result,
+              };
+            }
+          }
+        }
       }
-      const postCompactMessages = ensureTrailingUserMessage(buildPostCompactMessages(result));
-      const snapshot = await evaluateBudget(postCompactMessages);
-      if (snapshot.state === "blocking") {
-        return { type: "skipped", snapshot };
-      }
-      return {
-        type: "compacted",
-        messages: postCompactMessages,
-        tier: "full",
-        snapshot,
-        result,
-      };
     }
 
-    return { type: "skipped", snapshot: decision.snapshot };
+    // Emergency compaction: aggressive multi-step fallback.
+    const emergencyMessages = await this.runEmergencyCompaction(
+      messages,
+      effectiveMaxContextTokens,
+      evaluateBudget,
+      input.abortSignal,
+      input.sessionId,
+      input.turnId,
+    );
+    messages = emergencyMessages;
+    const finalSnapshot = await evaluateBudget(messages);
+    return {
+      type: "compacted",
+      messages: ensureTrailingUserMessage(messages),
+      tier: "full",
+      snapshot: finalSnapshot,
+      result: compactionResult,
+      ...(finalSnapshot.ratio >= 1.0 ? { error: "context_overflow_after_emergency_compaction" } : {}),
+    };
+  }
+
+  /**
+   * Emergency compaction: three-level aggressive cascade when all normal
+   * compaction tiers fail to bring context below the blocking threshold.
+   *
+   * Level 1: Emergency summary with minimal tail preservation and no tool protection.
+   * Level 2: Emergency tool projection — trim all tool_results to 256 tokens.
+   * Level 3: Emergency head truncation — keep only 10% of messages.
+   */
+  private async runEmergencyCompaction(
+    messages: CanonicalMessage[],
+    maxContextTokens: number,
+    evaluateBudget: (msgs: CanonicalMessage[]) => Promise<TokenBudgetSnapshot>,
+    abortSignal?: AbortSignal,
+    sessionId?: string,
+    turnId?: string,
+  ): Promise<CanonicalMessage[]> {
+    let current = messages;
+
+    // Level 1: Emergency summary with minimal tail and no protection.
+    if (this.compactionEngine) {
+      try {
+        const result = await this.compactionEngine.run({
+          trigger: "auto",
+          messages: current,
+          keepTailRatio: EMERGENCY_KEEP_TAIL_RATIO,
+          protectedToolNames: null,
+          maxOutputTokens: EMERGENCY_SUMMARY_MAX_OUTPUT_TOKENS,
+          cacheReset: true,
+          signal: abortSignal,
+          sessionId,
+          turnId,
+        });
+        if (!result.error && result.summaryMessage) {
+          current = ensureTrailingUserMessage(buildPostCompactMessages(result));
+          const snap = await evaluateBudget(current);
+          if (snap.ratio < 0.90) return current;
+        }
+      } catch {
+        // Emergency summary failed — continue to next level.
+      }
+    }
+
+    // Level 2: Emergency tool projection — trim all tool_results aggressively.
+    if (this.microCompaction) {
+      const r = this.microCompaction.apply({
+        messages: current,
+        trimToTokens: EMERGENCY_TOOL_RESULT_TOKENS,
+        keepLatest: 0,
+        protectedToolNames: null,
+      });
+      current = r.messages;
+      const snap = await evaluateBudget(current);
+      if (snap.ratio < 0.90) return current;
+    }
+
+    // Level 3: Emergency head truncation — keep only 10% of messages.
+    current = truncateHeadPreservingCheckpoint(current, EMERGENCY_HEAD_KEEP_RATIO);
+    return ensureTrailingUserMessage(current);
   }
 
   async recoverFromModelError(input: ContextRecoveryInput): Promise<ContextRecoveryDecision> {
