@@ -142,6 +142,8 @@ export type CanonicalMessageMetadata = {
   transientId?: string;
   /** Message replaces compacted history and is omitted from the visible transcript. */
   compactReplacement?: boolean;
+  /** Compaction id of the effective replacement snapshot persisted in the transcript. */
+  compactSnapshotId?: string;
   purpose?: string;
   forkCarryover?: {
     sourceSessionId: string;

@@ -44,7 +44,12 @@ import type { LifecycleDispatchResult } from "../../lifecycle/index.js";
 import type { PilotDeckHookEvent } from "../../extension/hooks/protocol/events.js";
 import { NullContextRuntime } from "../../context/NullContextRuntime.js";
 import type { AgentContextRuntime } from "../../context/ContextRuntime.js";
-import type { ContextRecoveryDecision, ContextSupplementalToolResultMessage, TokenBudgetSnapshot } from "../../context/index.js";
+import type {
+  CompactionResult,
+  ContextRecoveryDecision,
+  ContextSupplementalToolResultMessage,
+  TokenBudgetSnapshot,
+} from "../../context/index.js";
 import type { PermissionMode, PermissionRule, PermissionRuleSet } from "../../permission/index.js";
 import type { AgentControlBoundaryTranscriptEntry } from "../../session/transcript/TranscriptEntry.js";
 import { collectToolCalls } from "./collectToolCalls.js";
@@ -2014,11 +2019,15 @@ export class AgentLoop {
         compactionId: compact.result.compactionId,
         trigger: compact.result.trigger,
         preTokens: compact.result.preTokens,
-        ...(compact.result.postTokens !== undefined ? { postTokens: compact.result.postTokens } : {}),
+        postTokens: compact.snapshot.tokens,
         messagesSummarized: compact.result.messagesSummarized,
+        ...(compact.result.targetPostTokens !== undefined ? { targetTokens: compact.result.targetPostTokens } : {}),
+        summaryGenerated: compactionSummaryGenerated(compact.result),
+        checkpointMerged: compact.result.checkpointMerged ?? compact.result.cacheReset === true,
+        finalRatio: compact.snapshot.ratio,
         extra: {
           tier: compact.tier,
-          summarySucceeded: compact.result.error === undefined,
+          summarySucceeded: compactionSummarySucceeded(compact.result),
           ...(compact.result.cacheReset ? { cacheReset: true } : {}),
           ...(compact.result.stablePrefix && compact.result.stablePrefix.length > 0
             ? { checkpointVersion: Math.floor(compact.result.stablePrefix.length / 2) + 1 }
@@ -2036,7 +2045,7 @@ export class AgentLoop {
     };
     await Promise.resolve(input.onCompactPersisted({
       boundary,
-      messages: markCompactReplacementMessages(compact.messages),
+      messages: markCompactReplacementMessages(compact.messages, compact.result.compactionId),
     })).catch(() => {});
   }
 
@@ -3464,14 +3473,26 @@ function tokensFromUsage(usage: CanonicalUsage | undefined): number | undefined 
   return Math.ceil(inputTokens + outputTokens);
 }
 
-function markCompactReplacementMessages(messages: CanonicalMessage[]): CanonicalMessage[] {
+function markCompactReplacementMessages(messages: CanonicalMessage[], compactionId: string): CanonicalMessage[] {
   return messages.map((message) => ({
     ...message,
     metadata: {
       ...(message.metadata ?? {}),
       compactReplacement: true,
+      compactSnapshotId: compactionId,
     },
   }));
+}
+
+function compactionSummarySucceeded(result: CompactionResult): boolean {
+  return result.error === undefined
+    && result.summaryMessage !== undefined
+    && result.messagesSummarized > 0;
+}
+
+function compactionSummaryGenerated(result: CompactionResult): boolean {
+  return result.summaryGenerated
+    ?? (result.summaryMessage !== undefined && result.messagesSummarized > 0);
 }
 
 function modelErrorTarget(error: CanonicalModelError, fallbackProvider: string, fallbackModel: string): {

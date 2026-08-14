@@ -126,6 +126,12 @@ export type CompactionResult = {
   stablePrefix?: CanonicalMessage[];
   /** True when this pass rewrites an existing checkpoint prefix. */
   cacheReset?: boolean;
+  /** Requested total token target for the post-compaction prompt. */
+  targetPostTokens?: number;
+  /** True when this pass produced a summary message (LLM or fallback). */
+  summaryGenerated?: boolean;
+  /** True when existing checkpoint summaries were consolidated by this pass. */
+  checkpointMerged?: boolean;
   /** Usage from the summary request, including provider cache accounting. */
   summaryUsage?: CanonicalUsage;
   diagnostics: ContextDiagnostic[];
@@ -137,6 +143,10 @@ export type CompactionInput = {
   messages: CanonicalMessage[];
   /** Optional ratio of messages to preserve verbatim past the boundary. */
   keepTailRatio?: number;
+  /** Effective input budget after reserving model output tokens. */
+  effectiveContextTokens?: number;
+  /** Desired total size of the post-compaction prompt. */
+  targetPostTokens?: number;
   /** Override protected tool names for this compaction pass; null disables protection. */
   protectedToolNames?: Iterable<string> | null;
   /** Provider summarize prompt addition (e.g. "user wants you to focus on X"). */
@@ -157,6 +167,8 @@ export type CompactionInput = {
 const DEFAULT_KEEP_TAIL_RATIO = 0.35;
 const DEFAULT_MIN_TAIL_MESSAGES = 3;
 const RELAXED_MIN_TAIL_MESSAGES = 1;
+const CHECKPOINT_MERGE_GROUP_LIMIT = 3;
+const CHECKPOINT_MERGE_BUDGET_RATIO = 0.15;
 
 /**
  * Owned by `AgentLoop`, not by `ContextRuntime`. Performs the second model
@@ -181,8 +193,27 @@ export class CompactionEngine {
     const compactionId = this.options.uuid?.() ?? randomUUID();
     const checkpoint = splitCheckpointPrefix(input.messages);
     const preTokens = this.estimateMessages(input.messages);
+    const stablePrefixTokens = this.estimateMessages(checkpoint.stablePrefix);
+    const checkpointGroups = Math.floor(checkpoint.stablePrefix.length / 2);
+    const effectiveContextTokens = positiveTokenCount(input.effectiveContextTokens);
+    const mergeForCheckpointPressure = input.trigger === "auto"
+      && checkpoint.stablePrefix.length > 0
+      && (checkpointGroups >= CHECKPOINT_MERGE_GROUP_LIMIT
+        || (effectiveContextTokens !== undefined
+          && stablePrefixTokens >= effectiveContextTokens * CHECKPOINT_MERGE_BUDGET_RATIO));
+    const cacheReset = input.cacheReset
+      ?? (mergeForCheckpointPressure || (checkpoint.stablePrefix.length > 0 && input.trigger !== "auto"));
+    const checkpointMerged = cacheReset && checkpoint.stablePrefix.length > 0;
+    const stablePrefix = checkpointMerged ? [] : checkpoint.stablePrefix;
+    const planningMessages = checkpointMerged ? input.messages : checkpoint.liveMessages;
+    const summaryOutputReserve = positiveTokenCount(input.maxOutputTokens)
+      ?? positiveTokenCount(this.options.maxOutputTokens)
+      ?? COMPACT_MAX_OUTPUT_TOKENS;
+    const targetPostTokens = positiveTokenCount(input.targetPostTokens);
     const tailRatio = clamp(input.keepTailRatio ?? DEFAULT_KEEP_TAIL_RATIO, 0, 1);
-    const tailTokenBudget = Math.max(1, Math.floor(preTokens * tailRatio));
+    const tailTokenBudget = targetPostTokens !== undefined
+      ? Math.max(1, targetPostTokens - this.estimateMessages(stablePrefix) - summaryOutputReserve)
+      : Math.max(1, Math.floor(preTokens * tailRatio));
     const protectedToolNames = input.protectedToolNames === null
       ? new Set<string>()
       : input.protectedToolNames ?? this.protectedToolNames;
@@ -190,7 +221,7 @@ export class CompactionEngine {
       ? RELAXED_MIN_TAIL_MESSAGES
       : DEFAULT_MIN_TAIL_MESSAGES;
     const compactPlan = planFullCompactionMessages(
-      checkpoint.liveMessages,
+      planningMessages,
       tailTokenBudget,
       protectedToolNames,
       minTailMessages,
@@ -228,14 +259,11 @@ export class CompactionEngine {
       // the intent, but no model call happens.
     } else {
       const summaryAnchors = input.protectedToolNames === null
-        ? buildCompactSummaryAnchors(checkpoint.liveMessages, this.protectedToolNames)
+        ? buildCompactSummaryAnchors(planningMessages, this.protectedToolNames)
         : undefined;
-      // The summary sees the entire live segment, including the retained tail.
-      // This makes a later post-summary snip semantically safe.
-      const summaryInput = projectMessagesForSummary([
-        ...checkpoint.stablePrefix,
-        ...checkpoint.liveMessages,
-      ]);
+      // Append passes summarize only new live history. Checkpoint-merge passes
+      // see the full prompt and replace all prior summaries with one checkpoint.
+      const summaryInput = projectMessagesForSummary(planningMessages);
       if (this.isSummaryFailureCooldownActive()) {
         summaryError = this.summaryFailureError ?? "context summary is in cooldown";
         summaryMessage = buildDeterministicFallbackSummary(messagesToSummarize, summaryError);
@@ -265,7 +293,7 @@ export class CompactionEngine {
       trigger: input.trigger,
       preTokens,
       messagesSummarized: messagesToSummarize.length,
-      summarySucceeded: summaryError === undefined,
+      summarySucceeded: summaryError === undefined && summaryMessage !== undefined,
     });
 
     const diagnostics: ContextDiagnostic[] = summaryError
@@ -300,8 +328,11 @@ export class CompactionEngine {
       summaryMessage,
       boundaryMarker,
       messagesToKeep,
-      stablePrefix: checkpoint.stablePrefix,
-      cacheReset: input.cacheReset ?? (checkpoint.stablePrefix.length > 0 && input.trigger !== "auto"),
+      stablePrefix,
+      cacheReset,
+      targetPostTokens,
+      summaryGenerated: summaryMessage !== undefined,
+      checkpointMerged,
       summaryUsage,
       attachments: input.attachments ?? [],
       hookResults: input.hookResults ?? [],
@@ -317,7 +348,7 @@ export class CompactionEngine {
       event: "PostCompact",
       payload: {
         trigger: input.trigger,
-        status: summaryError ? "fallback" : "success",
+        status: summaryError ? "fallback" : summaryMessage ? "success" : "skipped",
         error: summaryError,
         preTokens,
         postTokens: result.postTokens,
@@ -331,7 +362,7 @@ export class CompactionEngine {
       turnId: input.turnId ?? "",
       compactionId,
       trigger: input.trigger,
-      status: summaryError ? "fallback" : "success",
+      status: summaryError ? "fallback" : summaryMessage ? "success" : "skipped",
       preTokens,
       postTokens: result.postTokens,
       messagesSummarized: messagesToSummarize.length,
@@ -431,7 +462,11 @@ export class CompactionEngine {
     messagesSummarized: number;
     summarySucceeded: boolean;
   }): CanonicalMessage {
-    const status = opts.summarySucceeded ? "ok" : "summary_failed";
+    const status = opts.summarySucceeded
+      ? "ok"
+      : opts.messagesSummarized === 0
+        ? "no_content"
+        : "summary_failed";
     return {
       role: "user",
       content: [
@@ -442,6 +477,11 @@ export class CompactionEngine {
       ],
     };
   }
+}
+
+function positiveTokenCount(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value);
 }
 
 /**

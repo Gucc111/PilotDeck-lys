@@ -23,6 +23,8 @@ export type SnipEngineOptions = {
   protectedToolNames?: Iterable<string>;
   /** Optional token target for the retained live tail. */
   targetTokens?: number;
+  /** Optional token target for the complete prompt, including checkpoints. */
+  targetTotalTokens?: number;
 };
 
 export type SnipResult = {
@@ -97,19 +99,23 @@ export class SnipEngine {
     this.protectedToolNames = protectedToolNameSet(options.protectedToolNames);
   }
 
-  snip(messages: CanonicalMessage[], options: Pick<SnipEngineOptions, "targetTokens"> = {}): SnipResult {
+  snip(messages: CanonicalMessage[], options: Pick<SnipEngineOptions, "targetTokens" | "targetTotalTokens"> = {}): SnipResult {
     if (!this.enabled) {
       return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
     }
     const prefixCount = checkpointPrefixMessageCount(messages);
     const stablePrefix = messages.slice(0, prefixCount);
+    const stablePrefixTokens = this.tokenBudget.estimateMessagesTokens(stablePrefix);
+    const targetTokens = options.targetTotalTokens !== undefined
+      ? Math.max(1, Math.floor(options.targetTotalTokens) - stablePrefixTokens)
+      : options.targetTokens;
     const turns = splitIntoTurns(messages.slice(prefixCount));
     if (turns.length <= this.keepHeadTurns + this.keepTailTurns) {
       return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
     }
 
     const keepIndexes = new Set<number>();
-    if (options.targetTokens === undefined) {
+    if (targetTokens === undefined) {
       for (let index = 0; index < Math.min(this.keepHeadTurns, turns.length); index += 1) {
         keepIndexes.add(index);
       }
@@ -119,8 +125,8 @@ export class SnipEngine {
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const tokens = this.tokenBudget.estimateMessagesTokens(turns[index]!);
       const mustKeep = turns.length - index <= tailFloor;
-      if (!mustKeep && options.targetTokens !== undefined
-        && accumulatedTailTokens + tokens > Math.max(1, options.targetTokens)) {
+      if (!mustKeep && targetTokens !== undefined
+        && accumulatedTailTokens + tokens > Math.max(1, targetTokens)) {
         break;
       }
       keepIndexes.add(index);

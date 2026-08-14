@@ -78,9 +78,11 @@ test("full compaction can disable protected turn preservation", async () => {
 
 test("rolling checkpoints keep the accepted prefix byte-identical", async () => {
   let sequence = 0;
+  const summaryRequests: CanonicalModelRequest[] = [];
   const engine = new CompactionEngine({
     model: {
-      async *stream(): AsyncIterable<CanonicalModelEvent> {
+      async *stream(request): AsyncIterable<CanonicalModelEvent> {
+        summaryRequests.push(request);
         sequence += 1;
         yield { type: "message_start", role: "assistant" };
         yield { type: "text_delta", text: `## Objective\ncheckpoint-${sequence}` };
@@ -89,6 +91,7 @@ test("rolling checkpoints keep the accepted prefix byte-identical", async () => 
     },
     provider: "local",
     model_: "local-chat",
+    maxOutputTokens: 1,
   });
   const first = await engine.run({
     trigger: "auto",
@@ -114,6 +117,69 @@ test("rolling checkpoints keep the accepted prefix byte-identical", async () => 
 
   assert.deepEqual(secondMessages.slice(0, 2), firstMessages.slice(0, 2));
   assert.match(summaryText(second.summaryMessage), /checkpoint-2/);
+  assert.doesNotMatch(textFromMessages(summaryRequests[1]!.messages), /checkpoint-1/);
+
+  const third = await engine.run({
+    trigger: "auto",
+    messages: [...secondMessages, ...rollingWorkMessages("Third")],
+    keepTailRatio: 0.05,
+  });
+  const thirdMessages = buildPostCompactMessages(third);
+  assert.equal(third.checkpointMerged, false);
+  assert.equal(third.stablePrefix?.length, 4);
+
+  const fourth = await engine.run({
+    trigger: "auto",
+    messages: [...thirdMessages, ...rollingWorkMessages("Fourth")],
+    effectiveContextTokens: 100_000,
+    targetPostTokens: 60,
+  });
+  const fourthMessages = buildPostCompactMessages(fourth);
+  assert.equal(fourth.checkpointMerged, true);
+  assert.equal(fourth.stablePrefix?.length, 0);
+  assert.equal(fourthMessages.filter(isCompactBoundaryMessageForTest).length, 1);
+  assert.match(textFromMessages(summaryRequests[3]!.messages), /checkpoint-1/);
+  assert.match(textFromMessages(summaryRequests[3]!.messages), /checkpoint-3/);
+});
+
+test("auto compaction merges a stable checkpoint prefix above 15% of the effective budget", async () => {
+  let sequence = 0;
+  const summaryRequests: CanonicalModelRequest[] = [];
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(request): AsyncIterable<CanonicalModelEvent> {
+        summaryRequests.push(request);
+        sequence += 1;
+        yield { type: "message_start", role: "assistant" };
+        yield {
+          type: "text_delta",
+          text: sequence === 1
+            ? `## Objective\n${"large-checkpoint ".repeat(200)}`
+            : "## Objective\nmerged-checkpoint",
+        };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+    maxOutputTokens: 1,
+  });
+
+  const first = await engine.run({
+    trigger: "auto",
+    messages: rollingWorkMessages("Initial"),
+    keepTailRatio: 0.05,
+  });
+  const second = await engine.run({
+    trigger: "auto",
+    messages: [...buildPostCompactMessages(first), ...rollingWorkMessages("Next")],
+    effectiveContextTokens: 1_000,
+    targetPostTokens: 60,
+  });
+
+  assert.equal(second.checkpointMerged, true);
+  assert.equal(second.stablePrefix?.length, 0);
+  assert.match(textFromMessages(summaryRequests[1]!.messages), /large-checkpoint/);
 });
 
 test("auto full compaction retries without protected turns when protected output still blocks", async () => {
@@ -166,6 +232,43 @@ test("auto full compaction retries without protected turns when protected output
   assert.equal(hasToolResult(result.messages, "task-1"), false);
   assert.equal(hasToolCall(result.messages, "read_skill"), false);
   assert.equal(hasToolResultReference(result.messages, "skill-1"), false);
+});
+
+test("protected turns above the 60% target stay intact without emergency below 90%", async () => {
+  const summaryRequests: CanonicalModelRequest[] = [];
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(request): AsyncIterable<CanonicalModelEvent> {
+        summaryRequests.push(request);
+        yield { type: "message_start", role: "assistant" };
+        yield { type: "text_delta", text: "## Objective\nKeep protected work." };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+    maxOutputTokens: 1,
+  });
+  const tokenBudget = new TokenBudgetManager();
+  const runtime = new DefaultContextRuntime({
+    tokenBudget,
+    autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
+    compactionEngine: engine,
+    maxContextTokens: 100,
+  });
+
+  const result = await runtime.tryAutoCompact({
+    messages: compactFixture(),
+    budgetEvaluator: (candidate) => Promise.resolve(
+      tokenBudget.snapshotFromTokens(hasCompactSummary(candidate) ? 85 : 95, 100),
+    ),
+  });
+
+  assert.equal(result.type, "compacted");
+  assert.equal(result.tier, "full");
+  assert.equal(summaryRequests.length, 1);
+  assert.equal(hasToolCall(result.messages, "Task"), true);
+  assert.ok(result.result?.diagnostics.some((diagnostic) => diagnostic.code === "compaction_target_not_reached"));
 });
 
 test("custom summary prompts retain runtime intent isolation constraints", async () => {
@@ -630,6 +733,26 @@ test("summary input prunes stale tool outputs and oversized tool-call args", asy
   assert.ok(duplicateResult);
   assert.match(toolResultText(duplicateResult!), /Duplicate tool output omitted/);
 });
+
+function rollingWorkMessages(label: string): CanonicalMessage[] {
+  return Array.from({ length: 16 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" as const : "assistant" as const,
+    content: [{ type: "text" as const, text: `${label} work ${index} ${"context ".repeat(20)}` }],
+  }));
+}
+
+function textFromMessages(messages: CanonicalMessage[]): string {
+  return messages
+    .flatMap((message) => message.content)
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function isCompactBoundaryMessageForTest(message: CanonicalMessage): boolean {
+  return message.role === "user"
+    && message.content.some((block) => block.type === "text" && block.text.startsWith("<compact-boundary"));
+}
 
 function compactFixture(): CanonicalMessage[] {
   return [

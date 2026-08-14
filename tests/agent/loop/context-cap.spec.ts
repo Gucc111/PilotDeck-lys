@@ -433,6 +433,9 @@ test("agent loop records a compact boundary when auto compaction fires", async (
       preTokens: 120,
       postTokens: 40,
       messagesSummarized: 1,
+      summaryGenerated: true,
+      checkpointMerged: false,
+      finalRatio: 40,
       extra: {
         tier: "full",
         summarySucceeded: true,
@@ -441,6 +444,7 @@ test("agent loop records a compact boundary when auto compaction fires", async (
   });
   assert.equal(persistedCompacts[0]!.messages.length, 1);
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
+  assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactSnapshotId, "compact-auto-1");
 });
 
 test("agent loop persists a full compaction after recovering from a context error", async () => {

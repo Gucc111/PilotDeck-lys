@@ -15,6 +15,7 @@ test("auto-compaction summarizes earlier work instead of deleting it", async () 
   const engine = new CompactionEngine({
     provider: "test",
     model_: "test-model",
+    maxOutputTokens: 1,
     tokenBudget,
     model: {
       async *stream(request) {
@@ -248,14 +249,14 @@ test("summary runs before post-summary snip and keeps the compact checkpoint", a
     tokenBudget,
     autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
     compactionEngine: engine,
-    snipEngine: new SnipEngine({ keepHeadTurns: 1, keepTailTurns: 2 }),
+    snipEngine: new SnipEngine({ keepHeadTurns: 0, keepTailTurns: 1 }),
     maxContextTokens: 100,
   });
   const result = await runtime.tryAutoCompact({
     messages: textMessages(...Array.from({ length: 24 }, (_, index) => `turn-${index}`)),
     budgetEvaluator: (candidate) => Promise.resolve(
       tokenBudget.snapshotFromTokens(
-        hasSnipBoundary(candidate) ? 75 : hasCompactSummary(candidate) ? 95 : 100,
+        hasSnipBoundary(candidate) ? 55 : hasCompactSummary(candidate) ? 95 : 100,
         100,
       ),
     ),
@@ -266,6 +267,79 @@ test("summary runs before post-summary snip and keeps the compact checkpoint", a
   assert.equal(summaryRequests.length, 1);
   assert.equal(hasSnipBoundary(result.messages), true);
   assert.match(textFrom(result.messages), /Keep the checkpoint/);
+  assert.equal(result.result?.targetPostTokens, 60);
+});
+
+test("full compaction targets 60% of the effective input budget", async () => {
+  async function compactWithReserve(reservedOutputTokens: number, compactedTokens: number) {
+    const tokenBudget = new TokenBudgetManager();
+    const engine = new CompactionEngine({
+      provider: "test",
+      model_: "test-model",
+      maxOutputTokens: 1,
+      model: {
+        async *stream() {
+          yield { type: "text_delta" as const, text: "## Objective\nKeep working." };
+        },
+      },
+    });
+    const runtime = new DefaultContextRuntime({
+      tokenBudget,
+      autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
+      compactionEngine: engine,
+      maxContextTokens: 110_000,
+    });
+    return runtime.tryAutoCompact({
+      messages: textMessages(...Array.from({ length: 40 }, (_, index) => `turn-${index} `.repeat(50))),
+      reservedOutputTokens,
+      budgetEvaluator: (candidate) => Promise.resolve(tokenBudget.snapshotFromTokens(
+        hasCompactSummary(candidate) ? compactedTokens : 70_000,
+        110_000,
+        { reservedOutputTokens },
+      )),
+    });
+  }
+
+  const legacyReserve = await compactWithReserve(65_536, 26_000);
+  assert.equal(legacyReserve.type, "compacted");
+  assert.equal(legacyReserve.result?.targetPostTokens, 26_678);
+  assert.ok(legacyReserve.snapshot.ratio <= 0.60);
+
+  const currentDefault = await compactWithReserve(32_768, 46_000);
+  assert.equal(currentDefault.type, "compacted");
+  assert.equal(currentDefault.result?.targetPostTokens, 46_339);
+  assert.ok(currentDefault.snapshot.ratio <= 0.60);
+});
+
+test("zero-message summaries are skipped when compaction makes no effective change", async () => {
+  const tokenBudget = new TokenBudgetManager();
+  let summaryCalls = 0;
+  const engine = new CompactionEngine({
+    provider: "test",
+    model_: "test-model",
+    model: {
+      async *stream() {
+        summaryCalls += 1;
+        yield { type: "text_delta" as const, text: "unused" };
+      },
+    },
+  });
+  const runtime = new DefaultContextRuntime({
+    tokenBudget,
+    autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
+    compactionEngine: engine,
+    maxContextTokens: 100,
+  });
+  const result = await runtime.tryAutoCompact({
+    messages: [{ role: "user", content: [{ type: "text", text: "Only protected current request" }] }],
+    budgetEvaluator: (candidate) => Promise.resolve(tokenBudget.snapshotFromTokens(
+      textFrom(candidate).includes("<compact-boundary") ? 50 : 95,
+      100,
+    )),
+  });
+
+  assert.equal(result.type, "skipped");
+  assert.equal(summaryCalls, 0);
 });
 
 test("pre-summary tool projection is idempotent", () => {
