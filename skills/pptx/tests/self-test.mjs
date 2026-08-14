@@ -112,6 +112,14 @@ try {
 
   const review = pptx('review', '--input', edited, '--out-dir', reviewDir);
   assert.ok(['review_pending', 'evidence_unavailable'].includes(review.status));
+  assert.equal(review.structure.slideCount, 1);
+  assert.equal(review.structure.slides, undefined);
+  assert.equal(review.audit.errors, undefined);
+  assert.ok(await fs.stat(review.audit.report).then((stat) => stat.isFile()));
+  const fullReview = JSON.parse(await fs.readFile(review.report, 'utf8'));
+  assert.equal(fullReview.structure.slides.length, 1);
+  assert.ok(Array.isArray(fullReview.audit.errors));
+  assert.ok(JSON.stringify(review).length < JSON.stringify(fullReview).length);
   if (review.status === 'review_pending') {
     assert.equal(review.render.pages.length, 1);
     assert.ok(await fs.stat(review.render.pages[0].image).then((stat) => stat.isFile()));
@@ -121,7 +129,7 @@ try {
   assert.equal(delivered.slideCount, 1);
   assert.ok(await fs.stat(final).then((stat) => stat.isFile()));
   passed = true;
-  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'bom-ooxml', 'convert', 'template-edit', 'evaluate', 'review', 'deliver'] })}\n`);
+  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'bom-ooxml', 'convert', 'template-edit', 'evaluate', 'compact-review', 'deliver'] })}\n`);
 } finally {
   if (passed) await fs.rm(outputRoot, { recursive: true, force: true });
   else process.stderr.write(`PPTX self-test artifacts: ${outputRoot}\n`);

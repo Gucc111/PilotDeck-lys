@@ -75,6 +75,10 @@ bash "$PPTX" review \
 
 `review_pending` means structural facts, audit observations, and revision-specific slide images are ready; it is not a visual verdict. Choose relevant slides from the task and risk, inspect them at full size, and treat audit findings as evidence rather than automatic failures. If the candidate changes, review the new revision instead of relying on earlier images.
 
+The command returns a compact evidence index; detailed structure and findings remain in its `report` and `audit.report` files. Read those details when the task or a summary finding warrants them instead of loading them by default.
+
+LibreOffice rendering is a compatibility baseline, not Microsoft PowerPoint. It may substitute or omit fonts—commonly CJK fonts—causing boxes, blanks, or different wrapping. Compare source and candidate evidence before attributing these artifacts to the candidate; when the baseline is inconclusive, report the rendering limitation instead of claiming a visual fix.
+
 When correctness depends on sources, exact values, specified copy, slide preservation, or task-specific acceptance criteria, write an independent evaluator:
 
 ```bash

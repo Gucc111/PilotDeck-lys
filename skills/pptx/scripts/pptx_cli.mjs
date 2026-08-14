@@ -138,7 +138,8 @@ async function reviewCommand(args) {
   const revisionDir = assertInternalPath(path.join(root, revisionId, evidenceId), 'PPTX review evidence');
   await fs.mkdir(revisionDir, { recursive: true });
 
-  const audit = await auditPptx(input, { output: path.join(revisionDir, 'audit.json') });
+  const auditPath = path.join(revisionDir, 'audit.json');
+  const audit = await auditPptx(input, { output: auditPath });
   let render;
   try {
     const rendered = await renderPptx(input, path.join(revisionDir, 'slides'), {
@@ -190,9 +191,28 @@ async function reviewCommand(args) {
     },
     judgment: 'Use the structural findings and rendered slides as evidence. The report does not decide whether the presentation is good or complete.',
   };
-  report.report = await writeJson(path.join(revisionDir, 'report.json'), report);
+  const reportPath = await writeJson(path.join(revisionDir, 'report.json'), report);
   if (args.report) await writeJson(args.report, report);
-  return report;
+  return {
+    status: report.status,
+    input: report.input,
+    revision: report.revision,
+    structure: {
+      slideCount: report.structure.slideCount,
+      slideSize: report.structure.slideSize,
+      masterCount: report.structure.masterCount,
+      layoutCount: report.structure.layoutCount,
+    },
+    audit: {
+      status: audit.status,
+      counts: audit.counts,
+      report: auditPath,
+    },
+    render: report.render,
+    visualReview: report.visualReview,
+    judgment: report.judgment,
+    report: reportPath,
+  };
 }
 
 async function evaluateCommand(args) {
