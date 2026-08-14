@@ -268,7 +268,18 @@
   "team": {
     "statusTitle": "团队状态",
     "running": "运行中",
-    "noTeammates": "当前工作区没有已启用且有效的 Teammate。"
+    "active": "活跃",
+    "done": "完成",
+    "idle": "空闲",
+    "completedCount": "已完成 ({{count}})",
+    "noTeammates": "当前工作区没有已启用且有效的 Teammate。",
+    "status": {
+      "running": "正在运行",
+      "idle": "空闲",
+      "failed": "失败",
+      "aborted": "已中止",
+      "not_started": "等待中"
+    }
   },
   "documentReferences": {
     "defaultPrompt": "请根据我引用的文档内容回答。",

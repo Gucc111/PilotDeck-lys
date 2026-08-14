@@ -41,7 +41,8 @@ describe('Agent Teams chat UI', () => {
     render(<TeamStatusPanel projectPath="/workspace" sessionId="leader" />);
 
     await waitFor(() => expect(screen.getByText('implementer')).toBeTruthy());
-    expect(screen.getAllByText('Implement runtime').length).toBeGreaterThan(0);
+    expect(screen.getByText('└ Implement runtime')).toBeTruthy();
+    expect(screen.getByText('Running')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/teammates/state?projectPath=%2Fworkspace&sessionId=leader',
     );
@@ -85,6 +86,37 @@ describe('Agent Teams chat UI', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/teammates/state?projectPath=%2Fworkspace&sessionId=web%3As_leader',
     );
+  });
+
+  it('groups teammates into active, done (collapsed), and waiting sections', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      progress: {
+        summary: 'Testing MCP servers',
+        items: [
+          { id: 't1', subject: 'Test Alpha', status: 'completed', teammateId: 'alpha' },
+          { id: 't2', subject: 'Test Bravo', status: 'in_progress', teammateId: 'bravo' },
+        ],
+      },
+      teammates: [
+        { id: 'bravo', sessionId: 's::teammate::bravo', status: 'running', currentTask: 'Test Bravo' },
+        { id: 'alpha', sessionId: 's::teammate::alpha', status: 'idle' },
+        { id: 'charlie', sessionId: 's::teammate::charlie', status: 'not_started' },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    render(<TeamStatusPanel projectPath="/workspace" sessionId="leader" />);
+
+    await waitFor(() => expect(screen.getByText('bravo')).toBeTruthy());
+    expect(screen.getByText('Running')).toBeTruthy();
+    expect(screen.getByText('└ Test Bravo')).toBeTruthy();
+    expect(screen.getByText('Completed (1)')).toBeTruthy();
+    expect(screen.getByText('charlie')).toBeTruthy();
+    expect(screen.getByText('Waiting')).toBeTruthy();
+    // alpha is in the collapsed "done" section — not visible by default
+    expect(screen.queryByText('alpha')).toBeNull();
   });
 });
 

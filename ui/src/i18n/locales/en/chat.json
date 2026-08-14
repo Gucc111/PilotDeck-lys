@@ -285,7 +285,18 @@
   "team": {
     "statusTitle": "Team status",
     "running": "running",
-    "noTeammates": "The current workspace has no enabled and valid Teammate."
+    "active": "active",
+    "done": "done",
+    "idle": "idle",
+    "completedCount": "Completed ({{count}})",
+    "noTeammates": "The current workspace has no enabled and valid Teammate.",
+    "status": {
+      "running": "Running",
+      "idle": "Idle",
+      "failed": "Failed",
+      "aborted": "Aborted",
+      "not_started": "Waiting"
+    }
   },
   "documentReferences": {
     "defaultPrompt": "Please answer based on the document selection I quoted.",
