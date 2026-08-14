@@ -34,8 +34,13 @@ try {
   const builder = path.join(workDir, 'deck.mjs');
   const candidate = path.join(workDir, 'candidate.pptx');
   const compatibilityCandidate = path.join(workDir, 'candidate-with-ooxml-variants.pptx');
+  const templateScaffold = path.join(workDir, 'template-deck.mjs');
+  const templateScaffoldCandidate = path.join(workDir, 'template-scaffold-candidate.pptx');
   const editBuilder = path.join(workDir, 'edit.mjs');
   const edited = path.join(workDir, 'edited.pptx');
+  const fallbackScript = path.join(workDir, 'patch.mjs');
+  const fallbackCandidate = path.join(workDir, 'fallback-candidate.pptx');
+  const fallbackReport = path.join(workDir, 'fallback-report.json');
   const evaluator = path.join(workDir, 'evaluator.mjs');
   const evaluation = path.join(workDir, 'evaluation.json');
   const reviewDir = path.join(workDir, 'review');
@@ -53,6 +58,58 @@ try {
   const manifest = pptx('inspect', '--input', candidate);
   const title = manifest.slides[0].objects.find((object) => object.text.includes('A clear presentation'));
   assert.ok(title?.name, 'starter title needs a stable object name');
+
+  const sourceHashBeforeScaffold = crypto.createHash('sha256').update(await fs.readFile(candidate)).digest('hex');
+  const scaffoldedTemplate = pptx('scaffold', '--input', candidate, '--out', templateScaffold);
+  assert.equal(scaffoldedTemplate.mode, 'template');
+  assert.equal(scaffoldedTemplate.slideCount, 2);
+  assert.match(await fs.readFile(templateScaffold, 'utf8'), /createTemplatePresentation/);
+  const scaffoldBuild = pptx(
+    'build',
+    '--builder', templateScaffold,
+    '--input', candidate,
+    '--out', templateScaffoldCandidate,
+  );
+  assert.equal(scaffoldBuild.engine, 'pptx-automizer');
+  const scaffoldManifest = pptx('inspect', '--input', templateScaffoldCandidate);
+  assert.equal(scaffoldManifest.slideCount, manifest.slideCount);
+  assert.deepEqual(
+    scaffoldManifest.slides.map((slide) => slide.text),
+    manifest.slides.map((slide) => slide.text),
+  );
+  assert.equal(
+    crypto.createHash('sha256').update(await fs.readFile(candidate)).digest('hex'),
+    sourceHashBeforeScaffold,
+  );
+
+  await fs.writeFile(fallbackScript, [
+    "import fs from 'node:fs/promises';",
+    "import path from 'node:path';",
+    'const args = process.argv.slice(2);',
+    "const packageIndex = args.indexOf('--package-dir');",
+    "if (packageIndex < 0 || !args[packageIndex + 1]) throw new Error('Missing --package-dir');",
+    "const slide = path.join(args[packageIndex + 1], 'ppt', 'slides', 'slide1.xml');",
+    "const xml = await fs.readFile(slide, 'utf8');",
+    "const updated = xml.replace('A clear presentation title', 'Fallback stays inside the skill');",
+    "if (updated === xml) throw new Error('Expected source text was not found');",
+    "await fs.writeFile(slide, updated, 'utf8');",
+    '',
+  ].join('\n'));
+  const fallback = pptx(
+    'fallback-patch',
+    '--input', candidate,
+    '--script', fallbackScript,
+    '--out', fallbackCandidate,
+    '--report', fallbackReport,
+  );
+  assert.equal(fallback.status, 'ok');
+  assert.deepEqual(fallback.changedParts, ['ppt/slides/slide1.xml']);
+  assert.ok(await fs.stat(fallback.report).then((stat) => stat.isFile()));
+  assert.match(pptx('inspect', '--input', fallbackCandidate).slides[0].text, /Fallback stays inside the skill/);
+  assert.equal(
+    crypto.createHash('sha256').update(await fs.readFile(candidate)).digest('hex'),
+    sourceHashBeforeScaffold,
+  );
 
   const { loadDependencies } = await import('../scripts/lib/runtime.mjs');
   const { JSZip, xmldom } = loadDependencies();
@@ -188,7 +245,7 @@ try {
   assert.equal(delivered.slideCount, 1);
   assert.ok(await fs.stat(final).then((stat) => stat.isFile()));
   passed = true;
-  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'ooxml-compatibility', 'convert', 'template-edit', 'evaluate', 'compact-review', 'deliver'] })}\n`);
+  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'template-scaffold', 'fallback-patch', 'ooxml-compatibility', 'convert', 'template-edit', 'evaluate', 'compact-review', 'deliver'] })}\n`);
 } finally {
   if (passed) await fs.rm(outputRoot, { recursive: true, force: true });
   else process.stderr.write(`PPTX self-test artifacts: ${outputRoot}\n`);

@@ -38,7 +38,7 @@ Toolkit members include:
 
 ## Template inheritance and existing PPTX files
 
-Build with `--input source.pptx`, then use `createTemplatePresentation()` inside the builder:
+Scaffold with `--input source.pptx` to start from a builder that preserves the source slides, then build with the same input. Use `createTemplatePresentation()` inside the builder:
 
 ```js
 export default async function build({ createTemplatePresentation }) {
@@ -59,7 +59,42 @@ The returned object exposes the underlying `presentation`, `automizer`, `ModifyT
 
 Use `template.loadMedia(imagePath)` before replacing an image. Refer to object names from `inspect` output. Select, reorder, or repeat source slides according to the request; there is no frame-map schema or fixed action list.
 
-Preserve charts, diagrams, media, OLE objects, animations, and complex master content when the requested change does not require touching them. If a requested edit cannot be expressed safely, report the limitation instead of rebuilding the whole source deck or hiding replacement objects over inaccessible content.
+Preserve charts, diagrams, media, OLE objects, animations, and complex master content when the requested change does not require touching them. If neither the builder nor the controlled fallback can express an edit safely, report the limitation instead of rebuilding the whole source deck or hiding replacement objects over inaccessible content.
+
+## Controlled package fallback
+
+When the standard APIs cannot express an important edit, write a local JavaScript patch instead of running an untracked ZIP rewrite. Read the temporary package directory from `PPTX_PACKAGE_DIR`; the wrapper also includes it in the command for traceability:
+
+```bash
+node patch.mjs --package-dir /temporary/unpacked/pptx
+```
+
+A minimal patch starts like this:
+
+```js
+import fs from 'node:fs';
+import path from 'node:path';
+
+const packageDir = process.env.PPTX_PACKAGE_DIR;
+if (!packageDir) throw new Error('PPTX_PACKAGE_DIR is required');
+
+// Inspect and modify only the package parts needed for this task.
+const slidePath = path.join(packageDir, 'ppt/slides/slide1.xml');
+const slideXml = fs.readFileSync(slidePath, 'utf8');
+fs.writeFileSync(slidePath, slideXml);
+```
+
+Run it only through the wrapper:
+
+```bash
+bash "$PPTX" fallback-patch \
+  --input "$INPUT_OR_CANDIDATE" \
+  --script "$WORKSPACE/tmp/patch.mjs" \
+  --out "$WORKSPACE/tmp/patched-candidate.pptx" \
+  --report "$WORKSPACE/tmp/fallback-report.json"
+```
+
+The script may inspect and modify the temporary package according to the task. The wrapper preserves the input, records added, changed, and deleted parts, repacks the result, and promotes it to an internal candidate. Review that candidate and publish it through `deliver`; do not run the patch directly or copy its output into the project.
 
 ## Builder discipline
 

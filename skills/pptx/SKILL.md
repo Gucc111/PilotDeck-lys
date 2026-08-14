@@ -46,10 +46,11 @@ Review the source visually before layout-sensitive edits. Use judgment instead o
 
 ## Execute
 
-Use one reproducible JavaScript `.mjs` builder for each candidate revision. Scaffold a minimal builder, patch the same file as the work evolves, and build to an internal candidate:
+Use one reproducible JavaScript `.mjs` builder for each candidate revision. Scaffold a minimal builder, patch the same file as the work evolves, and build to an internal candidate. Pass the source when the task starts from a template or existing PPTX so the scaffold uses the template editing API:
 
 ```bash
 bash "$PPTX" scaffold --out "$WORKSPACE/tmp/deck.mjs"
+bash "$PPTX" scaffold --input "$INPUT_PPTX" --out "$WORKSPACE/tmp/deck.mjs"
 bash "$PPTX" build \
   --builder "$WORKSPACE/tmp/deck.mjs" \
   --out "$WORKSPACE/tmp/candidate.pptx"
@@ -58,6 +59,18 @@ bash "$PPTX" build \
 For template inheritance or an existing PPTX, add `--input "$INPUT_PPTX"`. The builder can call `createTemplatePresentation()` and use the complete pptx-automizer API to select, reorder, preserve, or modify source slides and named objects. Prefer localized edits over reconstruction when the source already contains the desired visual system.
 
 For a new deck, return a PptxGenJS presentation from the builder. Use the complete PptxGenJS API and the optional image crop/contain helpers. Charts, tables, native shapes, prepared graphics, and diagrams are available when they serve the content.
+
+When the standard builder APIs cannot safely express an important package edit, write a task-local patch and run it through the controlled fallback instead of unpacking, repacking, or publishing a PPTX directly:
+
+```bash
+bash "$PPTX" fallback-patch \
+  --input "$INPUT_OR_CANDIDATE" \
+  --script "$WORKSPACE/tmp/patch.mjs" \
+  --out "$WORKSPACE/tmp/patched-candidate.pptx" \
+  --report "$WORKSPACE/tmp/fallback-report.json"
+```
+
+The patch receives a temporary package directory. The wrapper preserves the source, records changed parts, repacks to an internal candidate, and keeps the result in the normal review and delivery flow. See [builder-api.md](references/builder-api.md) for the patch contract.
 
 ### Choose presentation intentionally
 

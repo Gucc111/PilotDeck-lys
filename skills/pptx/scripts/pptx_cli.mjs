@@ -8,6 +8,7 @@ import { parseArgs, required, numberArg } from './lib/args.mjs';
 import { auditPptx } from './lib/audit.mjs';
 import { convertLegacyPpt } from './lib/convert.mjs';
 import { deliverPptx } from './lib/delivery.mjs';
+import { fallbackPatchPptx } from './lib/fallback.mjs';
 import { inspectPptx, validatePptxPackage } from './lib/ooxml.mjs';
 import {
   assertDistinctPaths,
@@ -26,12 +27,40 @@ function print(value) {
 
 async function scaffoldCommand(args) {
   const output = assertInternalPath(required(args, 'out'), 'PPTX builder');
+  const input = args.input === undefined ? null : path.resolve(required(args, 'input'));
+  assertDistinctPaths({ input, builder: output });
   if (await pathExists(output) && !args.force) {
     throw new Error(`Refusing to overwrite existing builder: ${output}`);
   }
   await fs.mkdir(path.dirname(output), { recursive: true });
-  await fs.copyFile(path.join(skillRoot(), 'assets', 'starter-deck.mjs'), output);
-  return { status: 'ok', builder: output };
+  if (!input) {
+    await fs.copyFile(path.join(skillRoot(), 'assets', 'starter-deck.mjs'), output);
+    return { status: 'ok', mode: 'new', builder: output };
+  }
+
+  const manifest = await inspectPptx(input);
+  const builder = [
+    'export default async function build({ createTemplatePresentation }) {',
+    '  const template = await createTemplatePresentation();',
+    '',
+    '  // Modify, reorder, repeat, or omit source slides according to the request.',
+    `  for (let slideNumber = 1; slideNumber <= ${manifest.slideCount}; slideNumber += 1) {`,
+    '    template.addSlide(slideNumber);',
+    '  }',
+    '',
+    '  return template;',
+    '}',
+    '',
+  ].join('\n');
+  await fs.writeFile(output, builder, 'utf8');
+  return {
+    status: 'ok',
+    mode: 'template',
+    input,
+    inputSha256: manifest.sha256,
+    slideCount: manifest.slideCount,
+    builder: output,
+  };
 }
 
 async function loadBuilder(builderPath) {
@@ -265,6 +294,18 @@ async function evaluateCommand(args) {
   return report;
 }
 
+async function fallbackPatchCommand(args) {
+  const timeoutSeconds = numberArg(args, 'timeout', 120);
+  if (timeoutSeconds <= 0) throw new Error('--timeout must be greater than zero');
+  return fallbackPatchPptx({
+    inputPath: required(args, 'input'),
+    scriptPath: required(args, 'script'),
+    outputPath: required(args, 'out'),
+    reportPath: args.report === undefined ? undefined : required(args, 'report'),
+    timeoutSeconds,
+  });
+}
+
 async function deliverCommand(args) {
   return deliverPptx(required(args, 'input'), required(args, 'out'), {
     overwrite: Boolean(args.overwrite),
@@ -289,8 +330,9 @@ function help() {
     usage: 'pptx.sh <command> [options]',
     workflow: {
       inspect: '--input source.pptx [--out manifest.json]',
-      scaffold: '--out deck.mjs [--force]',
+      scaffold: '--out deck.mjs [--input source.pptx --force]',
       build: '--builder deck.mjs --out candidate.pptx [--input source.pptx]',
+      'fallback-patch': '--input source-or-candidate.pptx --script patch.mjs --out candidate.pptx [--report report.json --timeout 120]',
       review: '--input candidate.pptx --out-dir review [--report report.json --dpi 144]',
       evaluate: '--input candidate.pptx --script evaluator.mjs --out evaluation.json',
       deliver: '--input candidate.pptx --out final.pptx [--overwrite]',
@@ -311,6 +353,7 @@ try {
   else if (command === 'inspect') result = await inspectCommand(args);
   else if (command === 'review') result = await reviewCommand(args);
   else if (command === 'evaluate') result = await evaluateCommand(args);
+  else if (command === 'fallback-patch') result = await fallbackPatchCommand(args);
   else if (command === 'deliver') result = await deliverCommand(args);
   else if (command === 'convert-legacy') result = await convertLegacyCommand(args);
   else if (['help', '-h', '--help'].includes(command)) result = help();
