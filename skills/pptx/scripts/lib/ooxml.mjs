@@ -4,6 +4,8 @@ import crypto from 'node:crypto';
 import { loadDependencies } from './runtime.mjs';
 
 const EMU_PER_INCH = 914400;
+const RELATIONSHIPS_NAMESPACE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/';
 
 function parseXml(xml) {
   const { xmldom } = loadDependencies();
@@ -16,6 +18,11 @@ function parseXml(xml) {
     throw new Error(`Invalid OOXML: ${errors.map((item) => item.message).join('; ')}`);
   }
   return document;
+}
+
+function serializeXml(document) {
+  const { xmldom } = loadDependencies();
+  return new xmldom.XMLSerializer().serializeToString(document);
 }
 
 function elementChildren(node) {
@@ -62,8 +69,147 @@ function relationshipMap(document) {
 
 function resolvePart(basePart, target) {
   if (!target) return null;
-  if (target.startsWith('/')) return target.slice(1);
-  return path.posix.normalize(path.posix.join(path.posix.dirname(basePart), target));
+  const [part] = target.split(/[?#]/u, 1);
+  if (part.startsWith('/')) return path.posix.normalize(part.slice(1));
+  return path.posix.normalize(path.posix.join(path.posix.dirname(basePart), part));
+}
+
+function relationshipOwnerPart(relationshipsPart) {
+  if (relationshipsPart === '_rels/.rels') return '';
+  const match = relationshipsPart.match(/^(.*)\/_rels\/([^/]+)\.rels$/u);
+  if (!match) return null;
+  return path.posix.join(match[1], match[2]);
+}
+
+function relationshipTargetSuffix(target) {
+  return target.slice(target.search(/[?#]/u) < 0 ? target.length : target.search(/[?#]/u));
+}
+
+function relativeRelationshipTarget(ownerPart, target) {
+  const resolved = resolvePart(ownerPart, target);
+  if (!resolved) return target;
+  const ownerDirectory = path.posix.dirname(ownerPart);
+  const relative = path.posix.relative(ownerDirectory === '.' ? '' : ownerDirectory, resolved);
+  return `${relative || path.posix.basename(resolved)}${relationshipTargetSuffix(target)}`;
+}
+
+function zipContainsPart(zip, part) {
+  if (!part || part === '.' || part.startsWith('../')) return false;
+  if (zip.file(part)) return true;
+  try {
+    return decodeURI(part) !== part && Boolean(zip.file(decodeURI(part)));
+  } catch {
+    return false;
+  }
+}
+
+function ensureRelationshipNamespace(document) {
+  const root = document.documentElement;
+  if (!root) throw new Error('Invalid OOXML: document root is missing');
+  const current = root.getAttribute('xmlns:r');
+  if (current && current !== RELATIONSHIPS_NAMESPACE) {
+    throw new Error(`Invalid OOXML: xmlns:r is bound to an unexpected namespace: ${current}`);
+  }
+  if (!current) root.setAttributeNS(XMLNS_NAMESPACE, 'xmlns:r', RELATIONSHIPS_NAMESPACE);
+}
+
+async function validateZipRelationships(zip) {
+  let relationshipCount = 0;
+  for (const relationshipsPart of Object.keys(zip.files).filter((name) => name.endsWith('.rels'))) {
+    const ownerPart = relationshipOwnerPart(relationshipsPart);
+    if (ownerPart === null) throw new Error(`Invalid OOXML relationship part path: ${relationshipsPart}`);
+    const document = parseXml(await zip.file(relationshipsPart).async('string'));
+    for (const relationship of descendants(document, 'Relationship')) {
+      relationshipCount += 1;
+      if (String(relationship.getAttribute('TargetMode') ?? '').toLowerCase() === 'external') continue;
+      const target = relationship.getAttribute('Target');
+      const resolved = resolvePart(ownerPart, target);
+      if (!zipContainsPart(zip, resolved)) {
+        throw new Error(`Invalid OOXML relationship: ${relationshipsPart} targets missing part ${target}`);
+      }
+    }
+  }
+  return relationshipCount;
+}
+
+async function loadPptxPackage(inputPath) {
+  const absolute = path.resolve(inputPath);
+  const buffer = await fs.readFile(absolute);
+  const { JSZip } = loadDependencies();
+  const legacyMagic = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+  if (buffer.length >= legacyMagic.length && buffer.subarray(0, legacyMagic.length).equals(legacyMagic)) {
+    throw new Error('Legacy binary .ppt is not OOXML. Run `pptx.sh convert-legacy --input source.ppt --out source-converted.pptx --qa-dir conversion-qa` first.');
+  }
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch (error) {
+    throw new Error(`Not a valid PPTX OOXML package: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { absolute, buffer, zip };
+}
+
+export async function validatePptxPackage(inputPath) {
+  const { absolute, zip } = await loadPptxPackage(inputPath);
+  const textParts = Object.keys(zip.files)
+    .filter((name) => !zip.files[name].dir && (name.endsWith('.xml') || name.endsWith('.rels')));
+  for (const part of textParts) parseXml(await zip.file(part).async('string'));
+  const relationshipCount = await validateZipRelationships(zip);
+  return { file: absolute, textPartCount: textParts.length, relationshipCount };
+}
+
+export async function normalizeTemplatePptx(inputPath, outputPath) {
+  const source = path.resolve(inputPath);
+  const output = path.resolve(outputPath);
+  if (source === output) throw new Error('Template normalization requires a separate output path');
+  const { zip } = await loadPptxPackage(source);
+  const stats = {
+    bomParts: 0,
+    absoluteRelationshipTargets: 0,
+    relationshipNamespaces: 0,
+  };
+  const textParts = Object.keys(zip.files)
+    .filter((name) => !zip.files[name].dir && (name.endsWith('.xml') || name.endsWith('.rels')));
+
+  for (const part of textParts) {
+    const file = zip.file(part);
+    const original = await file.async('string');
+    const withoutBom = original.replace(/^\uFEFF/u, '');
+    if (withoutBom !== original) stats.bomParts += 1;
+    let normalized = withoutBom;
+
+    if (part.endsWith('.rels')) {
+      const ownerPart = relationshipOwnerPart(part);
+      if (ownerPart === null) throw new Error(`Invalid OOXML relationship part path: ${part}`);
+      const document = parseXml(normalized);
+      for (const relationship of descendants(document, 'Relationship')) {
+        if (String(relationship.getAttribute('TargetMode') ?? '').toLowerCase() === 'external') continue;
+        const target = relationship.getAttribute('Target');
+        if (!target.startsWith('/')) continue;
+        relationship.setAttribute('Target', relativeRelationshipTarget(ownerPart, target));
+        stats.absoluteRelationshipTargets += 1;
+      }
+      normalized = serializeXml(document);
+    } else if (part.startsWith('ppt/')) {
+      const document = parseXml(normalized);
+      const hadRelationshipNamespace = Boolean(document.documentElement?.getAttribute('xmlns:r'));
+      ensureRelationshipNamespace(document);
+      if (!hadRelationshipNamespace) stats.relationshipNamespaces += 1;
+      normalized = serializeXml(document);
+    }
+
+    zip.file(part, normalized);
+  }
+
+  await fs.mkdir(path.dirname(output), { recursive: true });
+  const buffer = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+  await fs.writeFile(output, buffer);
+  await validatePptxPackage(output);
+  return { input: source, output, ...stats };
 }
 
 function readText(node) {
@@ -220,19 +366,7 @@ function slidePartFallback(files) {
 }
 
 export async function inspectPptx(inputPath) {
-  const absolute = path.resolve(inputPath);
-  const buffer = await fs.readFile(absolute);
-  const { JSZip } = loadDependencies();
-  const legacyMagic = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
-  if (buffer.length >= legacyMagic.length && buffer.subarray(0, legacyMagic.length).equals(legacyMagic)) {
-    throw new Error('Legacy binary .ppt is not OOXML. Run `pptx.sh convert-legacy --input source.ppt --out source-converted.pptx --qa-dir conversion-qa` first.');
-  }
-  let zip;
-  try {
-    zip = await JSZip.loadAsync(buffer);
-  } catch (error) {
-    throw new Error(`Not a valid PPTX OOXML package: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const { absolute, buffer, zip } = await loadPptxPackage(inputPath);
   const files = Object.keys(zip.files);
   const presentationPart = 'ppt/presentation.xml';
   const presentationFile = zip.file(presentationPart);

@@ -8,7 +8,7 @@ import { parseArgs, required, numberArg } from './lib/args.mjs';
 import { auditPptx } from './lib/audit.mjs';
 import { convertLegacyPpt } from './lib/convert.mjs';
 import { deliverPptx } from './lib/delivery.mjs';
-import { inspectPptx } from './lib/ooxml.mjs';
+import { inspectPptx, validatePptxPackage } from './lib/ooxml.mjs';
 import {
   assertDistinctPaths,
   assertInternalPath,
@@ -17,7 +17,7 @@ import {
   writeJson,
 } from './lib/paths.mjs';
 import { renderPptx, renderingAvailability } from './lib/render.mjs';
-import { buildToolkit } from './lib/toolkit.mjs';
+import { buildToolkit, disposeToolkit } from './lib/toolkit.mjs';
 import { skillRoot } from './lib/runtime.mjs';
 
 function print(value) {
@@ -74,10 +74,12 @@ async function buildDeck(builderPath, inputPath, outputPath) {
     path.dirname(output),
     `.${path.basename(output, '.pptx')}.${process.pid}.${Date.now()}.candidate.pptx`,
   );
+  let toolkit;
   try {
-    const toolkit = await buildToolkit({ inputPath: input, outputPath: temporary });
+    toolkit = await buildToolkit({ inputPath: input, outputPath: temporary });
     const product = await build(toolkit);
     const engine = await writeBuilderProduct(product, temporary);
+    await validatePptxPackage(temporary);
     const manifest = await inspectPptx(temporary);
     if (manifest.slideCount < 1) throw new Error('Builder produced an empty presentation');
     await fs.rm(output, { force: true });
@@ -92,6 +94,7 @@ async function buildDeck(builderPath, inputPath, outputPath) {
       slideCount: manifest.slideCount,
     };
   } finally {
+    await toolkit?.[disposeToolkit]?.();
     await fs.rm(temporary, { force: true }).catch(() => {});
   }
 }

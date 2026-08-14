@@ -1,5 +1,10 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
+import { normalizeTemplatePptx } from './ooxml.mjs';
 import { loadDependencies } from './runtime.mjs';
+
+export const disposeToolkit = Symbol('disposeToolkit');
 
 export async function imageSizingCrop(imagePath, x, y, w, h) {
   const { sharp } = loadDependencies();
@@ -58,9 +63,15 @@ export async function createTemplatePresentation(inputPath, options = {}) {
   const { Automizer, automizerModule } = loadDependencies();
   const source = path.resolve(inputPath);
   const output = path.resolve(options.outputPath);
+  const preparedSource = path.join(
+    path.dirname(output),
+    `.${path.basename(source, path.extname(source))}.${process.pid}.${Date.now()}.${crypto.randomBytes(5).toString('hex')}.template.pptx`,
+  );
+  options.registerTemporaryFile?.(preparedSource);
+  await normalizeTemplatePptx(source, preparedSource);
   const sourceAlias = options.alias ?? '__pilotdeck_source__';
   const presentation = new Automizer({
-    templateDir: path.dirname(source),
+    templateDir: path.dirname(preparedSource),
     outputDir: path.dirname(output),
     mediaDir: path.dirname(source),
     autoImportSlideMasters: true,
@@ -70,8 +81,8 @@ export async function createTemplatePresentation(inputPath, options = {}) {
     useCreationIds: false,
     verbosity: options.verbose ? 1 : 0,
   })
-    .loadRoot(path.basename(source))
-    .load(path.basename(source), sourceAlias);
+    .loadRoot(path.basename(preparedSource))
+    .load(path.basename(preparedSource), sourceAlias);
   return {
     presentation,
     sourceAlias,
@@ -93,15 +104,26 @@ export async function createTemplatePresentation(inputPath, options = {}) {
 
 export async function buildToolkit(options = {}) {
   const deps = loadDependencies();
-  return {
+  const temporaryFiles = new Set();
+  const toolkit = {
     createDeck,
     pptxgenjs: deps.PptxGenJS,
     inputPath: options.inputPath ? path.resolve(options.inputPath) : null,
     createTemplatePresentation: (templatePath = options.inputPath, templateOptions = {}) => createTemplatePresentation(
       templatePath,
-      { ...templateOptions, outputPath: options.outputPath },
+      {
+        ...templateOptions,
+        outputPath: options.outputPath,
+        registerTemporaryFile: (file) => temporaryFiles.add(file),
+      },
     ),
     imageSizingCrop,
     imageSizingContain,
   };
+  Object.defineProperty(toolkit, disposeToolkit, {
+    value: async () => {
+      await Promise.all([...temporaryFiles].map((file) => fs.rm(file, { force: true }).catch(() => {})));
+    },
+  });
+  return toolkit;
 }
