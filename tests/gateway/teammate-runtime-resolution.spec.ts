@@ -557,6 +557,57 @@ test("workspace bindings resolve distinct effective tools and isolate invalid pr
   }
 });
 
+test("teammate catalog includes perSession MCP server IDs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-catalog-mcp-"));
+  const pilotHome = join(root, "pilot-home");
+  const projectRoot = join(root, "project");
+  let dispose: (() => void) | undefined;
+  try {
+    await Promise.all([
+      mkdir(join(pilotHome, "teammates"), { recursive: true }),
+      mkdir(join(projectRoot, ".pilotdeck"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(pilotHome, "pilotdeck.yaml"), CONFIG, "utf8"),
+      writeFile(
+        join(pilotHome, "teammates", "browser-worker.md"),
+        definition("browser-worker", "mcpServers: [browser-use]"),
+        "utf8",
+      ),
+      writeFile(
+        join(projectRoot, ".pilotdeck", "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            "browser-use": {
+              command: "echo",
+              args: ["noop"],
+              perSession: true,
+            },
+          },
+        }),
+        "utf8",
+      ),
+    ]);
+    await new TeammateEnablementStore({ pilotHome }).set(projectRoot, ["browser-worker"]);
+
+    const local = createLocalGateway({
+      projectRoot,
+      pilotHome,
+      env: { PILOT_HOME: pilotHome },
+    });
+    dispose = local.dispose;
+
+    const catalog = await local.gateway.teammateCatalog!({ projectKey: projectRoot });
+    assert.ok(
+      catalog.mcpServers.includes("browser-use"),
+      `Expected mcpServers to include "browser-use", got: ${JSON.stringify(catalog.mcpServers)}`,
+    );
+  } finally {
+    dispose?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("global teammate reload paths are classified independently of project scope", () => {
   const pilotHome = join(tmpdir(), "pilot-home");
   assert.equal(

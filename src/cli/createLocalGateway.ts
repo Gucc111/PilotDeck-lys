@@ -1751,13 +1751,41 @@ class ProjectRuntimeRegistry {
     await this.resolveWorkspaceTeammates(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
 
+    // -- resolve session identity early (needed for per-session MCP filtering) --
+    const teammateBinding = this.teammateBindings.get(context.sessionKey);
+    const leaderConfig = runtime.leaderConfig;
+
     // -- per-session MCP runtime (e.g. browser-use) --------------------
     let sessionTools: ToolRegistry = runtime.tools;
     const perSpecs = runtime.perSessionServerSpecs;
-    const maxInstances = runtime.snapshot.config.gateway?.maxPerSessionMcpInstances ?? 5;
-    if (perSpecs && perSpecs.length > 0 && this.sessionMcpRuntimes.size < maxInstances) {
+    const configuredMax = runtime.snapshot.config.gateway?.maxPerSessionMcpInstances ?? 5;
+    const teamSize = runtime.teammates.length;
+    const maxInstances = teamSize > 0
+      ? Math.max(configuredMax, 1 + teamSize)
+      : configuredMax;
+
+    let effectivePerSpecs = perSpecs ? [...perSpecs] : [];
+    if (teammateBinding) {
+      const needed = new Set(
+        (teammateBinding.definition.mcpServers ?? []).map((id) => {
+          const wire = buildMcpToolWireName(id, "tool");
+          return parseMcpToolWireName(wire)?.serverId ?? id;
+        }),
+      );
+      effectivePerSpecs = effectivePerSpecs.filter((spec) => needed.has(spec.id));
+    } else if (leaderConfig) {
+      const needed = new Set(
+        leaderConfig.mcpServers.map((id) => {
+          const wire = buildMcpToolWireName(id, "tool");
+          return parseMcpToolWireName(wire)?.serverId ?? id;
+        }),
+      );
+      effectivePerSpecs = effectivePerSpecs.filter((spec) => needed.has(spec.id));
+    }
+
+    if (effectivePerSpecs.length > 0 && this.sessionMcpRuntimes.size < maxInstances) {
       this.evictSessionMcp(context.sessionKey);
-      const patchedPerSpecs = perSpecs.map((spec) => {
+      const patchedPerSpecs = effectivePerSpecs.map((spec) => {
         if (spec.transport === "stdio" && spec.id === "browser-use") {
           const outDir = joinPath(
             runtime.projectRoot,
@@ -1788,6 +1816,9 @@ class ProjectRuntimeRegistry {
               sessionTools.register(def);
             }
           }
+        } else {
+          this.sessionMcpRuntimes.delete(context.sessionKey);
+          sessionMcp.stop().catch(() => {});
         }
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -1795,8 +1826,13 @@ class ProjectRuntimeRegistry {
           `[pilotdeck] Per-session MCP startup failed for ${context.sessionKey}:`,
           (err as Error).message,
         );
+        const failed = this.sessionMcpRuntimes.get(context.sessionKey);
+        if (failed) {
+          this.sessionMcpRuntimes.delete(context.sessionKey);
+          failed.stop().catch(() => {});
+        }
       }
-    } else if (perSpecs && perSpecs.length > 0) {
+    } else if (effectivePerSpecs.length > 0) {
       // eslint-disable-next-line no-console
       console.warn(
         `[pilotdeck] Per-session MCP limit reached (${maxInstances}). ` +
@@ -1815,7 +1851,6 @@ class ProjectRuntimeRegistry {
       }
     }
 
-    const teammateBinding = this.teammateBindings.get(context.sessionKey);
     if (teammateBinding) {
       sessionTools = scopeTeammateTools(sessionTools, teammateBinding.definition);
       if (sessionTools.has("read_skill")) {
@@ -2461,6 +2496,9 @@ class ProjectRuntimeRegistry {
     for (const tool of runtime.tools.list()) {
       const mcp = parseMcpToolWireName(tool.name);
       if (mcp) mcpServers.add(mcp.serverId);
+    }
+    for (const spec of runtime.perSessionServerSpecs ?? []) {
+      mcpServers.add(spec.id);
     }
     return {
       tools: runtime.tools.list()
