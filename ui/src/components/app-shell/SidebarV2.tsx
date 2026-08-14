@@ -22,6 +22,7 @@ import {
   GitBranch,
   Settings as SettingsIcon,
   Trash2,
+  Users,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
@@ -806,7 +807,9 @@ export default function SidebarV2({
                       isOptimisticRow && 'italic text-neutral-600 dark:text-neutral-300',
                     )}
                   >
-                    {isForkChild ? (
+                    {isForkChild && session.sessionKind === 'teammate' ? (
+                      <Users className="h-3 w-3 shrink-0 text-neutral-400 dark:text-neutral-500" strokeWidth={2} />
+                    ) : isForkChild ? (
                       <GitBranch className="h-3 w-3 shrink-0 text-neutral-400 dark:text-neutral-500" strokeWidth={2} />
                     ) : null}
                     <span className="truncate">{sessionDisplayTitle(session)}</span>
@@ -814,12 +817,17 @@ export default function SidebarV2({
                   <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
                     {isOptimisticRow
                       ? t('sidebar:sessions.sending', { defaultValue: 'Sending…' })
-                      : isForkChild
-                        ? t('sidebar:sessions.forkedFrom', {
+                      : isForkChild && session.sessionKind === 'teammate'
+                        ? t('sidebar:sessions.teammateOf', {
                             parent: parentTitle || session.parentSessionId || '',
-                            defaultValue: `forked from ${parentTitle || session.parentSessionId || 'parent'}`,
+                            defaultValue: `teammate of ${parentTitle || session.parentSessionId || 'leader'}`,
                           })
-                        : formatRelative(lastActivity, t)}
+                        : isForkChild
+                          ? t('sidebar:sessions.forkedFrom', {
+                              parent: parentTitle || session.parentSessionId || '',
+                              defaultValue: `forked from ${parentTitle || session.parentSessionId || 'parent'}`,
+                            })
+                          : formatRelative(lastActivity, t)}
                   </div>
                 </div>
               </button>

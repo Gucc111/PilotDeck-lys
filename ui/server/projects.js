@@ -25,7 +25,7 @@ import os from 'node:os';
 import {
     getPilotDeckGateway,
 } from './pilotdeck-bridge.js';
-import { mapLegacySessionPresentation } from '../../src/web/server/legacySessionPresentation.js';
+import { mapLegacySessionPresentation, parseTeammateSessionId } from '../../src/web/server/legacySessionPresentation.js';
 import {
     resolvePilotHome,
     createProjectId,
@@ -78,6 +78,7 @@ function projectDisplayName(fullPath) {
  */
 function toLegacySession(session, projectName) {
     const presentation = mapLegacySessionPresentation(session);
+    const parsedTeammate = parseTeammateSessionId(session.sessionId);
     return {
         id: session.sessionId,
         title: presentation.title,
@@ -101,7 +102,10 @@ function toLegacySession(session, projectName) {
         aiTitle: session.aiTitle,
         firstPrompt: session.firstPrompt,
         tag: presentation.tag,
-        parentSessionId: session.parentSessionId,
+        parentSessionId: parsedTeammate
+            ? parsedTeammate.leaderSessionId
+            : session.parentSessionId,
+        sessionKind: parsedTeammate ? 'teammate' : undefined,
         forkedFromTurnId: session.forkedFromTurnId,
         __projectName: projectName,
     };

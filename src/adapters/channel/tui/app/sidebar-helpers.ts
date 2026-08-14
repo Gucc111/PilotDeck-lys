@@ -1,4 +1,5 @@
 import type { GatewaySessionInfo } from "../../../../gateway/index.js";
+import { parseTeammateSessionId } from "../../../../web/server/legacySessionPresentation.js";
 
 export type SidebarRowKind = "header" | "session";
 
@@ -132,7 +133,12 @@ export function sessionStatusIcon(session: GatewaySessionInfo): string {
 }
 
 export function sessionDisplayTitle(session: GatewaySessionInfo, maxLen: number): string {
-  const raw = session.customTitle || session.aiTitle || session.firstPrompt || session.summary || session.sessionId;
+  let raw = session.customTitle || session.aiTitle || session.firstPrompt || session.summary || session.sessionId;
+  const sessionId = session.sessionKey ?? session.sessionId;
+  const parsed = parseTeammateSessionId(sessionId);
+  if (parsed && !raw.startsWith(`[Team: ${parsed.teammateId}]`)) {
+    raw = `[Team: ${parsed.teammateId}] ${raw}`;
+  }
   if (raw.length <= maxLen) return raw;
   return raw.slice(0, maxLen - 1) + "…";
 }

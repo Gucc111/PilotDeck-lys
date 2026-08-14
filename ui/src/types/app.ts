@@ -1,5 +1,5 @@
 export type SessionProvider = 'claude' | 'cursor' | 'codex' | 'gemini' | 'pilotdeck';
-export type ProjectSessionKind = 'background_task';
+export type ProjectSessionKind = 'background_task' | 'teammate';
 
 export type AppTab = 'home' | 'chat' | 'always-on' | 'cron' | 'files' | 'shell' | 'git' | 'tasks' | 'memory' | 'skills' | 'preview' | 'dashboard' | `plugin:${string}`;
 
@@ -208,6 +208,19 @@ export function isBackgroundTaskSession(
     session.parentSessionId.length > 0 &&
     typeof session.relativeTranscriptPath === 'string' &&
     session.relativeTranscriptPath.length > 0
+  );
+}
+
+export function isTeammateSession(
+  session: ProjectSession | null | undefined,
+): session is ProjectSession & {
+  sessionKind: 'teammate';
+  parentSessionId: string;
+} {
+  return (
+    session?.sessionKind === 'teammate' &&
+    typeof session.parentSessionId === 'string' &&
+    session.parentSessionId.length > 0
   );
 }
 
