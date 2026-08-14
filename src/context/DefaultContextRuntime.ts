@@ -446,8 +446,17 @@ export class DefaultContextRuntime implements ContextRuntime {
     let snapshot = await evaluateBudget(postMessages);
     let snipApplied = false;
     if (snapshot.ratio > POST_COMPACTION_TARGET_RATIO && this.snipEngine) {
+      const rawMessageTokens = this.tokenBudget?.estimateMessagesTokens(postMessages);
+      const paddedMessageTokens = this.tokenBudget?.estimateForMessagesWithPadding(postMessages);
+      const nonMessageTokens = paddedMessageTokens === undefined
+        ? 0
+        : Math.max(0, snapshot.tokens - paddedMessageTokens);
+      const paddedMessageTarget = Math.max(1, targetPostTokens - nonMessageTokens);
+      const snipTargetTokens = rawMessageTokens !== undefined && paddedMessageTokens !== undefined
+        ? Math.max(1, Math.floor(rawMessageTokens * paddedMessageTarget / Math.max(1, paddedMessageTokens)))
+        : targetPostTokens;
       const snip = this.snipEngine.snip(postMessages, {
-        targetTotalTokens: targetPostTokens,
+        targetTotalTokens: snipTargetTokens,
       });
       postMessages = snip.messages;
       snapshot = await evaluateBudget(postMessages);
@@ -456,6 +465,7 @@ export class DefaultContextRuntime implements ContextRuntime {
         applied: snip.applied,
         turnsSnipped: snip.turnsSnipped,
         targetPostTokens,
+        snipTargetTokens,
         snapshot: describeTokenBudgetSnapshot(snapshot),
       });
     }

@@ -270,6 +270,43 @@ test("summary runs before post-summary snip and keeps the compact checkpoint", a
   assert.equal(result.result?.targetPostTokens, 60);
 });
 
+test("targeted snip can prune tool cycles inside one user task", () => {
+  const messages: CanonicalMessage[] = [{
+    role: "user",
+    content: [{ type: "text", text: "Inspect each repository file." }],
+  }];
+  for (let index = 0; index < 6; index += 1) {
+    messages.push(
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: `cycle-${index}`, name: "read_file", input: { path: `src/file-${index}.ts` } }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          toolCallId: `cycle-${index}`,
+          content: [{ type: "text", text: `file-${index} ${"content ".repeat(300)}` }],
+        }],
+      },
+    );
+  }
+
+  const result = new SnipEngine().snip(messages, { targetTotalTokens: 1_000 });
+  const callIds = result.messages.flatMap((message) => message.content.flatMap((block) =>
+    block.type === "tool_call" ? [block.id] : [],
+  ));
+  const resultIds = result.messages.flatMap((message) => message.content.flatMap((block) =>
+    block.type === "tool_result" ? [block.toolCallId] : [],
+  ));
+
+  assert.equal(result.applied, true);
+  assert.ok(result.turnsSnipped > 0);
+  assert.equal(callIds.includes("cycle-0"), false);
+  assert.equal(callIds.includes("cycle-5"), true);
+  assert.deepEqual(resultIds, callIds);
+});
+
 test("full compaction targets 60% of the effective input budget", async () => {
   async function compactWithReserve(reservedOutputTokens: number, compactedTokens: number) {
     const tokenBudget = new TokenBudgetManager();

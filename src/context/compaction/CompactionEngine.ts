@@ -193,7 +193,7 @@ export class CompactionEngine {
     const compactionId = this.options.uuid?.() ?? randomUUID();
     const checkpoint = splitCheckpointPrefix(input.messages);
     const preTokens = this.estimateMessages(input.messages);
-    const stablePrefixTokens = this.estimateMessages(checkpoint.stablePrefix);
+    const stablePrefixTokens = this.estimateMessages(checkpoint.stablePrefix, true);
     const checkpointGroups = Math.floor(checkpoint.stablePrefix.length / 2);
     const effectiveContextTokens = positiveTokenCount(input.effectiveContextTokens);
     const mergeForCheckpointPressure = input.trigger === "auto"
@@ -212,7 +212,12 @@ export class CompactionEngine {
     const targetPostTokens = positiveTokenCount(input.targetPostTokens);
     const tailRatio = clamp(input.keepTailRatio ?? DEFAULT_KEEP_TAIL_RATIO, 0, 1);
     const tailTokenBudget = targetPostTokens !== undefined
-      ? Math.max(1, targetPostTokens - this.estimateMessages(stablePrefix) - summaryOutputReserve)
+      ? Math.max(
+          1,
+          targetPostTokens
+            - this.estimateMessages(stablePrefix, true)
+            - paddedTokenCount(summaryOutputReserve),
+        )
       : Math.max(1, Math.floor(preTokens * tailRatio));
     const protectedToolNames = input.protectedToolNames === null
       ? new Set<string>()
@@ -225,10 +230,13 @@ export class CompactionEngine {
       tailTokenBudget,
       protectedToolNames,
       minTailMessages,
-      (turnMessages) => this.estimateMessages(turnMessages),
+      (turnMessages) => this.estimateMessages(turnMessages, targetPostTokens !== undefined),
     );
     const messagesToSummarize = compactPlan.messagesToSummarize;
-    const retainedTailExceededBudget = this.estimateMessages(compactPlan.messagesToKeep) > tailTokenBudget;
+    const retainedTailExceededBudget = this.estimateMessages(
+      compactPlan.messagesToKeep,
+      targetPostTokens !== undefined,
+    ) > tailTokenBudget;
     const messagesToKeep = retainedTailExceededBudget
       ? projectOversizedRetainedToolResults(compactPlan.messagesToKeep, collectToolNamesByCallId(input.messages))
       : compactPlan.messagesToKeep;
@@ -261,8 +269,9 @@ export class CompactionEngine {
       const summaryAnchors = input.protectedToolNames === null
         ? buildCompactSummaryAnchors(planningMessages, this.protectedToolNames)
         : undefined;
-      // Append passes summarize only new live history. Checkpoint-merge passes
-      // see the full prompt and replace all prior summaries with one checkpoint.
+      // Append passes see only new live history; checkpoint-merge passes see
+      // the full prompt so prior checkpoints can be consolidated. The retained
+      // tail stays available as reference for tool and protected-turn context.
       const summaryInput = projectMessagesForSummary(planningMessages);
       if (this.isSummaryFailureCooldownActive()) {
         summaryError = this.summaryFailureError ?? "context summary is in cooldown";
@@ -341,7 +350,10 @@ export class CompactionEngine {
     };
 
     if (summaryMessage) {
-      result.postTokens = this.estimateMessages(buildPostCompactMessages(result));
+      result.postTokens = this.estimateMessages(
+        buildPostCompactMessages(result),
+        targetPostTokens !== undefined,
+      );
     }
 
     await this.options.lifecycle?.dispatch({
@@ -374,9 +386,11 @@ export class CompactionEngine {
     return result;
   }
 
-  private estimateMessages(messages: CanonicalMessage[]): number {
-    return this.options.tokenAccounting?.estimateMessages(messages)
-      ?? this.tokenBudget.estimateMessagesTokens(messages);
+  private estimateMessages(messages: CanonicalMessage[], usePadding = false): number {
+    return this.options.tokenAccounting?.estimateMessages(messages, { usePadding })
+      ?? (usePadding
+        ? this.tokenBudget.estimateForMessagesWithPadding(messages)
+        : this.tokenBudget.estimateMessagesTokens(messages));
   }
 
   private async summarize(
@@ -482,6 +496,10 @@ export class CompactionEngine {
 function positiveTokenCount(value: number | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
   return Math.floor(value);
+}
+
+function paddedTokenCount(value: number): number {
+  return Math.ceil((value * 4) / 3);
 }
 
 /**
