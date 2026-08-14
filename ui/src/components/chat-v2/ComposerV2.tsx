@@ -143,6 +143,7 @@ type ContextStatus = {
   total: number;
   displayTotal: number;
   percent: number;
+  percentLabel: string;
   usedLabel: string;
   totalLabel: string;
   tone: 'normal' | 'amber' | 'red' | 'unknown';
@@ -253,7 +254,8 @@ function getContextStatus(tokenBudget?: Record<string, unknown> | null): Context
   const budgetUsed = readNumber(tokenBudget?.budgetUsed) ?? readNumber(tokenBudget?.used) ?? used;
   const total = readNumber(tokenBudget?.total) ?? 0;
   const effectiveTotal = readNumber(tokenBudget?.effectiveTotal);
-  const displayTotal = effectiveTotal && effectiveTotal > 0 ? effectiveTotal : total;
+  const displayTotal = total > 0 ? total : (effectiveTotal && effectiveTotal > 0 ? effectiveTotal : 0);
+  const ratioBase = effectiveTotal && effectiveTotal > 0 ? effectiveTotal : displayTotal;
   if (displayTotal <= 0) {
     return {
       known: false,
@@ -261,13 +263,16 @@ function getContextStatus(tokenBudget?: Record<string, unknown> | null): Context
       total: 0,
       displayTotal: 0,
       percent: 0,
+      percentLabel: '--',
       usedLabel: '--',
       totalLabel: '--',
       tone: 'unknown',
     };
   }
 
-  const percent = Math.max(0, Math.min(999, Math.round((budgetUsed / displayTotal) * 100)));
+  const rawPercent = ratioBase > 0 ? Math.round((budgetUsed / ratioBase) * 100) : 0;
+  const percent = Math.max(0, Math.min(100, rawPercent));
+  const percentLabel = rawPercent > 100 ? '>100%' : `${percent}%`;
   const snapshotState = typeof tokenBudget?.state === 'string' ? tokenBudget.state : null;
   const tone = snapshotState === 'blocking'
     ? 'red'
@@ -284,6 +289,7 @@ function getContextStatus(tokenBudget?: Record<string, unknown> | null): Context
     total,
     displayTotal,
     percent,
+    percentLabel,
     usedLabel: formatTokenCount(used),
     totalLabel: formatTokenCount(displayTotal),
     tone,
@@ -859,7 +865,7 @@ export default function ComposerV2({
                         aria-expanded={isContextPopoverOpen}
                       >
                         <CircleGauge className="h-4 w-4" strokeWidth={1.75} />
-                        <span className="pd-composer-context-label">{contextStatus.known ? `${contextStatus.percent}%` : '--'}</span>
+                        <span className="pd-composer-context-label">{contextStatus.known ? contextStatus.percentLabel : '--'}</span>
                       </button>
                       {isContextPopoverOpen ? (
                         <div
@@ -882,7 +888,7 @@ export default function ComposerV2({
                                       : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
                               )}
                             >
-                              {contextStatus.known ? `${contextStatus.percent}%` : '--'}
+                              {contextStatus.known ? contextStatus.percentLabel : '--'}
                             </span>
                           </div>
                           {contextStatus.known ? (
