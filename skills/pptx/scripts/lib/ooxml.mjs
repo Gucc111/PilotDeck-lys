@@ -8,9 +8,10 @@ const EMU_PER_INCH = 914400;
 function parseXml(xml) {
   const { xmldom } = loadDependencies();
   const errors = [];
+  const normalized = xml.replace(/^\uFEFF/u, '');
   const document = new xmldom.DOMParser({
     onError: (level, message) => errors.push({ level, message }),
-  }).parseFromString(xml, 'application/xml');
+  }).parseFromString(normalized, 'application/xml');
   if (errors.some((item) => item.level === 'fatalError')) {
     throw new Error(`Invalid OOXML: ${errors.map((item) => item.message).join('; ')}`);
   }

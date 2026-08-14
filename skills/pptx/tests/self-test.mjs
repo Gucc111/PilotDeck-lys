@@ -32,6 +32,7 @@ try {
   await fs.mkdir(workDir, { recursive: true });
   const builder = path.join(workDir, 'deck.mjs');
   const candidate = path.join(workDir, 'candidate.pptx');
+  const bomCandidate = path.join(workDir, 'candidate-with-bom.pptx');
   const editBuilder = path.join(workDir, 'edit.mjs');
   const edited = path.join(workDir, 'edited.pptx');
   const evaluator = path.join(workDir, 'evaluator.mjs');
@@ -41,7 +42,9 @@ try {
   const conversionReview = path.join(workDir, 'conversion-review');
   const final = path.join(outputRoot, 'final.pptx');
 
-  assert.equal(pptx('check').status, 'ok');
+  const check = pptx('check');
+  assert.equal(check.status, 'ok');
+  process.env.PPTX_RUNTIME_ROOT = check.runtime;
   pptx('scaffold', '--out', builder);
   const built = pptx('build', '--builder', builder, '--out', candidate);
   assert.equal(built.slideCount, 2);
@@ -49,6 +52,28 @@ try {
   const manifest = pptx('inspect', '--input', candidate);
   const title = manifest.slides[0].objects.find((object) => object.text.includes('A clear presentation'));
   assert.ok(title?.name, 'starter title needs a stable object name');
+
+  const { loadDependencies } = await import('../scripts/lib/runtime.mjs');
+  const { JSZip } = loadDependencies();
+  const bomZip = await JSZip.loadAsync(await fs.readFile(candidate));
+  for (const part of [
+    'ppt/presentation.xml',
+    'ppt/_rels/presentation.xml.rels',
+    'ppt/slides/slide1.xml',
+    'ppt/theme/theme1.xml',
+  ]) {
+    const file = bomZip.file(part);
+    if (!file) continue;
+    const xml = await file.async('string');
+    bomZip.file(part, `\uFEFF${xml.replace(/^\uFEFF/u, '')}`);
+  }
+  await fs.writeFile(bomCandidate, await bomZip.generateAsync({ type: 'nodebuffer' }));
+  const bomManifest = pptx('inspect', '--input', bomCandidate);
+  assert.equal(bomManifest.slideCount, manifest.slideCount);
+  assert.deepEqual(
+    bomManifest.slides.map((slide) => slide.text),
+    manifest.slides.map((slide) => slide.text),
+  );
 
   const conversion = pptx(
     'convert-legacy',
@@ -96,7 +121,7 @@ try {
   assert.equal(delivered.slideCount, 1);
   assert.ok(await fs.stat(final).then((stat) => stat.isFile()));
   passed = true;
-  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'convert', 'template-edit', 'evaluate', 'review', 'deliver'] })}\n`);
+  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'bom-ooxml', 'convert', 'template-edit', 'evaluate', 'review', 'deliver'] })}\n`);
 } finally {
   if (passed) await fs.rm(outputRoot, { recursive: true, force: true });
   else process.stderr.write(`PPTX self-test artifacts: ${outputRoot}\n`);
