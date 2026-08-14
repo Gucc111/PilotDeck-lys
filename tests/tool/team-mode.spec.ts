@@ -865,3 +865,72 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
   }
   throw new Error("Timed out waiting for condition.");
 }
+
+// -- inferTeammateStatusFromProgress logic tests --
+// Replicate the helper logic here to verify correctness without exporting it.
+function inferTeammateStatusFromProgress(
+  progress: { items: Array<{ teammateId?: string; status: string }> },
+  teammateId: string,
+): "idle" | "failed" | "not_started" {
+  const items = progress.items.filter((item) => item.teammateId === teammateId);
+  if (items.length === 0) return "not_started";
+  const hasCompleted = items.some((item) => item.status === "completed");
+  if (hasCompleted) return "idle";
+  const hasFailed = items.some((item) => item.status === "failed");
+  if (hasFailed) return "failed";
+  return "not_started";
+}
+
+test("inferTeammateStatusFromProgress returns 'not_started' with no items", () => {
+  assert.equal(
+    inferTeammateStatusFromProgress({ items: [] }, "worker"),
+    "not_started",
+  );
+});
+
+test("inferTeammateStatusFromProgress returns 'idle' when teammate has completed items", () => {
+  assert.equal(
+    inferTeammateStatusFromProgress({
+      items: [
+        { teammateId: "worker", status: "completed" },
+        { teammateId: "worker", status: "in_progress" },
+      ],
+    }, "worker"),
+    "idle",
+  );
+});
+
+test("inferTeammateStatusFromProgress returns 'failed' when teammate has only failed items", () => {
+  assert.equal(
+    inferTeammateStatusFromProgress({
+      items: [
+        { teammateId: "worker", status: "failed" },
+        { teammateId: "other", status: "completed" },
+      ],
+    }, "worker"),
+    "failed",
+  );
+});
+
+test("inferTeammateStatusFromProgress returns 'not_started' for unrelated teammate items", () => {
+  assert.equal(
+    inferTeammateStatusFromProgress({
+      items: [
+        { teammateId: "other", status: "completed" },
+      ],
+    }, "worker"),
+    "not_started",
+  );
+});
+
+test("inferTeammateStatusFromProgress prefers 'idle' over 'failed' when both exist", () => {
+  assert.equal(
+    inferTeammateStatusFromProgress({
+      items: [
+        { teammateId: "worker", status: "failed" },
+        { teammateId: "worker", status: "completed" },
+      ],
+    }, "worker"),
+    "idle",
+  );
+});

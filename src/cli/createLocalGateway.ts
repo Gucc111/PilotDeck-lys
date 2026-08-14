@@ -145,6 +145,7 @@ import type {
   PilotDeckTeamDelegateResult,
   PilotDeckTeamMessage,
   PilotDeckTeamPermissionSnapshot,
+  PilotDeckTeamProgressSnapshot,
 } from "../tool/protocol/types.js";
 import { buildMcpToolWireName, parseMcpToolWireName } from "../mcp/runtime/wireName.js";
 
@@ -399,13 +400,16 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         teammates: listed.teammates.map((teammate) => {
           const sessionId = registry.getCurrentTeammateSessionId(projectKey, leaderSessionId, teammate.id);
           const snapshot = router?.snapshotSession(sessionId);
+          const inFlight = registry.isTeammateInFlight(projectKey, leaderSessionId, teammate.id);
           const currentTask = progress.items.find(
             (item) => item.teammateId === teammate.id && item.status === "in_progress",
           )?.subject;
           return {
             id: teammate.id,
             sessionId,
-            status: snapshot?.status ?? "not_started",
+            status: inFlight
+              ? "running"
+              : snapshot?.status ?? inferTeammateStatusFromProgress(progress, teammate.id),
             ...(currentTask ? { currentTask } : {}),
           };
         }),
@@ -725,6 +729,16 @@ class ProjectRuntimeRegistry {
     return this.teammateCurrentSessions.get(
       this.teammateRuntimeKey(projectRoot, leaderSessionId, teammateId),
     ) ?? teammateSessionKey(leaderSessionId, teammateId);
+  }
+
+  isTeammateInFlight(
+    projectRoot: string,
+    leaderSessionId: string,
+    teammateId: string,
+  ): boolean {
+    return this.teammateInFlightTurns.has(
+      this.teammateRuntimeKey(projectRoot, leaderSessionId, teammateId),
+    );
   }
 
   reconcileTeamMessages(projectRoot: string, leaderSessionId: string): void {
@@ -3066,4 +3080,17 @@ function teamLifecycleId(
   sourceId: string,
 ): string {
   return `team-lifecycle:${leaderSessionId}:${teammateId}:${sourceId}`;
+}
+
+function inferTeammateStatusFromProgress(
+  progress: PilotDeckTeamProgressSnapshot,
+  teammateId: string,
+): "idle" | "failed" | "not_started" {
+  const items = progress.items.filter((item) => item.teammateId === teammateId);
+  if (items.length === 0) return "not_started";
+  const hasCompleted = items.some((item) => item.status === "completed");
+  if (hasCompleted) return "idle";
+  const hasFailed = items.some((item) => item.status === "failed");
+  if (hasFailed) return "failed";
+  return "not_started";
 }

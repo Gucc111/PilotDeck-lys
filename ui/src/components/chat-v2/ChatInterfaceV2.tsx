@@ -8,6 +8,7 @@ import type { ChatInterfaceProps, ChatMessage, ChatRunMode, Provider } from '../
 import {
   getSessionRequestParams,
   isReadOnlySession,
+  isTeammateSession,
 } from '../../types/app';
 import { useChatProviderState } from '../chat/hooks/useChatProviderState';
 import { useChatSessionState } from '../chat/hooks/useChatSessionState';
@@ -648,7 +649,11 @@ function ChatInterfaceV2({
       />
       {runMode === 'team' && (currentSessionId || selectedSession?.id) && selectedProject && (
         <TeamStatusPanel
-          sessionId={(currentSessionId || selectedSession?.id) as string}
+          sessionId={
+            (selectedSession && isTeammateSession(selectedSession)
+              ? selectedSession.parentSessionId
+              : (currentSessionId || selectedSession?.id)) as string
+          }
           projectPath={selectedProject.fullPath || selectedProject.path || ''}
         />
       )}
