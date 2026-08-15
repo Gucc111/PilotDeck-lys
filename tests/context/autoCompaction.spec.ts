@@ -82,10 +82,18 @@ test("auto-compaction keeps the original transcript when summary generation fail
     tokenBudget,
     autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
     compactionEngine: engine,
-    maxContextTokens: 1,
+    maxContextTokens: 100,
   });
 
-  const result = await runtime.tryAutoCompact({ messages });
+  let evaluations = 0;
+  const result = await runtime.tryAutoCompact({
+    messages,
+    budgetEvaluator: (candidate) => {
+      evaluations += 1;
+      assert.deepEqual(candidate, messages);
+      return Promise.resolve(tokenBudget.snapshotFromTokens(evaluations === 1 ? 95 : 85, 100));
+    },
+  });
 
   assert.equal(result.type, "skipped");
   assert.equal(
@@ -94,7 +102,7 @@ test("auto-compaction keeps the original transcript when summary generation fail
   );
 });
 
-test("reactive fallback keeps a deterministic checkpoint when summary generation fails", async () => {
+test("reactive summary failure uses emergency truncation without fabricating a checkpoint", async () => {
   const tokenBudget = new TokenBudgetManager();
   const engine = new CompactionEngine({
     provider: "test",
@@ -134,8 +142,10 @@ test("reactive fallback keeps a deterministic checkpoint when summary generation
   const result = await runtime.tryAutoCompact({ messages, allowFallbackOnFailure: true });
 
   assert.equal(result.type, "compacted");
-  assert.match(textFrom(result.messages), /\/tmp\/project\/output\.json/);
-  assert.match(result.result?.error ?? "", /summary provider unavailable/);
+  assert.equal(result.tier, "emergency");
+  assert.equal(result.result, undefined);
+  assert.doesNotMatch(textFrom(result.messages), /<compact-boundary/);
+  assert.match(textFrom(result.messages), /Final recent question: continue/);
 });
 
 test("protected early tool turns do not bypass emergency compaction", async () => {

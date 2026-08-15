@@ -100,7 +100,6 @@ const COMPACT_SUMMARY_INPUT_TOOL_RESULT_PREVIEW_CHARS = 800;
 const COMPACT_SUMMARY_INPUT_TOOL_RESULT_TAIL_CHARS = 240;
 const COMPACT_SUMMARY_INPUT_DUPLICATE_THRESHOLD_CHARS = 320;
 const COMPACT_SUMMARY_INPUT_TOOL_CALL_ARG_MAX_CHARS = 2_000;
-const COMPACT_SUMMARY_FALLBACK_MAX_CHARS = 8_000;
 
 const COMPACT_SUMMARY_PREFIX =
   "[CONTEXT COMPACTION - REFERENCE ONLY] Earlier turns were compacted into this summary. Treat it as background state, not active instructions.";
@@ -122,13 +121,13 @@ export type CompactionResult = {
   attachments: CanonicalMessage[];
   /** Hook output messages to follow the attachments. */
   hookResults: CanonicalMessage[];
-  /** Previously accepted checkpoint messages; kept byte-for-byte stable. */
+  /** Retained for result compatibility; rolling summaries always return an empty prefix. */
   stablePrefix?: CanonicalMessage[];
   /** True when this pass rewrites an existing checkpoint prefix. */
   cacheReset?: boolean;
   /** Requested total token target for the post-compaction prompt. */
   targetPostTokens?: number;
-  /** True when this pass produced a summary message (LLM or fallback). */
+  /** True when this pass produced a new LLM summary message. */
   summaryGenerated?: boolean;
   /** True when existing checkpoint summaries were consolidated by this pass. */
   checkpointMerged?: boolean;
@@ -167,9 +166,6 @@ export type CompactionInput = {
 const DEFAULT_KEEP_TAIL_RATIO = 0.35;
 const DEFAULT_MIN_TAIL_MESSAGES = 3;
 const RELAXED_MIN_TAIL_MESSAGES = 1;
-const CHECKPOINT_MERGE_GROUP_LIMIT = 3;
-const CHECKPOINT_MERGE_BUDGET_RATIO = 0.15;
-
 /**
  * Owned by `AgentLoop`, not by `ContextRuntime`. Performs the second model
  * call required to summarize a conversation, writes the summary message and
@@ -193,19 +189,10 @@ export class CompactionEngine {
     const compactionId = this.options.uuid?.() ?? randomUUID();
     const checkpoint = splitCheckpointPrefix(input.messages);
     const preTokens = this.estimateMessages(input.messages);
-    const stablePrefixTokens = this.estimateMessages(checkpoint.stablePrefix, true);
-    const checkpointGroups = Math.floor(checkpoint.stablePrefix.length / 2);
-    const effectiveContextTokens = positiveTokenCount(input.effectiveContextTokens);
-    const mergeForCheckpointPressure = input.trigger === "auto"
-      && checkpoint.stablePrefix.length > 0
-      && (checkpointGroups >= CHECKPOINT_MERGE_GROUP_LIMIT
-        || (effectiveContextTokens !== undefined
-          && stablePrefixTokens >= effectiveContextTokens * CHECKPOINT_MERGE_BUDGET_RATIO));
-    const cacheReset = input.cacheReset
-      ?? (mergeForCheckpointPressure || (checkpoint.stablePrefix.length > 0 && input.trigger !== "auto"));
-    const checkpointMerged = cacheReset && checkpoint.stablePrefix.length > 0;
-    const stablePrefix = checkpointMerged ? [] : checkpoint.stablePrefix;
-    const planningMessages = checkpointMerged ? input.messages : checkpoint.liveMessages;
+    const checkpointMerged = checkpoint.previousSummaries.length > 0;
+    const cacheReset = input.cacheReset ?? checkpointMerged;
+    const stablePrefix: CanonicalMessage[] = [];
+    const planningMessages = checkpoint.liveMessages;
     const summaryOutputReserve = positiveTokenCount(input.maxOutputTokens)
       ?? positiveTokenCount(this.options.maxOutputTokens)
       ?? COMPACT_MAX_OUTPUT_TOKENS;
@@ -215,8 +202,7 @@ export class CompactionEngine {
       ? Math.max(
           1,
           targetPostTokens
-            - this.estimateMessages(stablePrefix, true)
-            - paddedTokenCount(summaryOutputReserve),
+            - summaryOutputReserve,
         )
       : Math.max(1, Math.floor(preTokens * tailRatio));
     const protectedToolNames = input.protectedToolNames === null
@@ -230,13 +216,10 @@ export class CompactionEngine {
       tailTokenBudget,
       protectedToolNames,
       minTailMessages,
-      (turnMessages) => this.estimateMessages(turnMessages, targetPostTokens !== undefined),
+      (turnMessages) => this.estimateMessages(turnMessages),
     );
     const messagesToSummarize = compactPlan.messagesToSummarize;
-    const retainedTailExceededBudget = this.estimateMessages(
-      compactPlan.messagesToKeep,
-      targetPostTokens !== undefined,
-    ) > tailTokenBudget;
+    const retainedTailExceededBudget = this.estimateMessages(compactPlan.messagesToKeep) > tailTokenBudget;
     const messagesToKeep = retainedTailExceededBudget
       ? projectOversizedRetainedToolResults(compactPlan.messagesToKeep, collectToolNamesByCallId(input.messages))
       : compactPlan.messagesToKeep;
@@ -263,19 +246,17 @@ export class CompactionEngine {
     let summaryUsage: CanonicalUsage | undefined;
 
     if (messagesToSummarize.length === 0) {
-      // Nothing to summarize: still emit a boundary so the transcript captures
-      // the intent, but no model call happens.
+      // Nothing can be removed from the live tail, so no model call happens.
     } else {
       const summaryAnchors = input.protectedToolNames === null
         ? buildCompactSummaryAnchors(planningMessages, this.protectedToolNames)
         : undefined;
-      // Append passes see only new live history; checkpoint-merge passes see
-      // the full prompt so prior checkpoints can be consolidated. The retained
-      // tail stays available as reference for tool and protected-turn context.
+      // The current live segment may overlap facts already captured in the
+      // previous rolling summary. The summary control prompt explicitly asks
+      // the model to de-duplicate that overlap while incorporating new state.
       const summaryInput = projectMessagesForSummary(planningMessages);
       if (this.isSummaryFailureCooldownActive()) {
         summaryError = this.summaryFailureError ?? "context summary is in cooldown";
-        summaryMessage = buildDeterministicFallbackSummary(messagesToSummarize, summaryError);
       } else {
         try {
           const result = await this.summarize(
@@ -284,6 +265,7 @@ export class CompactionEngine {
             input.signal,
             summaryAnchors,
             input.maxOutputTokens,
+            checkpoint.previousSummaries,
           );
           summaryMessage = wrapSummaryMessage(result.message);
           summaryUsage = result.usage;
@@ -293,7 +275,6 @@ export class CompactionEngine {
           summaryError = error instanceof Error ? error.message : String(error);
           this.summaryFailureCooldownUntil = Date.now() + COMPACT_SUMMARY_FAILURE_COOLDOWN_MS;
           this.summaryFailureError = summaryError;
-          summaryMessage = buildDeterministicFallbackSummary(messagesToSummarize, summaryError);
         }
       }
     }
@@ -311,11 +292,6 @@ export class CompactionEngine {
             code: "compact_summary_failed",
             severity: "warning" as const,
             message: summaryError,
-          },
-          {
-            code: "compact_summary_fallback_used",
-            severity: "warning" as const,
-            message: "A deterministic fallback summary was used because the LLM summary call failed or is cooling down.",
           },
         ]
       : summaryMessage
@@ -340,7 +316,7 @@ export class CompactionEngine {
       stablePrefix,
       cacheReset,
       targetPostTokens,
-      summaryGenerated: summaryMessage !== undefined,
+      summaryGenerated: summaryError === undefined && summaryMessage !== undefined,
       checkpointMerged,
       summaryUsage,
       attachments: input.attachments ?? [],
@@ -350,17 +326,14 @@ export class CompactionEngine {
     };
 
     if (summaryMessage) {
-      result.postTokens = this.estimateMessages(
-        buildPostCompactMessages(result),
-        targetPostTokens !== undefined,
-      );
+      result.postTokens = this.estimateMessages(buildPostCompactMessages(result));
     }
 
     await this.options.lifecycle?.dispatch({
       event: "PostCompact",
       payload: {
         trigger: input.trigger,
-        status: summaryError ? "fallback" : summaryMessage ? "success" : "skipped",
+        status: summaryError ? "failed" : summaryMessage ? "success" : "skipped",
         error: summaryError,
         preTokens,
         postTokens: result.postTokens,
@@ -374,7 +347,7 @@ export class CompactionEngine {
       turnId: input.turnId ?? "",
       compactionId,
       trigger: input.trigger,
-      status: summaryError ? "fallback" : summaryMessage ? "success" : "skipped",
+      status: summaryError ? "failed" : summaryMessage ? "success" : "skipped",
       preTokens,
       postTokens: result.postTokens,
       messagesSummarized: messagesToSummarize.length,
@@ -386,11 +359,9 @@ export class CompactionEngine {
     return result;
   }
 
-  private estimateMessages(messages: CanonicalMessage[], usePadding = false): number {
-    return this.options.tokenAccounting?.estimateMessages(messages, { usePadding })
-      ?? (usePadding
-        ? this.tokenBudget.estimateForMessagesWithPadding(messages)
-        : this.tokenBudget.estimateMessagesTokens(messages));
+  private estimateMessages(messages: CanonicalMessage[]): number {
+    return this.options.tokenAccounting?.estimateMessages(messages)
+      ?? this.tokenBudget.estimateMessagesTokens(messages);
   }
 
   private async summarize(
@@ -399,13 +370,14 @@ export class CompactionEngine {
     signal: AbortSignal | undefined,
     summaryAnchors: string | undefined,
     maxOutputTokens: number | undefined,
+    previousSummaries: CanonicalMessage[],
   ): Promise<{ message: CanonicalMessage; usage?: CanonicalUsage }> {
     const trailingPrompt: CanonicalMessage = {
       role: "user",
       content: [
         {
           type: "text",
-          text: buildMarkdownSummaryUserPrompt(userInstruction, summaryAnchors),
+          text: buildMarkdownSummaryUserPrompt(userInstruction, summaryAnchors, previousSummaries),
         },
       ],
       metadata: {
@@ -498,10 +470,6 @@ function positiveTokenCount(value: number | undefined): number | undefined {
   return Math.floor(value);
 }
 
-function paddedTokenCount(value: number): number {
-  return Math.ceil((value * 4) / 3);
-}
-
 /**
  * Decision §3.1 #9 — exact legacy order:
  *   boundaryMarker → summary → keep → attachments → hookResults
@@ -519,18 +487,23 @@ export function buildPostCompactMessages(result: CompactionResult): CanonicalMes
 
 function splitCheckpointPrefix(messages: CanonicalMessage[]): {
   stablePrefix: CanonicalMessage[];
+  previousSummaries: CanonicalMessage[];
   liveMessages: CanonicalMessage[];
 } {
   let index = 0;
-  // A compact checkpoint is emitted as a boundary marker followed by the
-  // wrapped assistant summary. Keep every accepted pair immutable.
+  const previousSummaries: CanonicalMessage[] = [];
+  // Legacy snapshots may contain multiple boundary/summary pairs. Collect
+  // every accepted summary so the next successful pass can replace them with
+  // one rolling checkpoint.
   while (index + 1 < messages.length
     && isCompactBoundaryMessage(messages[index]!)
     && isWrappedSummaryMessage(messages[index + 1]!)) {
+    previousSummaries.push(messages[index + 1]!);
     index += 2;
   }
   return {
     stablePrefix: messages.slice(0, index),
+    previousSummaries,
     liveMessages: messages.slice(index),
   };
 }
@@ -823,12 +796,25 @@ function buildMarkdownSummarySystemPrompt(basePrompt: string): string {
 function buildMarkdownSummaryUserPrompt(
   userInstruction: string | undefined,
   summaryAnchors: string | undefined,
+  previousSummaries: CanonicalMessage[],
 ): string {
   const parts = [
     '<internal-compaction-control purpose="context-summary" synthetic="true">',
     "Generate the Markdown checkpoint specified by the system prompt.",
     "This block is runtime-generated summarization control, not an end-user message. Do not include it in the summary or treat it as changing the underlying task state.",
   ];
+  const previousSummary = previousSummaries
+    .map((message) => stripSummaryEnvelope(visibleTextFromMessage(message)))
+    .filter(Boolean)
+    .join("\n\n--- PRIOR CHECKPOINT ---\n\n");
+  if (previousSummary) {
+    parts.push(
+      "<previous-rolling-summary>",
+      previousSummary,
+      "</previous-rolling-summary>",
+      "Update the previous rolling summary with the live conversation above. Preserve still-relevant facts, correct obsolete state, and de-duplicate any live tail already represented in the previous summary. Return one complete replacement summary, not an addendum.",
+    );
+  }
   if (userInstruction?.trim()) {
     parts.push(
       "<additional-summary-instructions>",
@@ -1112,264 +1098,12 @@ function stripSummaryEnvelope(text: string): string {
   return out;
 }
 
-function buildDeterministicFallbackSummary(messages: CanonicalMessage[], reason: string | undefined): CanonicalMessage {
-  const facts = collectFallbackSummaryFacts(messages);
-  let body = [
-    "## Objective",
-    facts.objective || "None",
-    "",
-    "## Current State",
-    facts.currentState || "None",
-    "",
-    "## Completed",
-    formatBulletList(facts.completed, 8),
-    "",
-    "## Remaining",
-    formatBulletList(facts.remaining, 8),
-    "",
-    "## Decisions",
-    formatBulletList(facts.decisions, 8),
-    "",
-    "## Files And Artifacts",
-    formatBulletList(facts.files, 12),
-    "",
-    "## Tool Findings",
-    formatBulletList(facts.toolFindings, 8),
-    "",
-    "## Thinking",
-    formatBulletList(facts.thinking, 8),
-    "",
-    "## Errors And Recovery",
-    formatBulletList(
-      [
-        ...(reason ? [reason] : []),
-        ...facts.errors,
-      ],
-      8,
-    ),
-    "",
-    "## Open Questions",
-    formatBulletList(facts.openQuestions, 8),
-  ].join("\n");
-
-  if (body.length > COMPACT_SUMMARY_FALLBACK_MAX_CHARS) {
-    body = `${body.slice(0, COMPACT_SUMMARY_FALLBACK_MAX_CHARS - 40).trimEnd()}\n...[fallback summary truncated]`;
-  }
-
-  return wrapSummaryMessage({
-    role: "assistant",
-    content: [{ type: "text", text: body }],
-  });
-}
-
-type FallbackSummaryFacts = {
-  objective: string;
-  currentState: string;
-  completed: string[];
-  remaining: string[];
-  decisions: string[];
-  files: string[];
-  toolFindings: string[];
-  thinking: string[];
-  errors: string[];
-  openQuestions: string[];
-};
-
-function collectFallbackSummaryFacts(messages: CanonicalMessage[]): FallbackSummaryFacts {
-  const userTexts: string[] = [];
-  const completed: string[] = [];
-  const remaining: string[] = [];
-  const decisions: string[] = [];
-  const files: string[] = [];
-  const toolFindings: string[] = [];
-  const thinking: string[] = [];
-  const errors: string[] = [];
-  const openQuestions: string[] = [];
-  const toolNamesByCallId = collectToolNamesByCallId(messages);
-  const currentStateBits: string[] = [];
-
-  for (const message of messages) {
-    const visibleText = visibleTextFromMessage(message);
-    if (message.role === "user" && visibleText) {
-      userTexts.push(visibleText);
-      if (visibleText.includes("?")) {
-        openQuestions.push(shortenFallbackText(visibleText, 220));
-      }
-      currentStateBits.push(shortenFallbackText(visibleText, 220));
-    }
-    if (message.role === "assistant") {
-      const calls = message.content.filter((block) => block.type === "tool_call") as CanonicalToolCallBlock[];
-      if (calls.length > 0) {
-        completed.push(`Called tool(s): ${calls.map((call) => call.name).join(", ")}`);
-        for (const call of calls) {
-          collectFallbackPathsFromValue(call.input, files);
-          if (call.name === "Task" || call.name === "read_skill") {
-            const callText = buildToolCallSummaryText(call);
-            toolFindings.push(callText);
-          }
-        }
-      }
-      if (visibleText) {
-        completed.push(shortenFallbackText(visibleText, 220));
-      }
-    }
-    for (const block of message.content) {
-      if (block.type === "thinking") {
-        thinking.push(shortenFallbackText(block.reasoningContent ?? block.text, 260));
-        continue;
-      }
-      if (block.type === "tool_result") {
-        const toolName = toolNamesByCallId.get(block.toolCallId) ?? "unknown";
-        const text = flattenToolResultContentText(block.content);
-        const summary = summarizeFallbackToolResult(toolName, block.toolCallId, text, block.isError === true);
-        toolFindings.push(summary);
-        if (block.isError || /(?:error|failed|exception|traceback|timeout|fatal)/i.test(text)) {
-          errors.push(shortenFallbackText(summary, 280));
-        }
-        collectFallbackPathsFromText(text, files);
-        continue;
-      }
-      if (block.type === "tool_result_reference") {
-        files.push(shortenFallbackText(block.readFilePath ?? block.path, 280));
-        toolFindings.push(
-          `Referenced ${shortenFallbackText(block.readFilePath ?? block.path, 180)} (${block.originalBytes} bytes)`,
-        );
-        if (block.preview) {
-          toolFindings.push(shortenFallbackText(block.preview, 220));
-        }
-        continue;
-      }
-      if (block.type === "text") {
-        collectFallbackPathsFromText(block.text, files);
-      }
-    }
-  }
-
-  if (userTexts.length === 0) {
-    currentStateBits.push("No user messages were recoverable from the compacted window.");
-  }
-  remaining.push(
-    userTexts.length > 0
-      ? `Continue from the latest user request: ${shortenFallbackText(userTexts[userTexts.length - 1]!, 260)}`
-      : "Continue from the preserved tail and verify current repository state before changing anything.",
-  );
-  if (userTexts.length > 1) {
-    decisions.push(`Earlier user asks were: ${shortenFallbackText(userTexts.slice(0, -1).join(" | "), 260)}`);
-  }
-
-  return {
-    objective: userTexts.length > 0 ? shortenFallbackText(userTexts[0]!, 280) : "Unknown from deterministic fallback.",
-    currentState: currentStateBits.length > 0
-      ? shortenFallbackText(currentStateBits.join(" / "), 320)
-      : "Unknown from deterministic fallback.",
-    completed: uniqueFallbackEntries(completed),
-    remaining: uniqueFallbackEntries(remaining),
-    decisions: uniqueFallbackEntries(decisions),
-    files: uniqueFallbackEntries(files),
-    toolFindings: uniqueFallbackEntries(toolFindings),
-    thinking: uniqueFallbackEntries(thinking),
-    errors: uniqueFallbackEntries(errors),
-    openQuestions: uniqueFallbackEntries(openQuestions),
-  };
-}
-
 function visibleTextFromMessage(message: CanonicalMessage): string {
   return message.content
     .filter((block) => block.type === "text")
     .map((block) => block.text.trim())
     .filter(Boolean)
     .join("\n");
-}
-
-function collectFallbackPathsFromValue(value: unknown, files: string[]): void {
-  if (value === null || value === undefined) {
-    return;
-  }
-  if (typeof value === "string") {
-    collectFallbackPathsFromText(value, files);
-    return;
-  }
-  if (typeof value !== "object") {
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectFallbackPathsFromValue(item, files);
-    }
-    return;
-  }
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof entry === "string" && /(?:path|file|read|cwd|dir|url|uri|location)/i.test(key)) {
-      files.push(shortenFallbackText(entry, 280));
-    }
-    collectFallbackPathsFromValue(entry, files);
-  }
-}
-
-function collectFallbackPathsFromText(text: string, files: string[]): void {
-  const matches = text.match(/(?:\/|~\/?|[A-Za-z]:\\)[^\s`'"")\]}<>]+/g) ?? [];
-  for (const match of matches) {
-    files.push(shortenFallbackText(match.replace(/[.,:;]+$/g, ""), 280));
-  }
-}
-
-function summarizeFallbackToolResult(toolName: string, toolCallId: string, text: string, isError: boolean): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const preview = shortenFallbackText(normalized, 260);
-  return `[${toolName}] ${isError ? "error" : "result"} for ${toolCallId}: ${preview || "None"}`;
-}
-
-function buildToolCallSummaryText(call: CanonicalToolCallBlock): string {
-  const input = summarizeFallbackInput(call.input);
-  return `[${call.name}] call ${call.id}${input ? ` ${input}` : ""}`;
-}
-
-function summarizeFallbackInput(value: unknown): string {
-  const rendered = JSON.stringify(value, circularJsonReplacer());
-  if (!rendered) {
-    return "";
-  }
-  return shortenFallbackText(rendered, 220);
-}
-
-function shortenFallbackText(text: string, maxChars: number): string {
-  const normalized = redactSensitiveText(text.replace(/\s+/g, " ").trim());
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-  const head = Math.max(0, maxChars - 16);
-  return `${normalized.slice(0, head).trimEnd()}...[truncated]`;
-}
-
-function formatBulletList(items: string[], limit: number): string {
-  const seen = new Set<string>();
-  const lines: string[] = [];
-  for (const item of items) {
-    const normalized = item.trim();
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    lines.push(`- ${normalized}`);
-    if (lines.length >= limit) {
-      break;
-    }
-  }
-  return lines.length > 0 ? lines.join("\n") : "None";
-}
-
-function uniqueFallbackEntries(items: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const item of items) {
-    const normalized = item.trim();
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
 }
 
 function redactSensitiveText(text: string): string {

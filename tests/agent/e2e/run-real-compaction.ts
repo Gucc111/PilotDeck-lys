@@ -10,6 +10,7 @@ import {
 } from "../../../src/agent/index.js";
 import type { AgentRuntimeConfig } from "../../../src/agent/runtime/AgentRuntimeConfig.js";
 import {
+  actualInputTokensFromUsage,
   AutoCompactionPolicy,
   CachedMicroCompactionEngine,
   CompactionEngine,
@@ -56,7 +57,7 @@ const maxContextTokens = snapshot.config.agent.maxContextTokens ?? capabilities.
 const maxOutputTokens = snapshot.config.agent.maxOutputTokens ?? capabilities.maxOutputTokens;
 const effectiveInputTokens = Math.max(1, maxContextTokens - maxOutputTokens);
 const targetTokens = Math.floor(effectiveInputTokens * 0.60);
-const summaryMaxOutputTokens = 8_192;
+const summaryMaxOutputTokens = 4_000;
 const model = { provider: selected.provider, model: selected.model };
 const tokenBudget = new TokenBudgetManager();
 const tokenAccounting = new TokenAccountingRuntime({ modelConfig: snapshot.config.model });
@@ -81,11 +82,13 @@ const routerConfig = snapshot.config.router ?? {
 const router = createRouterRuntime(routerConfig, { modelRuntime });
 let summaryCalls = 0;
 let summaryUsage: CanonicalUsage | undefined;
+const summaryPrompts: string[] = [];
 const compactEvents: Array<Record<string, unknown>> = [];
 const compactionEngine = new CompactionEngine({
   model: {
     async *stream(request, signal): AsyncIterable<CanonicalModelEvent> {
       summaryCalls += 1;
+      summaryPrompts.push(textFromMessage(request.messages.at(-1)));
       for await (const event of router.stream(request, {
         sessionId: "real-compaction-e2e",
         turnId: "compact",
@@ -205,24 +208,71 @@ for await (const event of session.submit(
 )) {
   agentEvents.push(event as unknown as Record<string, unknown>);
 }
+const firstSnapshot = session.snapshot();
+const firstRollingSummary = firstSnapshot.messages.find(isWrappedSummaryMessage);
+assert.ok(firstRollingSummary, "the first compaction did not retain a rolling summary");
+const summaryCallsAfterFirstPass = summaryCalls;
+const firstTranscript = await readTranscript(storage.transcriptPath);
+const firstBoundaryCount = compactBoundaryEntries(firstTranscript.entries).length;
+assert.ok(firstBoundaryCount > 0, "the first compaction did not persist a compact boundary");
+
+const secondAgentEvents: Array<Record<string, unknown>> = [];
+for await (const event of session.submit(
+  { type: "text", text: "Run a second rolling-summary continuity check." },
+  {
+    turnId: "real-compaction-turn-2",
+    maxTurns: 1,
+    permissionMode: "bypassPermissions",
+    canPrompt: false,
+    syntheticMessages: [
+      ...history.messages,
+      textMessage("user", "The second repository inspection is complete. Confirm completion in one short sentence and do not call tools."),
+    ],
+  },
+)) {
+  secondAgentEvents.push(event as unknown as Record<string, unknown>);
+}
 await router.shutdown();
 
 const { entries } = await readTranscript(storage.transcriptPath);
 const replay = replayTranscriptEntries(entries);
-const compactBoundaries = entries.filter((entry): entry is AgentTranscriptEntry & {
-  type: "control_boundary";
-  boundary: { kind: "compact"; subtype: "compact_boundary"; compactMetadata: CompactBoundaryMetadata };
-} =>
-  entry.type === "control_boundary"
-    && entry.boundary.kind === "compact"
-    && "subtype" in entry.boundary
-    && entry.boundary.subtype === "compact_boundary"
+const compactBoundaries = compactBoundaryEntries(entries);
+assert.ok(summaryCalls > summaryCallsAfterFirstPass, "the real summary model was not called for the second compaction");
+assert.ok(
+  summaryPrompts.slice(summaryCallsAfterFirstPass).some((prompt) =>
+    prompt.includes("<previous-rolling-summary>")
+      && prompt.includes("</previous-rolling-summary>")
+      && prompt.includes("one complete replacement summary, not an addendum")
+  ),
+  "the second summary request did not include the first rolling summary",
 );
+assert.ok(compactBoundaries.length > firstBoundaryCount, "the second compact boundary was not persisted");
+const finalSnapshotMessages = session.snapshot().messages;
+assert.equal(finalSnapshotMessages.filter(isCompactBoundaryMessage).length, 1);
+assert.equal(finalSnapshotMessages.filter(isWrappedSummaryMessage).length, 1);
+const tokenCountSources = secondAgentEvents
+  .filter((event) => event.type === "context_budget")
+  .map((event) => String((event.snapshot as Record<string, unknown> | undefined)?.source));
+assert.ok(tokenCountSources.length > 0, "the second turn did not emit token budget accounting");
+assert.ok(tokenCountSources.every((source) => ["provider", "calibrated", "local"].includes(source)));
+
+function compactBoundaryEntries(entriesToFilter: AgentTranscriptEntry[]) {
+  return entriesToFilter.filter((entry): entry is AgentTranscriptEntry & {
+    type: "control_boundary";
+    boundary: { kind: "compact"; subtype: "compact_boundary"; compactMetadata: CompactBoundaryMetadata };
+  } =>
+    entry.type === "control_boundary"
+      && entry.boundary.kind === "compact"
+      && "subtype" in entry.boundary
+      && entry.boundary.subtype === "compact_boundary"
+  );
+}
 assert.ok(summaryCalls > 0, "real summary model was not called");
 assert.ok(compactBoundaries.length > 0, "no compact boundary was persisted");
 const compactMetadata = compactBoundaries.at(-1)!.boundary.compactMetadata;
 assert.equal(compactMetadata.targetTokens, targetTokens);
 assert.equal(compactMetadata.summaryGenerated, true);
+assert.equal(compactMetadata.checkpointMerged, true);
 assert.ok(
   typeof compactMetadata.postTokens === "number" && compactMetadata.postTokens <= targetTokens,
   `post-compaction prompt ${compactMetadata.postTokens} exceeded target ${targetTokens}`,
@@ -263,9 +313,12 @@ const report = {
   afterMicroProjection: budgetReport(projectedSnapshot),
   summaryCalls,
   summaryUsage,
+  summaryInputUsageTokens: actualInputTokensFromUsage(summaryUsage),
   compactMetadata: compactMetadata as CompactBoundaryMetadata,
   compactEvents,
   agentEventTypes: agentEvents.map((event) => event.type),
+  secondAgentEventTypes: secondAgentEvents.map((event) => event.type),
+  tokenCountSources,
   replayMessages: replay.messages.length,
   replacementMessages: replacementMessages.length,
   finalTextPreview: finalText.slice(0, 500),
@@ -298,6 +351,17 @@ async function buildRealRepositoryHistory(input: {
     .split("\n")
     .filter((path) => path.endsWith(".ts"))
     .sort();
+  const sourcePool: Array<{ relativePath: string; content: string }> = [];
+  for (const relativePath of candidates) {
+    try {
+      const content = readFileSync(resolve(input.projectRoot, relativePath), "utf8");
+      if (content.length >= 4_000) sourcePool.push({ relativePath, content });
+    } catch {
+      // Ignore files that disappear during the live repository scan.
+    }
+    if (sourcePool.length >= 12) break;
+  }
+  assert.ok(sourcePool.length > 0, "no real repository source files were available for the E2E history");
   const messages: CanonicalMessage[] = [{
     role: "user",
     content: [{
@@ -307,15 +371,8 @@ async function buildRealRepositoryHistory(input: {
   }];
   let projectedMessages: CanonicalMessage[] = messages;
   let sourceFiles = 0;
-  for (const relativePath of candidates) {
-    const fullPath = resolve(input.projectRoot, relativePath);
-    let content: string;
-    try {
-      content = readFileSync(fullPath, "utf8");
-    } catch {
-      continue;
-    }
-    if (content.length < 4_000) continue;
+  while (sourceFiles < 240) {
+    const { relativePath, content } = sourcePool[sourceFiles % sourcePool.length]!;
     sourceFiles += 1;
     const toolCallId = `real-read-${sourceFiles}`;
     messages.push(
@@ -373,12 +430,27 @@ function evaluateRequestBudget(
   return accounting.evaluateRequestBudget(request, {
     maxContextTokens: contextTokens,
     reservedOutputTokens: outputTokens,
-    usePadding: true,
   });
 }
 
 function textMessage(role: "user" | "assistant", text: string): CanonicalMessage {
   return { role, content: [{ type: "text", text }] };
+}
+
+function textFromMessage(message: CanonicalMessage | undefined): string {
+  return message?.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n") ?? "";
+}
+
+function isCompactBoundaryMessage(message: CanonicalMessage): boolean {
+  return message.role === "user" && textFromMessage(message).startsWith("<compact-boundary");
+}
+
+function isWrappedSummaryMessage(message: CanonicalMessage): boolean {
+  return message.role === "assistant"
+    && textFromMessage(message).startsWith("[CONTEXT COMPACTION - REFERENCE ONLY]");
 }
 
 function budgetReport(value: TokenBudgetSnapshot): Record<string, unknown> {

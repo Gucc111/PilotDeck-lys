@@ -48,8 +48,10 @@ import type {
   CompactionResult,
   ContextRecoveryDecision,
   ContextSupplementalToolResultMessage,
+  TokenCalibrationBaseline,
   TokenBudgetSnapshot,
 } from "../../context/index.js";
+import { actualInputTokensFromUsage } from "../../context/index.js";
 import type { PermissionMode, PermissionRule, PermissionRuleSet } from "../../permission/index.js";
 import type { AgentControlBoundaryTranscriptEntry } from "../../session/transcript/TranscriptEntry.js";
 import { collectToolCalls } from "./collectToolCalls.js";
@@ -154,6 +156,7 @@ export class AgentLoop {
   private readonly readFileState: PilotDeckReadFileStateMap;
   private readonly writeSnapshots: PilotDeckWriteSnapshotMap;
   private readonly allowedReadFiles: Set<string>;
+  private readonly tokenCalibrationByRoute = new Map<string, TokenCalibrationBaseline>();
   private readonly transientTokenCaps = new Map<string, {
     maxContextTokens?: number;
     requestedMaxOutputTokens?: number;
@@ -190,7 +193,6 @@ export class AgentLoop {
     let messages = [...input.messages];
     let turnCount = 1;
     let usage: CanonicalUsage = {};
-    let lastModelUsage: CanonicalUsage | undefined;
     let permissionDenials: AgentPermissionDenial[] = [];
     let structuredOutput: unknown;
     let finalMessage: CanonicalMessage | undefined;
@@ -413,7 +415,6 @@ export class AgentLoop {
             messages,
             abortSignal: input.abortSignal,
             reservedOutputTokens,
-            lastUsage: lastModelUsage,
             budgetEvaluator: this.createBudgetEvaluator(input, {
               maxContextTokens: preRoutingMaxContextTokens,
               reservedOutputTokens,
@@ -518,7 +519,6 @@ export class AgentLoop {
               abortSignal: input.abortSignal,
               maxContextTokens: routedMaxCtx,
               reservedOutputTokens,
-              lastUsage: lastModelUsage,
               budgetEvaluator: this.createBudgetEvaluator(input, {
                 decision,
                 baseRequest: request,
@@ -577,6 +577,7 @@ export class AgentLoop {
         };
       }
 
+      const requestInputEstimate = this.dependencies.tokenAccounting?.estimateRequestInput?.(request);
       const assembler = createModelMessageAssemblerState();
       try {
         for await (const event of this.dependencies.router.execute(decision, request, {
@@ -675,7 +676,7 @@ export class AgentLoop {
 
       const assembled = assembleAssistantMessage(assembler);
       usage = mergeUsage(usage, assembled.usage);
-      lastModelUsage = assembled.usage;
+      this.recordTokenCalibration(request, assembled.usage, requestInputEstimate);
       let assistantMessage = assembled.message;
       let toolCalls = collectToolCalls(assistantMessage);
       if (assembled.hasTextFallbackToolCalls) {
@@ -1090,7 +1091,6 @@ export class AgentLoop {
                 abortSignal: input.abortSignal,
                 maxContextTokens: this.currentMaxContextTokens(target.provider, target.model),
                 reservedOutputTokens: this.getReservedOutputTokens(target.provider, target.model),
-                lastUsage: lastModelUsage,
                 allowFallbackOnFailure: true,
               });
               if (compact.type === "compacted") {
@@ -1890,13 +1890,13 @@ export class AgentLoop {
       maxContextTokens?: number;
       reservedOutputTokens: number;
     },
-  ): ((candidateMessages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>) | undefined {
+  ): ((candidateMessages: CanonicalMessage[]) => Promise<TokenBudgetSnapshot>) | undefined {
     const tokenAccounting = this.dependencies.tokenAccounting;
     const maxContextTokens = options.maxContextTokens;
     if (!tokenAccounting || !maxContextTokens) {
       return undefined;
     }
-    return async (candidateMessages, lastUsage) => {
+    return async (candidateMessages) => {
       let candidateRequest = await this.createModelRequest(candidateMessages, input, {
         emitInstructionEvents: false,
       });
@@ -1913,21 +1913,30 @@ export class AgentLoop {
         maxContextTokens,
         reservedOutputTokens: options.reservedOutputTokens,
         signal: input.abortSignal,
-        usePadding: true,
+        calibration: this.tokenCalibrationByRoute.get(tokenCalibrationKey(
+          candidateRequest.provider,
+          candidateRequest.model,
+        )),
       });
-      const usageTokens = tokensFromUsage(lastUsage);
-      if (usageTokens === undefined || usageTokens <= snapshot.tokens) {
-        return snapshot;
-      }
-      return tokenAccounting.snapshotFromTokens(usageTokens, maxContextTokens, {
-        reservedOutputTokens: options.reservedOutputTokens,
-        usageTokens,
-        budgetTokens: snapshot.budgetTokens,
-        source: snapshot.source,
-        exact: snapshot.exact,
-        estimatorError: snapshot.estimatorError,
-      });
+      return snapshot;
     };
+  }
+
+  private recordTokenCalibration(
+    request: CanonicalModelRequest,
+    usage: CanonicalUsage | undefined,
+    estimatedInputTokens: number | undefined,
+  ): void {
+    const actualInputTokens = actualInputTokensFromUsage(usage);
+    if (actualInputTokens === undefined || estimatedInputTokens === undefined || estimatedInputTokens <= 0) {
+      return;
+    }
+    this.tokenCalibrationByRoute.set(tokenCalibrationKey(request.provider, request.model), {
+      provider: request.provider,
+      model: request.model,
+      actualInputTokens,
+      estimatedInputTokens,
+    });
   }
 
   private getReservedOutputTokens(provider?: string, model?: string): number {
@@ -2029,9 +2038,6 @@ export class AgentLoop {
           tier: compact.tier,
           summarySucceeded: compactionSummarySucceeded(compact.result),
           ...(compact.result.cacheReset ? { cacheReset: true } : {}),
-          ...(compact.result.stablePrefix && compact.result.stablePrefix.length > 0
-            ? { checkpointVersion: Math.floor(compact.result.stablePrefix.length / 2) + 1 }
-            : {}),
           ...(compact.error
             ? {
                 finalBudgetTokens: compact.snapshot.maxContextTokens,
@@ -3461,16 +3467,8 @@ function clampOutputToModelCap(requested: number, modelMaxOutputTokens: number |
   return next;
 }
 
-function tokensFromUsage(usage: CanonicalUsage | undefined): number | undefined {
-  if (!usage) return undefined;
-  const inputTokens = usage.inputTokens;
-  if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens) || inputTokens <= 0) {
-    return undefined;
-  }
-  const outputTokens = typeof usage.outputTokens === "number" && Number.isFinite(usage.outputTokens) && usage.outputTokens > 0
-    ? usage.outputTokens
-    : 0;
-  return Math.ceil(inputTokens + outputTokens);
+function tokenCalibrationKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`;
 }
 
 function markCompactReplacementMessages(messages: CanonicalMessage[], compactionId: string): CanonicalMessage[] {

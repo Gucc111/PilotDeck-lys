@@ -7,18 +7,28 @@ import {
   type CanonicalModelEvent,
   type CanonicalModelRequest,
   type CanonicalToolSchema,
+  type CanonicalUsage,
   type ModelConfig,
   type ProviderConfig,
 } from "../../model/index.js";
 import { buildProviderHeaders } from "../../model/streaming/streamModel.js";
-import { TokenBudgetManager, type TokenBudgetEvaluateOptions, type TokenBudgetSnapshot } from "./TokenBudgetManager.js";
+import { TokenBudgetManager, type TokenBudgetSnapshot } from "./TokenBudgetManager.js";
 
-export type TokenCountSource = "provider" | "local";
+export type TokenCountSource = "provider" | "calibrated" | "local";
+
+export type TokenCalibrationBaseline = {
+  provider: string;
+  model: string;
+  actualInputTokens: number;
+  estimatedInputTokens: number;
+};
 
 export type TokenCountResult = {
   tokens: number;
   source: TokenCountSource;
   exact: boolean;
+  localEstimateTokens: number;
+  calibration?: TokenCalibrationBaseline;
   estimatorError?: string;
 };
 
@@ -33,12 +43,12 @@ export type TokenAccountingRuntimeOptions = {
 export type CountRequestInputOptions = {
   signal?: AbortSignal;
   useProviderCount?: boolean;
+  calibration?: TokenCalibrationBaseline;
 };
 
 export type EvaluateRequestBudgetOptions = CountRequestInputOptions & {
   maxContextTokens: number;
   reservedOutputTokens?: number;
-  usePadding?: boolean;
 };
 
 const DEFAULT_COUNT_TIMEOUT_MS = 1_500;
@@ -64,29 +74,42 @@ export class TokenAccountingRuntime {
     request: CanonicalModelRequest,
     options: CountRequestInputOptions = {},
   ): Promise<TokenCountResult> {
+    const localEstimateTokens = this.estimateRequestInput(request);
+    let estimatorError: string | undefined;
     if (options.useProviderCount !== false) {
       const cached = this.getCachedProviderCount(request);
-      if (cached) return cached;
+      if (cached) return { ...cached, localEstimateTokens };
       try {
         const counted = await this.countWithProvider(request, options.signal);
         if (counted) {
           this.setCachedProviderCount(request, counted);
-          return counted;
+          return { ...counted, localEstimateTokens };
         }
       } catch (error) {
-        return {
-          tokens: this.estimateRequestInput(request, { usePadding: true }),
-          source: "local",
-          exact: false,
-          estimatorError: error instanceof Error ? error.message : String(error),
-        };
+        estimatorError = error instanceof Error ? error.message : String(error);
       }
     }
 
+    const calibration = matchingCalibration(request, options.calibration);
+    if (calibration) {
+      return {
+        tokens: Math.max(
+          1,
+          Math.round(localEstimateTokens + calibration.actualInputTokens - calibration.estimatedInputTokens),
+        ),
+        source: "calibrated",
+        exact: false,
+        localEstimateTokens,
+        calibration,
+        estimatorError,
+      };
+    }
     return {
-      tokens: this.estimateRequestInput(request, { usePadding: true }),
+      tokens: localEstimateTokens,
       source: "local",
       exact: false,
+      localEstimateTokens,
+      estimatorError,
     };
   }
 
@@ -100,8 +123,10 @@ export class TokenAccountingRuntime {
       source: counted.source,
       exact: counted.exact,
       estimatorError: counted.estimatorError,
-      displayTokens: counted.exact ? undefined : this.estimateRequestInput(request),
-      budgetTokens: options.usePadding ? this.estimateRequestInput(request, { usePadding: true }) : undefined,
+      displayTokens: counted.localEstimateTokens,
+      usageTokens: counted.source === "local" ? undefined : counted.tokens,
+      calibrationActualInputTokens: counted.calibration?.actualInputTokens,
+      calibrationEstimatedInputTokens: counted.calibration?.estimatedInputTokens,
     });
   }
 
@@ -115,16 +140,15 @@ export class TokenAccountingRuntime {
       estimatorError?: string;
       usageTokens?: number;
       displayTokens?: number;
-      budgetTokens?: number;
+      calibrationActualInputTokens?: number;
+      calibrationEstimatedInputTokens?: number;
     } = {},
   ): TokenBudgetSnapshot {
     return this.tokenBudget.snapshotFromTokens(tokens, maxContextTokens, metadata);
   }
 
-  estimateMessages(messages: CanonicalMessage[], options: TokenBudgetEvaluateOptions = {}): number {
-    return options.usePadding
-      ? this.tokenBudget.estimateForMessagesWithPadding(messages)
-      : this.tokenBudget.estimateMessagesTokens(messages);
+  estimateMessages(messages: CanonicalMessage[]): number {
+    return this.tokenBudget.estimateMessagesTokens(messages);
   }
 
   estimateResponseEvents(events: CanonicalModelEvent[]): number {
@@ -140,10 +164,8 @@ export class TokenAccountingRuntime {
     return this.tokenBudget.estimateTextTokens(chunks.join(""));
   }
 
-  estimateRequestInput(request: CanonicalModelRequest, options: TokenBudgetEvaluateOptions = {}): number {
-    const messages = options.usePadding
-      ? this.tokenBudget.estimateForMessagesWithPadding(request.messages)
-      : this.tokenBudget.estimateMessagesTokens(request.messages);
+  estimateRequestInput(request: CanonicalModelRequest): number {
+    const messages = this.tokenBudget.estimateMessagesTokens(request.messages);
     const system = request.systemPrompt ? this.tokenBudget.estimateTextTokens(request.systemPrompt) : 0;
     const tools = estimateToolSchemas(this.tokenBudget, request.tools ?? []);
     return messages + system + tools;
@@ -184,7 +206,7 @@ export class TokenAccountingRuntime {
       thinking: fullBody.thinking,
     };
     const raw = await this.postProviderCount(provider, "v1/messages/count_tokens", body, signal);
-    return { tokens: readTokenCount(raw), source: "provider", exact: true };
+    return { tokens: readTokenCount(raw), source: "provider", exact: true, localEstimateTokens: 0 };
   }
 
   private async countOpenAI(
@@ -196,7 +218,7 @@ export class TokenAccountingRuntime {
     const raw = await this.postProviderCount(provider, "v1/responses/input_tokens", body, signal, {
       useOriginBase: true,
     });
-    return { tokens: readTokenCount(raw), source: "provider", exact: true };
+    return { tokens: readTokenCount(raw), source: "provider", exact: true, localEstimateTokens: 0 };
   }
 
   private async postProviderCount(
@@ -246,6 +268,33 @@ export class TokenAccountingRuntime {
       this.cache.delete(oldest);
     }
   }
+}
+
+export function actualInputTokensFromUsage(usage: CanonicalUsage | undefined): number | undefined {
+  if (!usage) return undefined;
+  let total = 0;
+  for (const tokens of [usage.inputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]) {
+    if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0) {
+      total += tokens;
+    }
+  }
+  return total > 0 ? Math.ceil(total) : undefined;
+}
+
+function matchingCalibration(
+  request: CanonicalModelRequest,
+  calibration: TokenCalibrationBaseline | undefined,
+): TokenCalibrationBaseline | undefined {
+  if (!calibration || calibration.provider !== request.provider || calibration.model !== request.model) {
+    return undefined;
+  }
+  if (!Number.isFinite(calibration.actualInputTokens) || calibration.actualInputTokens <= 0) {
+    return undefined;
+  }
+  if (!Number.isFinite(calibration.estimatedInputTokens) || calibration.estimatedInputTokens <= 0) {
+    return undefined;
+  }
+  return calibration;
 }
 
 function toOpenAIResponsesTokenCountBody(

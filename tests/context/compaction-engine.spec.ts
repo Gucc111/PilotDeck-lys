@@ -76,7 +76,7 @@ test("full compaction can disable protected turn preservation", async () => {
   assert.match(summaryText(result.summaryMessage), /END OF CONTEXT SUMMARY/);
 });
 
-test("rolling checkpoints keep the accepted prefix byte-identical", async () => {
+test("four rolling compactions replace the previous checkpoint with one summary", async () => {
   let sequence = 0;
   const summaryRequests: CanonicalModelRequest[] = [];
   const engine = new CompactionEngine({
@@ -93,56 +93,31 @@ test("rolling checkpoints keep the accepted prefix byte-identical", async () => 
     model_: "local-chat",
     maxOutputTokens: 1,
   });
-  const first = await engine.run({
-    trigger: "auto",
-    messages: Array.from({ length: 16 }, (_, index) => ({
-      role: index % 2 === 0 ? "user" as const : "assistant" as const,
-      content: [{ type: "text" as const, text: `Old work ${index} `.repeat(20) }],
-    })),
-    keepTailRatio: 0.2,
-  });
-  const firstMessages = buildPostCompactMessages(first);
-  const second = await engine.run({
-    trigger: "auto",
-    messages: [
-      ...firstMessages,
-      ...Array.from({ length: 16 }, (_, index) => ({
-        role: index % 2 === 0 ? "user" as const : "assistant" as const,
-        content: [{ type: "text" as const, text: `New work ${index}` }],
-      })),
-    ],
-    keepTailRatio: 0.05,
-  });
-  const secondMessages = buildPostCompactMessages(second);
+  let messages = rollingWorkMessages("First");
+  for (let pass = 1; pass <= 4; pass += 1) {
+    const result = await engine.run({
+      trigger: "auto",
+      messages,
+      keepTailRatio: 0.05,
+    });
+    const snapshot = buildPostCompactMessages(result);
 
-  assert.deepEqual(secondMessages.slice(0, 2), firstMessages.slice(0, 2));
-  assert.match(summaryText(second.summaryMessage), /checkpoint-2/);
-  assert.doesNotMatch(textFromMessages(summaryRequests[1]!.messages), /checkpoint-1/);
-
-  const third = await engine.run({
-    trigger: "auto",
-    messages: [...secondMessages, ...rollingWorkMessages("Third")],
-    keepTailRatio: 0.05,
-  });
-  const thirdMessages = buildPostCompactMessages(third);
-  assert.equal(third.checkpointMerged, false);
-  assert.equal(third.stablePrefix?.length, 4);
-
-  const fourth = await engine.run({
-    trigger: "auto",
-    messages: [...thirdMessages, ...rollingWorkMessages("Fourth")],
-    effectiveContextTokens: 100_000,
-    targetPostTokens: 60,
-  });
-  const fourthMessages = buildPostCompactMessages(fourth);
-  assert.equal(fourth.checkpointMerged, true);
-  assert.equal(fourth.stablePrefix?.length, 0);
-  assert.equal(fourthMessages.filter(isCompactBoundaryMessageForTest).length, 1);
-  assert.match(textFromMessages(summaryRequests[3]!.messages), /checkpoint-1/);
-  assert.match(textFromMessages(summaryRequests[3]!.messages), /checkpoint-3/);
+    assert.equal(result.stablePrefix?.length, 0);
+    assert.equal(result.checkpointMerged, pass > 1);
+    assert.equal(snapshot.filter(isCompactBoundaryMessageForTest).length, 1);
+    assert.equal(snapshot.filter(isWrappedSummaryMessageForTest).length, 1);
+    assert.match(summaryText(result.summaryMessage), new RegExp(`checkpoint-${pass}`));
+    if (pass > 1) {
+      const prompt = summaryPromptText(summaryRequests[pass - 1]!);
+      assert.match(prompt, /<previous-rolling-summary>/);
+      assert.match(prompt, new RegExp(`checkpoint-${pass - 1}`));
+      assert.match(prompt, /one complete replacement summary, not an addendum/);
+    }
+    messages = [...snapshot, ...rollingWorkMessages(`Pass ${pass + 1}`)];
+  }
 });
 
-test("auto compaction merges a stable checkpoint prefix above 15% of the effective budget", async () => {
+test("the first rolling compaction collapses a legacy three-checkpoint prefix", async () => {
   let sequence = 0;
   const summaryRequests: CanonicalModelRequest[] = [];
   const engine = new CompactionEngine({
@@ -153,9 +128,7 @@ test("auto compaction merges a stable checkpoint prefix above 15% of the effecti
         yield { type: "message_start", role: "assistant" };
         yield {
           type: "text_delta",
-          text: sequence === 1
-            ? `## Objective\n${"large-checkpoint ".repeat(200)}`
-            : "## Objective\nmerged-checkpoint",
+          text: `## Objective\nlegacy-checkpoint-${sequence}`,
         };
         yield { type: "message_end", finishReason: "stop" };
       },
@@ -165,21 +138,30 @@ test("auto compaction merges a stable checkpoint prefix above 15% of the effecti
     maxOutputTokens: 1,
   });
 
-  const first = await engine.run({
+  const legacyPairs: CanonicalMessage[] = [];
+  for (let pass = 0; pass < 3; pass += 1) {
+    const legacy = await engine.run({
+      trigger: "auto",
+      messages: rollingWorkMessages(`Legacy ${pass + 1}`),
+      keepTailRatio: 0.05,
+    });
+    legacyPairs.push(legacy.boundaryMarker, legacy.summaryMessage!);
+  }
+  const merged = await engine.run({
     trigger: "auto",
-    messages: rollingWorkMessages("Initial"),
+    messages: [...legacyPairs, ...rollingWorkMessages("Current")],
     keepTailRatio: 0.05,
   });
-  const second = await engine.run({
-    trigger: "auto",
-    messages: [...buildPostCompactMessages(first), ...rollingWorkMessages("Next")],
-    effectiveContextTokens: 1_000,
-    targetPostTokens: 60,
-  });
+  const snapshot = buildPostCompactMessages(merged);
 
-  assert.equal(second.checkpointMerged, true);
-  assert.equal(second.stablePrefix?.length, 0);
-  assert.match(textFromMessages(summaryRequests[1]!.messages), /large-checkpoint/);
+  assert.equal(merged.checkpointMerged, true);
+  assert.equal(merged.stablePrefix?.length, 0);
+  assert.equal(snapshot.filter(isCompactBoundaryMessageForTest).length, 1);
+  assert.equal(snapshot.filter(isWrappedSummaryMessageForTest).length, 1);
+  const prompt = summaryPromptText(summaryRequests[3]!);
+  assert.match(prompt, /legacy-checkpoint-1/);
+  assert.match(prompt, /legacy-checkpoint-2/);
+  assert.match(prompt, /legacy-checkpoint-3/);
 });
 
 test("auto full compaction retries without protected turns when protected output still blocks", async () => {
@@ -227,7 +209,8 @@ test("auto full compaction retries without protected turns when protected output
   assert.match(relaxedPrompt, /task output/);
   assert.match(relaxedPrompt, /skills\/pdf\/SKILL\.md/);
   assert.doesNotMatch(relaxedPrompt, /private protected reasoning|native protected reasoning/);
-  assert.doesNotMatch(relaxedPrompt, /## Objective/);
+  assert.match(relaxedPrompt, /<previous-rolling-summary>/);
+  assert.match(relaxedPrompt, /## Objective/);
   assert.equal(hasToolCall(result.messages, "Task"), false);
   assert.equal(hasToolResult(result.messages, "task-1"), false);
   assert.equal(hasToolCall(result.messages, "read_skill"), false);
@@ -443,7 +426,8 @@ test("summary output truncated by the provider is treated as a failed compaction
   });
 
   assert.match(result.error ?? "", /truncated at the token limit/);
-  assert.match(summaryText(result.summaryMessage), /## Files And Artifacts/);
+  assert.equal(result.summaryMessage, undefined);
+  assert.equal(result.summaryGenerated, false);
 });
 
 test("protected turns remain in chronological order with later work", async () => {
@@ -652,19 +636,31 @@ test("summary failures preserve the original transcript and cool down retries", 
     maxContextTokens: 100,
   });
 
+  const original = compactFixture();
+  const evaluated: CanonicalMessage[][] = [];
   const first = await runtime.tryAutoCompact({
-    messages: compactFixture(),
-    budgetEvaluator: (candidate) => Promise.resolve(fakeSnapshot(candidate, tokenBudget)),
+    messages: original,
+    budgetEvaluator: (candidate) => {
+      evaluated.push(candidate);
+      return Promise.resolve(tokenBudget.snapshotFromTokens(evaluated.length === 1 ? 95 : 85, 100));
+    },
   });
 
   assert.equal(first.type, "skipped");
+  assert.deepEqual(evaluated[1], original);
+  assert.equal(evaluated[1]!.some(isCompactBoundaryMessageForTest), false);
 
+  const secondEvaluated: CanonicalMessage[][] = [];
   const second = await runtime.tryAutoCompact({
-    messages: compactFixture(),
-    budgetEvaluator: (candidate) => Promise.resolve(fakeSnapshot(candidate, tokenBudget)),
+    messages: original,
+    budgetEvaluator: (candidate) => {
+      secondEvaluated.push(candidate);
+      return Promise.resolve(tokenBudget.snapshotFromTokens(secondEvaluated.length === 1 ? 95 : 85, 100));
+    },
   });
 
   assert.equal(second.type, "skipped");
+  assert.deepEqual(secondEvaluated[1], original);
   assert.equal(summaryRequests.length, 1);
 });
 
@@ -752,6 +748,13 @@ function textFromMessages(messages: CanonicalMessage[]): string {
 function isCompactBoundaryMessageForTest(message: CanonicalMessage): boolean {
   return message.role === "user"
     && message.content.some((block) => block.type === "text" && block.text.startsWith("<compact-boundary"));
+}
+
+function isWrappedSummaryMessageForTest(message: CanonicalMessage): boolean {
+  return message.role === "assistant"
+    && message.content.some((block) =>
+      block.type === "text" && block.text.startsWith("[CONTEXT COMPACTION - REFERENCE ONLY]")
+    );
 }
 
 function compactFixture(): CanonicalMessage[] {

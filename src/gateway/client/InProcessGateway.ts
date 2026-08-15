@@ -1745,7 +1745,6 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
         type: "context_budget",
         used: event.snapshot.tokens,
         displayUsed: event.snapshot.displayTokens,
-        budgetUsed: event.snapshot.budgetTokens,
         total: totalContextTokens,
         effectiveTotal: event.snapshot.effectiveContextTokens ?? event.snapshot.maxContextTokens,
         reservedOutputTokens,
