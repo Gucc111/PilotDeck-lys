@@ -4,8 +4,8 @@
  * the engine catalog (different tsconfig / build root).
  *
  * Keep this in sync with the engine catalog when adding providers/models.
- * The engine catalog auto-fills capabilities and multimodal — this UI list
- * only needs the IDs and display names.
+ * Token limits are used as the settings placeholders, so they must match the
+ * effective capabilities resolved by the engine.
  */
 
 export type CatalogModel = {
@@ -20,6 +20,19 @@ export type CatalogModel = {
 };
 
 export type CatalogProviderProtocol = 'anthropic' | 'openai' | 'openai-responses' | 'google';
+
+export type ModelTokenLimits = {
+  maxContextTokens: number;
+  maxOutputTokens: number;
+};
+
+/** Mirrors the protocol defaults used by `src/model/config/parseModelConfig.ts`. */
+export const DEFAULT_MODEL_TOKEN_LIMITS: Record<CatalogProviderProtocol, ModelTokenLimits> = {
+  anthropic: { maxContextTokens: 200_000, maxOutputTokens: 32_768 },
+  openai: { maxContextTokens: 128_000, maxOutputTokens: 32_768 },
+  'openai-responses': { maxContextTokens: 128_000, maxOutputTokens: 32_768 },
+  google: { maxContextTokens: 1_048_576, maxOutputTokens: 32_768 },
+};
 
 export type CatalogProvider = {
   id: string;
@@ -110,7 +123,7 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
       { id: 'gemini-3.1-pro-preview', displayName: 'Gemini 3.1 Pro Preview', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
       { id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
       { id: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
-      { id: 'gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 8192 },
+      { id: 'gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
     ],
   },
   {
@@ -119,10 +132,10 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     protocol: 'openai',
     defaultUrl: 'https://openrouter.ai/api/v1',
     models: [
-      { id: 'anthropic/claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', supportsImage: true, maxContextTokens: 200000 },
-      { id: 'google/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', supportsImage: true, maxContextTokens: 1048576 },
-      { id: 'deepseek/deepseek-v4-flash', displayName: 'DeepSeek V4 Flash', maxContextTokens: 1048576 },
-      { id: 'moonshotai/kimi-k2.6', displayName: 'Kimi K2.6', supportsImage: true, maxContextTokens: 262144 },
+      { id: 'anthropic/claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 128000 },
+      { id: 'google/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
+      { id: 'deepseek/deepseek-v4-flash', displayName: 'DeepSeek V4 Flash', maxContextTokens: 1048576, maxOutputTokens: 393216 },
+      { id: 'moonshotai/kimi-k2.6', displayName: 'Kimi K2.6', supportsImage: true, maxContextTokens: 262144, maxOutputTokens: 8192 },
     ],
   },
   {
@@ -143,8 +156,8 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     protocol: 'openai',
     defaultUrl: 'https://api.minimax.io/v1',
     models: [
-      { id: 'MiniMax-M2.5', displayName: 'MiniMax M2.5', maxContextTokens: 1000000 },
-      { id: 'MiniMax-M2.7-highspeed', displayName: 'MiniMax M2.7 Highspeed', maxContextTokens: 1000000 },
+      { id: 'MiniMax-M2.5', displayName: 'MiniMax M2.5', maxContextTokens: 1000000, maxOutputTokens: 16384 },
+      { id: 'MiniMax-M2.7-highspeed', displayName: 'MiniMax M2.7 Highspeed', maxContextTokens: 1000000, maxOutputTokens: 16384 },
     ],
   },
   {
@@ -155,9 +168,9 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     modelListRequiresApiKey: true,
     models: [
       { id: 'kimi-k2.6', displayName: 'Kimi K2.6', supportsImage: true, maxContextTokens: 262144, maxOutputTokens: 8192 },
-      { id: 'kimi-k2.7-code', displayName: 'Kimi K2.7 Code' },
-      { id: 'kimi-k2.7-code-highspeed', displayName: 'Kimi K2.7 Code Highspeed' },
-      { id: 'kimi-k3', displayName: 'Kimi K3' },
+      { id: 'kimi-k2.7-code', displayName: 'Kimi K2.7 Code', maxContextTokens: 262144, maxOutputTokens: 8192 },
+      { id: 'kimi-k2.7-code-highspeed', displayName: 'Kimi K2.7 Code Highspeed', maxContextTokens: 262144, maxOutputTokens: 8192 },
+      { id: 'kimi-k3', displayName: 'Kimi K3', maxContextTokens: 262144, maxOutputTokens: 8192 },
     ],
   },
   {
@@ -166,11 +179,11 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     protocol: 'openai',
     defaultUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     models: [
-      { id: 'doubao-1.5-pro-256k', displayName: 'Doubao 1.5 Pro 256K', supportsImage: true, maxContextTokens: 262144 },
-      { id: 'doubao-1.5-pro', displayName: 'Doubao 1.5 Pro', supportsImage: true, maxContextTokens: 131072 },
-      { id: 'doubao-1.5-lite-128k', displayName: 'Doubao 1.5 Lite 128K', maxContextTokens: 131072 },
-      { id: 'doubao-1.5-lite', displayName: 'Doubao 1.5 Lite', maxContextTokens: 32768 },
-      { id: 'deepseek-r1', displayName: 'DeepSeek R1 (Volc)', maxContextTokens: 65536 },
+      { id: 'doubao-1.5-pro-256k', displayName: 'Doubao 1.5 Pro 256K', supportsImage: true, maxContextTokens: 262144, maxOutputTokens: 16384 },
+      { id: 'doubao-1.5-pro', displayName: 'Doubao 1.5 Pro', supportsImage: true, maxContextTokens: 131072, maxOutputTokens: 16384 },
+      { id: 'doubao-1.5-lite-128k', displayName: 'Doubao 1.5 Lite 128K', maxContextTokens: 131072, maxOutputTokens: 8192 },
+      { id: 'doubao-1.5-lite', displayName: 'Doubao 1.5 Lite', maxContextTokens: 32768, maxOutputTokens: 8192 },
+      { id: 'deepseek-r1', displayName: 'DeepSeek R1 (Volc)', maxContextTokens: 65536, maxOutputTokens: 16384 },
     ],
   },
   {
@@ -179,10 +192,10 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     protocol: 'openai',
     defaultUrl: 'https://api.z.ai/api/paas/v4',
     models: [
-      { id: 'glm-5.2', displayName: 'GLM-5.2', maxContextTokens: 131072, maxOutputTokens: 131072 },
-      { id: 'glm-5.1', displayName: 'GLM-5.1', maxContextTokens: 131072, maxOutputTokens: 131072 },
-      { id: 'glm-5-turbo', displayName: 'GLM-5 Turbo', maxContextTokens: 131072, maxOutputTokens: 131072 },
-      { id: 'glm-4.6', displayName: 'GLM-4.6', maxContextTokens: 131072, maxOutputTokens: 131072 },
+      { id: 'glm-5.2', displayName: 'GLM-5.2', maxContextTokens: 131072, maxOutputTokens: 65536 },
+      { id: 'glm-5.1', displayName: 'GLM-5.1', maxContextTokens: 131072, maxOutputTokens: 65536 },
+      { id: 'glm-5-turbo', displayName: 'GLM-5 Turbo', maxContextTokens: 131072, maxOutputTokens: 65536 },
+      { id: 'glm-4.6', displayName: 'GLM-4.6', maxContextTokens: 131072, maxOutputTokens: 65536 },
       { id: 'glm-4.7', displayName: 'GLM-4.7', maxContextTokens: 200000, maxOutputTokens: 131072 },
       { id: 'glm-4.7-flashx', displayName: 'GLM-4.7 FlashX', maxContextTokens: 200000, maxOutputTokens: 131072 },
       { id: 'glm-4.7-flash', displayName: 'GLM-4.7 Flash', maxContextTokens: 200000, maxOutputTokens: 131072 },

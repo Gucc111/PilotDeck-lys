@@ -1,4 +1,7 @@
-import { findCatalogProviderById } from "../../../../../shared/catalogProviders";
+import {
+  DEFAULT_MODEL_TOKEN_LIMITS,
+  findCatalogProviderById,
+} from "../../../../../shared/catalogProviders";
 import { patch } from "../../modelPool/utils/patch";
 import type { PilotDeckConfig } from "../../modelPool/types";
 import type { ActiveModelCapabilities } from "../types";
@@ -143,6 +146,8 @@ export function activeModelCapabilities(
   }
   const catalogProvider = findCatalogProviderById(providerId);
   const catalogModel = catalogProvider?.models.find((m) => m.id === modelId);
+  const protocol = provider.protocol ?? catalogProvider?.protocol ?? "openai";
+  const protocolDefaults = DEFAULT_MODEL_TOKEN_LIMITS[protocol];
   return {
     ref,
     providerId,
@@ -151,5 +156,9 @@ export function activeModelCapabilities(
     catalogProvider,
     multimodalInput,
     maxOutputTokensOverride,
+    defaultMaxContextTokens:
+      catalogModel?.maxContextTokens ?? protocolDefaults.maxContextTokens,
+    defaultMaxOutputTokens:
+      catalogModel?.maxOutputTokens ?? protocolDefaults.maxOutputTokens,
   };
 }
