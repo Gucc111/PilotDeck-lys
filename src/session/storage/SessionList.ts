@@ -1,9 +1,12 @@
-import { readdir } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getPilotProjectChatDir } from "../../pilot/index.js";
 import { readSessionLite, type SessionLiteFile } from "./SessionLiteReader.js";
+import type { SessionMetadataValue } from "../transcript/TranscriptEntry.js";
 
 const ALWAYS_ON_AUXILIARY_PATTERN = /^always-on-(discovery|workspace|report)[:\-]/;
+const SESSION_METADATA_SCAN_CHUNK_BYTES = 64 * 1024;
+const MAX_SESSION_METADATA_LINE_BYTES = 128 * 1024;
 
 function isInternalSession(sessionId: string): boolean {
   return ALWAYS_ON_AUXILIARY_PATTERN.test(sessionId);
@@ -46,15 +49,11 @@ export async function listProjectSessions(options: ListProjectSessionsOptions): 
     if (!name.endsWith(".jsonl")) {
       continue;
     }
-    const lite = await readSessionLite(join(chatDir, name));
-    if (!lite) {
-      continue;
-    }
     const sessionId = name.slice(0, -".jsonl".length);
     if (!options.includeInternal && isInternalSession(sessionId)) {
       continue;
     }
-    const info = parseSessionInfoFromLite(sessionId, lite, options.projectRoot);
+    const info = await readSessionInfo(join(chatDir, name), sessionId, options.projectRoot);
     if (info) {
       sessions.push(info);
     }
@@ -64,6 +63,23 @@ export async function listProjectSessions(options: ListProjectSessionsOptions): 
   const offset = Math.max(0, options.offset ?? 0);
   const limit = options.limit ?? sessions.length;
   return sessions.slice(offset, limit === 0 ? undefined : offset + limit);
+}
+
+async function readSessionInfo(
+  path: string,
+  sessionId: string,
+  projectRoot?: string,
+): Promise<SessionInfo | null> {
+  const lite = await readSessionLite(path);
+  if (!lite) return null;
+
+  const fastInfo = parseSessionInfoFromLite(sessionId, lite, projectRoot);
+  if (fastInfo) return fastInfo;
+
+  // Large inline media can make the first JSONL record exceed the 64 KiB
+  // preview. Fall back only when the fast path cannot identify the session.
+  const metadata = await readLastSessionMetadata(path);
+  return metadata ? parseSessionInfoFromMetadata(sessionId, lite, metadata, projectRoot) : null;
 }
 
 export function parseSessionInfoFromLite(
@@ -187,6 +203,117 @@ function escapeRegExp(value: string): string {
   return value.replace(/[\\^$*+?.()|[\]{}]/g, "\\$&");
 }
 
+function parseSessionInfoFromMetadata(
+  sessionId: string,
+  lite: SessionLiteFile,
+  metadata: SessionMetadataValue,
+  projectRoot?: string,
+): SessionInfo | null {
+  const summary = metadata.title ?? metadata.aiTitle ?? metadata.lastPrompt ?? metadata.firstPrompt;
+  if (!summary?.trim()) return null;
+  return {
+    sessionId,
+    summary,
+    lastModified: lite.mtime,
+    fileSize: lite.size,
+    customTitle: metadata.title,
+    aiTitle: metadata.aiTitle,
+    firstPrompt: metadata.firstPrompt,
+    cwd: projectRoot,
+    tag: metadata.tag,
+    parentSessionId: metadata.parentSessionId,
+    forkedFromTurnId: metadata.forkedFromTurnId,
+  };
+}
+
+/**
+ * Scan only for strict session_metadata records while keeping oversized JSONL
+ * records (such as base64 image inputs) out of memory.
+ */
+async function readLastSessionMetadata(path: string): Promise<SessionMetadataValue | undefined> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, "r");
+    const buffer = Buffer.allocUnsafe(SESSION_METADATA_SCAN_CHUNK_BYTES);
+    let lastMetadata: SessionMetadataValue | undefined;
+    let lineChunks: Buffer[] = [];
+    let lineBytes = 0;
+    let lineTooLarge = false;
+
+    const append = (segment: Buffer): void => {
+      if (segment.length === 0) return;
+      lineBytes += segment.length;
+      if (lineTooLarge || lineBytes > MAX_SESSION_METADATA_LINE_BYTES) {
+        lineChunks = [];
+        lineTooLarge = true;
+        return;
+      }
+      lineChunks.push(segment);
+    };
+
+    const finishLine = (): void => {
+      if (!lineTooLarge) {
+        const metadata = parseSessionMetadataLine(Buffer.concat(lineChunks).toString("utf8").replace(/\r$/, ""));
+        if (metadata) lastMetadata = metadata;
+      }
+      lineChunks = [];
+      lineBytes = 0;
+      lineTooLarge = false;
+    };
+
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+
+      let start = 0;
+      for (let newline = buffer.indexOf(0x0a, start); newline !== -1 && newline < bytesRead; newline = buffer.indexOf(0x0a, start)) {
+        append(buffer.subarray(start, newline));
+        finishLine();
+        start = newline + 1;
+      }
+      append(buffer.subarray(start, bytesRead));
+    }
+    if (lineBytes > 0 || lineChunks.length > 0) finishLine();
+    return lastMetadata;
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function parseSessionMetadataLine(line: string): SessionMetadataValue | undefined {
+  if (!line.includes('"type":"session_metadata"')) return undefined;
+  try {
+    const entry = JSON.parse(line) as unknown;
+    if (!isRecord(entry) || entry.type !== "session_metadata" || !isRecord(entry.metadata)) {
+      return undefined;
+    }
+    const metadata = entry.metadata;
+    return {
+      title: stringValue(metadata.title),
+      aiTitle: stringValue(metadata.aiTitle),
+      tag: stringValue(metadata.tag),
+      firstPrompt: stringValue(metadata.firstPrompt),
+      lastPrompt: stringValue(metadata.lastPrompt),
+      parentSessionId: stringValue(metadata.parentSessionId),
+      forkedFromTurnId: stringValue(metadata.forkedFromTurnId),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 /** Options for listing sessions across all known projects. */
 export type ListAllSessionsOptions = {
   pilotHome: string;
@@ -224,9 +351,7 @@ export async function listAllSessions(options: ListAllSessionsOptions): Promise<
       if (!name.endsWith(".jsonl")) continue;
       const sessionId = name.slice(0, -".jsonl".length);
       if (!options.includeInternal && isInternalSession(sessionId)) continue;
-      const lite = await readSessionLite(join(chatDir, name));
-      if (!lite) continue;
-      const info = parseSessionInfoFromLite(sessionId, lite);
+      const info = await readSessionInfo(join(chatDir, name), sessionId);
       if (info) {
         info.cwd = projectId;
         all.push(info);
@@ -269,9 +394,7 @@ export async function searchSessionsByTitle(options: SearchSessionsByTitleOption
     if (!name.endsWith(".jsonl")) continue;
     const sessionId = name.slice(0, -".jsonl".length);
     if (!options.includeInternal && isInternalSession(sessionId)) continue;
-    const lite = await readSessionLite(join(chatDir, name));
-    if (!lite) continue;
-    const info = parseSessionInfoFromLite(sessionId, lite, options.projectRoot);
+    const info = await readSessionInfo(join(chatDir, name), sessionId, options.projectRoot);
     if (!info) continue;
     const haystack = [info.customTitle, info.aiTitle, info.firstPrompt]
       .filter(Boolean)

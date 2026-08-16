@@ -161,6 +161,7 @@ export class TurnRunner {
         }
         const status = await this.recordTurnFailureStatus(options, error);
         yield this.toAgentStatusEvent(options, status);
+        await this.finalizeSessionMetadata(options);
         yield { type: "turn_failed", sessionId: options.sessionId, turnId: options.turnId, error };
         yield { type: "turn_completed", sessionId: options.sessionId, turnId: options.turnId, result };
         return { result, messages };
@@ -182,7 +183,7 @@ export class TurnRunner {
         }
         const status = await this.recordTurnFailureStatus(options, error);
         yield this.toAgentStatusEvent(options, status);
-        await this.flushReadySessionTitle(options, sessionTitle);
+        await this.finalizeSessionMetadata(options, sessionTitle);
         yield { type: "turn_failed", sessionId: options.sessionId, turnId: options.turnId, error };
         yield { type: "turn_completed", sessionId: options.sessionId, turnId: options.turnId, result };
         return { result, messages };
@@ -253,7 +254,7 @@ export class TurnRunner {
           yield turnCompletedEvent;
         }
         await this.transcript.recordTurnResult(options.sessionId, options.turnId, runResult.result);
-        await this.flushReadySessionTitle(options, sessionTitle);
+        await this.finalizeSessionMetadata(options, sessionTitle);
         return runResult;
       } catch (error) {
         const normalized = normalizeAgentError(error);
@@ -265,7 +266,7 @@ export class TurnRunner {
         await Promise.resolve(this.transcript.recordTurnResult(options.sessionId, options.turnId, result)).catch(() => {});
         const status = await this.recordTurnFailureStatus(options, normalized);
         yield this.toAgentStatusEvent(options, status);
-        await this.flushReadySessionTitle(options, sessionTitle);
+        await this.finalizeSessionMetadata(options, sessionTitle);
         yield { type: "turn_failed", sessionId: options.sessionId, turnId: options.turnId, error: normalized };
         yield { type: "turn_completed", sessionId: options.sessionId, turnId: options.turnId, result };
         return { result, messages };
@@ -420,6 +421,14 @@ export class TurnRunner {
       return;
     }
     await metadataStore.saveAiTitle(pending.title, options.turnId);
+  }
+
+  private async finalizeSessionMetadata(
+    options: TurnRunnerOptions,
+    pending?: PendingSessionTitle,
+  ): Promise<void> {
+    await this.flushReadySessionTitle(options, pending);
+    await this.turnDependencies.metadataStore?.reappendTail(options.turnId).catch(() => {});
   }
 }
 
