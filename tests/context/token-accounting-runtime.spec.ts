@@ -14,6 +14,7 @@ import type {
   ModelDefinition,
   ModelProtocol,
 } from "../../src/model/index.js";
+import { normalizeGoogleUsage } from "../../src/model/providers/google/response.js";
 
 class FixedTokenBudget extends TokenBudgetManager {
   value = 1;
@@ -46,6 +47,31 @@ test("current provider count wins even when it is below the local estimate", asy
 
   assert.equal(counted.tokens, 12_345);
   assert.equal(counted.localEstimateTokens, 50_000);
+  assert.equal(counted.source, "provider");
+  assert.equal(counted.exact, true);
+});
+
+test("official OpenAI Responses routes use the provider input-token endpoint", async () => {
+  const tokenBudget = new FixedTokenBudget();
+  tokenBudget.value = 50_000;
+  let requestedUrl = "";
+  const accounting = new TokenAccountingRuntime({
+    modelConfig: modelConfig("openai-responses", "https://api.openai.com/v1"),
+    tokenBudget,
+    cacheSize: 0,
+    fetch: (async (input) => {
+      requestedUrl = String(input);
+      return new Response(JSON.stringify({ input_tokens: 12_345 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch,
+  });
+
+  const counted = await accounting.countRequestInput(request());
+
+  assert.equal(requestedUrl, "https://api.openai.com/v1/responses/input_tokens");
+  assert.equal(counted.tokens, 12_345);
   assert.equal(counted.source, "provider");
   assert.equal(counted.exact, true);
 });
@@ -113,6 +139,14 @@ test("real input usage includes cache traffic and excludes output tokens", () =>
     outputTokens: 30_000,
   }), 12_500);
   assert.equal(actualInputTokensFromUsage({ outputTokens: 30_000 }), undefined);
+
+  const googleUsage = normalizeGoogleUsage({
+    promptTokenCount: 10_000,
+    cachedContentTokenCount: 2_000,
+    candidatesTokenCount: 500,
+    totalTokenCount: 10_500,
+  });
+  assert.equal(actualInputTokensFromUsage(googleUsage), 10_000);
 });
 
 function baseline(actualInputTokens: number, estimatedInputTokens: number): TokenCalibrationBaseline {

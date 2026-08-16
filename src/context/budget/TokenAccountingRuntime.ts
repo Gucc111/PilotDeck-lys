@@ -464,7 +464,7 @@ function cacheKeyForRequest(request: CanonicalModelRequest): string {
 
 function isOfficialOpenAIProvider(provider: ProviderConfig): boolean {
   const normalized = normalizeProviderBaseUrl(provider.url);
-  return provider.protocol === "openai" && (
+  return (provider.protocol === "openai" || provider.protocol === "openai-responses") && (
     normalized === "https://api.openai.com" ||
     normalized === "https://api.openai.com/v1"
   );
