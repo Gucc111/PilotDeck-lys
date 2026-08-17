@@ -96,6 +96,30 @@ test("official OpenAI Responses routes use the provider input-token endpoint", a
   assert.equal(requestedBody?.max_output_tokens, undefined);
 });
 
+test("official OpenAI Chat Completions routes do not use the Responses count endpoint", async () => {
+  const tokenBudget = new FixedTokenBudget();
+  tokenBudget.value = 50_000;
+  let fetchCalls = 0;
+  const accounting = new TokenAccountingRuntime({
+    modelConfig: modelConfig("openai", "https://api.openai.com/v1"),
+    tokenBudget,
+    cacheSize: 0,
+    fetch: (async () => {
+      fetchCalls += 1;
+      throw new Error("Chat Completions must not call the Responses count endpoint.");
+    }) as typeof fetch,
+  });
+
+  const counted = await accounting.countRequestInput(request(), {
+    calibration: baseline(55_000, 50_000),
+  });
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(counted.tokens, 55_000);
+  assert.equal(counted.source, "calibrated");
+  assert.equal(counted.exact, false);
+});
+
 test("an OpenAI-compatible route uses the previous real-usage delta for calibration", async () => {
   const tokenBudget = new FixedTokenBudget();
   const accounting = new TokenAccountingRuntime({

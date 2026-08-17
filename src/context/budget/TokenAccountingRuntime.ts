@@ -186,7 +186,7 @@ export class TokenAccountingRuntime {
     if (provider.protocol === "anthropic") {
       return this.countAnthropic(provider, request, signal);
     }
-    if (isOfficialOpenAIProvider(provider)) {
+    if (isOfficialOpenAIResponsesProvider(provider)) {
       return this.countOpenAI(provider, request, signal);
     }
     return undefined;
@@ -356,9 +356,9 @@ function cacheKeyForRequest(request: CanonicalModelRequest): string {
     .digest("hex");
 }
 
-function isOfficialOpenAIProvider(provider: ProviderConfig): boolean {
+function isOfficialOpenAIResponsesProvider(provider: ProviderConfig): boolean {
   const normalized = normalizeProviderBaseUrl(provider.url);
-  return (provider.protocol === "openai" || provider.protocol === "openai-responses") && (
+  return provider.protocol === "openai-responses" && (
     normalized === "https://api.openai.com" ||
     normalized === "https://api.openai.com/v1"
   );
