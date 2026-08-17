@@ -5,6 +5,7 @@ import { AgentLoop } from "../../../src/agent/loop/AgentLoop.js";
 import type { AgentRuntimeConfig } from "../../../src/agent/runtime/AgentRuntimeConfig.js";
 import type { AgentRouterRuntime, AgentRuntimeDependencies } from "../../../src/agent/runtime/AgentRuntimeDependencies.js";
 import { TokenBudgetManager } from "../../../src/context/budget/TokenBudgetManager.js";
+import { requestFingerprint } from "../../../src/model/streaming/requestFingerprint.js";
 import { createDefaultPermissionContext } from "../../../src/permission/protocol/types.js";
 import { ToolRegistry } from "../../../src/tool/registry/ToolRegistry.js";
 import type { CanonicalMessage, CanonicalModelEvent } from "../../../src/model/protocol/canonical.js";
@@ -433,6 +434,9 @@ test("agent loop records a compact boundary when auto compaction fires", async (
       preTokens: 120,
       postTokens: 40,
       messagesSummarized: 1,
+      summaryGenerated: true,
+      checkpointMerged: false,
+      finalRatio: 40,
       extra: {
         tier: "full",
         summarySucceeded: true,
@@ -441,6 +445,7 @@ test("agent loop records a compact boundary when auto compaction fires", async (
   });
   assert.equal(persistedCompacts[0]!.messages.length, 1);
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
+  assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactSnapshotId, "compact-auto-1");
 });
 
 test("agent loop persists a full compaction after recovering from a context error", async () => {
@@ -448,6 +453,7 @@ test("agent loop persists a full compaction after recovering from a context erro
   const tokenBudget = new TokenBudgetManager();
   let compactCalls = 0;
   let executeCalls = 0;
+  const recoveryBudgetRequests: Array<{ provider?: string; model?: string }> = [];
 
   const context: AgentRuntimeDependencies["context"] = {
     prepareForModel: async (input) => ({
@@ -461,11 +467,13 @@ test("agent loop persists a full compaction after recovering from a context erro
     applyToolResults: async (input) => ({ messages: input.messages, diagnostics: [] }),
     recoverFromModelError: async () => ({ type: "compact_and_retry", reason: "provider-context-limit" }),
     captureTurn: async () => undefined,
-    tryAutoCompact: async () => {
+    tryAutoCompact: async (compactInput) => {
       compactCalls += 1;
       if (compactCalls !== 2) {
         return { type: "skipped", snapshot: tokenBudget.snapshotFromTokens(90, 100) };
       }
+      assert.ok(compactInput.budgetEvaluator);
+      await compactInput.budgetEvaluator(compactInput.messages);
       return {
         type: "compacted",
         tier: "full",
@@ -545,8 +553,19 @@ test("agent loop persists a full compaction after recovering from a context erro
     tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
     context,
     tokenAccounting: {
-      evaluateRequestBudget: async () => tokenBudget.snapshotFromTokens(20, 100),
+      evaluateRequestBudget: async (candidate: unknown) => {
+        const request = candidate as { provider?: string; model?: string };
+        recoveryBudgetRequests.push({ provider: request.provider, model: request.model });
+        return tokenBudget.snapshotFromTokens(20, 100);
+      },
     } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+  });
+  const calibrations = (loop as unknown as { tokenCalibrationByRoute: Map<string, unknown> }).tokenCalibrationByRoute;
+  calibrations.set("openai/model-a", {
+    provider: "openai",
+    model: "model-a",
+    actualInputTokens: 90,
+    estimatedInputTokens: 60,
   });
 
   for await (const _event of loop.run({
@@ -567,4 +586,119 @@ test("agent loop persists a full compaction after recovering from a context erro
   assert.equal(persistedCompacts.length, 1);
   assert.equal((persistedCompacts[0]!.boundary as { kind?: string }).kind, "compact");
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
+  assert.deepEqual(recoveryBudgetRequests, [{ provider: "openai", model: "model-a" }]);
+  assert.equal(calibrations.size, 0);
+});
+
+test("agent loop does not calibrate a primary route from fallback usage", async () => {
+  const router: AgentRouterRuntime = {
+    decide: async () => ({
+      provider: "primary",
+      model: "model-a",
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: async function* (): AsyncIterable<CanonicalModelEvent> {
+      yield { type: "request_started", provider: "fallback", model: "model-b" };
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "completed by fallback" };
+      yield { type: "message_end", finishReason: "stop" };
+      yield { type: "usage", usage: { inputTokens: 50_000, outputTokens: 20 } };
+    },
+    stream: async function* (): AsyncIterable<CanonicalModelEvent> {},
+  };
+  const loop = new AgentLoop({
+    provider: "primary",
+    model: "model-a",
+    cwd: "/workspace/project",
+    permissionMode: "bypassPermissions",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "bypassPermissions",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
+    tokenAccounting: {
+      estimateRequestInput: () => 40_000,
+    } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+  });
+
+  for await (const _event of loop.run({
+    sessionId: "fallback-calibration",
+    turnId: "fallback-turn",
+    messages: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
+  })) {
+    // Drain the completed turn.
+  }
+
+  const calibrations = (loop as unknown as { tokenCalibrationByRoute: Map<string, unknown> }).tokenCalibrationByRoute;
+  assert.equal(calibrations.size, 0);
+});
+
+test("agent loop skips calibration when a same-route request was transformed", async () => {
+  const router: AgentRouterRuntime = {
+    decide: async ({ request }) => ({
+      provider: request.provider,
+      model: request.model,
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: async function* (_decision, request): AsyncIterable<CanonicalModelEvent> {
+      const transformed = {
+        ...request,
+        messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "media removed" }] }],
+      };
+      yield {
+        type: "request_started",
+        provider: request.provider,
+        model: request.model,
+        requestFingerprint: requestFingerprint(transformed),
+      };
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "completed" };
+      yield { type: "message_end", finishReason: "stop" };
+      yield { type: "usage", usage: { inputTokens: 50_000, outputTokens: 20 } };
+    },
+    stream: async function* (): AsyncIterable<CanonicalModelEvent> {},
+    materializeRequest: (_decision, request) => request,
+    observeUsage: () => undefined,
+  };
+  const loop = new AgentLoop({
+    provider: "openai",
+    model: "model-a",
+    cwd: "/workspace/project",
+    permissionMode: "bypassPermissions",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "bypassPermissions",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
+    tokenAccounting: {
+      estimateRequestInput: () => 40_000,
+    } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+  });
+
+  for await (const _event of loop.run({
+    sessionId: "transformed-calibration",
+    turnId: "transformed-turn",
+    messages: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
+  })) {
+    // Drain the completed turn.
+  }
+
+  const calibrations = (loop as unknown as { tokenCalibrationByRoute: Map<string, unknown> }).tokenCalibrationByRoute;
+  assert.equal(calibrations.size, 0);
 });

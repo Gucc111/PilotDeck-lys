@@ -8,7 +8,9 @@ import {
   stripUnpairedToolResults,
 } from "./toolPairIntegrity.js";
 import {
+  collectToolNamesByCallId,
   collectProtectedTurnIndexes,
+  isProtectedContextMessage,
   protectedToolNameSet,
 } from "./protectedContext.js";
 
@@ -23,6 +25,8 @@ export type SnipEngineOptions = {
   protectedToolNames?: Iterable<string>;
   /** Optional token target for the retained live tail. */
   targetTokens?: number;
+  /** Optional token target for the complete prompt, including checkpoints. */
+  targetTotalTokens?: number;
 };
 
 export type SnipResult = {
@@ -97,30 +101,36 @@ export class SnipEngine {
     this.protectedToolNames = protectedToolNameSet(options.protectedToolNames);
   }
 
-  snip(messages: CanonicalMessage[], options: Pick<SnipEngineOptions, "targetTokens"> = {}): SnipResult {
+  snip(messages: CanonicalMessage[], options: Pick<SnipEngineOptions, "targetTokens" | "targetTotalTokens"> = {}): SnipResult {
     if (!this.enabled) {
       return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
     }
     const prefixCount = checkpointPrefixMessageCount(messages);
     const stablePrefix = messages.slice(0, prefixCount);
-    const turns = splitIntoTurns(messages.slice(prefixCount));
-    if (turns.length <= this.keepHeadTurns + this.keepTailTurns) {
+    const stablePrefixTokens = this.tokenBudget.estimateMessagesTokens(stablePrefix);
+    const targetTokens = options.targetTotalTokens !== undefined
+      ? Math.max(1, Math.floor(options.targetTotalTokens) - stablePrefixTokens)
+      : options.targetTokens;
+    const constrained = targetTokens !== undefined;
+    const liveMessages = messages.slice(prefixCount);
+    const turns = constrained ? splitIntoToolCycles(liveMessages) : splitIntoTurns(liveMessages);
+    if (!constrained && turns.length <= this.keepHeadTurns + this.keepTailTurns) {
       return { messages, applied: false, turnsSnipped: 0, danglingToolCallIds: [] };
     }
 
     const keepIndexes = new Set<number>();
-    if (options.targetTokens === undefined) {
+    if (targetTokens === undefined) {
       for (let index = 0; index < Math.min(this.keepHeadTurns, turns.length); index += 1) {
         keepIndexes.add(index);
       }
     }
     let accumulatedTailTokens = 0;
-    const tailFloor = Math.min(this.keepTailTurns, turns.length);
+    const tailFloor = Math.min(constrained ? 1 : this.keepTailTurns, turns.length);
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const tokens = this.tokenBudget.estimateMessagesTokens(turns[index]!);
       const mustKeep = turns.length - index <= tailFloor;
-      if (!mustKeep && options.targetTokens !== undefined
-        && accumulatedTailTokens + tokens > Math.max(1, options.targetTokens)) {
+      if (!mustKeep && targetTokens !== undefined
+        && accumulatedTailTokens + tokens > Math.max(1, targetTokens)) {
         break;
       }
       keepIndexes.add(index);
@@ -130,9 +140,10 @@ export class SnipEngine {
     // messages are intentionally excluded from `turns`, so calculating these
     // indexes against the full input would shift every protected turn after
     // the checkpoint and could preserve the wrong middle turn.
-    for (const index of collectProtectedTurnIndexes(messages.slice(prefixCount), {
-      protectedToolNames: this.protectedToolNames,
-    })) {
+    const protectedIndexes = constrained
+      ? collectProtectedCycleIndexes(turns, liveMessages, this.protectedToolNames)
+      : collectProtectedTurnIndexes(liveMessages, { protectedToolNames: this.protectedToolNames });
+    for (const index of protectedIndexes) {
       keepIndexes.add(index);
     }
     if (keepIndexes.size >= turns.length) {
@@ -213,6 +224,54 @@ function splitIntoTurns(messages: CanonicalMessage[]): CanonicalMessage[][] {
   }
   if (current.length > 0) turns.push(current);
   return turns;
+}
+
+function splitIntoToolCycles(messages: CanonicalMessage[]): CanonicalMessage[][] {
+  const groups: CanonicalMessage[][] = [];
+  let current: CanonicalMessage[] = [];
+  const flush = () => {
+    if (current.length === 0) return;
+    groups.push(current);
+    current = [];
+  };
+
+  for (const message of messages) {
+    if ((message.role === "user" && !isToolResultOnly(message)) || message.role === "assistant") {
+      flush();
+    }
+    current.push(message);
+  }
+  flush();
+  return groups;
+}
+
+function collectProtectedCycleIndexes(
+  groups: CanonicalMessage[][],
+  messages: CanonicalMessage[],
+  protectedToolNames: ReadonlySet<string>,
+): Set<number> {
+  const toolNamesByCallId = collectToolNamesByCallId(messages);
+  const protectedIndexes = new Set<number>();
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index]!;
+    if (!group.some((message) => isProtectedContextMessage(message, {
+      protectedToolNames,
+      toolNamesByCallId,
+    }))) {
+      continue;
+    }
+    protectedIndexes.add(index);
+    if (index > 0 && isStandaloneUserRequest(groups[index - 1]!)) {
+      protectedIndexes.add(index - 1);
+    }
+  }
+  return protectedIndexes;
+}
+
+function isStandaloneUserRequest(messages: CanonicalMessage[]): boolean {
+  return messages.length === 1
+    && messages[0]?.role === "user"
+    && !isToolResultOnly(messages[0]);
 }
 
 function stitchKeptTurnsWithBoundaries(

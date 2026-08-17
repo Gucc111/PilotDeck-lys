@@ -19,6 +19,7 @@ import { normalizeProviderBaseUrl } from "../normalizeProviderBaseUrl.js";
 import { buildProviderChatEndpointCandidates, isExpectedProviderResponseShape } from "../providerEndpoint.js";
 import { StreamingCheckpointManager } from "./StreamingCheckpoint.js";
 import { buildLiteLLMContinuationRequest } from "./continuationRequest.js";
+import { requestFingerprint } from "./requestFingerprint.js";
 import { NetworkFetchError, networkFetch } from "../../network/fetch.js";
 
 export type ModelTransport = typeof fetch;
@@ -139,14 +140,6 @@ export async function* streamModel(
   const maxRetries = provider.retry?.streamMaxRetries ?? DEFAULT_STREAM_MAX_RETRIES;
   const retryBaseDelay = provider.retry?.baseDelayMs ?? LITELLM_INITIAL_RETRY_DELAY_MS;
 
-  yield {
-    type: "request_started",
-    provider: provider.id,
-    model: streamingRequest.model,
-    providerBaseUrl: normalizeProviderBaseUrl(provider.url),
-    metadata: streamingRequest.metadata,
-  };
-
   let currentRequest = streamingRequest;
   const checkpoint = new StreamingCheckpointManager();
 
@@ -164,6 +157,14 @@ export async function* streamModel(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     throwIfAborted(options.signal);
+    yield {
+      type: "request_started",
+      provider: provider.id,
+      model: currentRequest.model,
+      providerBaseUrl: normalizeProviderBaseUrl(provider.url),
+      requestFingerprint: requestFingerprint(currentRequest),
+      metadata: currentRequest.metadata,
+    };
     const body = buildModelRequest(currentRequest, config);
     if (process.env.PILOTDECK_DUMP_REQUEST === "1") {
       const fs = await import("node:fs");
@@ -303,6 +304,14 @@ async function* streamGoogleProviderRequest(params: {
 
   for (let attempt = 0; attempt <= params.maxRetries; attempt++) {
     throwIfAborted(params.options.signal);
+    yield {
+      type: "request_started",
+      provider: params.provider.id,
+      model: currentRequest.model,
+      providerBaseUrl: normalizeProviderBaseUrl(params.provider.url),
+      requestFingerprint: requestFingerprint(currentRequest),
+      metadata: currentRequest.metadata,
+    };
     try {
       const body = withGoogleAbortSignal(buildModelRequest(currentRequest, {
         providers: { [params.provider.id]: params.provider },

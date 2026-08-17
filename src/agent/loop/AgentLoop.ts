@@ -44,7 +44,14 @@ import type { LifecycleDispatchResult } from "../../lifecycle/index.js";
 import type { PilotDeckHookEvent } from "../../extension/hooks/protocol/events.js";
 import { NullContextRuntime } from "../../context/NullContextRuntime.js";
 import type { AgentContextRuntime } from "../../context/ContextRuntime.js";
-import type { ContextRecoveryDecision, ContextSupplementalToolResultMessage, TokenBudgetSnapshot } from "../../context/index.js";
+import type {
+  CompactionResult,
+  ContextRecoveryDecision,
+  ContextSupplementalToolResultMessage,
+  TokenCalibrationBaseline,
+  TokenBudgetSnapshot,
+} from "../../context/index.js";
+import { actualInputTokensFromUsage } from "../../context/index.js";
 import type { PermissionMode, PermissionRule, PermissionRuleSet } from "../../permission/index.js";
 import type { AgentControlBoundaryTranscriptEntry } from "../../session/transcript/TranscriptEntry.js";
 import { collectToolCalls } from "./collectToolCalls.js";
@@ -60,6 +67,7 @@ import {
 } from "../../tool/askModeConstraints.js";
 import { buildAskModeAgentToolSchema } from "../../tool/builtin/agent.js";
 import { repairToolName } from "../../model/streaming/repairToolName.js";
+import { requestFingerprint } from "../../model/streaming/requestFingerprint.js";
 import {
   createAgentStatusDetail,
   createVisibleErrorStatusDetail,
@@ -149,6 +157,7 @@ export class AgentLoop {
   private readonly readFileState: PilotDeckReadFileStateMap;
   private readonly writeSnapshots: PilotDeckWriteSnapshotMap;
   private readonly allowedReadFiles: Set<string>;
+  private readonly tokenCalibrationByRoute = new Map<string, TokenCalibrationBaseline>();
   private readonly transientTokenCaps = new Map<string, {
     maxContextTokens?: number;
     requestedMaxOutputTokens?: number;
@@ -185,7 +194,6 @@ export class AgentLoop {
     let messages = [...input.messages];
     let turnCount = 1;
     let usage: CanonicalUsage = {};
-    let lastModelUsage: CanonicalUsage | undefined;
     let permissionDenials: AgentPermissionDenial[] = [];
     let structuredOutput: unknown;
     let finalMessage: CanonicalMessage | undefined;
@@ -408,7 +416,6 @@ export class AgentLoop {
             messages,
             abortSignal: input.abortSignal,
             reservedOutputTokens,
-            lastUsage: lastModelUsage,
             budgetEvaluator: this.createBudgetEvaluator(input, {
               maxContextTokens: preRoutingMaxContextTokens,
               reservedOutputTokens,
@@ -416,6 +423,7 @@ export class AgentLoop {
           });
           if (compact.type === "compacted") {
             messages = compact.messages;
+            this.tokenCalibrationByRoute.clear();
             await this.persistCompactSnapshot(input, compact);
             yield {
               type: "turn_continued",
@@ -513,7 +521,6 @@ export class AgentLoop {
               abortSignal: input.abortSignal,
               maxContextTokens: routedMaxCtx,
               reservedOutputTokens,
-              lastUsage: lastModelUsage,
               budgetEvaluator: this.createBudgetEvaluator(input, {
                 decision,
                 baseRequest: request,
@@ -523,6 +530,7 @@ export class AgentLoop {
             });
             if (recompact.type === "compacted") {
               messages = recompact.messages;
+              this.tokenCalibrationByRoute.clear();
               request = await this.createModelRequest(messages, input);
               request = this.applyTokenCapsToRequest(request, decision.provider, decision.model);
               await this.persistCompactSnapshot(input, recompact);
@@ -572,7 +580,13 @@ export class AgentLoop {
         };
       }
 
+      const calibrationRequest = this.dependencies.router.materializeRequest
+        ? this.dependencies.router.materializeRequest(decision, request)
+        : { ...request, provider: decision.provider, model: decision.model };
+      const requestInputEstimate = this.dependencies.tokenAccounting?.estimateRequestInput?.(calibrationRequest);
+      const calibrationRequestFingerprint = requestFingerprint(calibrationRequest);
       const assembler = createModelMessageAssemblerState();
+      let executedRequest: { provider: string; model: string; fingerprint?: string } | undefined;
       try {
         for await (const event of this.dependencies.router.execute(decision, request, {
           sessionId: input.sessionId,
@@ -580,6 +594,13 @@ export class AgentLoop {
           projectPath: this.config.cwd,
           abortSignal: input.abortSignal,
         })) {
+          if (event.type === "request_started") {
+            executedRequest = {
+              provider: event.provider,
+              model: event.model,
+              fingerprint: event.requestFingerprint,
+            };
+          }
           yield { type: "model_event", sessionId: input.sessionId, turnId: input.turnId, event };
           applyModelEventToAssembler(assembler, event);
           if (event.type === "error") {
@@ -670,7 +691,16 @@ export class AgentLoop {
 
       const assembled = assembleAssistantMessage(assembler);
       usage = mergeUsage(usage, assembled.usage);
-      lastModelUsage = assembled.usage;
+      // A fallback, media downgrade, or interrupted-stream continuation can
+      // change request contents without changing the route. Calibrate only
+      // against the exact request whose usage the provider reported.
+      if (
+        executedRequest?.provider === calibrationRequest.provider
+        && executedRequest.model === calibrationRequest.model
+        && executedRequest.fingerprint === calibrationRequestFingerprint
+      ) {
+        this.recordTokenCalibration(calibrationRequest, assembled.usage, requestInputEstimate);
+      }
       let assistantMessage = assembled.message;
       let toolCalls = collectToolCalls(assistantMessage);
       if (assembled.hasTextFallbackToolCalls) {
@@ -1078,18 +1108,31 @@ export class AgentLoop {
           messages = stripTrailingErrorPair(messages);
           if (ctx?.tryAutoCompact) {
             try {
+              const maxContextTokens = this.currentMaxContextTokens(target.provider, target.model);
+              const reservedOutputTokens = this.getReservedOutputTokens(target.provider, target.model);
+              const recoveryDecision = {
+                ...decision,
+                provider: target.provider,
+                model: target.model,
+              };
               const compact = await ctx.tryAutoCompact({
                 sessionId: input.sessionId,
                 turnId: input.turnId,
                 messages,
                 abortSignal: input.abortSignal,
-                maxContextTokens: this.currentMaxContextTokens(target.provider, target.model),
-                reservedOutputTokens: this.getReservedOutputTokens(target.provider, target.model),
-                lastUsage: lastModelUsage,
+                maxContextTokens,
+                reservedOutputTokens,
+                budgetEvaluator: this.createBudgetEvaluator(input, {
+                  decision: recoveryDecision,
+                  baseRequest: { ...request, provider: target.provider, model: target.model },
+                  maxContextTokens,
+                  reservedOutputTokens,
+                }),
                 allowFallbackOnFailure: true,
               });
               if (compact.type === "compacted") {
                 messages = compact.messages;
+                this.tokenCalibrationByRoute.clear();
                 await this.persistCompactSnapshot(input, compact);
                 if (compact.error) {
                   const failure = await contextOverflowAfterEmergency(compact);
@@ -1102,13 +1145,16 @@ export class AgentLoop {
                 }
               } else {
                 messages = truncateHeadKeepRatio(messages, 0.5);
+                this.tokenCalibrationByRoute.clear();
               }
             } catch (error: unknown) {
               logAutoCompactFailure("model-error-recovery", input, error);
               messages = truncateHeadKeepRatio(messages, 0.5);
+              this.tokenCalibrationByRoute.clear();
             }
           } else {
             messages = truncateHeadKeepRatio(messages, 0.5);
+            this.tokenCalibrationByRoute.clear();
           }
           hasAttemptedCompact = true;
           yield {
@@ -1126,6 +1172,7 @@ export class AgentLoop {
           // keepRatio so the cap is computed against valid history only.
           messages = stripTrailingErrorPair(messages);
           messages = truncateHeadKeepRatio(messages, reactive.keepRatio);
+          this.tokenCalibrationByRoute.clear();
           hasAttemptedCompact = true;
           yield {
             type: "turn_continued",
@@ -1140,6 +1187,7 @@ export class AgentLoop {
           hasAttemptedImageStrip = true;
           messages = stripTrailingErrorPair(messages);
           messages = stripImagesFromMessages(messages);
+          this.tokenCalibrationByRoute.clear();
           yield {
             type: "turn_continued",
             sessionId: input.sessionId,
@@ -1885,44 +1933,60 @@ export class AgentLoop {
       maxContextTokens?: number;
       reservedOutputTokens: number;
     },
-  ): ((candidateMessages: CanonicalMessage[], lastUsage?: CanonicalUsage) => Promise<TokenBudgetSnapshot>) | undefined {
+  ): ((candidateMessages: CanonicalMessage[]) => Promise<TokenBudgetSnapshot>) | undefined {
     const tokenAccounting = this.dependencies.tokenAccounting;
     const maxContextTokens = options.maxContextTokens;
     if (!tokenAccounting || !maxContextTokens) {
       return undefined;
     }
-    return async (candidateMessages, lastUsage) => {
+    return async (candidateMessages) => {
       let candidateRequest = await this.createModelRequest(candidateMessages, input, {
         emitInstructionEvents: false,
       });
-      if (options.decision && options.baseRequest && this.dependencies.router.materializeRequest) {
+      if (options.decision && options.baseRequest) {
         const patchedBase = { ...options.baseRequest, messages: candidateRequest.messages };
-        candidateRequest = this.dependencies.router.materializeRequest(options.decision, {
+        const materializedRequest = {
           ...patchedBase,
           systemPrompt: candidateRequest.systemPrompt,
           tools: candidateRequest.tools,
           cacheBreakpoints: candidateRequest.cacheBreakpoints,
-        });
+        };
+        candidateRequest = this.dependencies.router.materializeRequest
+          ? this.dependencies.router.materializeRequest(options.decision, materializedRequest)
+          : {
+              ...materializedRequest,
+              provider: options.decision.provider,
+              model: options.decision.model,
+            };
       }
       const snapshot = await tokenAccounting.evaluateRequestBudget(candidateRequest, {
         maxContextTokens,
         reservedOutputTokens: options.reservedOutputTokens,
         signal: input.abortSignal,
-        usePadding: true,
+        calibration: this.tokenCalibrationByRoute.get(tokenCalibrationKey(
+          candidateRequest.provider,
+          candidateRequest.model,
+        )),
       });
-      const usageTokens = tokensFromUsage(lastUsage);
-      if (usageTokens === undefined || usageTokens <= snapshot.tokens) {
-        return snapshot;
-      }
-      return tokenAccounting.snapshotFromTokens(usageTokens, maxContextTokens, {
-        reservedOutputTokens: options.reservedOutputTokens,
-        usageTokens,
-        budgetTokens: snapshot.budgetTokens,
-        source: snapshot.source,
-        exact: snapshot.exact,
-        estimatorError: snapshot.estimatorError,
-      });
+      return snapshot;
     };
+  }
+
+  private recordTokenCalibration(
+    request: CanonicalModelRequest,
+    usage: CanonicalUsage | undefined,
+    estimatedInputTokens: number | undefined,
+  ): void {
+    const actualInputTokens = actualInputTokensFromUsage(usage);
+    if (actualInputTokens === undefined || estimatedInputTokens === undefined || estimatedInputTokens <= 0) {
+      return;
+    }
+    this.tokenCalibrationByRoute.set(tokenCalibrationKey(request.provider, request.model), {
+      provider: request.provider,
+      model: request.model,
+      actualInputTokens,
+      estimatedInputTokens,
+    });
   }
 
   private getReservedOutputTokens(provider?: string, model?: string): number {
@@ -2014,15 +2078,16 @@ export class AgentLoop {
         compactionId: compact.result.compactionId,
         trigger: compact.result.trigger,
         preTokens: compact.result.preTokens,
-        ...(compact.result.postTokens !== undefined ? { postTokens: compact.result.postTokens } : {}),
+        postTokens: compact.snapshot.tokens,
         messagesSummarized: compact.result.messagesSummarized,
+        ...(compact.result.targetPostTokens !== undefined ? { targetTokens: compact.result.targetPostTokens } : {}),
+        summaryGenerated: compactionSummaryGenerated(compact.result),
+        checkpointMerged: compact.result.checkpointMerged ?? compact.result.cacheReset === true,
+        finalRatio: compact.snapshot.ratio,
         extra: {
           tier: compact.tier,
-          summarySucceeded: compact.result.error === undefined,
+          summarySucceeded: compactionSummarySucceeded(compact.result),
           ...(compact.result.cacheReset ? { cacheReset: true } : {}),
-          ...(compact.result.stablePrefix && compact.result.stablePrefix.length > 0
-            ? { checkpointVersion: Math.floor(compact.result.stablePrefix.length / 2) + 1 }
-            : {}),
           ...(compact.error
             ? {
                 finalBudgetTokens: compact.snapshot.maxContextTokens,
@@ -2036,7 +2101,7 @@ export class AgentLoop {
     };
     await Promise.resolve(input.onCompactPersisted({
       boundary,
-      messages: markCompactReplacementMessages(compact.messages),
+      messages: markCompactReplacementMessages(compact.messages, compact.result.compactionId),
     })).catch(() => {});
   }
 
@@ -3452,26 +3517,29 @@ function clampOutputToModelCap(requested: number, modelMaxOutputTokens: number |
   return next;
 }
 
-function tokensFromUsage(usage: CanonicalUsage | undefined): number | undefined {
-  if (!usage) return undefined;
-  const inputTokens = usage.inputTokens;
-  if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens) || inputTokens <= 0) {
-    return undefined;
-  }
-  const outputTokens = typeof usage.outputTokens === "number" && Number.isFinite(usage.outputTokens) && usage.outputTokens > 0
-    ? usage.outputTokens
-    : 0;
-  return Math.ceil(inputTokens + outputTokens);
+function tokenCalibrationKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`;
 }
 
-function markCompactReplacementMessages(messages: CanonicalMessage[]): CanonicalMessage[] {
+function markCompactReplacementMessages(messages: CanonicalMessage[], compactionId: string): CanonicalMessage[] {
   return messages.map((message) => ({
     ...message,
     metadata: {
       ...(message.metadata ?? {}),
       compactReplacement: true,
+      compactSnapshotId: compactionId,
     },
   }));
+}
+
+function compactionSummarySucceeded(result: CompactionResult): boolean {
+  return result.error === undefined
+    && result.summaryMessage !== undefined;
+}
+
+function compactionSummaryGenerated(result: CompactionResult): boolean {
+  return result.summaryGenerated
+    ?? result.summaryMessage !== undefined;
 }
 
 function modelErrorTarget(error: CanonicalModelError, fallbackProvider: string, fallbackModel: string): {

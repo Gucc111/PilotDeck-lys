@@ -142,6 +142,8 @@ export type CanonicalMessageMetadata = {
   transientId?: string;
   /** Message replaces compacted history and is omitted from the visible transcript. */
   compactReplacement?: boolean;
+  /** Compaction id of the effective replacement snapshot persisted in the transcript. */
+  compactSnapshotId?: string;
   purpose?: string;
   forkCarryover?: {
     sourceSessionId: string;
@@ -252,6 +254,8 @@ export type CanonicalModelEvent =
       provider: string;
       model: string;
       providerBaseUrl?: string;
+      /** Opaque digest of the exact request dispatched to the provider. */
+      requestFingerprint?: string;
       metadata?: Record<string, unknown>;
     }
   | { type: "message_start"; role: "assistant"; raw?: unknown }
