@@ -11,6 +11,7 @@ import type { LifecycleRuntime } from "../../lifecycle/index.js";
 import type { PermissionMode, PermissionRuleSet } from "../../permission/index.js";
 import type { AgentStatusMessageInput, AgentTranscriptWriterState } from "../../session/transcript/TranscriptWriter.js";
 import type { SessionMetadataStore } from "../../session/metadata/SessionMetadataStore.js";
+import type { SessionMetadataValue } from "../../session/transcript/TranscriptEntry.js";
 import type { SessionTitleGenerator } from "../../session/title/SessionTitleGenerator.js";
 import { createVisibleErrorStatusDetail } from "../../status/agentStatus.js";
 import { FileArtifactCollector, type FileArtifact } from "../../session/artifacts/index.js";
@@ -51,6 +52,7 @@ export type TurnRunnerRuntimeContext = {
 export type TurnRunnerRuntimeReloadSnapshot = {
   runtimeContext: TurnRunnerRuntimeContext;
   transcriptWriterState?: AgentTranscriptWriterState;
+  metadata?: SessionMetadataValue;
 };
 
 export type TurnRunnerDependencies = {
@@ -283,6 +285,7 @@ export class TurnRunner {
     return {
       runtimeContext: { ...this.runtimeContext },
       transcriptWriterState: this.transcript.snapshotState?.(),
+      metadata: this.turnDependencies.metadataStore?.getSnapshot(),
     };
   }
 

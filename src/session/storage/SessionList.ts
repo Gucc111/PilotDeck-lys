@@ -125,7 +125,12 @@ function readLatestTailSnapshot(lite: SessionLiteFile): SessionMetadataValue | u
   // full snapshot, so ordinary trailing patches cannot skip title recovery.
   if (
     latestMetadata?.isSnapshot === true
-    && (latestMetadata.title?.trim() || latestMetadata.aiTitle?.trim())
+    && (
+      latestMetadata.title?.trim()
+      || latestMetadata.aiTitle?.trim()
+      || latestMetadata.lastPrompt?.trim()
+      || latestMetadata.firstPrompt?.trim()
+    )
   ) {
     return latestMetadata;
   }

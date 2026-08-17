@@ -221,3 +221,38 @@ test("uses firstPrompt from a titled tail snapshot for title search", async () =
     await rm(pilotHome, { recursive: true, force: true });
   }
 });
+
+test("uses a prompt-only tail snapshot without requiring a generated title", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+
+    const sessionId = "web:s_prompt-snapshot";
+    const largeInput = entry("accepted_input", sessionId, 1, {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "First prompt" },
+          { type: "image", source: "base64", data: "x".repeat(256 * 1024) },
+        ],
+      }],
+    });
+    const snapshot = entry("session_metadata", sessionId, 2, {
+      metadata: {
+        isSnapshot: true,
+        firstPrompt: "First prompt",
+        lastPrompt: "Latest prompt",
+      },
+    });
+    await writeFile(join(chatDir, `${sessionId}.jsonl`), `${JSON.stringify(largeInput)}\n${JSON.stringify(snapshot)}\n`);
+
+    const [session] = await listProjectSessions({ projectRoot, pilotHome });
+    assert.equal(session?.summary, "Latest prompt");
+    assert.equal(session?.firstPrompt, "First prompt");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
