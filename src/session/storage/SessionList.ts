@@ -75,7 +75,12 @@ export async function readSessionInfo(
   if (!lite) return null;
 
   const fastInfo = parseSessionInfoFromLite(sessionId, lite, projectRoot);
-  if (fastInfo && hasCompleteLatestMetadata(lite)) return fastInfo;
+  if (fastInfo && lite.size <= SESSION_LITE_READ_BYTES) return fastInfo;
+  const tailSnapshot = readLatestTailSnapshot(lite);
+  if (tailSnapshot) {
+    const snapshotInfo = parseSessionInfoFromMetadata(sessionId, lite, tailSnapshot, projectRoot);
+    if (snapshotInfo) return mergeSessionInfo(fastInfo, snapshotInfo);
+  }
 
   // Large inline media can make the first JSONL record exceed the 64 KiB
   // preview. Fall back unless the preview includes a complete latest metadata
@@ -84,6 +89,13 @@ export async function readSessionInfo(
   const metadataInfo = metadata
     ? parseSessionInfoFromMetadata(sessionId, lite, metadata, projectRoot)
     : null;
+  return mergeSessionInfo(fastInfo, metadataInfo);
+}
+
+function mergeSessionInfo(
+  fastInfo: SessionInfo | null,
+  metadataInfo: SessionInfo | null,
+): SessionInfo | null {
   if (!metadataInfo) return fastInfo;
   if (!fastInfo) return metadataInfo;
   return {
@@ -94,9 +106,9 @@ export async function readSessionInfo(
   };
 }
 
-function hasCompleteLatestMetadata(lite: SessionLiteFile): boolean {
+function readLatestTailSnapshot(lite: SessionLiteFile): SessionMetadataValue | undefined {
   if (lite.size <= SESSION_LITE_READ_BYTES) {
-    return true;
+    return undefined;
   }
 
   // The tail starts at an arbitrary byte offset, so its first line can be
@@ -106,13 +118,18 @@ function hasCompleteLatestMetadata(lite: SessionLiteFile): boolean {
   for (const line of lines.slice(1)) {
     if (!line.includes('"type":"session_metadata"')) continue;
     const metadata = parseSessionMetadataLine(line);
-    if (!metadata) return false;
+    if (!metadata) return undefined;
     latestMetadata = metadata;
   }
   // Metadata records are patches. Only `reappendTail()` writes an explicit
   // full snapshot, so ordinary trailing patches cannot skip title recovery.
-  return latestMetadata?.isSnapshot === true
-    && Boolean(latestMetadata.title?.trim() || latestMetadata.aiTitle?.trim());
+  if (
+    latestMetadata?.isSnapshot === true
+    && (latestMetadata.title?.trim() || latestMetadata.aiTitle?.trim())
+  ) {
+    return latestMetadata;
+  }
+  return undefined;
 }
 
 export function parseSessionInfoFromLite(

@@ -132,6 +132,51 @@ test("TurnRunner persists a bounded prompt when title generation produces no tit
   }
 });
 
+test("TurnRunner updates lastPrompt on subsequent accepted turns", async () => {
+  const sessionId = "two-turn-session";
+  const transcript = new InMemoryTranscriptWriter();
+  const metadataStore = new SessionMetadataStore({
+    transcript,
+    sessionId,
+    now: () => new Date(NOW),
+  });
+  const loop = {
+    async *run(input: AgentLoopInput): AsyncGenerator<AgentEvent, AgentLoopRunResult, unknown> {
+      const successfulResult = result(input.sessionId);
+      yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: successfulResult };
+      return { result: successfulResult, messages: input.messages };
+    },
+    snapshotFileState: () => ({}),
+  } as unknown as AgentLoop;
+  const runner = new TurnRunner(
+    loop,
+    transcript,
+    undefined,
+    () => new Date(NOW),
+    undefined,
+    { cwd: process.cwd(), transcriptPath: "", collectFileArtifacts: false },
+    { metadataStore, autoGenerateSessionTitle: false },
+  );
+
+  for (const [turnId, prompt] of [["turn-1", "First prompt"], ["turn-2", "Second prompt"]] as const) {
+    for await (const _event of runner.run({
+      sessionId,
+      turnId,
+      messages: [],
+      input: { type: "text", text: prompt },
+    })) {
+      // Exhaust each turn so the metadata snapshot is persisted.
+    }
+  }
+
+  const lastEntry = transcript.entries.at(-1);
+  assert.equal(lastEntry?.type, "session_metadata");
+  if (lastEntry?.type === "session_metadata") {
+    assert.equal(lastEntry.metadata.firstPrompt, "First prompt");
+    assert.equal(lastEntry.metadata.lastPrompt, "Second prompt");
+  }
+});
+
 test("TurnRunner persists a bounded prompt when a hook blocks a first turn", async () => {
   const sessionId = "blocked-session";
   const transcript = new InMemoryTranscriptWriter();

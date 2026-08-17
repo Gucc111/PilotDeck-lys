@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 
 import { getPilotProjectChatDir } from "../../src/pilot/paths.js";
 import { searchChatHistory } from "../../src/session/search/searchChatHistory.js";
-import { listProjectSessions } from "../../src/session/storage/SessionList.js";
+import { listProjectSessions, searchSessionsByTitle } from "../../src/session/storage/SessionList.js";
 
 const NOW = "2026-08-16T09:00:00.000Z";
 
@@ -179,6 +179,43 @@ test("does not trust a trailing metadata patch as a full title snapshot", async 
 
     const [session] = await listProjectSessions({ projectRoot, pilotHome });
     assert.equal(session?.summary, "Recovered title");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("uses firstPrompt from a titled tail snapshot for title search", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+
+    const sessionId = "web:s_tail-snapshot-prompt";
+    const originalPrompt = "Original presentation prompt";
+    const largeInput = entry("accepted_input", sessionId, 1, {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: originalPrompt },
+          { type: "image", source: "base64", data: "x".repeat(256 * 1024) },
+        ],
+      }],
+    });
+    const snapshot = entry("session_metadata", sessionId, 2, {
+      metadata: {
+        isSnapshot: true,
+        aiTitle: "Titled snapshot",
+        firstPrompt: originalPrompt,
+        lastPrompt: originalPrompt,
+      },
+    });
+    await writeFile(join(chatDir, `${sessionId}.jsonl`), `${JSON.stringify(largeInput)}\n${JSON.stringify(snapshot)}\n`);
+
+    const sessions = await searchSessionsByTitle({ projectRoot, pilotHome, query: "original presentation" });
+    assert.deepEqual(sessions.map((session) => session.sessionId), [sessionId]);
+    assert.equal(sessions[0]?.firstPrompt, originalPrompt);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(pilotHome, { recursive: true, force: true });

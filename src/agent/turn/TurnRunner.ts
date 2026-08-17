@@ -442,15 +442,12 @@ export class TurnRunner {
     if (!metadataStore) return;
 
     const snapshot = metadataStore.getSnapshot();
-    if (snapshot.title || snapshot.aiTitle || snapshot.firstPrompt || snapshot.lastPrompt) {
-      return;
-    }
     const prompt = allHumanText(acceptedMessages);
     if (!prompt) return;
 
     const boundedPrompt = prompt.slice(0, SESSION_LISTING_PROMPT_MAX_CHARS);
     await metadataStore.record(options.turnId, {
-      firstPrompt: boundedPrompt,
+      ...(snapshot.firstPrompt ? {} : { firstPrompt: boundedPrompt }),
       lastPrompt: boundedPrompt,
       updatedAt: this.now().toISOString(),
     }).catch(() => {});
