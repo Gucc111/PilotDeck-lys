@@ -362,6 +362,25 @@ describe('computeMerged', () => {
     ]);
   });
 
+  it('keeps the second identical optimistic send during server-refresh cleanup', () => {
+    const server = [
+      textMessage('persisted-first-user', 'Continue.', '2026-08-16T09:00:00.050Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_first', 'Continue.', '2026-08-16T09:00:00.000Z', { role: 'user' }),
+      textMessage('local_second', 'Continue.', '2026-08-16T09:00:00.100Z', { role: 'user' }),
+    ];
+    const consumedServerUserIndexes = new Set<number>();
+
+    const retained = realtime.filter((message) => (
+      shouldKeepRealtimeAfterServerRefresh(message, server, consumedServerUserIndexes)
+    ));
+
+    expect(retained.map((message) => message.id)).toEqual(['local_second']);
+  });
+
   it('keeps optimistic messages whose image input order differs from the persisted message', () => {
     const server = [
       textMessage('persisted-user', 'Compare these images.', '2026-08-16T09:00:00.050Z', {

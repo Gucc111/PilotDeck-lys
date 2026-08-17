@@ -629,11 +629,22 @@ export function getUnpersistedRealtimeTurnMessages(
 export function shouldKeepRealtimeAfterServerRefresh(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
+  consumedServerUserIndexes?: Set<number>,
 ): boolean {
   if (realtimeMessage.id.startsWith('__streaming_')) {
     return true;
   }
   if (!PERSISTED_RENDERABLE_KINDS.has(realtimeMessage.kind)) return false;
+  if (isOptimisticUserMessage(realtimeMessage)) {
+    const duplicateIndex = findConfirmedUserMessageDuplicateIndex(
+      realtimeMessage,
+      serverMessages,
+      consumedServerUserIndexes,
+    );
+    if (duplicateIndex < 0) return true;
+    consumedServerUserIndexes?.add(duplicateIndex);
+    return false;
+  }
   return !isRealtimeMessageRepresentedOnServer(realtimeMessage, serverMessages);
 }
 
@@ -1021,8 +1032,9 @@ export function useSessionStore() {
         const serverToolIds = new Set(
           messages.filter(m => m.kind === 'tool_use' && m.toolId).map(m => m.toolId!)
         );
+        const consumedServerUserIndexes = new Set<number>();
         slot.realtimeMessages = slot.realtimeMessages.filter(m => {
-          if (shouldKeepRealtimeAfterServerRefresh(m, messages)) return true;
+          if (shouldKeepRealtimeAfterServerRefresh(m, messages, consumedServerUserIndexes)) return true;
           if (serverIds.has(m.id)) return false;
           if (m.kind === 'tool_use' && m.toolId && serverToolIds.has(m.toolId)) return false;
           return (Date.parse(m.timestamp) || 0) > watermark;
@@ -1433,8 +1445,9 @@ export function useSessionStore() {
       // an equivalent assistant message; otherwise the UI can show "complete"
       // while the model's visible answer disappears.
       if (slot.realtimeMessages.length > 0 && incomingMessages.length > 0) {
+        const consumedServerUserIndexes = new Set<number>();
         slot.realtimeMessages = slot.realtimeMessages.filter((message) =>
-          shouldKeepRealtimeAfterServerRefresh(message, incomingMessages)
+          shouldKeepRealtimeAfterServerRefresh(message, incomingMessages, consumedServerUserIndexes)
         );
       }
       recomputeMergedIfNeeded(slot);
