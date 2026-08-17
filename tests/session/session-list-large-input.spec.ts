@@ -22,7 +22,7 @@ test("lists historical sessions whose large inline image hides metadata from the
     await mkdir(chatDir, { recursive: true });
 
     const largeSessionId = "web:s_large-image";
-    const largeTitle = `Generated briefing ${"m".repeat(70 * 1024)}`;
+    const largeTitle = "Recovered PilotDeck session title";
     const largeInput = entry("accepted_input", largeSessionId, 1, {
       messages: [{
         role: "user",
@@ -33,14 +33,20 @@ test("lists historical sessions whose large inline image hides metadata from the
       }],
     });
     const largeMetadata = entry("session_metadata", largeSessionId, 2, {
-      metadata: { aiTitle: largeTitle },
+      metadata: { aiTitle: largeTitle, firstPrompt: "p".repeat(130 * 1024) },
     });
-    const largeTail = entry("assistant_message", largeSessionId, 3, {
+    const modelSelectionPatch = entry("session_metadata", largeSessionId, 3, {
+      metadata: { modelSelection: { mode: "auto" } },
+    });
+    const largeTail = entry("assistant_message", largeSessionId, 4, {
       message: { role: "assistant", content: [{ type: "text", text: `findable ${"y".repeat(160 * 1024)}` }] },
+    });
+    const latestInput = entry("accepted_input", largeSessionId, 5, {
+      messages: [{ role: "user", content: [{ type: "text", text: "Latest prompt" }] }],
     });
     await writeFile(
       join(chatDir, `${largeSessionId}.jsonl`),
-      `${JSON.stringify(largeInput)}\n${JSON.stringify(largeMetadata)}\n${JSON.stringify(largeTail)}\n`,
+      `${JSON.stringify(largeInput)}\n${JSON.stringify(largeMetadata)}\n${JSON.stringify(modelSelectionPatch)}\n${JSON.stringify(largeTail)}\n${JSON.stringify(latestInput)}\n`,
     );
 
     const smallSessionId = "web:s_small";

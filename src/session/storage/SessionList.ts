@@ -1,6 +1,7 @@
 import { open, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getPilotProjectChatDir } from "../../pilot/index.js";
+import { mergeMetadata } from "../metadata/SessionMetadataStore.js";
 import { readSessionLite, type SessionLiteFile } from "./SessionLiteReader.js";
 import type { SessionMetadataValue } from "../transcript/TranscriptEntry.js";
 
@@ -74,12 +75,23 @@ export async function readSessionInfo(
   if (!lite) return null;
 
   const fastInfo = parseSessionInfoFromLite(sessionId, lite, projectRoot);
-  if (fastInfo) return fastInfo;
+  if (fastInfo?.customTitle || fastInfo?.aiTitle) return fastInfo;
 
   // Large inline media can make the first JSONL record exceed the 64 KiB
-  // preview. Fall back only when the fast path cannot identify the session.
+  // preview. A prompt alone is not authoritative, so recover metadata when
+  // the fast path did not find a title.
   const metadata = await readLastSessionMetadata(path);
-  return metadata ? parseSessionInfoFromMetadata(sessionId, lite, metadata, projectRoot) : null;
+  const metadataInfo = metadata
+    ? parseSessionInfoFromMetadata(sessionId, lite, metadata, projectRoot)
+    : null;
+  if (!metadataInfo) return fastInfo;
+  if (!fastInfo) return metadataInfo;
+  return {
+    ...fastInfo,
+    ...metadataInfo,
+    firstPrompt: metadataInfo.firstPrompt ?? fastInfo.firstPrompt,
+    createdAt: metadataInfo.createdAt ?? fastInfo.createdAt,
+  };
 }
 
 export function parseSessionInfoFromLite(
@@ -239,11 +251,21 @@ async function readLastSessionMetadata(path: string): Promise<SessionMetadataVal
     let lineChunks: Buffer[] = [];
     let lineBytes = 0;
     let lineTooLarge = false;
+    let lineIsSessionMetadata = false;
 
     const append = (segment: Buffer): void => {
       if (segment.length === 0) return;
       lineBytes += segment.length;
-      if (lineTooLarge || lineBytes > MAX_SESSION_METADATA_LINE_BYTES) {
+      if (lineTooLarge) return;
+
+      // Transcript records serialize `type` first, so the initial buffered
+      // prefix identifies metadata before a large fork `firstPrompt` forces
+      // us past the normal per-line cap.
+      if (!lineIsSessionMetadata) {
+        const prefix = Buffer.concat([...lineChunks, segment]).toString("utf8");
+        lineIsSessionMetadata = prefix.includes('"type":"session_metadata"');
+      }
+      if (!lineIsSessionMetadata && lineBytes > MAX_SESSION_METADATA_LINE_BYTES) {
         lineChunks = [];
         lineTooLarge = true;
         return;
@@ -254,11 +276,12 @@ async function readLastSessionMetadata(path: string): Promise<SessionMetadataVal
     const finishLine = (): void => {
       if (!lineTooLarge) {
         const metadata = parseSessionMetadataLine(Buffer.concat(lineChunks).toString("utf8").replace(/\r$/, ""));
-        if (metadata) lastMetadata = metadata;
+        if (metadata) lastMetadata = mergeMetadata(lastMetadata ?? {}, metadata);
       }
       lineChunks = [];
       lineBytes = 0;
       lineTooLarge = false;
+      lineIsSessionMetadata = false;
     };
 
     let position = 0;
@@ -292,15 +315,23 @@ function parseSessionMetadataLine(line: string): SessionMetadataValue | undefine
       return undefined;
     }
     const metadata = entry.metadata;
-    return {
-      title: stringValue(metadata.title),
-      aiTitle: stringValue(metadata.aiTitle),
-      tag: stringValue(metadata.tag),
-      firstPrompt: stringValue(metadata.firstPrompt),
-      lastPrompt: stringValue(metadata.lastPrompt),
-      parentSessionId: stringValue(metadata.parentSessionId),
-      forkedFromTurnId: stringValue(metadata.forkedFromTurnId),
-    };
+    const parsed: SessionMetadataValue = {};
+    const stringFields = [
+      "title",
+      "aiTitle",
+      "tag",
+      "firstPrompt",
+      "lastPrompt",
+      "parentSessionId",
+      "forkedFromTurnId",
+    ] as const;
+    for (const field of stringFields) {
+      const value = stringValue(metadata[field]);
+      if (value !== undefined) {
+        parsed[field] = value;
+      }
+    }
+    return parsed;
   } catch {
     return undefined;
   }
