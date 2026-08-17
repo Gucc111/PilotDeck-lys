@@ -135,6 +135,7 @@ export class TurnRunner {
         return { result, messages: options.messages };
       }
 
+      await this.persistListingPromptMetadata(options, accepted.messages);
       yield { type: "input_accepted", sessionId: options.sessionId, turnId: options.turnId, messages: accepted.messages };
 
       const prompt = inputToPromptText(options.input);
@@ -152,7 +153,6 @@ export class TurnRunner {
       yield { type: "user_prompt_submitted", sessionId: options.sessionId, turnId: options.turnId, prompt };
       if (userPromptHooks?.effects.some((effect) => effect.type === "block")) {
         const error = agentError("agent_unsupported_feature", "UserPromptSubmit hook blocked model execution.");
-        await this.persistListingPromptMetadata(options, accepted.messages);
         const result = this.createErrorResult(
           options,
           error,

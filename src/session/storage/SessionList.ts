@@ -109,9 +109,10 @@ function hasCompleteLatestMetadata(lite: SessionLiteFile): boolean {
     if (!metadata) return false;
     latestMetadata = metadata;
   }
-  // Metadata records are patches. Only an actual title in the newest complete
-  // tail record proves that the fast path has the accumulated title state.
-  return Boolean(latestMetadata?.title?.trim() || latestMetadata?.aiTitle?.trim());
+  // Metadata records are patches. Only `reappendTail()` writes an explicit
+  // full snapshot, so ordinary trailing patches cannot skip title recovery.
+  return latestMetadata?.isSnapshot === true
+    && Boolean(latestMetadata.title?.trim() || latestMetadata.aiTitle?.trim());
 }
 
 export function parseSessionInfoFromLite(
@@ -338,6 +339,9 @@ function parseSessionMetadataLine(line: string): SessionMetadataValue | undefine
     }
     const metadata = entry.metadata;
     const parsed: SessionMetadataValue = {};
+    if (metadata.isSnapshot === true) {
+      parsed.isSnapshot = true;
+    }
     const stringFields = [
       "title",
       "aiTitle",

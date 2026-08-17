@@ -72,7 +72,63 @@ test("TurnRunner appends session metadata after successful and failed accepted t
     assert.equal(lastEntry?.type, "session_metadata");
     if (lastEntry?.type === "session_metadata") {
       assert.equal(lastEntry.metadata.aiTitle, "Pinned at transcript tail");
+      assert.equal(lastEntry.metadata.isSnapshot, true);
     }
+  }
+});
+
+test("TurnRunner persists a bounded prompt when title generation produces no title", async () => {
+  const sessionId = "untitled-session";
+  const transcript = new InMemoryTranscriptWriter();
+  const metadataStore = new SessionMetadataStore({
+    transcript,
+    sessionId,
+    now: () => new Date(NOW),
+  });
+  const successfulResult = result(sessionId);
+  const loop = {
+    async *run(input: AgentLoopInput): AsyncGenerator<AgentEvent, AgentLoopRunResult, unknown> {
+      yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result: successfulResult };
+      return { result: successfulResult, messages: input.messages };
+    },
+    snapshotFileState: () => ({}),
+  } as unknown as AgentLoop;
+  const runner = new TurnRunner(
+    loop,
+    transcript,
+    undefined,
+    () => new Date(NOW),
+    undefined,
+    { cwd: process.cwd(), transcriptPath: "", collectFileArtifacts: false },
+    {
+      metadataStore,
+      autoGenerateSessionTitle: true,
+      sessionTitleGenerator: async () => null,
+    },
+  );
+
+  const prompt = "Create a briefing";
+  for await (const _event of runner.run({
+    sessionId,
+    turnId: "turn-1",
+    messages: [],
+    input: {
+      type: "blocks",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image", source: "base64", data: "x".repeat(2 * 1024 * 1024), mimeType: "image/png" },
+      ],
+    },
+  })) {
+    // Exhaust the successful turn so its metadata reappend is persisted.
+  }
+
+  const lastEntry = transcript.entries.at(-1);
+  assert.equal(lastEntry?.type, "session_metadata");
+  if (lastEntry?.type === "session_metadata") {
+    assert.equal(lastEntry.metadata.firstPrompt, prompt);
+    assert.equal(lastEntry.metadata.lastPrompt, prompt);
+    assert.equal(lastEntry.metadata.isSnapshot, true);
   }
 });
 

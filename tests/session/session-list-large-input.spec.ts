@@ -151,3 +151,36 @@ test("preserves createdAt when metadata recovery has no lite summary", async () 
     await rm(pilotHome, { recursive: true, force: true });
   }
 });
+
+test("does not trust a trailing metadata patch as a full title snapshot", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+
+    const sessionId = "web:s_tail-patch";
+    const oldMetadata = entry("session_metadata", sessionId, 1, {
+      metadata: { title: "Old title" },
+    });
+    const filler = entry("assistant_message", sessionId, 2, {
+      message: { role: "assistant", content: [{ type: "text", text: "x".repeat(160 * 1024) }] },
+    });
+    const newMetadata = entry("session_metadata", sessionId, 3, {
+      metadata: { title: "Recovered title", firstPrompt: "p".repeat(130 * 1024) },
+    });
+    const trailingPatch = entry("session_metadata", sessionId, 4, {
+      metadata: { aiTitle: "Later title patch" },
+    });
+    await writeFile(
+      join(chatDir, `${sessionId}.jsonl`),
+      `${JSON.stringify(oldMetadata)}\n${JSON.stringify(filler)}\n${JSON.stringify(newMetadata)}\n${JSON.stringify(trailingPatch)}\n`,
+    );
+
+    const [session] = await listProjectSessions({ projectRoot, pilotHome });
+    assert.equal(session?.summary, "Recovered title");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
