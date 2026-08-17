@@ -1021,6 +1021,7 @@ class ProjectRuntimeRegistry {
       transcript: storage.transcript,
       initialState: previous.state,
       seedState: previous.fileState,
+      initialMetadata: previous.metadata,
       sessionTitleGenerator: prepared.sessionTitleGenerator,
       collectFileArtifacts: this.shouldCollectFileArtifacts(prepared.runtime),
     });
