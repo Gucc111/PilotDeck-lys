@@ -35,18 +35,18 @@ test("lists historical sessions whose large inline image hides metadata from the
     const largeMetadata = entry("session_metadata", largeSessionId, 2, {
       metadata: { aiTitle: largeTitle, firstPrompt: "p".repeat(130 * 1024) },
     });
-    const modelSelectionPatch = entry("session_metadata", largeSessionId, 3, {
-      metadata: { modelSelection: { mode: "auto" } },
-    });
-    const largeTail = entry("assistant_message", largeSessionId, 4, {
+    const largeTail = entry("assistant_message", largeSessionId, 3, {
       message: { role: "assistant", content: [{ type: "text", text: `findable ${"y".repeat(160 * 1024)}` }] },
     });
-    const latestInput = entry("accepted_input", largeSessionId, 5, {
+    const latestInput = entry("accepted_input", largeSessionId, 4, {
       messages: [{ role: "user", content: [{ type: "text", text: "Latest prompt" }] }],
+    });
+    const modelSelectionPatch = entry("session_metadata", largeSessionId, 5, {
+      metadata: { modelSelection: { mode: "auto" } },
     });
     await writeFile(
       join(chatDir, `${largeSessionId}.jsonl`),
-      `${JSON.stringify(largeInput)}\n${JSON.stringify(largeMetadata)}\n${JSON.stringify(modelSelectionPatch)}\n${JSON.stringify(largeTail)}\n${JSON.stringify(latestInput)}\n`,
+      `${JSON.stringify(largeInput)}\n${JSON.stringify(largeMetadata)}\n${JSON.stringify(largeTail)}\n${JSON.stringify(latestInput)}\n${JSON.stringify(modelSelectionPatch)}\n`,
     );
 
     const smallSessionId = "web:s_small";
@@ -109,6 +109,43 @@ test("prefers a newer oversized metadata title over an older title in the lite h
 
     const sessions = await listProjectSessions({ projectRoot, pilotHome });
     assert.deepEqual(sessions.map((session) => [session.sessionId, session.summary]), [[sessionId, "New fork title"]]);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("preserves createdAt when metadata recovery has no lite summary", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+
+    const sessionId = "web:s_recovered-created-at";
+    const largeInput = entry("accepted_input", sessionId, 1, {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "Create a presentation" },
+          { type: "image", source: "base64", data: "x".repeat(2 * 1024 * 1024) },
+        ],
+      }],
+    });
+    const largeMetadata = entry("session_metadata", sessionId, 2, {
+      metadata: { aiTitle: "Recovered title", firstPrompt: "p".repeat(130 * 1024) },
+    });
+    const largeTail = entry("assistant_message", sessionId, 3, {
+      message: { role: "assistant", content: [{ type: "text", text: "y".repeat(160 * 1024) }] },
+    });
+    await writeFile(
+      join(chatDir, `${sessionId}.jsonl`),
+      `${JSON.stringify(largeInput)}\n${JSON.stringify(largeMetadata)}\n${JSON.stringify(largeTail)}\n`,
+    );
+
+    const [session] = await listProjectSessions({ projectRoot, pilotHome });
+    assert.equal(session?.summary, "Recovered title");
+    assert.equal(session?.createdAt, Date.parse(NOW));
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(pilotHome, { recursive: true, force: true });

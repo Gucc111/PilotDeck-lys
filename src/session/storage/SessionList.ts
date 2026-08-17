@@ -101,14 +101,17 @@ function hasCompleteLatestMetadata(lite: SessionLiteFile): boolean {
 
   // The tail starts at an arbitrary byte offset, so its first line can be
   // partial. Any complete metadata record after it is necessarily newer.
-  let foundMetadata = false;
+  let latestMetadata: SessionMetadataValue | undefined;
   const lines = lite.tail.split(/\r?\n/);
   for (const line of lines.slice(1)) {
     if (!line.includes('"type":"session_metadata"')) continue;
-    if (!parseSessionMetadataLine(line)) return false;
-    foundMetadata = true;
+    const metadata = parseSessionMetadataLine(line);
+    if (!metadata) return false;
+    latestMetadata = metadata;
   }
-  return foundMetadata;
+  // Metadata records are patches. Only an actual title in the newest complete
+  // tail record proves that the fast path has the accumulated title state.
+  return Boolean(latestMetadata?.title?.trim() || latestMetadata?.aiTitle?.trim());
 }
 
 export function parseSessionInfoFromLite(
@@ -240,6 +243,7 @@ function parseSessionInfoFromMetadata(
 ): SessionInfo | null {
   const summary = metadata.title ?? metadata.aiTitle ?? metadata.lastPrompt ?? metadata.firstPrompt;
   if (!summary?.trim()) return null;
+  const firstCreatedAt = firstJsonStringField(lite.head, "createdAt");
   return {
     sessionId,
     summary,
@@ -249,6 +253,7 @@ function parseSessionInfoFromMetadata(
     aiTitle: metadata.aiTitle,
     firstPrompt: metadata.firstPrompt,
     cwd: projectRoot,
+    createdAt: firstCreatedAt ? Date.parse(firstCreatedAt) : undefined,
     tag: metadata.tag,
     parentSessionId: metadata.parentSessionId,
     forkedFromTurnId: metadata.forkedFromTurnId,
