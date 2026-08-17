@@ -65,7 +65,7 @@ export async function listProjectSessions(options: ListProjectSessionsOptions): 
   return sessions.slice(offset, limit === 0 ? undefined : offset + limit);
 }
 
-async function readSessionInfo(
+export async function readSessionInfo(
   path: string,
   sessionId: string,
   projectRoot?: string,
@@ -248,7 +248,7 @@ async function readLastSessionMetadata(path: string): Promise<SessionMetadataVal
         lineTooLarge = true;
         return;
       }
-      lineChunks.push(segment);
+      lineChunks.push(Buffer.from(segment));
     };
 
     const finishLine = (): void => {

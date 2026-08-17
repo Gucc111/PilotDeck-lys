@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { getPilotProjectChatDir } from "../../src/pilot/paths.js";
+import { searchChatHistory } from "../../src/session/search/searchChatHistory.js";
 import { listProjectSessions } from "../../src/session/storage/SessionList.js";
 
 const NOW = "2026-08-16T09:00:00.000Z";
@@ -21,6 +22,7 @@ test("lists historical sessions whose large inline image hides metadata from the
     await mkdir(chatDir, { recursive: true });
 
     const largeSessionId = "web:s_large-image";
+    const largeTitle = `Generated briefing ${"m".repeat(70 * 1024)}`;
     const largeInput = entry("accepted_input", largeSessionId, 1, {
       messages: [{
         role: "user",
@@ -31,10 +33,10 @@ test("lists historical sessions whose large inline image hides metadata from the
       }],
     });
     const largeMetadata = entry("session_metadata", largeSessionId, 2, {
-      metadata: { aiTitle: "Generated briefing" },
+      metadata: { aiTitle: largeTitle },
     });
     const largeTail = entry("assistant_message", largeSessionId, 3, {
-      message: { role: "assistant", content: [{ type: "text", text: "y".repeat(160 * 1024) }] },
+      message: { role: "assistant", content: [{ type: "text", text: `findable ${"y".repeat(160 * 1024)}` }] },
     });
     await writeFile(
       join(chatDir, `${largeSessionId}.jsonl`),
@@ -48,21 +50,29 @@ test("lists historical sessions whose large inline image hides metadata from the
     );
 
     const invalidSessionId = "web:s_invalid";
+    const invalidTail = entry("assistant_message", invalidSessionId, 3, {
+      message: { role: "assistant", content: [{ type: "text", text: "z".repeat(160 * 1024) }] },
+    });
     await writeFile(
       join(chatDir, `${invalidSessionId}.jsonl`),
       `${JSON.stringify(largeInput).replace(largeSessionId, invalidSessionId)}\n`
         + '{"type":"session_metadata","metadata":{"aiTitle":\n'
-        + `${JSON.stringify(largeTail)}\n`,
+        + `${JSON.stringify(invalidTail)}\n`,
     );
 
     const sessions = await listProjectSessions({ projectRoot, pilotHome });
     assert.deepEqual(
       sessions.map((session) => [session.sessionId, session.summary]).sort((a, b) => a[0].localeCompare(b[0])),
       [
-        [largeSessionId, "Generated briefing"],
+        [largeSessionId, largeTitle],
         [smallSessionId, "Small session"],
       ],
     );
+
+    const search = await searchChatHistory({ projectRoot, pilotHome, query: "findable" });
+    assert.equal(search.matches.length, 1);
+    assert.equal(search.matches[0].sessionId, largeSessionId);
+    assert.equal(search.matches[0].sessionTitle, largeTitle);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(pilotHome, { recursive: true, force: true });
