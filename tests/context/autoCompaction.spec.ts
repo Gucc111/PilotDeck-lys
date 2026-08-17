@@ -389,6 +389,61 @@ test("zero-message summaries are skipped when compaction makes no effective chan
   assert.equal(summaryCalls, 0);
 });
 
+test("rolling-summary replacement with no live history succeeds without emergency compaction", async () => {
+  const tokenBudget = new TokenBudgetManager();
+  let summaryCalls = 0;
+  const engine = new CompactionEngine({
+    provider: "test",
+    model_: "test-model",
+    model: {
+      async *stream() {
+        summaryCalls += 1;
+        yield {
+          type: "text_delta" as const,
+          text: summaryCalls === 1 ? "## Objective\nInitial checkpoint." : "## Objective\nReplacement checkpoint.",
+        };
+        yield { type: "message_end" as const, finishReason: "stop" };
+      },
+    },
+  });
+  const previous = await engine.run({
+    trigger: "auto",
+    messages: textMessages(
+      "Earlier request",
+      "Earlier result",
+      "Earlier follow-up",
+      "Earlier response",
+      "Earlier status",
+      "Earlier conclusion",
+      "Earlier next step",
+    ),
+    keepTailRatio: 0.05,
+  });
+  const runtime = new DefaultContextRuntime({
+    tokenBudget,
+    autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
+    compactionEngine: engine,
+    maxContextTokens: 100,
+  });
+
+  const result = await runtime.tryAutoCompact({
+    messages: [previous.boundaryMarker, previous.summaryMessage!, {
+      role: "user",
+      content: [{ type: "text", text: "Required current request" }],
+    }],
+    budgetEvaluator: (candidate) => Promise.resolve(tokenBudget.snapshotFromTokens(
+      textFrom(candidate).includes("Replacement checkpoint") ? 50 : 95,
+      100,
+    )),
+  });
+
+  assert.equal(result.type, "compacted");
+  assert.equal(result.tier, "full");
+  assert.equal(result.result?.messagesSummarized, 0);
+  assert.equal(result.result?.summaryGenerated, true);
+  assert.equal(summaryCalls, 2);
+});
+
 test("zero-message compaction reports overflow instead of skipped above the hard budget", async () => {
   const tokenBudget = new TokenBudgetManager();
   let summaryCalls = 0;

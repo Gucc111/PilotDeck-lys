@@ -765,6 +765,5 @@ function describeTokenBudgetSnapshot(snapshot: TokenBudgetSnapshot): Record<stri
 
 function compactionSummarySucceeded(result: CompactionResult): boolean {
   return result.error === undefined
-    && result.summaryMessage !== undefined
-    && result.messagesSummarized > 0;
+    && result.summaryMessage !== undefined;
 }

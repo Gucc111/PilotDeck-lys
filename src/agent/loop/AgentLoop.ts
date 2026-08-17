@@ -1095,13 +1095,26 @@ export class AgentLoop {
           messages = stripTrailingErrorPair(messages);
           if (ctx?.tryAutoCompact) {
             try {
+              const maxContextTokens = this.currentMaxContextTokens(target.provider, target.model);
+              const reservedOutputTokens = this.getReservedOutputTokens(target.provider, target.model);
+              const recoveryDecision = {
+                ...decision,
+                provider: target.provider,
+                model: target.model,
+              };
               const compact = await ctx.tryAutoCompact({
                 sessionId: input.sessionId,
                 turnId: input.turnId,
                 messages,
                 abortSignal: input.abortSignal,
-                maxContextTokens: this.currentMaxContextTokens(target.provider, target.model),
-                reservedOutputTokens: this.getReservedOutputTokens(target.provider, target.model),
+                maxContextTokens,
+                reservedOutputTokens,
+                budgetEvaluator: this.createBudgetEvaluator(input, {
+                  decision: recoveryDecision,
+                  baseRequest: { ...request, provider: target.provider, model: target.model },
+                  maxContextTokens,
+                  reservedOutputTokens,
+                }),
                 allowFallbackOnFailure: true,
               });
               if (compact.type === "compacted") {
@@ -1911,14 +1924,21 @@ export class AgentLoop {
       let candidateRequest = await this.createModelRequest(candidateMessages, input, {
         emitInstructionEvents: false,
       });
-      if (options.decision && options.baseRequest && this.dependencies.router.materializeRequest) {
+      if (options.decision && options.baseRequest) {
         const patchedBase = { ...options.baseRequest, messages: candidateRequest.messages };
-        candidateRequest = this.dependencies.router.materializeRequest(options.decision, {
+        const materializedRequest = {
           ...patchedBase,
           systemPrompt: candidateRequest.systemPrompt,
           tools: candidateRequest.tools,
           cacheBreakpoints: candidateRequest.cacheBreakpoints,
-        });
+        };
+        candidateRequest = this.dependencies.router.materializeRequest
+          ? this.dependencies.router.materializeRequest(options.decision, materializedRequest)
+          : {
+              ...materializedRequest,
+              provider: options.decision.provider,
+              model: options.decision.model,
+            };
       }
       const snapshot = await tokenAccounting.evaluateRequestBudget(candidateRequest, {
         maxContextTokens,
@@ -3495,13 +3515,12 @@ function markCompactReplacementMessages(messages: CanonicalMessage[], compaction
 
 function compactionSummarySucceeded(result: CompactionResult): boolean {
   return result.error === undefined
-    && result.summaryMessage !== undefined
-    && result.messagesSummarized > 0;
+    && result.summaryMessage !== undefined;
 }
 
 function compactionSummaryGenerated(result: CompactionResult): boolean {
   return result.summaryGenerated
-    ?? (result.summaryMessage !== undefined && result.messagesSummarized > 0);
+    ?? result.summaryMessage !== undefined;
 }
 
 function modelErrorTarget(error: CanonicalModelError, fallbackProvider: string, fallbackModel: string): {

@@ -452,6 +452,7 @@ test("agent loop persists a full compaction after recovering from a context erro
   const tokenBudget = new TokenBudgetManager();
   let compactCalls = 0;
   let executeCalls = 0;
+  const recoveryBudgetRequests: Array<{ provider?: string; model?: string }> = [];
 
   const context: AgentRuntimeDependencies["context"] = {
     prepareForModel: async (input) => ({
@@ -465,11 +466,13 @@ test("agent loop persists a full compaction after recovering from a context erro
     applyToolResults: async (input) => ({ messages: input.messages, diagnostics: [] }),
     recoverFromModelError: async () => ({ type: "compact_and_retry", reason: "provider-context-limit" }),
     captureTurn: async () => undefined,
-    tryAutoCompact: async () => {
+    tryAutoCompact: async (compactInput) => {
       compactCalls += 1;
       if (compactCalls !== 2) {
         return { type: "skipped", snapshot: tokenBudget.snapshotFromTokens(90, 100) };
       }
+      assert.ok(compactInput.budgetEvaluator);
+      await compactInput.budgetEvaluator(compactInput.messages);
       return {
         type: "compacted",
         tier: "full",
@@ -549,7 +552,11 @@ test("agent loop persists a full compaction after recovering from a context erro
     tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
     context,
     tokenAccounting: {
-      evaluateRequestBudget: async () => tokenBudget.snapshotFromTokens(20, 100),
+      evaluateRequestBudget: async (candidate: unknown) => {
+        const request = candidate as { provider?: string; model?: string };
+        recoveryBudgetRequests.push({ provider: request.provider, model: request.model });
+        return tokenBudget.snapshotFromTokens(20, 100);
+      },
     } as unknown as AgentRuntimeDependencies["tokenAccounting"],
   });
 
@@ -571,6 +578,7 @@ test("agent loop persists a full compaction after recovering from a context erro
   assert.equal(persistedCompacts.length, 1);
   assert.equal((persistedCompacts[0]!.boundary as { kind?: string }).kind, "compact");
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
+  assert.deepEqual(recoveryBudgetRequests, [{ provider: "openai", model: "model-a" }]);
 });
 
 test("agent loop does not calibrate a primary route from fallback usage", async () => {
