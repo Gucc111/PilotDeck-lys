@@ -559,6 +559,41 @@ test("emergency compaction keeps a sendable prompt below the hard budget", async
   assert.equal(result.error, undefined);
 });
 
+test("emergency summary remains persistable after a later head truncation", async () => {
+  const tokenBudget = new TokenBudgetManager();
+  let summaryCalls = 0;
+  const engine = new CompactionEngine({
+    provider: "test",
+    model_: "test-model",
+    tokenBudget,
+    model: {
+      async *stream() {
+        summaryCalls += 1;
+        yield { type: "text_delta", text: `## Objective\nCheckpoint ${summaryCalls}.` };
+      },
+    },
+  });
+  const runtime = new DefaultContextRuntime({
+    tokenBudget,
+    autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
+    compactionEngine: engine,
+    maxContextTokens: 100,
+  });
+
+  const result = await runtime.tryAutoCompact({
+    messages: textMessages(...Array.from({ length: 20 }, (_, index) => `turn-${index}`)),
+    // Keep the simulated routed request in emergency territory after the
+    // summary so the emergency path continues through head truncation.
+    budgetEvaluator: () => Promise.resolve(tokenBudget.snapshotFromTokens(95, 100)),
+  });
+
+  assert.equal(result.type, "compacted");
+  assert.equal(result.tier, "emergency");
+  assert.ok(summaryCalls >= 2);
+  assert.ok(result.result?.summaryMessage);
+  assert.match(textFrom(result.messages), /Checkpoint 2/);
+});
+
 test("emergency tool projection may tighten a bounded preview once, then remains idempotent", () => {
   const engine = new MicroCompactionEngine();
   const first = engine.apply({ messages: largeToolResultFixture() });

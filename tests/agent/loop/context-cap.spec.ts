@@ -559,6 +559,13 @@ test("agent loop persists a full compaction after recovering from a context erro
       },
     } as unknown as AgentRuntimeDependencies["tokenAccounting"],
   });
+  const calibrations = (loop as unknown as { tokenCalibrationByRoute: Map<string, unknown> }).tokenCalibrationByRoute;
+  calibrations.set("openai/model-a", {
+    provider: "openai",
+    model: "model-a",
+    actualInputTokens: 90,
+    estimatedInputTokens: 60,
+  });
 
   for await (const _event of loop.run({
     sessionId: "session-reactive-compact",
@@ -579,6 +586,7 @@ test("agent loop persists a full compaction after recovering from a context erro
   assert.equal((persistedCompacts[0]!.boundary as { kind?: string }).kind, "compact");
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
   assert.deepEqual(recoveryBudgetRequests, [{ provider: "openai", model: "model-a" }]);
+  assert.equal(calibrations.size, 0);
 });
 
 test("agent loop does not calibrate a primary route from fallback usage", async () => {

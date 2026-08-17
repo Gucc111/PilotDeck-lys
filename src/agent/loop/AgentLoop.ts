@@ -1119,6 +1119,7 @@ export class AgentLoop {
               });
               if (compact.type === "compacted") {
                 messages = compact.messages;
+                this.tokenCalibrationByRoute.clear();
                 await this.persistCompactSnapshot(input, compact);
                 if (compact.error) {
                   const failure = await contextOverflowAfterEmergency(compact);
@@ -1131,13 +1132,16 @@ export class AgentLoop {
                 }
               } else {
                 messages = truncateHeadKeepRatio(messages, 0.5);
+                this.tokenCalibrationByRoute.clear();
               }
             } catch (error: unknown) {
               logAutoCompactFailure("model-error-recovery", input, error);
               messages = truncateHeadKeepRatio(messages, 0.5);
+              this.tokenCalibrationByRoute.clear();
             }
           } else {
             messages = truncateHeadKeepRatio(messages, 0.5);
+            this.tokenCalibrationByRoute.clear();
           }
           hasAttemptedCompact = true;
           yield {
@@ -1155,6 +1159,7 @@ export class AgentLoop {
           // keepRatio so the cap is computed against valid history only.
           messages = stripTrailingErrorPair(messages);
           messages = truncateHeadKeepRatio(messages, reactive.keepRatio);
+          this.tokenCalibrationByRoute.clear();
           hasAttemptedCompact = true;
           yield {
             type: "turn_continued",
@@ -1169,6 +1174,7 @@ export class AgentLoop {
           hasAttemptedImageStrip = true;
           messages = stripTrailingErrorPair(messages);
           messages = stripImagesFromMessages(messages);
+          this.tokenCalibrationByRoute.clear();
           yield {
             type: "turn_continued",
             sessionId: input.sessionId,

@@ -570,12 +570,13 @@ export class DefaultContextRuntime implements ContextRuntime {
     let messages = options.messages;
     let snapshot = await options.evaluateBudget(messages);
     let changed = false;
+    let emergencyResult: CompactionResult | undefined;
     if (snapshot.ratio < 0.90) return { messages, snapshot, changed };
 
     // Emergency summary is the only normal path allowed to rewrite the
     // checkpoint prefix. It is intentionally short and marked as a cache reset.
     if (this.compactionEngine) {
-      const emergencyResult = await this.compactionEngine.run({
+      emergencyResult = await this.compactionEngine.run({
         trigger: "reactive",
         messages,
         keepTailRatio: EMERGENCY_KEEP_TAIL_RATIO,
@@ -604,6 +605,9 @@ export class DefaultContextRuntime implements ContextRuntime {
       }
     }
 
+    const persistedEmergencyResult = emergencyResult?.summaryMessage && emergencyResult.error === undefined
+      ? emergencyResult
+      : undefined;
     const projected = this.microCompaction?.apply({
       messages,
       trimToTokens: EMERGENCY_TOOL_RESULT_TOKENS,
@@ -618,7 +622,14 @@ export class DefaultContextRuntime implements ContextRuntime {
         rewritten: projected.rewritten,
         snapshot: describeTokenBudgetSnapshot(snapshot),
       });
-      if (snapshot.ratio < 0.90) return { messages, snapshot, changed };
+      if (snapshot.ratio < 0.90) {
+        return {
+          messages,
+          snapshot,
+          changed,
+          result: persistedEmergencyResult,
+        };
+      }
     }
 
     const truncated = truncateHeadPreservingCheckpoint(messages, EMERGENCY_HEAD_KEEP_RATIO);
@@ -637,7 +648,13 @@ export class DefaultContextRuntime implements ContextRuntime {
       snapshot: describeTokenBudgetSnapshot(snapshot),
       keepRatio: EMERGENCY_HEAD_KEEP_RATIO,
     });
-    return { messages, snapshot, changed, diagnostics };
+    return {
+      messages,
+      snapshot,
+      changed,
+      result: persistedEmergencyResult,
+      diagnostics,
+    };
   }
 
   async recoverFromModelError(input: ContextRecoveryInput): Promise<ContextRecoveryDecision> {
