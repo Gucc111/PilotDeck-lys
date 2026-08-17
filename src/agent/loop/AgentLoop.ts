@@ -67,6 +67,7 @@ import {
 } from "../../tool/askModeConstraints.js";
 import { buildAskModeAgentToolSchema } from "../../tool/builtin/agent.js";
 import { repairToolName } from "../../model/streaming/repairToolName.js";
+import { requestFingerprint } from "../../model/streaming/requestFingerprint.js";
 import {
   createAgentStatusDetail,
   createVisibleErrorStatusDetail,
@@ -579,9 +580,13 @@ export class AgentLoop {
         };
       }
 
-      const requestInputEstimate = this.dependencies.tokenAccounting?.estimateRequestInput?.(request);
+      const calibrationRequest = this.dependencies.router.materializeRequest
+        ? this.dependencies.router.materializeRequest(decision, request)
+        : { ...request, provider: decision.provider, model: decision.model };
+      const requestInputEstimate = this.dependencies.tokenAccounting?.estimateRequestInput?.(calibrationRequest);
+      const calibrationRequestFingerprint = requestFingerprint(calibrationRequest);
       const assembler = createModelMessageAssemblerState();
-      let executedRoute: { provider: string; model: string } | undefined;
+      let executedRequest: { provider: string; model: string; fingerprint?: string } | undefined;
       try {
         for await (const event of this.dependencies.router.execute(decision, request, {
           sessionId: input.sessionId,
@@ -590,7 +595,11 @@ export class AgentLoop {
           abortSignal: input.abortSignal,
         })) {
           if (event.type === "request_started") {
-            executedRoute = { provider: event.provider, model: event.model };
+            executedRequest = {
+              provider: event.provider,
+              model: event.model,
+              fingerprint: event.requestFingerprint,
+            };
           }
           yield { type: "model_event", sessionId: input.sessionId, turnId: input.turnId, event };
           applyModelEventToAssembler(assembler, event);
@@ -682,11 +691,15 @@ export class AgentLoop {
 
       const assembled = assembleAssistantMessage(assembler);
       usage = mergeUsage(usage, assembled.usage);
-      // Router fallback can change both the provider tokenizer and the
-      // materialized request. The original local estimate is no longer a
-      // valid calibration baseline in that case.
-      if (!executedRoute || (executedRoute.provider === request.provider && executedRoute.model === request.model)) {
-        this.recordTokenCalibration(request, assembled.usage, requestInputEstimate);
+      // A fallback, media downgrade, or interrupted-stream continuation can
+      // change request contents without changing the route. Calibrate only
+      // against the exact request whose usage the provider reported.
+      if (
+        executedRequest?.provider === calibrationRequest.provider
+        && executedRequest.model === calibrationRequest.model
+        && executedRequest.fingerprint === calibrationRequestFingerprint
+      ) {
+        this.recordTokenCalibration(calibrationRequest, assembled.usage, requestInputEstimate);
       }
       let assistantMessage = assembled.message;
       let toolCalls = collectToolCalls(assistantMessage);

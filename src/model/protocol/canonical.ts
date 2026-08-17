@@ -254,6 +254,8 @@ export type CanonicalModelEvent =
       provider: string;
       model: string;
       providerBaseUrl?: string;
+      /** Opaque digest of the exact request dispatched to the provider. */
+      requestFingerprint?: string;
       metadata?: Record<string, unknown>;
     }
   | { type: "message_start"; role: "assistant"; raw?: unknown }

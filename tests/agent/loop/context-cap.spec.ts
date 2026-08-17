@@ -5,6 +5,7 @@ import { AgentLoop } from "../../../src/agent/loop/AgentLoop.js";
 import type { AgentRuntimeConfig } from "../../../src/agent/runtime/AgentRuntimeConfig.js";
 import type { AgentRouterRuntime, AgentRuntimeDependencies } from "../../../src/agent/runtime/AgentRuntimeDependencies.js";
 import { TokenBudgetManager } from "../../../src/context/budget/TokenBudgetManager.js";
+import { requestFingerprint } from "../../../src/model/streaming/requestFingerprint.js";
 import { createDefaultPermissionContext } from "../../../src/permission/protocol/types.js";
 import { ToolRegistry } from "../../../src/tool/registry/ToolRegistry.js";
 import type { CanonicalMessage, CanonicalModelEvent } from "../../../src/model/protocol/canonical.js";
@@ -631,6 +632,68 @@ test("agent loop does not calibrate a primary route from fallback usage", async 
   for await (const _event of loop.run({
     sessionId: "fallback-calibration",
     turnId: "fallback-turn",
+    messages: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
+  })) {
+    // Drain the completed turn.
+  }
+
+  const calibrations = (loop as unknown as { tokenCalibrationByRoute: Map<string, unknown> }).tokenCalibrationByRoute;
+  assert.equal(calibrations.size, 0);
+});
+
+test("agent loop skips calibration when a same-route request was transformed", async () => {
+  const router: AgentRouterRuntime = {
+    decide: async ({ request }) => ({
+      provider: request.provider,
+      model: request.model,
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: async function* (_decision, request): AsyncIterable<CanonicalModelEvent> {
+      const transformed = {
+        ...request,
+        messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "media removed" }] }],
+      };
+      yield {
+        type: "request_started",
+        provider: request.provider,
+        model: request.model,
+        requestFingerprint: requestFingerprint(transformed),
+      };
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "completed" };
+      yield { type: "message_end", finishReason: "stop" };
+      yield { type: "usage", usage: { inputTokens: 50_000, outputTokens: 20 } };
+    },
+    stream: async function* (): AsyncIterable<CanonicalModelEvent> {},
+    materializeRequest: (_decision, request) => request,
+    observeUsage: () => undefined,
+  };
+  const loop = new AgentLoop({
+    provider: "openai",
+    model: "model-a",
+    cwd: "/workspace/project",
+    permissionMode: "bypassPermissions",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "bypassPermissions",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
+    tokenAccounting: {
+      estimateRequestInput: () => 40_000,
+    } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+  });
+
+  for await (const _event of loop.run({
+    sessionId: "transformed-calibration",
+    turnId: "transformed-turn",
     messages: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
   })) {
     // Drain the completed turn.

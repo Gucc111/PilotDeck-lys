@@ -95,4 +95,36 @@ describe("activeModelCapabilities token defaults", () => {
     expect(capabilities?.defaultMaxContextTokens).toBe(262_144);
     expect(capabilities?.defaultMaxOutputTokens).toBe(8_192);
   });
+
+  it("resolves cross-provider catalog limits for a proxy model", () => {
+    const config: PilotDeckConfig = {
+      agent: { model: "openrouter/gpt-4o-mini" },
+      model: {
+        providers: {
+          openrouter: { protocol: "openai", models: { "gpt-4o-mini": {} } },
+        },
+      },
+    };
+
+    const capabilities = activeModelCapabilities(config);
+
+    expect(capabilities?.defaultMaxContextTokens).toBe(128_000);
+    expect(capabilities?.defaultMaxOutputTokens).toBe(16_384);
+  });
+
+  it("resolves aliases after removing a proxy vendor prefix", () => {
+    const config: PilotDeckConfig = {
+      agent: { model: "custom/anthropic/claude-sonnet-4-6" },
+      model: {
+        providers: {
+          custom: { protocol: "openai", models: { "anthropic/claude-sonnet-4-6": {} } },
+        },
+      },
+    };
+
+    const capabilities = activeModelCapabilities(config);
+
+    expect(capabilities?.defaultMaxContextTokens).toBe(200_000);
+    expect(capabilities?.defaultMaxOutputTokens).toBe(128_000);
+  });
 });

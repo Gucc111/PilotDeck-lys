@@ -11,6 +11,7 @@
 export type CatalogModel = {
   id: string;
   displayName: string;
+  aliases?: string[];
   /** Whether the model accepts image input. Drives the 🖼 indicator in the UI. */
   supportsImage?: boolean;
   /** Context window size (tokens). Drives the placeholder in the max-context-tokens setting. */
@@ -53,11 +54,11 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     protocol: 'anthropic',
     defaultUrl: 'https://api.anthropic.com',
     models: [
-      { id: 'claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 128000 },
-      { id: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 32768 },
-      { id: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 16384 },
-      { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
-      { id: 'claude-haiku-3-5-20241022', displayName: 'Claude 3.5 Haiku', supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
+      { id: 'claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', aliases: ['claude-sonnet-4-6'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 128000 },
+      { id: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', aliases: ['claude-opus-4', 'claude-opus-4.6'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 32768 },
+      { id: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', aliases: ['claude-sonnet-4'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 16384 },
+      { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', aliases: ['claude-sonnet-4.5', 'claude-3-5-sonnet-20250929'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
+      { id: 'claude-haiku-3-5-20241022', displayName: 'Claude 3.5 Haiku', aliases: ['claude-3-5-haiku', 'claude-3.5-haiku', 'claude-haiku-3.5'], supportsImage: true, maxContextTokens: 200000, maxOutputTokens: 8192 },
     ],
   },
   {
@@ -97,9 +98,9 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
       { id: 'qwen3.7-max', displayName: 'Qwen3.7 Max', maxContextTokens: 1000000, maxOutputTokens: 65536 },
       { id: 'qwen3.7-plus', displayName: 'Qwen3.7 Plus', supportsImage: true, maxContextTokens: 1000000, maxOutputTokens: 65536 },
       { id: 'qwen3.6-flash', displayName: 'Qwen3.6 Flash', maxContextTokens: 1000000, maxOutputTokens: 65536 },
-      { id: 'qwen-max', displayName: 'Qwen Max', maxContextTokens: 131072, maxOutputTokens: 2000 },
-      { id: 'qwen-plus', displayName: 'Qwen Plus', maxContextTokens: 131072, maxOutputTokens: 2000 },
-      { id: 'qwen-turbo', displayName: 'Qwen Turbo', maxContextTokens: 131072, maxOutputTokens: 1500 },
+      { id: 'qwen-max', displayName: 'Qwen Max', aliases: ['qwen-max-latest'], maxContextTokens: 131072, maxOutputTokens: 2000 },
+      { id: 'qwen-plus', displayName: 'Qwen Plus', aliases: ['qwen-plus-latest'], maxContextTokens: 131072, maxOutputTokens: 2000 },
+      { id: 'qwen-turbo', displayName: 'Qwen Turbo', aliases: ['qwen-turbo-latest'], maxContextTokens: 131072, maxOutputTokens: 1500 },
     ],
   },
   {
@@ -123,7 +124,7 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
       { id: 'gemini-3.1-pro-preview', displayName: 'Gemini 3.1 Pro Preview', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
       { id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
       { id: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
-      { id: 'gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
+      { id: 'gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', aliases: ['gemini-2.0-flash-001'], supportsImage: true, maxContextTokens: 1048576, maxOutputTokens: 65536 },
     ],
   },
   {
@@ -167,10 +168,10 @@ export const CATALOG_PROVIDERS: CatalogProvider[] = [
     defaultUrl: 'https://api.moonshot.cn/v1',
     modelListRequiresApiKey: true,
     models: [
-      { id: 'kimi-k2.6', displayName: 'Kimi K2.6', supportsImage: true, maxContextTokens: 262144, maxOutputTokens: 8192 },
-      { id: 'kimi-k2.7-code', displayName: 'Kimi K2.7 Code', maxContextTokens: 262144, maxOutputTokens: 8192 },
-      { id: 'kimi-k2.7-code-highspeed', displayName: 'Kimi K2.7 Code Highspeed', maxContextTokens: 262144, maxOutputTokens: 8192 },
-      { id: 'kimi-k3', displayName: 'Kimi K3', maxContextTokens: 262144, maxOutputTokens: 8192 },
+      { id: 'kimi-k2.6', displayName: 'Kimi K2.6', aliases: ['moonshotai/kimi-k2.6'], supportsImage: true, maxContextTokens: 262144, maxOutputTokens: 8192 },
+      { id: 'kimi-k2.7-code', displayName: 'Kimi K2.7 Code', aliases: ['moonshotai/kimi-k2.7-code'], maxContextTokens: 262144, maxOutputTokens: 8192 },
+      { id: 'kimi-k2.7-code-highspeed', displayName: 'Kimi K2.7 Code Highspeed', aliases: ['moonshotai/kimi-k2.7-code-highspeed'], maxContextTokens: 262144, maxOutputTokens: 8192 },
+      { id: 'kimi-k3', displayName: 'Kimi K3', aliases: ['moonshotai/kimi-k3'], maxContextTokens: 262144, maxOutputTokens: 8192 },
     ],
   },
   {
