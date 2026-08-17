@@ -10,6 +10,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { SessionProvider } from '../types/app';
 import { authenticatedFetch, readAgentStatusErrorFromResponse } from '../utils/api';
+import { parseUserAttachmentNote } from '../components/chat/utils/attachmentNotes';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -271,6 +272,10 @@ function normalizeRealtimeText(value?: string): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
+function normalizeUserMessageText(value?: string): string {
+  return normalizeRealtimeText(parseUserAttachmentNote(value).content);
+}
+
 function parseTimestampMs(value?: string): number | null {
   if (!value) return null;
   const parsed = Date.parse(value);
@@ -305,7 +310,7 @@ function isConfirmedUserMessageDuplicate(
     return false;
   }
 
-  const realtimeText = normalizeRealtimeText(realtimeMessage.content);
+  const realtimeText = normalizeUserMessageText(realtimeMessage.content);
   if (!realtimeText) return false;
 
   const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
@@ -315,7 +320,7 @@ function isConfirmedUserMessageDuplicate(
       return false;
     }
 
-    if (normalizeRealtimeText(serverMessage.content) !== realtimeText) {
+    if (normalizeUserMessageText(serverMessage.content) !== realtimeText) {
       return false;
     }
 

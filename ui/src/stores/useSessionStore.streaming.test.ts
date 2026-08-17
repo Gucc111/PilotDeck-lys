@@ -212,6 +212,63 @@ describe('patchMergedStreamingMessage', () => {
 });
 
 describe('computeMerged', () => {
+  it('deduplicates an optimistic user message from its persisted attachment prompt', () => {
+    const server = [
+      textMessage(
+        'persisted-user',
+        [
+          'Transcribe this audio.',
+          '',
+          '[Files attached by user and available for reading in the project:]',
+          '- meeting.wav: .tmp/meeting.wav',
+          '[End files attached by user]',
+          '',
+          '[Registered attachment files in this session:]',
+          '- meeting.wav: .tmp/meeting.wav',
+          'Use the audio transcription tool for this attachment.',
+        ].join('\n'),
+        '2026-08-16T09:00:00.050Z',
+        { role: 'user' },
+      ),
+    ];
+    const realtime = [
+      textMessage('local_user', 'Transcribe this audio.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-user',
+    ]);
+  });
+
+  it('deduplicates an optimistic user message from its persisted content reference prompt', () => {
+    const server = [
+      textMessage(
+        'persisted-user',
+        [
+          'Summarize this selection.',
+          '',
+          '[Content references selected by user:]',
+          '1. TEXT reference',
+          '   Source: notes.md',
+          '   Reference JSON: {"schemaVersion":1}',
+        ].join('\n'),
+        '2026-08-16T09:00:00.050Z',
+        { role: 'user' },
+      ),
+    ];
+    const realtime = [
+      textMessage('local_user', 'Summarize this selection.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-user',
+    ]);
+  });
+
   it('deduplicates a persisted gateway failure from its same-turn realtime status', () => {
     const persisted: NormalizedMessage = {
       id: 'persisted-gateway-failure',
