@@ -11,6 +11,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import type { SessionProvider } from '../types/app';
 import { authenticatedFetch, readAgentStatusErrorFromResponse } from '../utils/api';
 import { parseUserAttachmentNote } from '../components/chat/utils/attachmentNotes';
+import type { ChatAttachment } from '../components/chat/types/types';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -57,23 +58,7 @@ export interface NormalizedMessage {
   contentI18n?: { key: string; params?: Record<string, unknown> };
   userHintI18n?: { key: string; params?: Record<string, unknown> };
   images?: string[];
-  attachments?: Array<{
-    kind?: 'file' | 'document-selection';
-    name: string;
-    path?: string;
-    size?: number;
-    mimeType?: string;
-    fileName?: string;
-    filePath?: string;
-    source?: 'pdf' | 'office-pdf';
-    pageNumbers?: number[];
-    selectedText?: string;
-    surroundingText?: string;
-    occurrenceIndex?: number | null;
-    createdAt?: string;
-    truncated?: boolean;
-    contentReference?: { id?: string };
-  }>;
+  attachments?: ChatAttachment[];
   artifacts?: Array<{
     id: string;
     name: string;
@@ -303,15 +288,14 @@ function getConfirmedUserMessageIdentity(message: NormalizedMessage): {
   images: string[];
 } {
   const parsed = parseUserAttachmentNote(message.content);
-  const attachments = [
-    ...(message.attachments || []),
-    ...parsed.attachments,
-  ];
+  const attachments = message.attachments?.length
+    ? message.attachments
+    : parsed.attachments;
 
   return {
     text: normalizeRealtimeText(parsed.content),
-    attachments: [...new Set(attachments.map(getUserAttachmentIdentity))].sort(),
-    images: Array.isArray(message.images) ? [...message.images].sort() : [],
+    attachments: attachments.map(getUserAttachmentIdentity),
+    images: Array.isArray(message.images) ? message.images : [],
   };
 }
 
@@ -349,26 +333,29 @@ function getSameTurnServerCandidates(
   return serverMessages.filter((message) => getMessageTurnId(message) === realtimeTurnId);
 }
 
-function isConfirmedUserMessageDuplicate(
+function isOptimisticUserMessage(message: NormalizedMessage): boolean {
+  return message.kind === 'text'
+    && message.role === 'user'
+    && message.id.startsWith('local_');
+}
+
+function findConfirmedUserMessageDuplicateIndex(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
-): boolean {
-  if (
-    realtimeMessage.kind !== 'text'
-    || realtimeMessage.role !== 'user'
-    || !realtimeMessage.id.startsWith('local_')
-  ) {
-    return false;
-  }
+  consumedServerIndexes?: Set<number>,
+): number {
+  if (!isOptimisticUserMessage(realtimeMessage)) return -1;
 
   const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
-  if (!realtimeIdentity.text) return false;
+  if (!realtimeIdentity.text) return -1;
 
   const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
 
-  return serverMessages.some((serverMessage) => {
+  for (let index = 0; index < serverMessages.length; index += 1) {
+    if (consumedServerIndexes?.has(index)) continue;
+    const serverMessage = serverMessages[index];
     if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') {
-      return false;
+      continue;
     }
 
     const serverIdentity = getConfirmedUserMessageIdentity(serverMessage);
@@ -376,20 +363,29 @@ function isConfirmedUserMessageDuplicate(
       serverIdentity.text !== realtimeIdentity.text
       || !haveSameUserMessageInputs(serverIdentity, realtimeIdentity)
     ) {
-      return false;
+      continue;
     }
 
     if (realtimeTimestamp == null) {
-      return true;
+      return index;
     }
 
     const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
     if (serverTimestamp == null) {
-      return true;
+      return index;
     }
 
-    return Math.abs(serverTimestamp - realtimeTimestamp) <= 10_000;
-  });
+    if (Math.abs(serverTimestamp - realtimeTimestamp) <= 10_000) return index;
+  }
+
+  return -1;
+}
+
+function isConfirmedUserMessageDuplicate(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): boolean {
+  return findConfirmedUserMessageDuplicateIndex(realtimeMessage, serverMessages) >= 0;
 }
 
 /**
@@ -557,11 +553,7 @@ export function isRealtimeMessageRepresentedOnServer(
   // Local user bubbles must only match through isConfirmedUserMessageDuplicate,
   // which includes attachment and image input identity. The generic text path
   // below would otherwise collapse distinct queued sends with the same text.
-  if (
-    realtimeMessage.kind === 'text'
-    && realtimeMessage.role === 'user'
-    && realtimeMessage.id.startsWith('local_')
-  ) {
+  if (isOptimisticUserMessage(realtimeMessage)) {
     return false;
   }
 
@@ -655,7 +647,18 @@ export function computeMerged(server: NormalizedMessage[], realtime: NormalizedM
     return server;
   }
   if (server.length === 0) return realtime;
+  const consumedServerUserIndexes = new Set<number>();
   const extra = realtime.filter((message) => {
+    if (isOptimisticUserMessage(message)) {
+      const duplicateIndex = findConfirmedUserMessageDuplicateIndex(
+        message,
+        server,
+        consumedServerUserIndexes,
+      );
+      if (duplicateIndex < 0) return true;
+      consumedServerUserIndexes.add(duplicateIndex);
+      return false;
+    }
     return !isRealtimeMessageRepresentedOnServer(message, server);
   });
   if (extra.length === 0) return server;

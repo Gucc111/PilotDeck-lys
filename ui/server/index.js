@@ -2474,6 +2474,11 @@ function handleChatConnection(ws, request) {
                     if (userVisibleInput) {
                         const nowIso = new Date().toISOString();
                         const provider = data.options?.providerHint || 'pilotdeck';
+                        const optimisticImages = Array.isArray(data.options?.images)
+                            ? data.options.images
+                                .map((image) => typeof image === 'string' ? image : image?.data)
+                                .filter((image) => typeof image === 'string')
+                            : [];
                         const optimisticUserFrame = createNormalizedMessage({
                             id: `local_ws_user_${crypto.randomUUID()}`,
                             sessionId: commandSessionId,
@@ -2484,6 +2489,7 @@ function handleChatConnection(ws, request) {
                             ...(Array.isArray(data.options?.attachments) && data.options.attachments.length > 0
                                 ? { attachments: data.options.attachments }
                                 : {}),
+                            ...(optimisticImages.length > 0 ? { images: optimisticImages } : {}),
                             timestamp: nowIso,
                         });
                         const optimisticStatusFrame = createNormalizedMessage({

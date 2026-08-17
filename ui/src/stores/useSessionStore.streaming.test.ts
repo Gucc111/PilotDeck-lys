@@ -269,7 +269,17 @@ describe('computeMerged', () => {
           kind: 'content-reference',
           name: 'notes.md',
           path: 'notes.md',
-          contentReference: { id: 'content-reference-1' },
+          contentReference: {
+            schemaVersion: 1,
+            kind: 'content-reference',
+            id: 'content-reference-1',
+            selectionMode: 'text',
+            source: { relativePath: 'notes.md', fileName: 'notes.md' },
+            renderer: { id: 'text', backend: 'builtin', locatorQuality: 'semantic' },
+            createdAt: '2026-08-16T09:00:00.000Z',
+            locator: { surface: 'document', quote: { exact: 'selection' } },
+            selectedText: 'selection',
+          },
         }],
       }),
     ];
@@ -332,6 +342,69 @@ describe('computeMerged', () => {
     expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
       'persisted-first-user',
       'local_second',
+    ]);
+  });
+
+  it('matches persisted user messages to identical optimistic sends one-to-one', () => {
+    const server = [
+      textMessage('persisted-first-user', 'Continue.', '2026-08-16T09:00:00.050Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_first', 'Continue.', '2026-08-16T09:00:00.000Z', { role: 'user' }),
+      textMessage('local_second', 'Continue.', '2026-08-16T09:00:00.100Z', { role: 'user' }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-first-user',
+      'local_second',
+    ]);
+  });
+
+  it('keeps optimistic messages whose image input order differs from the persisted message', () => {
+    const server = [
+      textMessage('persisted-user', 'Compare these images.', '2026-08-16T09:00:00.050Z', {
+        role: 'user',
+        images: ['data:image/png;base64,first', 'data:image/png;base64,second'],
+      }),
+    ];
+    const realtime = [
+      textMessage('local_ws_user', 'Compare these images.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+        images: ['data:image/png;base64,second', 'data:image/png;base64,first'],
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-user',
+      'local_ws_user',
+    ]);
+  });
+
+  it('keeps optimistic messages whose attachment input order differs from the persisted message', () => {
+    const server = [
+      textMessage('persisted-user', 'Compare these files.', '2026-08-16T09:00:00.050Z', {
+        role: 'user',
+        attachments: [
+          { name: 'first.pdf', path: '.tmp/first.pdf' },
+          { name: 'second.pdf', path: '.tmp/second.pdf' },
+        ],
+      }),
+    ];
+    const realtime = [
+      textMessage('local_user', 'Compare these files.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+        attachments: [
+          { name: 'second.pdf', path: '.tmp/second.pdf' },
+          { name: 'first.pdf', path: '.tmp/first.pdf' },
+        ],
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-user',
+      'local_user',
     ]);
   });
 
