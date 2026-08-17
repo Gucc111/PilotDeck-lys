@@ -234,6 +234,10 @@ describe('computeMerged', () => {
     const realtime = [
       textMessage('local_user', 'Transcribe this audio.', '2026-08-16T09:00:00.000Z', {
         role: 'user',
+        attachments: [{
+          name: 'meeting.wav',
+          path: '.tmp/meeting.wav',
+        }],
       }),
     ];
 
@@ -252,7 +256,7 @@ describe('computeMerged', () => {
           '[Content references selected by user:]',
           '1. TEXT reference',
           '   Source: notes.md',
-          '   Reference JSON: {"schemaVersion":1}',
+          '   Reference JSON: {"schemaVersion":1,"kind":"content-reference","id":"content-reference-1","selectionMode":"text","source":{"relativePath":"notes.md","fileName":"notes.md"},"renderer":{"id":"text","backend":"builtin","locatorQuality":"semantic"},"createdAt":"2026-08-16T09:00:00.000Z","locator":{"surface":"document","quote":{"exact":"selection"}},"selectedText":"selection"}',
         ].join('\n'),
         '2026-08-16T09:00:00.050Z',
         { role: 'user' },
@@ -261,11 +265,73 @@ describe('computeMerged', () => {
     const realtime = [
       textMessage('local_user', 'Summarize this selection.', '2026-08-16T09:00:00.000Z', {
         role: 'user',
+        attachments: [{
+          kind: 'content-reference',
+          name: 'notes.md',
+          path: 'notes.md',
+          contentReference: { id: 'content-reference-1' },
+        }],
       }),
     ];
 
     expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
       'persisted-user',
+    ]);
+  });
+
+  it('keeps a second same-text optimistic message with different attachments', () => {
+    const server = [
+      textMessage(
+        'persisted-first-user',
+        [
+          'Please review the attached file(s).',
+          '',
+          '[Files attached by user and available for reading in the project:]',
+          '- first.pdf: .tmp/first.pdf',
+          '[End files attached by user]',
+        ].join('\n'),
+        '2026-08-16T09:00:00.050Z',
+        { role: 'user' },
+      ),
+    ];
+    const realtime = [
+      textMessage('local_first', 'Please review the attached file(s).', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+        attachments: [{ name: 'first.pdf', path: '.tmp/first.pdf' }],
+      }),
+      textMessage('local_second', 'Please review the attached file(s).', '2026-08-16T09:00:00.100Z', {
+        role: 'user',
+        attachments: [{ name: 'second.pdf', path: '.tmp/second.pdf' }],
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-first-user',
+      'local_second',
+    ]);
+  });
+
+  it('keeps a second same-text optimistic message with different image inputs', () => {
+    const server = [
+      textMessage('persisted-first-user', 'Describe this image.', '2026-08-16T09:00:00.050Z', {
+        role: 'user',
+        images: ['data:image/png;base64,first'],
+      }),
+    ];
+    const realtime = [
+      textMessage('local_first', 'Describe this image.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+        images: ['data:image/png;base64,first'],
+      }),
+      textMessage('local_second', 'Describe this image.', '2026-08-16T09:00:00.100Z', {
+        role: 'user',
+        images: ['data:image/png;base64,second'],
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-first-user',
+      'local_second',
     ]);
   });
 

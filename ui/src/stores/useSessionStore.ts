@@ -72,6 +72,7 @@ export interface NormalizedMessage {
     occurrenceIndex?: number | null;
     createdAt?: string;
     truncated?: boolean;
+    contentReference?: { id?: string };
   }>;
   artifacts?: Array<{
     id: string;
@@ -272,8 +273,58 @@ function normalizeRealtimeText(value?: string): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
-function normalizeUserMessageText(value?: string): string {
-  return normalizeRealtimeText(parseUserAttachmentNote(value).content);
+function getUserAttachmentIdentity(
+  attachment: NonNullable<NormalizedMessage['attachments']>[number],
+): string {
+  const kind = attachment.kind || 'file';
+  const path = attachment.path || attachment.filePath || attachment.name;
+
+  if (kind === 'content-reference') {
+    return [kind, attachment.contentReference?.id || path].join('\0');
+  }
+
+  if (kind === 'document-selection') {
+    return [
+      kind,
+      path,
+      (attachment.pageNumbers || []).join(','),
+      normalizeRealtimeText(attachment.selectedText),
+      normalizeRealtimeText(attachment.surroundingText),
+      attachment.occurrenceIndex ?? '',
+    ].join('\0');
+  }
+
+  return [kind, path].join('\0');
+}
+
+function getConfirmedUserMessageIdentity(message: NormalizedMessage): {
+  text: string;
+  attachments: string[];
+  images: string[];
+} {
+  const parsed = parseUserAttachmentNote(message.content);
+  const attachments = [
+    ...(message.attachments || []),
+    ...parsed.attachments,
+  ];
+
+  return {
+    text: normalizeRealtimeText(parsed.content),
+    attachments: [...new Set(attachments.map(getUserAttachmentIdentity))].sort(),
+    images: Array.isArray(message.images) ? [...message.images].sort() : [],
+  };
+}
+
+function haveSameUserMessageInputs(
+  left: ReturnType<typeof getConfirmedUserMessageIdentity>,
+  right: ReturnType<typeof getConfirmedUserMessageIdentity>,
+): boolean {
+  if (left.attachments.length !== right.attachments.length || left.images.length !== right.images.length) {
+    return false;
+  }
+
+  return left.attachments.every((identity, index) => identity === right.attachments[index])
+    && left.images.every((image, index) => image === right.images[index]);
 }
 
 function parseTimestampMs(value?: string): number | null {
@@ -310,8 +361,8 @@ function isConfirmedUserMessageDuplicate(
     return false;
   }
 
-  const realtimeText = normalizeUserMessageText(realtimeMessage.content);
-  if (!realtimeText) return false;
+  const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
+  if (!realtimeIdentity.text) return false;
 
   const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
 
@@ -320,7 +371,11 @@ function isConfirmedUserMessageDuplicate(
       return false;
     }
 
-    if (normalizeUserMessageText(serverMessage.content) !== realtimeText) {
+    const serverIdentity = getConfirmedUserMessageIdentity(serverMessage);
+    if (
+      serverIdentity.text !== realtimeIdentity.text
+      || !haveSameUserMessageInputs(serverIdentity, realtimeIdentity)
+    ) {
       return false;
     }
 
@@ -498,6 +553,17 @@ export function isRealtimeMessageRepresentedOnServer(
   if (serverMessages.some((message) => message.id === realtimeMessage.id)) return true;
   if (isConfirmedUserMessageDuplicate(realtimeMessage, serverMessages)) return true;
   if (isLocalInterruptDuplicate(realtimeMessage, serverMessages)) return true;
+
+  // Local user bubbles must only match through isConfirmedUserMessageDuplicate,
+  // which includes attachment and image input identity. The generic text path
+  // below would otherwise collapse distinct queued sends with the same text.
+  if (
+    realtimeMessage.kind === 'text'
+    && realtimeMessage.role === 'user'
+    && realtimeMessage.id.startsWith('local_')
+  ) {
+    return false;
+  }
 
   const candidates = getSameTurnServerCandidates(realtimeMessage, serverMessages);
   switch (realtimeMessage.kind) {
