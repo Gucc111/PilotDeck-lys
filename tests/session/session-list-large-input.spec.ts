@@ -84,3 +84,33 @@ test("lists historical sessions whose large inline image hides metadata from the
     await rm(pilotHome, { recursive: true, force: true });
   }
 });
+
+test("prefers a newer oversized metadata title over an older title in the lite head", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+
+    const sessionId = "web:s_new-fork-title";
+    const oldMetadata = entry("session_metadata", sessionId, 1, {
+      metadata: { title: "Old parent title" },
+    });
+    const filler = entry("assistant_message", sessionId, 2, {
+      message: { role: "assistant", content: [{ type: "text", text: "x".repeat(160 * 1024) }] },
+    });
+    const newMetadata = entry("session_metadata", sessionId, 3, {
+      metadata: { title: "New fork title", firstPrompt: "p".repeat(130 * 1024) },
+    });
+    await writeFile(
+      join(chatDir, `${sessionId}.jsonl`),
+      `${JSON.stringify(oldMetadata)}\n${JSON.stringify(filler)}\n${JSON.stringify(newMetadata)}\n`,
+    );
+
+    const sessions = await listProjectSessions({ projectRoot, pilotHome });
+    assert.deepEqual(sessions.map((session) => [session.sessionId, session.summary]), [[sessionId, "New fork title"]]);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});

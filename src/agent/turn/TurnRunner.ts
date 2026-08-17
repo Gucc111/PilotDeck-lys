@@ -68,6 +68,8 @@ type PendingSessionTitle = {
   promise: Promise<void>;
 };
 
+const SESSION_LISTING_PROMPT_MAX_CHARS = 1_200;
+
 export class TurnRunner {
   private pendingSessionTitle: PendingSessionTitle | undefined;
 
@@ -150,6 +152,7 @@ export class TurnRunner {
       yield { type: "user_prompt_submitted", sessionId: options.sessionId, turnId: options.turnId, prompt };
       if (userPromptHooks?.effects.some((effect) => effect.type === "block")) {
         const error = agentError("agent_unsupported_feature", "UserPromptSubmit hook blocked model execution.");
+        await this.persistListingPromptMetadata(options, accepted.messages);
         const result = this.createErrorResult(
           options,
           error,
@@ -429,6 +432,28 @@ export class TurnRunner {
   ): Promise<void> {
     await this.flushReadySessionTitle(options, pending);
     await this.turnDependencies.metadataStore?.reappendTail(options.turnId).catch(() => {});
+  }
+
+  private async persistListingPromptMetadata(
+    options: TurnRunnerOptions,
+    acceptedMessages: CanonicalMessage[],
+  ): Promise<void> {
+    const metadataStore = this.turnDependencies.metadataStore;
+    if (!metadataStore) return;
+
+    const snapshot = metadataStore.getSnapshot();
+    if (snapshot.title || snapshot.aiTitle || snapshot.firstPrompt || snapshot.lastPrompt) {
+      return;
+    }
+    const prompt = allHumanText(acceptedMessages);
+    if (!prompt) return;
+
+    const boundedPrompt = prompt.slice(0, SESSION_LISTING_PROMPT_MAX_CHARS);
+    await metadataStore.record(options.turnId, {
+      firstPrompt: boundedPrompt,
+      lastPrompt: boundedPrompt,
+      updatedAt: this.now().toISOString(),
+    }).catch(() => {});
   }
 }
 

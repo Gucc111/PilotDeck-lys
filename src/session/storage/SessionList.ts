@@ -2,7 +2,7 @@ import { open, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getPilotProjectChatDir } from "../../pilot/index.js";
 import { mergeMetadata } from "../metadata/SessionMetadataStore.js";
-import { readSessionLite, type SessionLiteFile } from "./SessionLiteReader.js";
+import { readSessionLite, SESSION_LITE_READ_BYTES, type SessionLiteFile } from "./SessionLiteReader.js";
 import type { SessionMetadataValue } from "../transcript/TranscriptEntry.js";
 
 const ALWAYS_ON_AUXILIARY_PATTERN = /^always-on-(discovery|workspace|report)[:\-]/;
@@ -75,11 +75,11 @@ export async function readSessionInfo(
   if (!lite) return null;
 
   const fastInfo = parseSessionInfoFromLite(sessionId, lite, projectRoot);
-  if (fastInfo?.customTitle || fastInfo?.aiTitle) return fastInfo;
+  if (fastInfo && hasCompleteLatestMetadata(lite)) return fastInfo;
 
   // Large inline media can make the first JSONL record exceed the 64 KiB
-  // preview. A prompt alone is not authoritative, so recover metadata when
-  // the fast path did not find a title.
+  // preview. Fall back unless the preview includes a complete latest metadata
+  // record; an older head title must not hide a newer oversized tail record.
   const metadata = await readLastSessionMetadata(path);
   const metadataInfo = metadata
     ? parseSessionInfoFromMetadata(sessionId, lite, metadata, projectRoot)
@@ -92,6 +92,23 @@ export async function readSessionInfo(
     firstPrompt: metadataInfo.firstPrompt ?? fastInfo.firstPrompt,
     createdAt: metadataInfo.createdAt ?? fastInfo.createdAt,
   };
+}
+
+function hasCompleteLatestMetadata(lite: SessionLiteFile): boolean {
+  if (lite.size <= SESSION_LITE_READ_BYTES) {
+    return true;
+  }
+
+  // The tail starts at an arbitrary byte offset, so its first line can be
+  // partial. Any complete metadata record after it is necessarily newer.
+  let foundMetadata = false;
+  const lines = lite.tail.split(/\r?\n/);
+  for (const line of lines.slice(1)) {
+    if (!line.includes('"type":"session_metadata"')) continue;
+    if (!parseSessionMetadataLine(line)) return false;
+    foundMetadata = true;
+  }
+  return foundMetadata;
 }
 
 export function parseSessionInfoFromLite(

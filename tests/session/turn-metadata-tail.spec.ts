@@ -5,6 +5,7 @@ import type { AgentEvent } from "../../src/agent/protocol/events.js";
 import type { AgentTurnResult } from "../../src/agent/protocol/result.js";
 import type { AgentLoop, AgentLoopInput, AgentLoopRunResult } from "../../src/agent/loop/AgentLoop.js";
 import { TurnRunner } from "../../src/agent/turn/TurnRunner.js";
+import type { LifecycleRuntime } from "../../src/lifecycle/index.js";
 import { SessionMetadataStore } from "../../src/session/metadata/SessionMetadataStore.js";
 import { InMemoryTranscriptWriter } from "../../src/session/transcript/InMemoryTranscriptWriter.js";
 
@@ -72,5 +73,58 @@ test("TurnRunner appends session metadata after successful and failed accepted t
     if (lastEntry?.type === "session_metadata") {
       assert.equal(lastEntry.metadata.aiTitle, "Pinned at transcript tail");
     }
+  }
+});
+
+test("TurnRunner persists a bounded prompt when a hook blocks a first turn", async () => {
+  const sessionId = "blocked-session";
+  const transcript = new InMemoryTranscriptWriter();
+  const metadataStore = new SessionMetadataStore({
+    transcript,
+    sessionId,
+    now: () => new Date(NOW),
+  });
+  const lifecycle = {
+    async dispatch() {
+      return {
+        effects: [{ type: "block", reason: "blocked by test" }],
+        messages: [],
+        events: [],
+        blockingErrors: [],
+        nonBlockingErrors: [],
+      };
+    },
+  } as unknown as LifecycleRuntime;
+  const loop = {
+    async *run(): AsyncGenerator<AgentEvent, AgentLoopRunResult, unknown> {
+      assert.fail("blocked turns must not run the model loop");
+    },
+    snapshotFileState: () => ({}),
+  } as unknown as AgentLoop;
+  const runner = new TurnRunner(
+    loop,
+    transcript,
+    undefined,
+    () => new Date(NOW),
+    lifecycle,
+    { cwd: process.cwd(), transcriptPath: "", collectFileArtifacts: false },
+    { metadataStore, autoGenerateSessionTitle: false },
+  );
+
+  const prompt = "p".repeat(2 * 1024 * 1024);
+  for await (const _event of runner.run({
+    sessionId,
+    turnId: "turn-1",
+    messages: [],
+    input: { type: "text", text: prompt },
+  })) {
+    // Exhaust the blocked turn so its metadata reappend is persisted.
+  }
+
+  const lastEntry = transcript.entries.at(-1);
+  assert.equal(lastEntry?.type, "session_metadata");
+  if (lastEntry?.type === "session_metadata") {
+    assert.equal(lastEntry.metadata.firstPrompt, prompt.slice(0, 1_200));
+    assert.equal(lastEntry.metadata.lastPrompt, prompt.slice(0, 1_200));
   }
 });
