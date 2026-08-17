@@ -389,6 +389,34 @@ test("zero-message summaries are skipped when compaction makes no effective chan
   assert.equal(summaryCalls, 0);
 });
 
+test("zero-message compaction reports overflow instead of skipped above the hard budget", async () => {
+  const tokenBudget = new TokenBudgetManager();
+  let summaryCalls = 0;
+  const runtime = new DefaultContextRuntime({
+    tokenBudget,
+    autoCompactionPolicy: new AutoCompactionPolicy({ tokenBudget }),
+    compactionEngine: new CompactionEngine({
+      provider: "test",
+      model_: "test-model",
+      model: {
+        async *stream() {
+          summaryCalls += 1;
+        },
+      },
+    }),
+    maxContextTokens: 100,
+  });
+
+  const result = await runtime.tryAutoCompact({
+    messages: [{ role: "user", content: [{ type: "text", text: "Only protected current request" }] }],
+    budgetEvaluator: () => Promise.resolve(tokenBudget.snapshotFromTokens(110, 100)),
+  });
+
+  assert.equal(result.type, "compacted");
+  assert.equal(result.error, "context_overflow_after_emergency_compaction");
+  assert.equal(summaryCalls, 0);
+});
+
 test("pre-summary tool projection is idempotent", () => {
   const engine = new MicroCompactionEngine();
   const first = engine.apply({ messages: largeToolResultFixture() });

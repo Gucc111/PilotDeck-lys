@@ -245,8 +245,8 @@ export class CompactionEngine {
     let summaryError: string | undefined;
     let summaryUsage: CanonicalUsage | undefined;
 
-    if (messagesToSummarize.length === 0) {
-      // Nothing can be removed from the live tail, so no model call happens.
+    if (messagesToSummarize.length === 0 && checkpoint.previousSummaries.length === 0) {
+      // There is neither live history nor an existing checkpoint to rewrite.
     } else {
       const summaryAnchors = input.protectedToolNames === null
         ? buildCompactSummaryAnchors(planningMessages, this.protectedToolNames)

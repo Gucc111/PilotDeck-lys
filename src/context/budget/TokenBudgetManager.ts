@@ -10,6 +10,8 @@ export type TokenWarningState = "ok" | "warning" | "blocking";
 
 export type TokenBudgetSnapshot = {
   tokens: number;
+  /** Local tokenizer estimate retained for diagnostics, never UI display. */
+  localEstimateTokens?: number;
   displayTokens?: number;
   estimateSource?: "estimator" | "usage";
   usageTokens?: number;
@@ -186,6 +188,7 @@ export class TokenBudgetManager {
       exact?: boolean;
       estimatorError?: string;
       usageTokens?: number;
+      localEstimateTokens?: number;
       displayTokens?: number;
       calibrationActualInputTokens?: number;
       calibrationEstimatedInputTokens?: number;
@@ -203,6 +206,7 @@ export class TokenBudgetManager {
     }
     return {
       tokens,
+      ...(options.localEstimateTokens !== undefined ? { localEstimateTokens: options.localEstimateTokens } : {}),
       ...(options.displayTokens !== undefined && options.displayTokens !== tokens ? { displayTokens: options.displayTokens } : {}),
       estimateSource: options.usageTokens !== undefined ? "usage" : "estimator",
       ...(options.usageTokens !== undefined ? { usageTokens: options.usageTokens } : {}),

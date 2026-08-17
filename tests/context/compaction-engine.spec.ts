@@ -117,6 +117,42 @@ test("four rolling compactions replace the previous checkpoint with one summary"
   }
 });
 
+test("a full rolling summary is rewritten even when only the required live tail remains", async () => {
+  const summaryRequests: CanonicalModelRequest[] = [];
+  const engine = new CompactionEngine({
+    model: {
+      async *stream(request): AsyncIterable<CanonicalModelEvent> {
+        summaryRequests.push(request);
+        yield { type: "text_delta", text: "## Objective\nShortened rolling checkpoint." };
+        yield { type: "message_end", finishReason: "stop" };
+      },
+    },
+    provider: "local",
+    model_: "local-chat",
+  });
+  const first = await engine.run({
+    trigger: "auto",
+    messages: rollingWorkMessages("Original"),
+    keepTailRatio: 0.05,
+  });
+
+  const result = await engine.run({
+    trigger: "auto",
+    messages: [first.boundaryMarker, first.summaryMessage!, {
+      role: "user",
+      content: [{ type: "text", text: "The current request must remain verbatim." }],
+    }],
+    keepTailRatio: 1,
+  });
+
+  assert.equal(summaryRequests.length, 2);
+  assert.equal(result.messagesSummarized, 0);
+  assert.equal(result.summaryGenerated, true);
+  assert.equal(result.checkpointMerged, true);
+  assert.match(summaryPromptText(summaryRequests[1]!), /<previous-rolling-summary>/);
+  assert.match(summaryText(result.summaryMessage), /Shortened rolling checkpoint/);
+});
+
 test("the first rolling compaction collapses a legacy three-checkpoint prefix", async () => {
   let sequence = 0;
   const summaryRequests: CanonicalModelRequest[] = [];

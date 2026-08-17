@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   buildAnthropicRequest,
-  buildOpenAIRequest,
   normalizeProviderBaseUrl,
   type CanonicalMessage,
   type CanonicalModelEvent,
@@ -11,6 +10,7 @@ import {
   type ModelConfig,
   type ProviderConfig,
 } from "../../model/index.js";
+import { buildOpenAIResponsesRequest } from "../../model/providers/openai-responses/request.js";
 import { buildProviderHeaders } from "../../model/streaming/streamModel.js";
 import { TokenBudgetManager, type TokenBudgetSnapshot } from "./TokenBudgetManager.js";
 
@@ -92,11 +92,13 @@ export class TokenAccountingRuntime {
 
     const calibration = matchingCalibration(request, options.calibration);
     if (calibration) {
+      const correction = calibration.actualInputTokens - calibration.estimatedInputTokens;
+      // A compaction or provider-side prompt transformation can substantially
+      // change the request's composition. Never let one previous absolute
+      // delta overwhelm the current request estimate.
+      const maximumCorrection = Math.max(1, Math.floor(localEstimateTokens * 0.5));
       return {
-        tokens: Math.max(
-          1,
-          Math.round(localEstimateTokens + calibration.actualInputTokens - calibration.estimatedInputTokens),
-        ),
+        tokens: Math.max(1, Math.round(localEstimateTokens + clamp(correction, -maximumCorrection, maximumCorrection))),
         source: "calibrated",
         exact: false,
         localEstimateTokens,
@@ -123,8 +125,8 @@ export class TokenAccountingRuntime {
       source: counted.source,
       exact: counted.exact,
       estimatorError: counted.estimatorError,
-      displayTokens: counted.localEstimateTokens,
       usageTokens: counted.source === "local" ? undefined : counted.tokens,
+      localEstimateTokens: counted.localEstimateTokens,
       calibrationActualInputTokens: counted.calibration?.actualInputTokens,
       calibrationEstimatedInputTokens: counted.calibration?.estimatedInputTokens,
     });
@@ -139,6 +141,7 @@ export class TokenAccountingRuntime {
       exact?: boolean;
       estimatorError?: string;
       usageTokens?: number;
+      localEstimateTokens?: number;
       displayTokens?: number;
       calibrationActualInputTokens?: number;
       calibrationEstimatedInputTokens?: number;
@@ -303,138 +306,29 @@ function toOpenAIResponsesTokenCountBody(
 ): Record<string, unknown> {
   const model = provider.models[request.model];
   if (!model) throw new Error(`Model ${request.model} does not exist in provider ${provider.id}.`);
-  const chatBody = buildOpenAIRequest({ ...request, stream: false }, model);
-  return {
-    model: chatBody.model,
-    input: toOpenAIResponsesInput(chatBody.messages),
-    tools: toOpenAIResponsesTools(chatBody.tools),
-    tool_choice: toOpenAIResponsesToolChoice(chatBody.tool_choice),
-    text: toOpenAIResponsesTextFormat(chatBody.response_format),
-  };
-}
-
-function toOpenAIResponsesInput(messages: Array<Record<string, unknown>>): unknown[] {
-  const input: unknown[] = [];
-  for (const message of messages) {
-    const role = typeof message.role === "string" ? message.role : undefined;
-    if (role === "tool") {
-      const callId = typeof message.tool_call_id === "string" ? message.tool_call_id : undefined;
-      input.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: contentToText(message.content),
-      });
-      continue;
-    }
-
-    if (role === "system" || role === "user" || role === "assistant") {
-      if (message.content !== undefined) {
-        input.push({
-          role,
-          content: toOpenAIResponsesContent(message.content),
-        });
-      }
-      if (role === "assistant" && Array.isArray(message.tool_calls)) {
-        for (const toolCall of message.tool_calls) {
-          input.push(toOpenAIResponsesFunctionCall(toolCall));
-        }
-      }
-    }
-  }
-  return input;
-}
-
-function toOpenAIResponsesContent(content: unknown): unknown {
-  if (!Array.isArray(content)) {
-    return content;
-  }
-  return content.map((part) => {
-    if (!isRecord(part)) {
-      return part;
-    }
-    if (part.type === "text") {
-      return { type: "input_text", text: part.text };
-    }
-    if (part.type === "image_url" && isRecord(part.image_url)) {
-      return {
-        type: "input_image",
-        image_url: part.image_url.url,
-        detail: part.image_url.detail,
-      };
-    }
-    return part;
+  const fullBody = buildOpenAIResponsesRequest({ ...request, stream: false }, model, provider);
+  const {
+    model: responseModel,
+    input,
+    instructions,
+    tools,
+    tool_choice: toolChoice,
+    text,
+    reasoning,
+    enable_thinking: enableThinking,
+    thinking_budget: thinkingBudget,
+  } = fullBody;
+  return omitUndefined({
+    model: responseModel,
+    input,
+    instructions,
+    tools,
+    tool_choice: toolChoice,
+    text,
+    reasoning,
+    enable_thinking: enableThinking,
+    thinking_budget: thinkingBudget,
   });
-}
-
-function toOpenAIResponsesFunctionCall(toolCall: unknown): Record<string, unknown> {
-  const call = isRecord(toolCall) ? toolCall : {};
-  const fn = isRecord(call.function) ? call.function : {};
-  return {
-    type: "function_call",
-    call_id: call.id,
-    name: fn.name,
-    arguments: typeof fn.arguments === "string" ? fn.arguments : safeJsonStringify(fn.arguments ?? {}),
-  };
-}
-
-function toOpenAIResponsesTools(tools: unknown): unknown {
-  if (!Array.isArray(tools)) {
-    return undefined;
-  }
-  return tools.map((tool) => {
-    if (!isRecord(tool) || tool.type !== "function" || !isRecord(tool.function)) {
-      return tool;
-    }
-    return {
-      type: "function",
-      name: tool.function.name,
-      description: tool.function.description,
-      parameters: tool.function.parameters,
-    };
-  });
-}
-
-function toOpenAIResponsesToolChoice(toolChoice: unknown): unknown {
-  if (!isRecord(toolChoice) || toolChoice.type !== "function" || !isRecord(toolChoice.function)) {
-    return toolChoice;
-  }
-  return {
-    type: "function",
-    name: toolChoice.function.name,
-  };
-}
-
-function toOpenAIResponsesTextFormat(responseFormat: unknown): unknown {
-  if (!isRecord(responseFormat) || responseFormat.type !== "json_schema" || !isRecord(responseFormat.json_schema)) {
-    return undefined;
-  }
-  return {
-    format: {
-      type: "json_schema",
-      name: responseFormat.json_schema.name,
-      description: responseFormat.json_schema.description,
-      schema: responseFormat.json_schema.schema,
-      strict: responseFormat.json_schema.strict,
-    },
-  };
-}
-
-function contentToText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return safeJsonStringify(content);
-  }
-  return content.map((part) => {
-    if (typeof part === "string") {
-      return part;
-    }
-    if (isRecord(part) && typeof part.text === "string") {
-      return part.text;
-    }
-    return safeJsonStringify(part);
-  }).join("\n");
 }
 
 function estimateToolSchemas(tokenBudget: TokenBudgetManager, tools: CanonicalToolSchema[]): number {
@@ -489,6 +383,14 @@ function readTokenCount(raw: unknown): number {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function omitUndefined(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 }
 
 function forwardAbort(source: AbortSignal, target: AbortController): () => void {

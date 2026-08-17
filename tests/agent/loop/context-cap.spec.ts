@@ -572,3 +572,54 @@ test("agent loop persists a full compaction after recovering from a context erro
   assert.equal((persistedCompacts[0]!.boundary as { kind?: string }).kind, "compact");
   assert.equal(persistedCompacts[0]!.messages[0]!.metadata?.compactReplacement, true);
 });
+
+test("agent loop does not calibrate a primary route from fallback usage", async () => {
+  const router: AgentRouterRuntime = {
+    decide: async () => ({
+      provider: "primary",
+      model: "model-a",
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: async function* (): AsyncIterable<CanonicalModelEvent> {
+      yield { type: "request_started", provider: "fallback", model: "model-b" };
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "completed by fallback" };
+      yield { type: "message_end", finishReason: "stop" };
+      yield { type: "usage", usage: { inputTokens: 50_000, outputTokens: 20 } };
+    },
+    stream: async function* (): AsyncIterable<CanonicalModelEvent> {},
+  };
+  const loop = new AgentLoop({
+    provider: "primary",
+    model: "model-a",
+    cwd: "/workspace/project",
+    permissionMode: "bypassPermissions",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "bypassPermissions",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
+    tokenAccounting: {
+      estimateRequestInput: () => 40_000,
+    } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+  });
+
+  for await (const _event of loop.run({
+    sessionId: "fallback-calibration",
+    turnId: "fallback-turn",
+    messages: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
+  })) {
+    // Drain the completed turn.
+  }
+
+  const calibrations = (loop as unknown as { tokenCalibrationByRoute: Map<string, unknown> }).tokenCalibrationByRoute;
+  assert.equal(calibrations.size, 0);
+});

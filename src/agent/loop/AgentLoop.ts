@@ -422,6 +422,7 @@ export class AgentLoop {
           });
           if (compact.type === "compacted") {
             messages = compact.messages;
+            this.tokenCalibrationByRoute.clear();
             await this.persistCompactSnapshot(input, compact);
             yield {
               type: "turn_continued",
@@ -528,6 +529,7 @@ export class AgentLoop {
             });
             if (recompact.type === "compacted") {
               messages = recompact.messages;
+              this.tokenCalibrationByRoute.clear();
               request = await this.createModelRequest(messages, input);
               request = this.applyTokenCapsToRequest(request, decision.provider, decision.model);
               await this.persistCompactSnapshot(input, recompact);
@@ -579,6 +581,7 @@ export class AgentLoop {
 
       const requestInputEstimate = this.dependencies.tokenAccounting?.estimateRequestInput?.(request);
       const assembler = createModelMessageAssemblerState();
+      let executedRoute: { provider: string; model: string } | undefined;
       try {
         for await (const event of this.dependencies.router.execute(decision, request, {
           sessionId: input.sessionId,
@@ -586,6 +589,9 @@ export class AgentLoop {
           projectPath: this.config.cwd,
           abortSignal: input.abortSignal,
         })) {
+          if (event.type === "request_started") {
+            executedRoute = { provider: event.provider, model: event.model };
+          }
           yield { type: "model_event", sessionId: input.sessionId, turnId: input.turnId, event };
           applyModelEventToAssembler(assembler, event);
           if (event.type === "error") {
@@ -676,7 +682,12 @@ export class AgentLoop {
 
       const assembled = assembleAssistantMessage(assembler);
       usage = mergeUsage(usage, assembled.usage);
-      this.recordTokenCalibration(request, assembled.usage, requestInputEstimate);
+      // Router fallback can change both the provider tokenizer and the
+      // materialized request. The original local estimate is no longer a
+      // valid calibration baseline in that case.
+      if (!executedRoute || (executedRoute.provider === request.provider && executedRoute.model === request.model)) {
+        this.recordTokenCalibration(request, assembled.usage, requestInputEstimate);
+      }
       let assistantMessage = assembled.message;
       let toolCalls = collectToolCalls(assistantMessage);
       if (assembled.hasTextFallbackToolCalls) {

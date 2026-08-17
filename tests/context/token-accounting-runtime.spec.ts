@@ -55,12 +55,14 @@ test("official OpenAI Responses routes use the provider input-token endpoint", a
   const tokenBudget = new FixedTokenBudget();
   tokenBudget.value = 50_000;
   let requestedUrl = "";
+  let requestedBody: Record<string, unknown> | undefined;
   const accounting = new TokenAccountingRuntime({
     modelConfig: modelConfig("openai-responses", "https://api.openai.com/v1"),
     tokenBudget,
     cacheSize: 0,
-    fetch: (async (input) => {
+    fetch: (async (input, init) => {
       requestedUrl = String(input);
+      requestedBody = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ input_tokens: 12_345 }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -68,12 +70,30 @@ test("official OpenAI Responses routes use the provider input-token endpoint", a
     }) as typeof fetch,
   });
 
-  const counted = await accounting.countRequestInput(request());
+  const counted = await accounting.countRequestInput({
+    ...request(),
+    systemPrompt: "Use the project conventions.",
+    messages: [{
+      role: "user",
+      content: [{ type: "pdf", source: "base64", mimeType: "application/pdf", data: "ZmFrZQ==", bytes: 4 }],
+    }],
+    tools: [{
+      name: "read_file",
+      description: "Read a file",
+      inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    }],
+  });
 
   assert.equal(requestedUrl, "https://api.openai.com/v1/responses/input_tokens");
   assert.equal(counted.tokens, 12_345);
   assert.equal(counted.source, "provider");
   assert.equal(counted.exact, true);
+  assert.equal(requestedBody?.instructions, "Use the project conventions.");
+  const firstInput = (requestedBody?.input as Array<{ content: Array<{ type: string }> }> | undefined)?.[0];
+  assert.equal(firstInput?.content[0]?.type, "input_file");
+  assert.equal((requestedBody?.tools as Array<Record<string, unknown>>)[0]?.strict, true);
+  assert.equal(requestedBody?.stream, undefined);
+  assert.equal(requestedBody?.max_output_tokens, undefined);
 });
 
 test("an OpenAI-compatible route uses the previous real-usage delta for calibration", async () => {
@@ -91,7 +111,8 @@ test("an OpenAI-compatible route uses the previous real-usage delta for calibrat
     calibration,
   });
   assert.equal(grown.tokens, 67_000);
-  assert.equal(grown.displayTokens, 62_000);
+  assert.equal(grown.displayTokens, undefined);
+  assert.equal(grown.localEstimateTokens, 62_000);
   assert.equal(grown.source, "calibrated");
   assert.equal(grown.calibrationActualInputTokens, 55_000);
   assert.equal(grown.calibrationEstimatedInputTokens, 50_000);
@@ -100,6 +121,22 @@ test("an OpenAI-compatible route uses the previous real-usage delta for calibrat
   const compacted = await accounting.countRequestInput(request(), { calibration });
   assert.equal(compacted.tokens, 35_000);
   assert.equal(compacted.source, "calibrated");
+});
+
+test("calibration correction cannot collapse a compacted request below half its local estimate", async () => {
+  const tokenBudget = new FixedTokenBudget();
+  const accounting = new TokenAccountingRuntime({
+    modelConfig: modelConfig("openai", "http://127.0.0.1:8000/v1"),
+    tokenBudget,
+  });
+  tokenBudget.value = 8_000;
+
+  const counted = await accounting.countRequestInput(request(), {
+    calibration: baseline(50_000, 60_000),
+  });
+
+  assert.equal(counted.tokens, 4_000);
+  assert.equal(counted.source, "calibrated");
 });
 
 test("failed or unavailable provider counting falls back to matching calibration, then local", async () => {

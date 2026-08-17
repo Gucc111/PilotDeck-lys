@@ -491,7 +491,8 @@ export class DefaultContextRuntime implements ContextRuntime {
       }
     }
 
-    if (!summarySucceeded && !snipApplied && !emergencyApplied) {
+    const overflowAfterEmergency = snapshot.ratio >= 1;
+    if (!summarySucceeded && !snipApplied && !emergencyApplied && !overflowAfterEmergency) {
       log("full_compaction_skipped", {
         reason: "no_effective_change",
         targetPostTokens,
@@ -525,7 +526,6 @@ export class DefaultContextRuntime implements ContextRuntime {
     // effective input budget, it remains sendable and should not be converted
     // into a fatal context error merely because static tool definitions consume
     // the remaining safety margin.
-    const overflowAfterEmergency = snapshot.ratio >= 1;
     if (overflowAfterEmergency) {
       const diagnostic: ContextDiagnostic = {
         code: "context_overflow_after_emergency_compaction",
@@ -746,7 +746,7 @@ function describeTokenBudgetSnapshot(snapshot: TokenBudgetSnapshot): Record<stri
     displayTokens: snapshot.displayTokens,
     estimateSource: snapshot.estimateSource,
     usageTokens: snapshot.usageTokens,
-    localEstimateTokens: snapshot.displayTokens,
+    localEstimateTokens: snapshot.localEstimateTokens,
     calibrationActualInputTokens: snapshot.calibrationActualInputTokens,
     calibrationEstimatedInputTokens: snapshot.calibrationEstimatedInputTokens,
     totalContextTokens: snapshot.totalContextTokens,
