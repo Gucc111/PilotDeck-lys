@@ -279,6 +279,7 @@ export class SubAgentSession {
 
   private buildConfig(): AgentRuntimeConfig {
     const parent = this.options.parentConfig;
+    const subagentModel = parent.subagentModel;
     const subagentSystem = buildSubagentSystemPrompt(this.options.definition);
     const filteredParentSystem = applySystemPromptFilters(
       parent.systemPrompt ?? "",
@@ -289,6 +290,21 @@ export class SubAgentSession {
       : subagentSystem;
     return {
       ...parent,
+      ...(subagentModel
+        ? {
+            provider: subagentModel.provider,
+            model: subagentModel.model,
+            ...(subagentModel.modelMultimodal
+              ? { modelMultimodal: subagentModel.modelMultimodal }
+              : {}),
+            ...(subagentModel.maxContextTokens !== undefined
+              ? { maxContextTokens: subagentModel.maxContextTokens }
+              : {}),
+            ...(subagentModel.maxOutputTokens !== undefined
+              ? { maxOutputTokens: subagentModel.maxOutputTokens }
+              : {}),
+          }
+        : {}),
       permissionContext: {
         ...parent.permissionContext,
         rules: {

@@ -2579,6 +2579,40 @@ class ProjectRuntimeRegistry {
       ?? teammateBinding?.definition.maxOutputTokens
       ?? (!teammateBinding ? leaderConfig?.maxOutputTokens : undefined)
       ?? agent.maxOutputTokens;
+    const subagentModel = !teammateBinding ? agent.subagents?.default : undefined;
+    let subagentRuntimeModel: CreateAgentSessionOptions["config"]["subagentModel"];
+    if (subagentModel) {
+      let subagentModelMultimodal: import("../model/index.js").MultimodalConstraints | undefined;
+      try {
+        subagentModelMultimodal = runtime.model.getMultimodal(
+          subagentModel.provider,
+          subagentModel.model,
+        );
+      } catch {
+        // Model or provider not found — keep the override but fall back to inherited caps.
+      }
+      let subagentMaxContextTokens: number | undefined;
+      let subagentMaxOutputTokens: number | undefined;
+      try {
+        const caps = runtime.model.getCapabilities(subagentModel.provider, subagentModel.model);
+        subagentMaxContextTokens = caps.maxContextTokens;
+        subagentMaxOutputTokens = caps.maxOutputTokens;
+      } catch {
+        // Keep the override even if capability lookup fails.
+      }
+      subagentRuntimeModel = {
+        provider: subagentModel.provider,
+        model: subagentModel.model,
+        ...(subagentModelMultimodal ? { modelMultimodal: subagentModelMultimodal } : {}),
+        ...(subagentMaxContextTokens !== undefined ? { maxContextTokens: subagentMaxContextTokens } : {}),
+        ...(subagentMaxOutputTokens !== undefined
+          ? {
+              maxOutputTokens: readPositiveIntegerEnv(this.options.env.PILOTDECK_MAX_OUTPUT_TOKENS)
+                ?? subagentMaxOutputTokens,
+            }
+          : {}),
+      };
+    }
     return {
       provider,
       model,
@@ -2586,6 +2620,7 @@ class ProjectRuntimeRegistry {
       cwd,
       permissionMode,
       jsonSelfCorrect: true,
+      ...(subagentRuntimeModel ? { subagentModel: subagentRuntimeModel } : {}),
       subagentTimeoutMs: agent.subagents?.timeoutMs,
       maxContextTokens,
       maxOutputTokens,

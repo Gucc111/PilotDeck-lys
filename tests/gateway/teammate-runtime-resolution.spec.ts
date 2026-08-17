@@ -142,6 +142,73 @@ test("local gateway preserves explicit agent maxOutputTokens as output reserve",
   }
 });
 
+test("local gateway wires configured subagent default model into agent config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pilotdeck-subagent-default-model-"));
+  const pilotHome = join(root, "pilot-home");
+  const projectRoot = join(root, "project");
+  let dispose: (() => void) | undefined;
+  try {
+    await Promise.all([
+      mkdir(pilotHome, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ]);
+    await writeFile(
+      join(pilotHome, "pilotdeck.yaml"),
+      `schemaVersion: 1
+agent:
+  model: fixture/main
+  subagents:
+    default: fixture/child
+model:
+  providers:
+    fixture:
+      protocol: openai
+      url: https://fixture.invalid
+      apiKey: test
+      models:
+        main:
+          capabilities:
+            maxContextTokens: 100000
+            maxOutputTokens: 4096
+        child:
+          capabilities:
+            maxContextTokens: 32000
+            maxOutputTokens: 2048
+`,
+      "utf8",
+    );
+
+    const local = createLocalGateway({
+      projectRoot,
+      pilotHome,
+      env: { PILOT_HOME: pilotHome, PILOTDECK_MAX_OUTPUT_TOKENS: "999" },
+    });
+    dispose = local.dispose;
+
+    const runtime = local.registry.resolve(projectRoot);
+    const config = (local.registry as unknown as {
+      createAgentConfig(runtime: unknown, sessionKey: string): {
+        subagentModel?: {
+          provider: string;
+          model: string;
+          modelMultimodal?: unknown;
+          maxContextTokens?: number;
+          maxOutputTokens?: number;
+        };
+      };
+    }).createAgentConfig(runtime, "web:s_subagent_default_model");
+
+    assert.equal(config.subagentModel?.provider, "fixture");
+    assert.equal(config.subagentModel?.model, "child");
+    assert.equal(config.subagentModel?.maxContextTokens, 32000);
+    assert.equal(config.subagentModel?.maxOutputTokens, 999);
+    assert.ok(config.subagentModel?.modelMultimodal);
+  } finally {
+    dispose?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("local gateway applies teammate token overrides to teammate sessions", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-token-overrides-"));
   const pilotHome = join(root, "pilot-home");
