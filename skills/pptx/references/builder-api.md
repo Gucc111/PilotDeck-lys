@@ -31,7 +31,7 @@ Toolkit members include:
 
 - `createDeck(options)` for a wide editable presentation with optional language, font, and metadata choices.
 - The complete `pptxgenjs` package for slide authoring.
-- `imageSizingCrop(path, x, y, w, h)` and `imageSizingContain(...)`.
+- `imageSizingCrop(...)` and `imageSizingContain(...)` are async. Await their result before spreading it into `slide.addImage()`, for example: `slide.addImage({ ...(await imageSizingCrop(path, x, y, w, h)), altText: '...' })`.
 - `inputPath`, which is set when `build --input` is used.
 
 `createDeck` does not choose a palette or slide composition. The starter builder is deliberately minimal; replace its content and composition rather than treating it as a template.
