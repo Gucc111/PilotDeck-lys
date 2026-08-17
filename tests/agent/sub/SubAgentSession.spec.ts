@@ -306,6 +306,144 @@ test("explore registry ignores an unallowed dynamic execute_code tool without pr
   assert.equal(session.buildConfig().runMode, "ask");
 });
 
+test("subagent config uses configured default model and caps", () => {
+  const registry = new ToolRegistry();
+  const session = new SubAgentSession({
+    definition: SUBAGENT_DEFINITIONS["general-purpose"],
+    directive: "Inspect the provided files.",
+    parentConfig: {
+      ...parentConfig(),
+      provider: "main",
+      model: "main-model",
+      modelMultimodal: { input: ["text"] },
+      maxContextTokens: 100000,
+      maxOutputTokens: 20000,
+      subagentModel: {
+        provider: "child",
+        model: "child-model",
+        modelMultimodal: { input: ["text", "image"] },
+        maxContextTokens: 32000,
+        maxOutputTokens: 4096,
+      },
+    },
+    parentDependencies: {
+      router: createRouter(),
+      tools: {
+        registry,
+        scheduler: {} as never,
+      },
+    },
+    parentSessionId: "parent-session",
+    parentTurnId: "parent-turn",
+    subagentSessionId: "subagent-session",
+    subagentId: "subagent-1",
+  }) as unknown as TestableSubAgentSession;
+
+  const config = session.buildConfig();
+
+  assert.equal(config.provider, "child");
+  assert.equal(config.model, "child-model");
+  assert.deepEqual(config.modelMultimodal, { input: ["text", "image"] });
+  assert.equal(config.maxContextTokens, 32000);
+  assert.equal(config.maxOutputTokens, 4096);
+  assert.equal(config.isSubagent, true);
+});
+
+test("subagent config inherits parent model when no default is configured", () => {
+  const registry = new ToolRegistry();
+  const session = sessionFor(SUBAGENT_DEFINITIONS["general-purpose"], registry);
+
+  const config = session.buildConfig();
+
+  assert.equal(config.provider, "test");
+  assert.equal(config.model, "test-model");
+  assert.equal(config.isSubagent, true);
+});
+
+test("configured subagent default remains a router baseline, not a router override", async () => {
+  const seen: Array<{ stage: "decide" | "execute"; provider: string; model: string; isMainAgent?: boolean }> = [];
+  const router: AgentRouterRuntime = {
+    decide: async ({ request, isMainAgent }) => {
+      seen.push({
+        stage: "decide",
+        provider: request.provider,
+        model: request.model,
+        isMainAgent,
+      });
+      return {
+        provider: "routed",
+        model: "tier-model",
+        scenarioType: "default",
+        isSubagent: true,
+        orchestrating: false,
+        resolvedFrom: "tokenSaver",
+        mutations: {},
+      };
+    },
+    execute: async function* (_decision, request) {
+      seen.push({
+        stage: "execute",
+        provider: request.provider,
+        model: request.model,
+      });
+      yield { type: "text_delta", text: FINAL_REPORT };
+      yield {
+        type: "usage",
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      };
+    },
+    stream: async function* () {
+      yield { type: "text_delta", text: FINAL_REPORT };
+    },
+  } as AgentRouterRuntime;
+  const events: AgentEvent[] = [];
+  const loop = new AgentLoop({
+    ...parentConfig(),
+    provider: "main",
+    model: "main-model",
+    subagentModel: {
+      provider: "child",
+      model: "child-model",
+    },
+  }, {
+    router,
+    tools: {
+      registry: new ToolRegistry(),
+      scheduler: {} as never,
+    },
+    eventEmitter: (event) => {
+      events.push(event);
+    },
+  }) as unknown as TestableAgentLoop;
+  const fork = loop.buildSubagentForkApi({
+    sessionId: "parent-session",
+    turnId: "parent-turn",
+    messages: [],
+  }, []);
+
+  await fork.fork({
+    definitionId: "explore",
+    directive: "Inspect routing.",
+    subagentId: "subagent-routed",
+    timeoutMs: 60_000,
+  });
+
+  assert.deepEqual(seen, [
+    {
+      stage: "decide",
+      provider: "child",
+      model: "child-model",
+      isMainAgent: false,
+    },
+    {
+      stage: "execute",
+      provider: "routed",
+      model: "tier-model",
+    },
+  ]);
+  assert.ok(events.some((event) => event.type === "subagent_completed"));
+});
+
 test("read-only subagent evaluates bash safety from the real command", async () => {
   const commands: string[] = [];
   const runner: PilotDeckCommandRunner = {

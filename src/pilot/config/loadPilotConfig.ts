@@ -346,7 +346,7 @@ function parseAgent(
   }
 
   const model = parseAgentModelSelection(rawAgent.model, "agent.model", modelConfig, diagnostics);
-  const subagents = parseAgentSubagents(rawAgent.subagents, diagnostics);
+  const subagents = parseAgentSubagents(rawAgent.subagents, modelConfig, diagnostics);
   const maxContextTokens = readOptionalPositiveInteger(rawAgent.maxContextTokens, "agent.maxContextTokens");
   const maxOutputTokens = readOptionalPositiveInteger(rawAgent.maxOutputTokens, "agent.maxOutputTokens");
   const thinking = parseAgentThinking(rawAgent.thinking);
@@ -383,6 +383,7 @@ function parseAgentThinking(value: unknown): PilotAgentConfig["thinking"] | unde
 
 function parseAgentSubagents(
   value: unknown,
+  modelConfig: ReturnType<typeof parseModel>,
   diagnostics: PilotConfigDiagnostic[],
 ): PilotAgentConfig["subagents"] | undefined {
   if (value === undefined) {
@@ -392,7 +393,7 @@ function parseAgentSubagents(
     throw new PilotConfigError("CONFIG_AGENT_SUBAGENTS_INVALID", "agent.subagents must be an object.");
   }
   for (const key of Object.keys(value)) {
-    if (key !== "timeoutMs") {
+    if (key !== "timeoutMs" && key !== "default" && key !== "params") {
       diagnostics.push({
         code: "CONFIG_AGENT_UNKNOWN_FIELD",
         severity: "warning",
@@ -402,7 +403,21 @@ function parseAgentSubagents(
       });
     }
   }
+  let defaultModel: PilotAgentModelSelection | undefined;
+  if (value.default !== undefined && value.default !== null) {
+    if (typeof value.default === "string" && value.default.trim() === "inherit") {
+      defaultModel = undefined;
+    } else {
+      defaultModel = parseAgentModelSelection(
+        value.default,
+        "agent.subagents.default",
+        modelConfig,
+        diagnostics,
+      );
+    }
+  }
   return {
+    ...(defaultModel ? { default: defaultModel } : {}),
     timeoutMs: readOptionalPositiveInteger(value.timeoutMs, "agent.subagents.timeoutMs"),
   };
 }
