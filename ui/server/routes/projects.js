@@ -646,7 +646,17 @@ export function cloneGitHubRepository(githubUrl, destinationPath, githubToken = 
       }
     }
 
-    const gitProcess = spawn('git', ['clone', '--progress', cloneUrl, destinationPath], {
+    const isScpLikeSsh = /^(?:[\w.-]+@)?[\w.-]+:[^\s]+$/.test(cloneUrl);
+    try {
+      const protocol = new URL(cloneUrl).protocol;
+      if (!['http:', 'https:', 'ssh:'].includes(protocol)) {
+        return reject(new Error('Git URL must use HTTP(S) or SSH'));
+      }
+    } catch {
+      if (!isScpLikeSsh) return reject(new Error('Git URL must use HTTP(S) or SSH'));
+    }
+
+    const gitProcess = spawn('git', ['clone', '--progress', '--', cloneUrl, destinationPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,

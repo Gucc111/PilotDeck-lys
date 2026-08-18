@@ -363,7 +363,7 @@ components:
         githubUrl:
           type: [string, "null"]
           format: uri
-          description: Optional and valid only for a new workspace
+          description: Optional HTTP(S) or SSH repository URL, valid only for a new workspace
         modelConfigurationId:
           type: [string, "null"]
           description: Uses the current default configuration when omitted

@@ -1,17 +1,22 @@
 import express from 'express';
-import { randomUUID } from 'crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { addProjectManually } from '../projects.js';
 import { validateWorkspacePath, cloneGitHubRepository } from './projects.js';
-import { readPilotDeckConfigFile, writePilotDeckConfig } from '../services/pilotdeckConfig.js';
+import { readPilotDeckConfigFile, withPilotDeckConfigWrite, writePilotDeckConfig } from '../services/pilotdeckConfig.js';
 import { reloadPilotDeckConfig } from '../services/pilotdeckConfigReloader.js';
 import { suppressNextWatchEvent } from '../services/pilotdeckConfigWatcher.js';
 import { probeModelConnection } from '../services/modelConnectionProbe.js';
 
 const router = express.Router();
 const TEST_TTL_MS = 10 * 60 * 1000;
+const MAX_MODELS_PER_TEST = 10;
+const TEST_RATE_WINDOW_MS = 60 * 1000;
+const TEST_RATE_MAX_REQUESTS = 5;
 const tests = new Map();
+const testRateBuckets = new Map();
+const testKeySecret = randomBytes(32);
 const ALIASES = { gemini: 'google', kimi: 'moonshot', volcengine: 'volc_ark', bailian: 'dashscope' };
 const PRESETS = {
   anthropic: { protocol: 'anthropic', endpoint: 'https://api.anthropic.com' },
@@ -33,6 +38,11 @@ function apiError(res, status, code, message, modelId = undefined) {
   return res.status(status).json({ code, message, ...(modelId ? { modelId } : {}) });
 }
 function text(value) { return typeof value === 'string' ? value.trim() : ''; }
+function keyFingerprint(apiKey) { return createHmac('sha256', testKeySecret).update(apiKey).digest(); }
+function sameKey(fingerprint, apiKey) {
+  const candidate = keyFingerprint(apiKey);
+  return fingerprint?.length === candidate.length && timingSafeEqual(fingerprint, candidate);
+}
 function hasOnlyKeys(value, keys) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every((key) => keys.includes(key));
@@ -61,6 +71,16 @@ function resolveProvider(body) {
     return { providerId, protocol, endpoint: url.toString().replace(/\/$/, ''), custom: true };
   } catch { return null; }
 }
+function parseCloneUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (!['http:', 'https:', 'ssh:'].includes(parsed.protocol)) return null;
+    return { url: value, path: parsed.pathname };
+  } catch {
+    const scpLike = /^(?:[\w.-]+@)?[\w.-]+:([^\s]+)$/.exec(value);
+    return scpLike ? { url: value, path: scpLike[1] } : null;
+  }
+}
 function testStatus(models) {
   if (models.some((model) => model.textInput !== 'supported')) return 'failed';
   return models.some((model) => model.imageInput === 'unknown') ? 'manual_input_required' : 'passed';
@@ -77,13 +97,26 @@ function getTest(req, res, testId = req.params.testId) {
 function deleteExpiredTests() { const now = Date.now(); for (const [id, record] of tests) if (record.expiresAt <= now) tests.delete(id); }
 setInterval(deleteExpiredTests, TEST_TTL_MS).unref();
 
-router.post('/model-connection-tests', async (req, res) => {
+function modelTestRateLimiter(req, res, next) {
+  const now = Date.now();
+  const key = String(req.user?.id || req.ip || 'anonymous');
+  const bucket = testRateBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    testRateBuckets.set(key, { count: 1, resetAt: now + TEST_RATE_WINDOW_MS });
+    return next();
+  }
+  if (++bucket.count <= TEST_RATE_MAX_REQUESTS) return next();
+  res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+  return apiError(res, 429, 'RATE_LIMITED', 'Too many connection tests.');
+}
+
+router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) => {
   const provider = resolveProvider(req.body || {});
   const requestedModels = Array.isArray(req.body?.models) ? req.body.models.map(text) : [];
   const models = [...new Set(requestedModels.filter(Boolean))];
   const retry = retryPolicy(req.body?.retryPolicy);
   const apiKey = text(req.body?.apiKey);
-  if (!hasOnlyKeys(req.body, ['providerId', 'protocol', 'endpoint', 'apiKey', 'models', 'retryPolicy']) || !provider || !models.length || models.length !== requestedModels.length || !retry || (provider.providerId !== 'ollama' && !apiKey)) {
+  if (!hasOnlyKeys(req.body, ['providerId', 'protocol', 'endpoint', 'apiKey', 'models', 'retryPolicy']) || !provider || !models.length || models.length !== requestedModels.length || models.length > MAX_MODELS_PER_TEST || !retry || (provider.providerId !== 'ollama' && !apiKey)) {
     return apiError(res, 400, 'INVALID_REQUEST', 'providerId, models, retryPolicy, and the required API key are invalid.');
   }
   const results = [];
@@ -104,7 +137,7 @@ router.post('/model-connection-tests', async (req, res) => {
         ? { modelId, textInput: 'supported', imageInput: 'unsupported', error: null }
         : { modelId, textInput: 'supported', imageInput: 'unknown', error: { code: 'IMAGE_CAPABILITY_UNKNOWN', message: imageProbe.error, modelId } });
   }
-  const record = { id: randomUUID(), userId: req.user.id, provider, retry, models: results, status: testStatus(results), testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: null };
+  const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status: testStatus(results), testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: null };
   tests.set(record.id, record);
   return res.json(publicResult(record));
 });
@@ -143,29 +176,45 @@ router.put('/model-configuration', async (req, res) => {
     const tested = expected.get(text(submitted?.modelId));
     if (!hasOnlyKeys(submitted, ['modelId', 'textInput', 'imageInput']) || !tested || submitted.textInput !== true || submitted.imageInput !== (tested.imageInput === 'supported')) return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'Model capabilities do not match the connection test.');
   }
-  const recordConfig = readPilotDeckConfigFile();
-  if (recordConfig.parseError) return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'pilotdeck.yaml is invalid and must be repaired before saving.');
-  const existingProvider = recordConfig.config?.model?.providers?.[provider.providerId] || {};
-  const suppliedKey = req.body?.apiKey;
-  const apiKey = typeof suppliedKey === 'string' && suppliedKey.trim() ? suppliedKey.trim() : existingProvider.apiKey;
-  if (provider.providerId !== 'ollama' && !apiKey) return apiError(res, 400, 'INVALID_REQUEST', 'apiKey is required for this provider.');
-  const configurationId = `cfg_${randomUUID()}`;
-  const modelsConfig = Object.fromEntries(record.models.map((model) => [model.modelId, { multimodal: { input: model.imageInput === 'supported' ? ['text', 'image'] : ['text'] } }]));
-  const nextConfig = {
-    ...recordConfig.config,
-    agent: { ...recordConfig.config.agent, model: `${provider.providerId}/${record.models[0].modelId}` },
-    model: { ...recordConfig.config.model, providers: { ...recordConfig.config.model.providers, [provider.providerId]: {
-      ...existingProvider, protocol: provider.protocol, url: provider.endpoint, ...(apiKey ? { apiKey } : {}),
-      retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs }, models: modelsConfig,
-    } } },
-    webui: { ...recordConfig.config.webui, onboarding: { modelConfigurationId: configurationId, savedAt: new Date().toISOString() } },
-  };
   try {
-    suppressNextWatchEvent();
-    const saved = await writePilotDeckConfig(nextConfig);
-    await reloadPilotDeckConfig(saved.config);
+    const outcome = await withPilotDeckConfigWrite(async () => {
+      const recordConfig = readPilotDeckConfigFile();
+      if (recordConfig.parseError) return { error: ['CONFIGURATION_MISMATCH', 'pilotdeck.yaml is invalid and must be repaired before saving.'] };
+      const existingProvider = recordConfig.config?.model?.providers?.[provider.providerId] || {};
+      const suppliedKey = req.body?.apiKey;
+      let apiKey;
+      if (suppliedKey === null) {
+        apiKey = text(existingProvider.apiKey);
+      } else if (typeof suppliedKey === 'string' && suppliedKey.trim()) {
+        apiKey = suppliedKey.trim();
+      } else if (provider.providerId === 'ollama') {
+        apiKey = '';
+      } else {
+        return { error: ['INVALID_REQUEST', 'apiKey is required for this provider.'] };
+      }
+      if (provider.providerId !== 'ollama' && !sameKey(record.keyFingerprint, apiKey)) {
+        return { error: ['CONFIGURATION_MISMATCH', 'apiKey does not match the credential used for testing.'] };
+      }
+      const configurationId = `cfg_${randomUUID()}`;
+      const savedAt = new Date().toISOString();
+      const modelsConfig = Object.fromEntries(record.models.map((model) => [model.modelId, { multimodal: { input: model.imageInput === 'supported' ? ['text', 'image'] : ['text'] } }]));
+      const nextConfig = {
+        ...recordConfig.config,
+        agent: { ...recordConfig.config.agent, model: `${provider.providerId}/${record.models[0].modelId}` },
+        model: { ...recordConfig.config.model, providers: { ...recordConfig.config.model.providers, [provider.providerId]: {
+          ...existingProvider, protocol: provider.protocol, url: provider.endpoint, ...(apiKey ? { apiKey } : {}),
+          retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs }, models: modelsConfig,
+        } } },
+        webui: { ...recordConfig.config.webui, onboarding: { modelConfigurationId: configurationId, savedAt } },
+      };
+      suppressNextWatchEvent();
+      const saved = await writePilotDeckConfig(nextConfig);
+      return { saved, configurationId, savedAt };
+    });
+    if (outcome.error) return apiError(res, outcome.error[0] === 'INVALID_REQUEST' ? 400 : 409, outcome.error[0], outcome.error[1]);
+    await reloadPilotDeckConfig(outcome.saved.config);
     tests.delete(record.id);
-    return res.json({ configurationId, savedAt: saved.config.webui.onboarding.savedAt });
+    return res.json({ configurationId: outcome.configurationId, savedAt: outcome.savedAt });
   } catch (error) {
     return apiError(res, 409, 'CONFIGURATION_MISMATCH', error?.message || 'Unable to save configuration.');
   }
@@ -189,12 +238,20 @@ router.post('/workspaces', async (req, res) => {
       const project = await addProjectManually(workspacePath);
       return res.status(201).json({ id: project.name, type, path: workspacePath, status: 'ready' });
     }
-    await fs.mkdir(workspacePath, { recursive: true });
+    try {
+      const existing = await fs.stat(workspacePath);
+      if (!existing.isDirectory()) return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Workspace path already exists and is not a directory.');
+      if ((await fs.readdir(workspacePath)).length > 0) return apiError(res, 409, 'WORKSPACE_CONFLICT', 'New workspace path must be empty.');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      await fs.mkdir(workspacePath, { recursive: true });
+    }
     let projectPath = workspacePath;
     const githubUrl = text(req.body?.githubUrl);
     if (githubUrl) {
-      let parsed; try { parsed = new URL(githubUrl); } catch { return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl must be an absolute URL.'); }
-      const repoName = path.basename(parsed.pathname.replace(/\/$/, '').replace(/\.git$/, '')) || 'repository';
+      const cloneUrl = parseCloneUrl(githubUrl);
+      if (!cloneUrl) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl must use HTTP(S) or SSH.');
+      const repoName = path.basename(cloneUrl.path.replace(/\/$/, '').replace(/\.git$/, '')) || 'repository';
       projectPath = path.join(workspacePath, repoName);
       try { await fs.access(projectPath); return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.'); } catch { /* expected */ }
       const lockPath = `${projectPath}.pilotdeck-clone.lock`;
@@ -207,7 +264,7 @@ router.post('/workspaces', async (req, res) => {
       }
       const stagingPath = path.join(workspacePath, `.${repoName}.pilotdeck-clone-${randomUUID()}`);
       try {
-        await cloneGitHubRepository(githubUrl, stagingPath);
+        await cloneGitHubRepository(cloneUrl.url, stagingPath);
         await fs.rename(stagingPath, projectPath);
       } catch (error) {
         try { await fs.rm(stagingPath, { recursive: true, force: true }); } catch { /* Staging path is owned by this request. */ }

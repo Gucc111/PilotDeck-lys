@@ -76,6 +76,17 @@ describe('onboarding routes', () => {
     expect(changedRetry).toMatchObject({ status: 409, body: { code: 'CONFIGURATION_MISMATCH' } });
   });
 
+  it('requires the saved API key to match the credential used for testing', async () => {
+    const { request } = await createOnboardingApp({ probe: vi.fn().mockResolvedValue({ ok: true }) });
+    const test = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'openai', apiKey: 'tested-key', models: ['model-a'], retryPolicy: retryPolicy() }),
+    });
+    const response = await request('/api/v1/model-configuration', {
+      method: 'PUT', body: JSON.stringify({ testId: test.body.testId, providerId: 'openai', apiKey: 'different-key', models: [{ modelId: 'model-a', textInput: true, imageInput: true }], retryPolicy: retryPolicy() }),
+    });
+    expect(response).toMatchObject({ status: 409, body: { code: 'CONFIGURATION_MISMATCH' } });
+  });
+
   it('creates existing and new workspaces through the shared helpers', async () => {
     const validateWorkspacePath = vi.fn(async (requestedPath) => ({ valid: true, resolvedPath: `/resolved/${requestedPath}` }));
     const addProjectManually = vi.fn(async (workspacePath) => ({ name: 'project-id', path: workspacePath }));
@@ -128,7 +139,11 @@ async function createOnboardingApp(overrides = {}) {
   const writePilotDeckConfig = overrides.writePilotDeckConfig ?? vi.fn(async (config) => ({ config }));
   const config = overrides.config ?? { schemaVersion: 1, agent: {}, model: { providers: {} }, webui: {} };
   vi.doMock('../services/modelConnectionProbe.js', () => ({ probeModelConnection: probe }));
-  vi.doMock('../services/pilotdeckConfig.js', () => ({ readPilotDeckConfigFile: vi.fn(() => ({ config })), writePilotDeckConfig }));
+  vi.doMock('../services/pilotdeckConfig.js', () => ({
+    readPilotDeckConfigFile: vi.fn(() => ({ config })),
+    withPilotDeckConfigWrite: vi.fn(async (operation) => operation()),
+    writePilotDeckConfig,
+  }));
   vi.doMock('../services/pilotdeckConfigReloader.js', () => ({ reloadPilotDeckConfig: vi.fn(async () => undefined) }));
   vi.doMock('../services/pilotdeckConfigWatcher.js', () => ({ suppressNextWatchEvent: vi.fn() }));
   vi.doMock('../projects.js', () => ({ addProjectManually: overrides.addProjectManually ?? vi.fn(async (workspacePath) => ({ name: 'id', path: workspacePath })) }));

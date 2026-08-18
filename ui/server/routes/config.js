@@ -15,6 +15,7 @@ import {
   preserveMaskedSecrets,
   rawYamlToMaskedString,
   readPilotDeckConfigFile,
+  withPilotDeckConfigWrite,
   validatePilotDeckConfig,
   writePilotDeckConfig,
   writeRawPilotDeckYaml,
@@ -44,7 +45,6 @@ async function notifyGatewayConfigReload() {
 }
 
 const router = express.Router();
-let configWriteQueue = Promise.resolve();
 
 const MASKED_SECRET = '********';
 const DEFAULT_GLM_WEB_SEARCH_ENDPOINT = 'https://api.z.ai/api/paas/v4/web_search';
@@ -364,14 +364,8 @@ router.get('/office-preview/status', async (req, res) => {
 });
 
 router.put('/', async (req, res) => {
-  const previousWrite = configWriteQueue;
-  let releaseWrite;
-  configWriteQueue = new Promise((resolve) => {
-    releaseWrite = resolve;
-  });
-  await previousWrite;
-
-  try {
+  await withPilotDeckConfigWrite(async () => {
+    try {
     // Two submission shapes coexist:
     //
     //   • `{ raw: "..." }` from the Raw YAML editor → write the
@@ -491,14 +485,13 @@ router.put('/', async (req, res) => {
     const response = serializeConfigResponse(freshRecord, reloadResult);
     broadcastConfigEvent({ source: 'ui-save', ...response, timestamp: new Date().toISOString() });
     res.json(response);
-  } catch (error) {
-    if (error?.validation) {
-      return res.status(400).json({ error: error.message, validation: error.validation });
+    } catch (error) {
+      if (error?.validation) {
+        return res.status(400).json({ error: error.message, validation: error.validation });
+      }
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  } finally {
-    releaseWrite();
-  }
+  });
 });
 
 router.post('/reload', async (_req, res) => {
