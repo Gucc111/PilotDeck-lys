@@ -262,6 +262,8 @@ export class AgentLoop {
     let hasAttemptedReasoningContentRetry = false;
     /** Prevent a provider that keeps rejecting text-only retries from looping forever. */
     let hasAttemptedImageStrip = false;
+    const MAX_STREAM_INTERRUPTION_RECOVERIES = 2;
+    let streamInterruptionRecoveryCount = 0;
     const largeFileRepair = new LargeFileRepair();
 
     /**
@@ -710,6 +712,59 @@ export class AgentLoop {
       }
       finalMessage = assistantMessage;
       expireConsumedTransientPrompts();
+
+      const streamInterruption = assembled.error?.streamInterruption;
+      if (streamInterruption) {
+        if (streamInterruptionRecoveryCount < MAX_STREAM_INTERRUPTION_RECOVERIES) {
+          streamInterruptionRecoveryCount++;
+          if (streamInterruption.phase === "text") {
+            const partialTextMessage = withoutThinkingBlocks(assistantMessage);
+            if (textFromMessage(partialTextMessage).trim().length > 0) {
+              finalMessage = partialTextMessage;
+              messages.push(partialTextMessage);
+              yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialTextMessage };
+              await input.onDurableMessage?.(partialTextMessage);
+            }
+          }
+          pushTransientSyntheticPrompt(
+            buildStreamInterruptionRecoveryPrompt(streamInterruption),
+            "stream_interruption_recovery",
+          );
+          yield {
+            type: "turn_continued",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            reason: "model_error",
+          };
+          continue;
+        }
+
+        const error = agentError(
+          "agent_model_error",
+          `Stream interruption recovery exhausted after ${MAX_STREAM_INTERRUPTION_RECOVERIES} attempts (${streamInterruption.phase}).`,
+          assembled.error,
+          "The model stream repeatedly disconnected. Retry the turn or switch providers.",
+        );
+        await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
+        yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: error.message };
+        const result = this.createTurnResult(input, {
+          type: "error",
+          stopReason: "model_error",
+          usage,
+          permissionDenials,
+          turns: turnCount,
+          startedAt,
+          finalMessage,
+          structuredOutput,
+          errors: [error],
+        });
+        yield await emitStatus(createModelRequestFailedStatus({ error, modelError: assembled.error }));
+        yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error };
+        await captureTurn(true);
+        yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+        return { result, messages };
+      }
+      streamInterruptionRecoveryCount = 0;
 
       if (assembled.hasPartialTextToolCall) {
         if (maxOutputRecoveryCount < MAX_OUTPUT_RECOVERY_LIMIT) {
@@ -2666,6 +2721,34 @@ function textFromMessage(message: CanonicalMessage): string {
     .join("\n");
 }
 
+function withoutThinkingBlocks(message: CanonicalMessage): CanonicalMessage {
+  return {
+    ...message,
+    content: messageContent(message).filter((block) => block.type !== "thinking"),
+  };
+}
+
+function buildStreamInterruptionRecoveryPrompt(
+  interruption: NonNullable<CanonicalModelError["streamInterruption"]>,
+): string {
+  if (interruption.phase === "tool_call") {
+    const tools = interruption.activeToolCalls?.map((call) => call.name || "unknown").filter(Boolean) ?? [];
+    const toolLabel = tools.length > 0 ? ` (${tools.slice(0, 3).join(", ")})` : "";
+    return [
+      `The previous model stream disconnected while generating a tool call${toolLabel}. No incomplete tool call was executed.`,
+      "Continue the original task from the current workspace state. Inspect relevant files before writing.",
+      "Do not retry the same large atomic write. Create or extend the artifact through small focused write_file or edit_file calls, keeping each tool call well under 8K output tokens.",
+    ].join("\n");
+  }
+  if (interruption.phase === "reasoning") {
+    return "The previous model stream disconnected during reasoning. Continue the original task directly from the current workspace state; do not repeat analysis or recap.";
+  }
+  if (interruption.phase === "text") {
+    return "The previous model stream disconnected mid-response. Continue exactly where the visible response ended; do not repeat prior text or recap.";
+  }
+  return "The previous model stream disconnected before producing a response. Continue the original task directly from the current workspace state.";
+}
+
 function isMissingReasoningContentError(error: CanonicalModelError): boolean {
   return /\breasoning_content\b/i.test(error.message) &&
     /thinking\s+mode/i.test(error.message) &&
@@ -3158,6 +3241,10 @@ export function modelFailureAction(error: CanonicalModelError | undefined): {
     return modelFailureActionResult(hint, "settings", "modelNotFound", { provider: error.provider ?? "the provider", model: error.model });
   }
   if (error.code === "timeout") {
+    if (error.settingsFix?.configPath === "model.providers.<id>.retry.streamIdleTimeoutMs") {
+      const hint = `Increase streamIdleTimeoutMs for${providerLabel} in Settings → Model Provider → Advanced, or check local network/proxy and provider status.`;
+      return modelFailureActionResult(hint, "network", "streamIdleTimeout", { provider: error.provider ?? "the provider" });
+    }
     const hint = `Increase timeoutMs for${providerLabel} in Settings → Model Provider → Advanced, or check local network/proxy and provider status.`;
     return modelFailureActionResult(hint, "network", "timeout", { provider: error.provider ?? "the provider" });
   }

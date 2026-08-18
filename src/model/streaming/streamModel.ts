@@ -249,7 +249,7 @@ export async function* streamModel(
       if (
         attempt < maxRetries &&
         isRetryableStreamError(error) &&
-        checkpoint.hasSubstantialContent()
+        checkpoint.canContinueText()
       ) {
         currentRequest = buildLiteLLMContinuationRequest(currentRequest, checkpoint.get().partialText);
         checkpoint.reset();
@@ -259,13 +259,24 @@ export async function* streamModel(
         continue;
       }
 
-      if (isRetryableStreamError(error) && attempt < maxRetries) {
+      if (
+        isRetryableStreamError(error) &&
+        attempt < maxRetries &&
+        checkpoint.interruption().phase === "empty"
+      ) {
         const delayMs = calculateRetryDelay(provider, attempt, retryAfterMsForError(error));
         emitModelRetryProgress(options, retryReasonForThrownError(error), attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
         continue;
       }
 
+      if (isRetryableStreamError(error)) {
+        yield {
+          type: "error",
+          error: streamInterruptionError(provider, error, checkpoint),
+        };
+        return;
+      }
       throw error;
     }
 
@@ -325,7 +336,10 @@ async function* streamGoogleProviderRequest(params: {
         console.log(`[model-debug] Request dumped to ${dumpPath} (model=${currentRequest.model})`);
       }
 
-      const client = (params.options.googleClientFactory ?? createGoogleClient)(params.provider);
+      const client = (params.options.googleClientFactory ?? createGoogleClient)({
+        ...params.provider,
+        timeoutMs: resolveStreamIdleTimeout(params.provider, params.options),
+      });
       const stream = await client.models.generateContentStream(body as unknown as GoogleRequestBody);
       const state = createGoogleStreamState();
       let sawTerminalEvent = false;
@@ -355,10 +369,11 @@ async function* streamGoogleProviderRequest(params: {
     } catch (error) {
       throwIfGoogleAbort(error, params.options.signal);
       const providerError = toProviderError(params.provider, error);
+      const retryable = isRetryableGoogleStreamError(providerError, error);
       if (
         attempt < params.maxRetries &&
-        isRetryableGoogleStreamError(providerError, error) &&
-        params.checkpoint.hasSubstantialContent()
+        retryable &&
+        params.checkpoint.canContinueText()
       ) {
         currentRequest = buildLiteLLMContinuationRequest(currentRequest, params.checkpoint.get().partialText);
         params.checkpoint.reset();
@@ -368,14 +383,23 @@ async function* streamGoogleProviderRequest(params: {
         continue;
       }
 
-      if (isRetryableGoogleStreamError(providerError, error) && attempt < params.maxRetries) {
+      if (
+        retryable &&
+        attempt < params.maxRetries &&
+        params.checkpoint.interruption().phase === "empty"
+      ) {
         const delayMs = calculateRetryDelay(params.provider, attempt);
         emitModelRetryProgress(params.options, "network_error", attempt, params.maxRetries, delayMs, params.provider, currentRequest.model);
         await delay(delayMs, params.options.signal);
         continue;
       }
 
-      yield { type: "error", error: providerError.error };
+      yield {
+        type: "error",
+        error: retryable
+          ? streamInterruptionError(params.provider, providerError, params.checkpoint)
+          : providerError.error,
+      };
       return;
     }
   }
@@ -411,6 +435,18 @@ function toProviderError(provider: ProviderConfig, error: unknown): ModelProvide
   return new ModelProviderError(
     normalizeModelError(provider.id, provider.protocol, error, extractStatus(error)),
   );
+}
+
+function streamInterruptionError(
+  provider: ProviderConfig,
+  error: unknown,
+  checkpoint: StreamingCheckpointManager,
+): import("../protocol/errors.js").CanonicalModelError {
+  const providerError = toProviderError(provider, error).error;
+  return {
+    ...providerError,
+    streamInterruption: checkpoint.interruption(),
+  };
 }
 
 function extractStatus(error: unknown): number | undefined {
@@ -603,7 +639,9 @@ async function sendProviderRequest(
 ): Promise<Response> {
   const controller = new AbortController();
   const detachAbort = signal ? forwardAbort(signal, controller) : undefined;
-  const effectiveTimeoutMs = stream ? resolveStreamIdleTimeout(provider, options) : provider.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const effectiveTimeoutMs = stream
+    ? resolveStreamIdleTimeout(provider, options)
+    : provider.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const timeout = effectiveTimeoutMs
     ? setTimeout(() => controller.abort(new NetworkFetchError("network_timeout", `Model request timed out after ${effectiveTimeoutMs}ms.`)), effectiveTimeoutMs)
     : undefined;
@@ -619,7 +657,7 @@ async function sendProviderRequest(
       body: JSON.stringify(finalBody),
       signal: controller.signal,
     };
-    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions);
+    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs);
   } catch (error) {
     if (signal?.aborted) {
       throw createAbortError(signal.reason);
@@ -649,6 +687,7 @@ async function sendWithEndpointFallback(
   stream: boolean,
   transport: ModelTransport,
   fetchOptions: RequestInit,
+  timeoutMs: number,
 ): Promise<Response> {
   const endpoints = buildProviderChatEndpointCandidates({ protocol: provider.protocol, baseUrl: provider.url });
   let lastResponse: Response | undefined;
@@ -656,7 +695,7 @@ async function sendWithEndpointFallback(
     const response = await networkFetch(endpoint, fetchOptions, {
       signal: fetchOptions.signal instanceof AbortSignal ? fetchOptions.signal : undefined,
       fetchImpl: transport === fetch ? undefined : transport,
-      timeoutMs: provider.timeoutMs,
+      timeoutMs,
       retry: { maxRetries: 0, retryOnPost: true },
     });
     if (await shouldUseEndpointResponse(provider, response, stream, endpoints.length)) {
@@ -718,7 +757,7 @@ async function safeReadJson(response: Response): Promise<unknown> {
   }
 }
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = LITELLM_DEFAULT_REQUEST_TIMEOUT_MS;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = LITELLM_COMPLETION_HTTP_FALLBACK_MS;
 
 class StreamIdleTimeoutError extends Error {
   constructor(idleMs: number) {
@@ -867,16 +906,13 @@ function readWithIdleTimeout(
   });
 }
 
-function resolveStreamIdleTimeout(provider: ProviderConfig, options?: ModelRuntimeOptions): number {
+export function resolveStreamIdleTimeout(provider: ProviderConfig, options?: ModelRuntimeOptions): number {
   if (typeof options?.streamTimeoutMs === "number" && options.streamTimeoutMs > 0) {
     return options.streamTimeoutMs;
   }
   const retry = provider.retry;
   if (retry && typeof retry.streamIdleTimeoutMs === "number" && retry.streamIdleTimeoutMs > 0) {
     return retry.streamIdleTimeoutMs;
-  }
-  if (typeof provider.timeoutMs === "number" && provider.timeoutMs > 0) {
-    return provider.timeoutMs;
   }
   return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 }
