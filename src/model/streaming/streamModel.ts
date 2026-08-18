@@ -184,6 +184,13 @@ export async function* streamModel(
         await delay(delayMs, options.signal);
         continue;
       }
+      if (isRetryableStreamError(error) && checkpoint.interruption().phase !== "empty") {
+        yield {
+          type: "error",
+          error: streamInterruptionError(provider, error, checkpoint),
+        };
+        return;
+      }
       throw error;
     }
 
@@ -201,6 +208,13 @@ export async function* streamModel(
         emitModelRetryProgress(options, retryReasonForError(error.code), attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
         continue;
+      }
+      if (error.retryable && checkpoint.interruption().phase !== "empty") {
+        yield {
+          type: "error",
+          error: streamInterruptionError(provider, new ModelProviderError(error), checkpoint),
+        };
+        return;
       }
       yield { type: "error", error };
       return;
@@ -383,7 +397,7 @@ async function* streamGoogleProviderRequest(params: {
       streamGuard.checkDuration();
 
       if (!sawTerminalEvent && !state.ended) {
-        yield { type: "message_end", finishReason: "unknown", raw: undefined };
+        throw new IncompleteStreamError();
       }
       return;
     } catch (error) {

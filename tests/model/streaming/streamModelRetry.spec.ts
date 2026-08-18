@@ -145,6 +145,42 @@ test("retains partial text if its continuation disconnects before output", async
   assert.equal(error?.error.streamInterruption?.phase, "text");
 });
 
+test("retains partial text when its continuation receives a terminal HTTP error", async () => {
+  const config = createConfig({ streamMaxRetries: 1 });
+  let requests = 0;
+  const events = await collect(streamModel(createRequest(), config, {
+    fetch: async () => {
+      requests++;
+      return requests === 1
+        ? sse('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
+        : new Response(JSON.stringify({ error: { message: "rate limit exceeded" } }), { status: 429 });
+    },
+  }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(requests, 2);
+  assert.equal(error?.error.code, "rate_limit_error");
+  assert.equal(error?.error.streamInterruption?.phase, "text");
+});
+
+test("retains partial text when continuation setup fails", async () => {
+  const config = createConfig({ streamMaxRetries: 1 });
+  let requests = 0;
+  const events = await collect(streamModel(createRequest(), config, {
+    fetch: async () => {
+      requests++;
+      if (requests === 1) {
+        return sse('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+      }
+      throw new Error("fetch failed");
+    },
+  }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(requests, 2);
+  assert.equal(error?.error.streamInterruption?.phase, "text");
+});
+
 test("does not replay a stream after reasoning or tool-call output", async () => {
   const cases = [
     {
@@ -223,6 +259,24 @@ test("Google idle watchdog interrupts a stalled iterator", async () => {
   const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
   assert.equal(error?.error.code, "timeout");
   assert.equal(error?.error.settingsFix?.configPath, "model.providers.<id>.retry.streamIdleTimeoutMs");
+});
+
+test("Google recovers a stream ending without a finish event", async () => {
+  const config = createGoogleConfig();
+  const googleClientFactory: GoogleClientFactory = () => ({
+    models: {
+      generateContent: async () => ({} as never),
+      generateContentStream: async () => (async function* () {
+        yield { candidates: [{ content: { parts: [{ text: "partial" }] } }] } as never;
+      })(),
+    },
+  });
+
+  const events = await collect(streamModel(createRequest(), config, { googleClientFactory }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(error?.error.streamInterruption?.phase, "text");
+  assert.equal(events.some((event) => event.type === "message_end"), false);
 });
 
 test("first-token timeout uses stream-idle guidance", async () => {
