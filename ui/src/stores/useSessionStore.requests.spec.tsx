@@ -281,4 +281,106 @@ describe('useSessionStore server request ordering', () => {
       }),
     ]);
   });
+
+  it('treats a sibling optimistic send as pending before history loading starts', async () => {
+    const initial = deferred<TestResponse>();
+    mocks.authenticatedFetch.mockImplementationOnce(() => initial.promise);
+
+    const { result } = renderHook(() => useSessionStore());
+    act(() => {
+      result.current.appendRealtime(
+        'session-1',
+        userMessage('local_ws_user_new_send', 'Continue.', '2026-08-04T00:00:05.000Z'),
+      );
+    });
+
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages[0]).toMatchObject({
+      id: 'local_ws_user_new_send',
+      serverTailIdAtStart: null,
+      serverHistoryPendingAtStart: true,
+    });
+
+    let initialRequest!: ReturnType<typeof result.current.fetchFromServer>;
+    act(() => {
+      initialRequest = result.current.fetchFromServer('session-1');
+    });
+    await act(async () => {
+      initial.resolve(response({
+        messages: [userMessage('persisted-old-send', 'Continue.', '2026-08-04T00:00:00.000Z')],
+        total: 1,
+      }));
+      await initialRequest;
+    });
+
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages).toEqual([
+      expect.objectContaining({
+        id: 'local_ws_user_new_send',
+        serverTailIdAtStart: 'persisted-old-send',
+        serverHistoryPendingAtStart: false,
+      }),
+    ]);
+  });
+
+  it('keeps optimistic history pending across an empty initial response', async () => {
+    const initial = deferred<TestResponse>();
+    const refresh = deferred<TestResponse>();
+    mocks.authenticatedFetch
+      .mockImplementationOnce(() => initial.promise)
+      .mockImplementationOnce(() => refresh.promise);
+
+    const { result } = renderHook(() => useSessionStore());
+    let initialRequest!: ReturnType<typeof result.current.fetchFromServer>;
+    act(() => {
+      initialRequest = result.current.fetchFromServer('session-1');
+      result.current.appendRealtime(
+        'session-1',
+        userMessage('local_new_send', 'Continue.', '2026-08-04T00:00:05.000Z'),
+      );
+    });
+    await act(async () => {
+      initial.resolve(response({ messages: [], total: 0 }));
+      await initialRequest;
+    });
+
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages[0]).toMatchObject({
+      id: 'local_new_send',
+      serverTailIdAtStart: null,
+      serverHistoryPendingAtStart: true,
+    });
+    act(() => {
+      result.current.appendRealtime(
+        'session-1',
+        userMessage('local_after_empty', 'Another message', '2026-08-04T00:00:06.000Z'),
+      );
+    });
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages[1]).toMatchObject({
+      id: 'local_after_empty',
+      serverHistoryPendingAtStart: true,
+    });
+
+    let refreshRequest!: ReturnType<typeof result.current.refreshFromServer>;
+    act(() => {
+      refreshRequest = result.current.refreshFromServer('session-1');
+    });
+    await act(async () => {
+      refresh.resolve(response({
+        messages: [userMessage('persisted-old-send', 'Continue.', '2026-08-04T00:00:00.000Z')],
+        total: 1,
+      }));
+      await refreshRequest;
+    });
+
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages).toEqual([
+      expect.objectContaining({
+        id: 'local_new_send',
+        serverTailIdAtStart: 'persisted-old-send',
+        serverHistoryPendingAtStart: false,
+      }),
+      expect.objectContaining({
+        id: 'local_after_empty',
+        serverTailIdAtStart: 'persisted-old-send',
+        serverHistoryPendingAtStart: false,
+      }),
+    ]);
+  });
 });

@@ -557,7 +557,11 @@ function settlePendingOptimisticServerTail(
   message: NormalizedMessage,
   serverMessages: NormalizedMessage[],
 ): NormalizedMessage {
-  if (!isOptimisticUserMessage(message) || !message.serverHistoryPendingAtStart) return message;
+  if (
+    !isOptimisticUserMessage(message)
+    || !message.serverHistoryPendingAtStart
+    || serverMessages.length === 0
+  ) return message;
   return {
     ...message,
     serverTailIdAtStart: serverMessages[serverMessages.length - 1]?.id ?? null,
@@ -1227,10 +1231,6 @@ export function useSessionStore() {
             return (Date.parse(m.timestamp) || 0) > watermark;
           })
           .map((message) => settlePendingOptimisticServerTail(message, messages));
-      } else if (slot.realtimeMessages.length > 0) {
-        slot.realtimeMessages = slot.realtimeMessages.map((message) => (
-          settlePendingOptimisticServerTail(message, messages)
-        ));
       }
 
       recomputeMergedIfNeeded(slot);
@@ -1321,7 +1321,7 @@ export function useSessionStore() {
     const capturedMessage = captureOptimisticUserServerTail(
       msg,
       slot.serverMessages,
-      slot._serverAppliedGeneration === 0 && slot._serverLoadingGeneration !== null,
+      slot.serverMessages.length === 0,
     );
     let updated = upsertRealtimeMessages(slot.realtimeMessages, [capturedMessage]);
     if (updated.length > MAX_REALTIME_MESSAGES) {
@@ -1567,7 +1567,7 @@ export function useSessionStore() {
       captureOptimisticUserServerTail(
         message,
         slot.serverMessages,
-        slot._serverAppliedGeneration === 0 && slot._serverLoadingGeneration !== null,
+        slot.serverMessages.length === 0,
       )
     ));
     let updated = upsertRealtimeMessages(slot.realtimeMessages, capturedMessages);
