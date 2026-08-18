@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseModelConfig } from "../../../src/model/config/parseModelConfig.js";
-import type { CanonicalModelEvent, CanonicalModelRequest } from "../../../src/model/protocol/canonical.js";
+import type { CanonicalModelEvent, CanonicalModelRequest, ProviderConfig } from "../../../src/model/protocol/canonical.js";
+import type { GoogleClientFactory } from "../../../src/model/providers/google/client.js";
 import { resolveStreamIdleTimeout, streamModel } from "../../../src/model/streaming/streamModel.js";
 
 function createConfig(input: { timeoutMs?: number; streamMaxRetries?: number; streamIdleTimeoutMs?: number } = {}) {
@@ -32,6 +33,25 @@ function createRequest(): CanonicalModelRequest {
   };
 }
 
+function createGoogleConfig(input: { timeoutMs?: number; streamMaxRetries?: number; streamIdleTimeoutMs?: number } = {}) {
+  return parseModelConfig({
+    providers: {
+      test: {
+        protocol: "google",
+        url: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "test-key",
+        timeoutMs: input.timeoutMs,
+        retry: {
+          streamMaxRetries: input.streamMaxRetries ?? 0,
+          streamIdleTimeoutMs: input.streamIdleTimeoutMs,
+          baseDelayMs: 1,
+        },
+        models: { "test-model": {} },
+      },
+    },
+  });
+}
+
 function sse(data: string): Response {
   return new Response(data, { headers: { "content-type": "text/event-stream" } });
 }
@@ -40,6 +60,10 @@ async function collect(stream: AsyncIterable<CanonicalModelEvent>): Promise<Cano
   const events: CanonicalModelEvent[] = [];
   for await (const event of stream) events.push(event);
   return events;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 test("stream idle timeout defaults independently from provider request timeout", () => {
@@ -104,6 +128,23 @@ test("continues a pure text stream after interruption", async () => {
   assert.equal(events.some((event) => event.type === "error"), false);
 });
 
+test("retains partial text if its continuation disconnects before output", async () => {
+  const config = createConfig({ streamMaxRetries: 1 });
+  let requests = 0;
+  const events = await collect(streamModel(createRequest(), config, {
+    fetch: async () => {
+      requests++;
+      return requests === 1
+        ? sse('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
+        : sse("");
+    },
+  }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(requests, 2);
+  assert.equal(error?.error.streamInterruption?.phase, "text");
+});
+
 test("does not replay a stream after reasoning or tool-call output", async () => {
   const cases = [
     {
@@ -132,4 +173,71 @@ test("does not replay a stream after reasoning or tool-call output", async () =>
     assert.equal(requests, 1, item.name);
     assert.equal(error?.error.streamInterruption?.phase, item.phase, item.name);
   }
+});
+
+test("Google streaming uses an idle watchdog instead of an absolute SDK timeout", async () => {
+  const config = createGoogleConfig({ timeoutMs: 1 });
+  const clientTimeouts: Array<number | undefined> = [];
+  const googleClientFactory: GoogleClientFactory = (provider: ProviderConfig) => {
+    clientTimeouts.push(provider.timeoutMs);
+    return {
+      models: {
+        generateContent: async () => ({} as never),
+        generateContentStream: async () => (async function* () {
+          yield { candidates: [{ content: { parts: [{ text: "a" }] } }] } as never;
+          await sleep(8);
+          yield { candidates: [{ content: { parts: [{ text: "b" }] } }] } as never;
+          await sleep(8);
+          yield { candidates: [{ finishReason: "STOP", content: { parts: [] } }] } as never;
+        })(),
+      },
+    };
+  };
+
+  const events = await collect(streamModel(createRequest(), config, {
+    streamTimeoutMs: 10,
+    googleClientFactory,
+  }));
+
+  assert.deepEqual(clientTimeouts, [undefined]);
+  assert.equal(events.some((event) => event.type === "error"), false);
+});
+
+test("Google idle watchdog interrupts a stalled iterator", async () => {
+  const config = createGoogleConfig();
+  const googleClientFactory: GoogleClientFactory = () => ({
+    models: {
+      generateContent: async () => ({} as never),
+      generateContentStream: async () => (async function* () {
+        await sleep(15);
+        yield { candidates: [{ finishReason: "STOP", content: { parts: [] } }] } as never;
+      })(),
+    },
+  });
+
+  const events = await collect(streamModel(createRequest(), config, {
+    streamTimeoutMs: 5,
+    googleClientFactory,
+  }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(error?.error.code, "timeout");
+  assert.equal(error?.error.settingsFix?.configPath, "model.providers.<id>.retry.streamIdleTimeoutMs");
+});
+
+test("first-token timeout uses stream-idle guidance", async () => {
+  const config = createConfig({ streamMaxRetries: 0 });
+  await assert.rejects(
+    collect(streamModel(createRequest(), config, {
+      streamTimeoutMs: 5,
+      fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal;
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    })),
+    (error: unknown) => {
+      const providerError = error as { error?: { settingsFix?: { configPath?: string } } };
+      return providerError.error?.settingsFix?.configPath === "model.providers.<id>.retry.streamIdleTimeoutMs";
+    },
+  );
 });

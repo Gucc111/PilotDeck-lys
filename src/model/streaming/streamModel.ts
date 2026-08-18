@@ -252,7 +252,6 @@ export async function* streamModel(
         checkpoint.canContinueText()
       ) {
         currentRequest = buildLiteLLMContinuationRequest(currentRequest, checkpoint.get().partialText);
-        checkpoint.reset();
         const delayMs = calculateRetryDelay(provider, attempt, retryAfterMsForError(error));
         emitModelRetryProgress(options, "continuation", attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
@@ -323,10 +322,12 @@ async function* streamGoogleProviderRequest(params: {
       requestFingerprint: requestFingerprint(currentRequest),
       metadata: currentRequest.metadata,
     };
+    const streamAbort = new AbortController();
+    const detachAbort = params.options.signal ? forwardAbort(params.options.signal, streamAbort) : undefined;
     try {
       const body = withGoogleAbortSignal(buildModelRequest(currentRequest, {
         providers: { [params.provider.id]: params.provider },
-      }) as Record<string, unknown>, params.options.signal);
+      }) as Record<string, unknown>, streamAbort.signal);
       if (process.env.PILOTDECK_DUMP_REQUEST === "1") {
         const fs = await import("node:fs");
         const os = await import("node:os");
@@ -336,16 +337,35 @@ async function* streamGoogleProviderRequest(params: {
         console.log(`[model-debug] Request dumped to ${dumpPath} (model=${currentRequest.model})`);
       }
 
+      // The Google SDK applies HttpOptions.timeout to the entire HTTP request.
+      // Streaming uses a per-read idle watchdog below, so do not give the SDK
+      // either the idle timeout or the provider's request timeout here.
       const client = (params.options.googleClientFactory ?? createGoogleClient)({
         ...params.provider,
-        timeoutMs: resolveStreamIdleTimeout(params.provider, params.options),
+        timeoutMs: undefined,
       });
-      const stream = await client.models.generateContentStream(body as unknown as GoogleRequestBody);
+      const streamIdleTimeoutMs = resolveStreamIdleTimeout(params.provider, params.options);
+      const abortForIdleTimeout = (error: StreamIdleTimeoutError) => streamAbort.abort(error);
+      const stream = await withIdleTimeout(
+        () => client.models.generateContentStream(body as unknown as GoogleRequestBody),
+        streamIdleTimeoutMs,
+        params.options.signal,
+        abortForIdleTimeout,
+      );
       const state = createGoogleStreamState();
       let sawTerminalEvent = false;
       const streamGuard = createStreamGuard(params.provider);
 
-      for await (const chunk of stream) {
+      while (true) {
+        const { value: chunk, done } = await withIdleTimeout(
+          () => stream.next(),
+          streamIdleTimeoutMs,
+          params.options.signal,
+          abortForIdleTimeout,
+        );
+        if (done) {
+          break;
+        }
         throwIfAborted(params.options.signal);
         streamGuard.checkDuration();
         for (const event of normalizeGoogleStreamEvent(chunk, state)) {
@@ -376,7 +396,6 @@ async function* streamGoogleProviderRequest(params: {
         params.checkpoint.canContinueText()
       ) {
         currentRequest = buildLiteLLMContinuationRequest(currentRequest, params.checkpoint.get().partialText);
-        params.checkpoint.reset();
         const delayMs = calculateRetryDelay(params.provider, attempt);
         emitModelRetryProgress(params.options, "continuation", attempt, params.maxRetries, delayMs, params.provider, currentRequest.model);
         await delay(delayMs, params.options.signal);
@@ -401,6 +420,8 @@ async function* streamGoogleProviderRequest(params: {
           : providerError.error,
       };
       return;
+    } finally {
+      detachAbort?.();
     }
   }
 }
@@ -643,7 +664,12 @@ async function sendProviderRequest(
     ? resolveStreamIdleTimeout(provider, options)
     : provider.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const timeout = effectiveTimeoutMs
-    ? setTimeout(() => controller.abort(new NetworkFetchError("network_timeout", `Model request timed out after ${effectiveTimeoutMs}ms.`)), effectiveTimeoutMs)
+    ? setTimeout(() => controller.abort(new NetworkFetchError(
+      "network_timeout",
+      stream
+        ? `Stream idle timeout: no data received for ${effectiveTimeoutMs}ms`
+        : `Model request timed out after ${effectiveTimeoutMs}ms.`,
+    )), effectiveTimeoutMs)
     : undefined;
 
   const finalBody = provider.extraBody
@@ -864,12 +890,23 @@ function readWithIdleTimeout(
   idleMs: number,
   signal?: AbortSignal,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
-  return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+  return withIdleTimeout(() => reader.read(), idleMs, signal);
+}
+
+function withIdleTimeout<T>(
+  operation: () => Promise<T>,
+  idleMs: number,
+  signal?: AbortSignal,
+  onIdleTimeout?: (error: StreamIdleTimeoutError) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        reject(new StreamIdleTimeoutError(idleMs));
+        const error = new StreamIdleTimeoutError(idleMs);
+        onIdleTimeout?.(error);
+        reject(error);
       }
     }, idleMs);
     if (typeof timer === "object" && "unref" in timer) {
@@ -885,7 +922,7 @@ function readWithIdleTimeout(
     if (signal) {
       signal.addEventListener("abort", onAbort, { once: true });
     }
-    reader.read().then(
+    operation().then(
       (result) => {
         if (!settled) {
           settled = true;
