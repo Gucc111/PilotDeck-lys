@@ -870,6 +870,38 @@ export function getRealtimeMessagesToKeepAfterServerRefresh(
     .map((message) => settlePendingOptimisticServerTail(message, serverMessages));
 }
 
+function mergeUnconfirmedOptimisticUsers(
+  server: NormalizedMessage[],
+  extra: NormalizedMessage[],
+): NormalizedMessage[] {
+  const optimisticUsers = extra.filter(isOptimisticUserMessage);
+  if (optimisticUsers.length === 0) return [...server, ...extra];
+
+  const remainingExtra = extra.filter((message) => !isOptimisticUserMessage(message));
+  const result: NormalizedMessage[] = [];
+  let userIndex = 0;
+
+  for (const serverMessage of server) {
+    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
+    while (userIndex < optimisticUsers.length) {
+      const optimisticUser = optimisticUsers[userIndex];
+      const optimisticTimestamp = parseTimestampMs(optimisticUser.timestamp);
+      if (
+        optimisticTimestamp == null
+        || serverTimestamp == null
+        || optimisticTimestamp > serverTimestamp
+      ) {
+        break;
+      }
+      result.push(optimisticUser);
+      userIndex += 1;
+    }
+    result.push(serverMessage);
+  }
+
+  return [...result, ...optimisticUsers.slice(userIndex), ...remainingExtra];
+}
+
 /**
  * Compute merged messages: server + realtime, deduped by id.
  * Server messages take priority (they're the persisted source of truth).
@@ -909,12 +941,11 @@ export function computeMerged(server: NormalizedMessage[], realtime: NormalizedM
     const tailIdChanged = streamMsg.serverTailIdAtStart !== undefined
       && lastServer.id !== streamMsg.serverTailIdAtStart;
     if (isAssistantText && tailIdChanged) {
-      return [...server.slice(0, -1), ...extra];
+      return mergeUnconfirmedOptimisticUsers(server.slice(0, -1), extra);
     }
   }
 
-  const result = [...server, ...extra];
-  return result;
+  return mergeUnconfirmedOptimisticUsers(server, extra);
 }
 
 function getUpsertKey(message: NormalizedMessage): string {

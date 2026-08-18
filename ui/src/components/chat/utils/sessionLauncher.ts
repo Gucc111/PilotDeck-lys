@@ -39,7 +39,10 @@ export function createTemporarySessionId(): string {
 }
 
 export function createUserTurnRunId(): string {
-  return crypto.randomUUID();
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `web-turn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export function getNotificationSessionSummary(

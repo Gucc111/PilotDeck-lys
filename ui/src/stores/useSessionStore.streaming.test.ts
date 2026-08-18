@@ -424,8 +424,8 @@ describe('computeMerged', () => {
     ];
 
     expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
-      'persisted-second-user',
       'local_failed_first',
+      'persisted-second-user',
     ]);
   });
 
@@ -471,8 +471,8 @@ describe('computeMerged', () => {
     ];
 
     expect(computeMerged(identitylessServer, identifiedRealtime).map((message) => message.id)).toEqual([
-      'persisted-legacy-user',
       'local_identified',
+      'persisted-legacy-user',
     ]);
   });
 
@@ -488,8 +488,8 @@ describe('computeMerged', () => {
     ];
 
     expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
-      'persisted-second-user',
       'local_failed_first',
+      'persisted-second-user',
     ]);
   });
 
@@ -604,8 +604,8 @@ describe('computeMerged', () => {
     ];
 
     expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
-      'persisted-user',
       'local_ws_user',
+      'persisted-user',
     ]);
   });
 
@@ -630,8 +630,8 @@ describe('computeMerged', () => {
     ];
 
     expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
-      'persisted-user',
       'local_user',
+      'persisted-user',
     ]);
   });
 
