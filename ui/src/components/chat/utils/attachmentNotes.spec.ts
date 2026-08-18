@@ -59,6 +59,22 @@ describe('attachment path notes', () => {
     }]);
   });
 
+  it('preserves a colon and space in a legacy attachment path', () => {
+    const parsed = parseUserAttachmentNote([
+      'Review this report',
+      '',
+      marker,
+      '- report.pdf: /tmp/Project: Docs/report.pdf',
+      '[End files attached by user]',
+    ].join('\n'));
+
+    expect(parsed.attachments).toEqual([{
+      name: 'report.pdf',
+      path: '/tmp/Project: Docs/report.pdf',
+      mimeType: 'application/pdf',
+    }]);
+  });
+
   it('round trips colons in both attachment names and paths', () => {
     const parsed = parseUserAttachmentNote([
       'Review this report',

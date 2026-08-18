@@ -872,12 +872,7 @@ function mergeUnconfirmedOptimisticUsers(
   server: NormalizedMessage[],
   extra: NormalizedMessage[],
 ): NormalizedMessage[] {
-  const optimisticUsers = extra.filter(isOptimisticUserMessage);
-  if (optimisticUsers.length === 0) return [...server, ...extra];
-
-  const remainingExtra = extra.filter((message) => !isOptimisticUserMessage(message));
-  const result: NormalizedMessage[] = [];
-  let userIndex = 0;
+  if (!extra.some(isOptimisticUserMessage)) return [...server, ...extra];
 
   const getTailBoundary = (message: NormalizedMessage): number => {
     const tailId = message.serverTailIdAtStart;
@@ -891,27 +886,42 @@ function mergeUnconfirmedOptimisticUsers(
     return tailIndex >= 0 ? tailIndex + 1 : server.length;
   };
 
-  for (let serverIndex = 0; serverIndex < server.length; serverIndex += 1) {
-    const serverMessage = server[serverIndex];
-    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
-    while (userIndex < optimisticUsers.length) {
-      const optimisticUser = optimisticUsers[userIndex];
-      const optimisticTimestamp = parseTimestampMs(optimisticUser.timestamp);
-      if (
-        serverIndex < getTailBoundary(optimisticUser)
-        || optimisticTimestamp == null
-        || serverTimestamp == null
-        || optimisticTimestamp > serverTimestamp
-      ) {
-        break;
+  const getInsertionIndex = (message: NormalizedMessage): number => {
+    const optimisticTimestamp = parseTimestampMs(message.timestamp);
+    if (optimisticTimestamp == null) return server.length;
+
+    for (let serverIndex = getTailBoundary(message); serverIndex < server.length; serverIndex += 1) {
+      const serverTimestamp = parseTimestampMs(server[serverIndex].timestamp);
+      if (serverTimestamp == null || optimisticTimestamp <= serverTimestamp) {
+        return serverIndex;
       }
-      result.push(optimisticUser);
-      userIndex += 1;
     }
-    result.push(serverMessage);
+    return server.length;
+  };
+
+  // Retain the arrival order of a realtime turn (user, streaming answer,
+  // next user) while anchoring each optimistic user after its server tail.
+  const extrasByServerIndex = new Map<number, NormalizedMessage[]>();
+  let previousInsertionIndex: number | null = null;
+  for (const message of extra) {
+    let insertionIndex = isOptimisticUserMessage(message)
+      ? getInsertionIndex(message)
+      : previousInsertionIndex ?? server.length;
+    if (previousInsertionIndex != null) {
+      insertionIndex = Math.max(insertionIndex, previousInsertionIndex);
+    }
+    const messages = extrasByServerIndex.get(insertionIndex) || [];
+    messages.push(message);
+    extrasByServerIndex.set(insertionIndex, messages);
+    previousInsertionIndex = insertionIndex;
   }
 
-  return [...result, ...optimisticUsers.slice(userIndex), ...remainingExtra];
+  const result: NormalizedMessage[] = [];
+  for (let serverIndex = 0; serverIndex <= server.length; serverIndex += 1) {
+    result.push(...(extrasByServerIndex.get(serverIndex) || []));
+    if (serverIndex < server.length) result.push(server[serverIndex]);
+  }
+  return result;
 }
 
 /**

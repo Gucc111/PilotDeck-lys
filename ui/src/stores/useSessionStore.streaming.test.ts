@@ -432,6 +432,32 @@ describe('computeMerged', () => {
     ]);
   });
 
+  it('preserves realtime turn order while anchoring optimistic users after the server tail', () => {
+    const server = [
+      textMessage('persisted-old-answer', 'Old answer', '2026-08-16T09:00:01.000Z'),
+    ];
+    const realtime = [
+      textMessage('local_first_user', 'First prompt', '2026-08-16T08:00:00.000Z', {
+        role: 'user',
+        runId: 'run-first',
+        serverTailIdAtStart: 'persisted-old-answer',
+      }),
+      streamingMessage('web:s_test', 'First answer'),
+      textMessage('local_second_user', 'Second prompt', '2026-08-16T08:00:01.000Z', {
+        role: 'user',
+        runId: 'run-second',
+        serverTailIdAtStart: 'persisted-old-answer',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-old-answer',
+      'local_first_user',
+      '__streaming_web:s_test',
+      'local_second_user',
+    ]);
+  });
+
   it('keeps an unpersisted retry while confirming a same-text send by run id', () => {
     const server = [
       textMessage('persisted-second-user', 'Continue.', '2026-08-16T09:00:00.100Z', {

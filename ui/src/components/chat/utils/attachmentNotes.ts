@@ -59,12 +59,40 @@ function parseAttachmentPathNoteLine(line: string): AttachmentPathNoteFile | nul
   }
 
   if (!line.startsWith('- ')) return null;
-  const separator = line.lastIndexOf(': ');
+  const separator = findLegacyAttachmentSeparator(line);
   if (separator < 0) return null;
 
   const name = line.slice(2, separator).trim();
   const filePath = line.slice(separator + 2).trim();
   return name && filePath ? { name, path: filePath } : null;
+}
+
+function isLikelyLegacyAttachmentPath(value: string): boolean {
+  return value.startsWith('/')
+    || value.startsWith('\\')
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || value.startsWith('./')
+    || value.startsWith('../');
+}
+
+function findLegacyAttachmentSeparator(line: string): number {
+  const firstSeparator = line.indexOf(': ', 2);
+  if (firstSeparator < 0) return -1;
+
+  // Legacy notes originally used the first delimiter. Prefer it whenever it
+  // clearly starts a path, then allow colon-containing filenames on common
+  // absolute-path records.
+  if (isLikelyLegacyAttachmentPath(line.slice(firstSeparator + 2).trim())) {
+    return firstSeparator;
+  }
+  for (let separator = line.indexOf(': ', firstSeparator + 2);
+    separator >= 0;
+    separator = line.indexOf(': ', separator + 2)) {
+    if (isLikelyLegacyAttachmentPath(line.slice(separator + 2).trim())) {
+      return separator;
+    }
+  }
+  return firstSeparator;
 }
 
 function sliceBeforeFirstMarker(value: string, markers: string[]): string {
