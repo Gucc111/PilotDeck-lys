@@ -279,6 +279,28 @@ test("Google recovers a stream ending without a finish event", async () => {
   assert.equal(events.some((event) => event.type === "message_end"), false);
 });
 
+test("Google stops reading once it emits a terminal event", async () => {
+  const config = createGoogleConfig();
+  let readAfterFinish = false;
+  const googleClientFactory: GoogleClientFactory = () => ({
+    models: {
+      generateContent: async () => ({} as never),
+      generateContentStream: async () => (async function* () {
+        yield { candidates: [{ content: { parts: [{ text: "complete" }] } }] } as never;
+        yield { candidates: [{ finishReason: "STOP", content: { parts: [] } }] } as never;
+        readAfterFinish = true;
+        throw new Error("stream closed after finish");
+      })(),
+    },
+  });
+
+  const events = await collect(streamModel(createRequest(), config, { googleClientFactory }));
+
+  assert.equal(readAfterFinish, false);
+  assert.equal(events.some((event) => event.type === "error"), false);
+  assert.equal(events.filter((event) => event.type === "message_end").length, 1);
+});
+
 test("first-token timeout uses stream-idle guidance", async () => {
   const config = createConfig({ streamMaxRetries: 0 });
   await assert.rejects(

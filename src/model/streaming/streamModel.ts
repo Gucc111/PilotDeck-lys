@@ -383,7 +383,8 @@ async function* streamGoogleProviderRequest(params: {
         throwIfAborted(params.options.signal);
         streamGuard.checkDuration();
         for (const event of normalizeGoogleStreamEvent(chunk, state)) {
-          if (event.type === "message_end" || event.type === "error") {
+          const terminalEvent = event.type === "message_end" || event.type === "error";
+          if (terminalEvent) {
             sawTerminalEvent = true;
           }
           if (event.type === "error") {
@@ -392,6 +393,10 @@ async function* streamGoogleProviderRequest(params: {
           streamGuard.observe(event);
           params.checkpoint.onEvent(event);
           yield event;
+          if (terminalEvent) {
+            void stream.return(undefined).catch(() => undefined);
+            return;
+          }
         }
       }
       streamGuard.checkDuration();
