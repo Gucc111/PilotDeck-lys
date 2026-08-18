@@ -6,6 +6,7 @@ type StartSessionOptions = {
   sendMessage: (message: unknown) => void;
   selectedProject: Project;
   command: string;
+  runId?: string;
   userVisibleInput?: string;
   sessionId?: string | null;
   temporarySessionId?: string;
@@ -35,6 +36,10 @@ export const isTemporarySessionId = (sessionId: string | null | undefined) =>
 
 export function createTemporarySessionId(): string {
   return `new-session-${Date.now()}`;
+}
+
+export function createUserTurnRunId(): string {
+  return crypto.randomUUID();
 }
 
 export function getNotificationSessionSummary(
@@ -83,6 +88,7 @@ export function startSessionCommand({
   sendMessage,
   selectedProject,
   command,
+  runId,
   userVisibleInput,
   sessionId,
   temporarySessionId,
@@ -111,6 +117,7 @@ export function startSessionCommand({
       ...(sessionId ? { sessionId, resume: true } : {}),
       projectPath: resolvedProjectPath,
       cwd: resolvedProjectPath,
+      ...(runId ? { runId } : {}),
       toolsSettings,
       ...(runMode ? { runMode } : {}),
       permissionMode,

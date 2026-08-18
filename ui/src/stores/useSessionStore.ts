@@ -346,7 +346,11 @@ function captureOptimisticUserServerTail(
   serverMessages: NormalizedMessage[],
   serverHistoryPending: boolean,
 ): NormalizedMessage {
-  if (!isOptimisticUserMessage(message) || message.serverTailIdAtStart !== undefined) {
+  if (
+    !isOptimisticUserMessage(message)
+    || getMessageTurnId(message)
+    || message.serverTailIdAtStart !== undefined
+  ) {
     return message;
   }
 
@@ -381,6 +385,7 @@ function getConfirmedUserMessageMatchDistance(
   serverMessages: NormalizedMessage[],
   serverIndex: number,
 ): number | null {
+  if (getMessageTurnId(realtimeMessage) || getMessageTurnId(serverMessage)) return null;
   if (!isServerMessageAfterOptimisticTail(realtimeMessage, serverMessages, serverIndex)) return null;
   if (
     serverIdentity.text !== realtimeIdentity.text
@@ -407,17 +412,28 @@ function getConfirmedUserMessageMatchDistance(
 function findConfirmedUserMessageDuplicateIndex(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
-  consumedServerIndexes?: Set<number>,
 ): number {
   if (!isOptimisticUserMessage(realtimeMessage)) return -1;
+
+  const realtimeTurnId = getMessageTurnId(realtimeMessage);
+  if (realtimeTurnId) {
+    return serverMessages.findIndex((message) => (
+      message.kind === 'text'
+      && message.role === 'user'
+      && getMessageTurnId(message) === realtimeTurnId
+    ));
+  }
 
   const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
   if (!realtimeIdentity.text) return -1;
 
   for (let index = 0; index < serverMessages.length; index += 1) {
-    if (consumedServerIndexes?.has(index)) continue;
     const serverMessage = serverMessages[index];
-    if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') {
+    if (
+      serverMessage.kind !== 'text'
+      || serverMessage.role !== 'user'
+      || getMessageTurnId(serverMessage)
+    ) {
       continue;
     }
 
@@ -446,9 +462,23 @@ function getConfirmedRealtimeUserIndexes(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
 ): Set<number> {
+  const persistedUserTurnIds = new Set(
+    serverMessages
+      .filter((message) => message.kind === 'text' && message.role === 'user')
+      .map(getMessageTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  const confirmedRealtimeIndexes = new Set<number>();
+  realtimeMessages.forEach((message, index) => {
+    const turnId = isOptimisticUserMessage(message) ? getMessageTurnId(message) : null;
+    if (turnId && persistedUserTurnIds.has(turnId)) {
+      confirmedRealtimeIndexes.add(index);
+    }
+  });
+
   const realtimeCandidates = realtimeMessages
     .map((message, index) => ({ message, index }))
-    .filter(({ message }) => isOptimisticUserMessage(message))
+    .filter(({ message }) => isOptimisticUserMessage(message) && !getMessageTurnId(message))
     .map(({ message, index }) => ({
       message,
       index,
@@ -457,14 +487,20 @@ function getConfirmedRealtimeUserIndexes(
     .filter(({ identity }) => Boolean(identity.text));
   const serverCandidates = serverMessages
     .map((message, index) => ({ message, index }))
-    .filter(({ message }) => message.kind === 'text' && message.role === 'user')
+    .filter(({ message }) => (
+      message.kind === 'text'
+      && message.role === 'user'
+      && !getMessageTurnId(message)
+    ))
     .map(({ message, index }) => ({
       message,
       index,
       identity: getConfirmedUserMessageIdentity(message),
     }))
     .filter(({ identity }) => Boolean(identity.text));
-  if (realtimeCandidates.length === 0 || serverCandidates.length === 0) return new Set();
+  if (realtimeCandidates.length === 0 || serverCandidates.length === 0) {
+    return confirmedRealtimeIndexes;
+  }
 
   const rowCount = realtimeCandidates.length;
   const unmatchedCost = (rowCount + 1) * (CONFIRMED_USER_WINDOW_MS + 1);
@@ -483,7 +519,6 @@ function getConfirmedRealtimeUserIndexes(
     ...Array.from({ length: rowCount }, () => unmatchedCost),
   ]);
   const assignment = findMinimumCostAssignment(costs);
-  const confirmedRealtimeIndexes = new Set<number>();
   assignment.forEach((column, row) => {
     if (column >= 0 && column < serverCandidates.length && costs[row][column] < unmatchedCost) {
       confirmedRealtimeIndexes.add(realtimeCandidates[row].index);
@@ -559,6 +594,7 @@ function settlePendingOptimisticServerTail(
 ): NormalizedMessage {
   if (
     !isOptimisticUserMessage(message)
+    || getMessageTurnId(message)
     || !message.serverHistoryPendingAtStart
     || serverMessages.length === 0
   ) return message;
