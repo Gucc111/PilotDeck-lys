@@ -23,6 +23,29 @@ function hasErrorFinish(body, protocol) {
   return String(body?.stop_reason || '').toLowerCase() === 'error';
 }
 
+function hasUsableOutput(body, protocol) {
+  if (protocol === 'anthropic') {
+    return (body?.content || []).some((part) => typeof part?.text === 'string' && part.text.trim());
+  }
+  if (protocol === 'google') {
+    return (body?.candidates || []).some((candidate) => (candidate?.content?.parts || [])
+      .some((part) => typeof part?.text === 'string' && part.text.trim()));
+  }
+  if (protocol === 'openai-responses') {
+    if (typeof body?.output_text === 'string' && body.output_text.trim()) return true;
+    return (body?.output || []).some((item) => (item?.content || []).some((part) =>
+      (typeof part?.text === 'string' && part.text.trim()) || (typeof part?.output_text === 'string' && part.output_text.trim())));
+  }
+  return (body?.choices || []).some((choice) => {
+    const content = choice?.message?.content;
+    if (typeof content === 'string' && content.trim()) return true;
+    if (Array.isArray(content) && content.some((part) => typeof part?.text === 'string' && part.text.trim())) return true;
+    return typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content.trim()
+      || typeof choice?.message?.reasoning === 'string' && choice.message.reasoning.trim()
+      || typeof choice?.text === 'string' && choice.text.trim();
+  });
+}
+
 function isFallbackStatus(status) {
   return status === 400 || status === 404 || status === 405;
 }
@@ -97,11 +120,13 @@ export async function probeModelConnection({ protocol, baseUrl, apiKey = '', mod
       if (response.ok) {
         let body;
         try { body = JSON.parse(responseText); } catch { body = null; }
-        if (isExpectedProviderResponseShape(protocol, body) && !hasErrorFinish(body, protocol)) {
+        if (isExpectedProviderResponseShape(protocol, body) && !hasErrorFinish(body, protocol) && hasUsableOutput(body, protocol)) {
           return { ok: true };
         }
         last = { detail: isExpectedProviderResponseShape(protocol, body)
-          ? 'Endpoint returned an error finish status.'
+          ? hasErrorFinish(body, protocol)
+            ? 'Endpoint returned an error finish status.'
+            : 'Endpoint returned a valid completion response, but the model did not produce any chat text.'
           : 'The endpoint returned an invalid completion response.' };
         continue;
       }

@@ -21,7 +21,7 @@ describe('onboarding routes', () => {
     });
     expect(result.status).toBe(200);
     expect(result.body.status).toBe('manual_input_required');
-    expect(probe).toHaveBeenNthCalledWith(1, expect.objectContaining({ providerId: 'google', protocol: 'google', endpoint: 'https://generativelanguage.googleapis.com' }));
+    expect(probe).toHaveBeenNthCalledWith(1, expect.objectContaining({ protocol: 'google', baseUrl: 'https://generativelanguage.googleapis.com' }));
 
     const incomplete = await request(`/api/v1/model-connection-tests/${result.body.testId}/image-capabilities`, {
       method: 'PUT', headers: { 'x-user': 'one' }, body: JSON.stringify({ models: [{ modelId: 'wrong-model', imageInput: 'supported' }] }),
@@ -80,6 +80,26 @@ describe('onboarding routes', () => {
       method: 'PUT', body: JSON.stringify({ models: [{ modelId: 'local', imageInput: 'supported' }] }),
     });
     expect(expired).toMatchObject({ status: 410, body: { code: 'TEST_EXPIRED' } });
+  });
+
+  it('removes only the clone destination when cloning a new workspace fails', async () => {
+    const fs = (await import('fs')).promises;
+    const mkdir = vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
+    const access = vi.spyOn(fs, 'access').mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' }));
+    const rm = vi.spyOn(fs, 'rm').mockResolvedValue(undefined);
+    const cloneGitHubRepository = vi.fn().mockRejectedValue(new Error('clone failed'));
+    const { request } = await createOnboardingApp({
+      validateWorkspacePath: vi.fn(async () => ({ valid: true, resolvedPath: '/tmp/onboarding-workspace' })),
+      cloneGitHubRepository,
+    });
+    const response = await request('/api/v1/workspaces', {
+      method: 'POST', body: JSON.stringify({ type: 'new', path: '/tmp/onboarding-workspace', githubUrl: 'https://github.com/openbmb/PilotDeck.git' }),
+    });
+    expect(response).toMatchObject({ status: 409, body: { code: 'GIT_CLONE_FAILED' } });
+    expect(rm).toHaveBeenCalledWith('/tmp/onboarding-workspace/PilotDeck', { recursive: true, force: true });
+    mkdir.mockRestore();
+    access.mockRestore();
+    rm.mockRestore();
   });
 });
 

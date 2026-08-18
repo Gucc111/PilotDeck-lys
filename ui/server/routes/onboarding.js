@@ -88,12 +88,16 @@ router.post('/model-connection-tests', async (req, res) => {
   }
   const results = [];
   for (const modelId of models) {
-    const textProbe = await probeModelConnection({ ...provider, apiKey, model: modelId });
+    const textProbe = await probeModelConnection({
+      protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId,
+    });
     if (!textProbe.ok) {
       results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: 'TEXT_TEST_FAILED', message: textProbe.error, modelId } });
       continue;
     }
-    const imageProbe = await probeModelConnection({ ...provider, apiKey, model: modelId, image: true });
+    const imageProbe = await probeModelConnection({
+      protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, image: true,
+    });
     results.push(imageProbe.ok
       ? { modelId, textInput: 'supported', imageInput: 'supported', error: null }
       : imageProbe.imageUnsupported
@@ -189,7 +193,12 @@ router.post('/workspaces', async (req, res) => {
       const repoName = path.basename(parsed.pathname.replace(/\/$/, '').replace(/\.git$/, '')) || 'repository';
       projectPath = path.join(workspacePath, repoName);
       try { await fs.access(projectPath); return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.'); } catch { /* expected */ }
-      try { await cloneGitHubRepository(githubUrl, projectPath); } catch (error) { return apiError(res, 409, 'GIT_CLONE_FAILED', 'Unable to clone the repository.'); }
+      try {
+        await cloneGitHubRepository(githubUrl, projectPath);
+      } catch {
+        try { await fs.rm(projectPath, { recursive: true, force: true }); } catch { /* Preserve the clone error response. */ }
+        return apiError(res, 409, 'GIT_CLONE_FAILED', 'Unable to clone the repository.');
+      }
     }
     const project = await addProjectManually(projectPath);
     return res.status(201).json({ id: project.name, type, path: projectPath, status: 'ready' });

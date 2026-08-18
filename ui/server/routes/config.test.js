@@ -224,7 +224,7 @@ describe('config test-connection route', () => {
     expect(calls).toEqual(['https://api.openai.com/v1/chat/completions']);
   });
 
-  it('accepts a non-error completion response without visible text', async () => {
+  it('fails when the provider returns no chat text or reasoning output', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ choices: [{ message: { content: '' } }] })));
 
     const { request } = await createConfigApp();
@@ -238,7 +238,8 @@ describe('config test-connection route', () => {
       }),
     });
 
-    expect(data.ok).toBe(true);
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain('did not produce any chat text');
   });
 
   it('accepts OpenAI-compatible reasoning output from a constrained probe', async () => {
