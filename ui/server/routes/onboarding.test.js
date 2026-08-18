@@ -88,11 +88,11 @@ describe('onboarding routes', () => {
   });
 
   it('creates existing and new workspaces through the shared helpers', async () => {
-    const validateWorkspacePath = vi.fn(async (requestedPath) => ({ valid: true, resolvedPath: `/resolved/${requestedPath}` }));
+    const validateWorkspacePath = vi.fn(async (requestedPath) => ({ valid: true, resolvedPath: `/resolved${requestedPath}` }));
     const addProjectManually = vi.fn(async (workspacePath) => ({ name: 'project-id', path: workspacePath }));
     const fsStat = vi.spyOn((await import('fs')).promises, 'stat').mockResolvedValue({ isDirectory: () => true });
     const { request } = await createOnboardingApp({ validateWorkspacePath, addProjectManually });
-    const result = await request('/api/v1/workspaces', { method: 'POST', body: JSON.stringify({ type: 'existing', path: 'project' }) });
+    const result = await request('/api/v1/workspaces', { method: 'POST', body: JSON.stringify({ type: 'existing', path: '/project' }) });
     expect(result).toEqual({ status: 201, body: { id: 'project-id', type: 'existing', path: '/resolved/project', status: 'ready' } });
     fsStat.mockRestore();
   });

@@ -17,6 +17,9 @@ describe('onboarding delivery resources', () => {
       expect(existsSync(resolve(root, 'ui/public', file))).toBe(true);
     }
     expect(existsSync(resolve(root, 'ui/server/assets/onboarding/image-capability-probe.png'))).toBe(true);
+    expect(readFileSync(resolve(root, 'ui/server/assets/onboarding/image-capability-probe.png')).subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
   });
 
   it('parses the OpenAPI handoff contract and resolves local component refs', () => {

@@ -125,7 +125,7 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
       protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId,
     });
     if (!textProbe.ok) {
-      results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: 'TEXT_TEST_FAILED', message: textProbe.error, modelId } });
+      results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: textProbe.code || 'TEXT_TEST_FAILED', message: textProbe.error, modelId } });
       continue;
     }
     const imageProbe = await probeModelConnection({
@@ -137,7 +137,9 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
         ? { modelId, textInput: 'supported', imageInput: 'unsupported', error: null }
         : { modelId, textInput: 'supported', imageInput: 'unknown', error: { code: 'IMAGE_CAPABILITY_UNKNOWN', message: imageProbe.error, modelId } });
   }
-  const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status: testStatus(results), testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: null };
+  const status = testStatus(results);
+  const aggregateError = results.find((model) => model.error)?.error || null;
+  const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status, testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: aggregateError };
   tests.set(record.id, record);
   return res.json(publicResult(record));
 });
@@ -223,7 +225,7 @@ router.put('/model-configuration', async (req, res) => {
 router.post('/workspaces', async (req, res) => {
   const type = text(req.body?.type);
   const requestedPath = text(req.body?.path);
-  if (!hasOnlyKeys(req.body, ['type', 'path', 'githubUrl', 'modelConfigurationId']) || !['existing', 'new'].includes(type) || !requestedPath) return apiError(res, 400, 'INVALID_REQUEST', 'type and path are required.');
+  if (!hasOnlyKeys(req.body, ['type', 'path', 'githubUrl', 'modelConfigurationId']) || !['existing', 'new'].includes(type) || !requestedPath || !path.isAbsolute(requestedPath)) return apiError(res, 400, 'INVALID_REQUEST', 'type and an absolute path are required.');
   if (req.body?.modelConfigurationId) {
     const configId = readPilotDeckConfigFile().config?.webui?.onboarding?.modelConfigurationId;
     if (req.body.modelConfigurationId !== configId) return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'modelConfigurationId is not the active configuration.');

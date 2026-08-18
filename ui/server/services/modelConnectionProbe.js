@@ -8,9 +8,13 @@ import path from 'node:path';
 
 const TIMEOUT_MS = 10_000;
 const uiRoot = path.basename(process.cwd()) === 'ui' ? process.cwd() : path.join(process.cwd(), 'ui');
-const PROBE_IMAGE_DATA = readFileSync(
+const probeImage = readFileSync(
   path.join(uiRoot, 'server/assets/onboarding/image-capability-probe.png'),
-).toString('base64');
+);
+if (!probeImage.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+  throw new Error('Onboarding image capability probe is not a PNG file. Fetch Git LFS assets before starting the UI server.');
+}
+const PROBE_IMAGE_DATA = probeImage.toString('base64');
 
 function hasErrorFinish(body, protocol) {
   if (body?.error || body?.status === 'failed') return true;
@@ -60,7 +64,13 @@ function responseDetail(responseText, response) {
 }
 
 function looksLikeImageUnsupported(detail) {
-  return /(?:image|vision|multimodal).{0,60}(?:not supported|unsupported|not enabled|not available)|(?:not supported|unsupported).{0,60}(?:image|vision|multimodal)/i.test(detail);
+  return /(?:image|vision|multimodal).{0,60}(?:not supported|unsupported|not enabled|not available)|(?:not supported|unsupported|does not support).{0,60}(?:image|vision|multimodal)/i.test(detail);
+}
+
+function classifyProbeError(detail, status) {
+  if (status === 401 || status === 403 || /api.?key|authentication|unauthori[sz]ed/i.test(detail)) return 'INVALID_API_KEY';
+  if (status === 404 || /model.+not found|unknown model|does not exist/i.test(detail)) return 'MODEL_NOT_FOUND';
+  return 'ENDPOINT_UNREACHABLE';
 }
 
 function requestFor({ protocol, apiKey, model, image, maxTokens }) {
@@ -131,16 +141,20 @@ export async function probeModelConnection({ protocol, baseUrl, apiKey = '', mod
         continue;
       }
       const detail = responseDetail(responseText, response);
+      if (image && looksLikeImageUnsupported(detail)) {
+        return { ok: false, imageUnsupported: true, code: 'IMAGE_TEST_FAILED', error: detail };
+      }
       if (urls.length > 1 && isFallbackStatus(response.status)) {
         last = { detail };
         continue;
       }
-      return { ok: false, imageUnsupported: image && looksLikeImageUnsupported(detail), error: detail };
+      return { ok: false, imageUnsupported: false, code: classifyProbeError(detail, response.status), error: detail };
     }
-    return { ok: false, imageUnsupported: image && looksLikeImageUnsupported(last?.detail || ''), error: last?.detail || 'Connection failed.' };
+    const detail = last?.detail || 'Connection failed.';
+    return { ok: false, imageUnsupported: image && looksLikeImageUnsupported(detail), code: classifyProbeError(detail), error: detail };
   } catch (error) {
     const timedOut = error?.name === 'AbortError' || error?.code === 'network_timeout';
-    return { ok: false, imageUnsupported: false, error: timedOut ? 'Connection timed out after 10s.' : (error?.message || String(error)) };
+    return { ok: false, imageUnsupported: false, code: 'ENDPOINT_UNREACHABLE', error: timedOut ? 'Connection timed out after 10s.' : (error?.message || String(error)) };
   } finally {
     clearTimeout(timer);
   }

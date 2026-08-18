@@ -21,4 +21,12 @@ describe('model connection probe request formats', () => {
       assertBody(requestBody);
     });
   }
+
+  it('preserves an explicit image-unsupported response before endpoint fallback', async () => {
+    const fetch = vi.fn(async () => ({ ok: false, status: 400, statusText: 'Bad Request', text: async () => JSON.stringify({ error: { message: 'This model does not support image input' } }) }));
+    vi.stubGlobal('fetch', fetch);
+    const result = await probeModelConnection({ protocol: 'anthropic', baseUrl: 'https://example.test', apiKey: 'key', model: 'test-model', image: true });
+    expect(result).toMatchObject({ ok: false, imageUnsupported: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
