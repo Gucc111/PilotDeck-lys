@@ -279,6 +279,11 @@ export class SubAgentSession {
   private buildConfig(): AgentRuntimeConfig {
     const parent = this.options.parentConfig;
     const subagentModel = parent.subagentModel;
+    const {
+      maxContextTokens: _parentMaxContextTokens,
+      maxOutputTokens: _parentMaxOutputTokens,
+      ...parentWithoutTokenCaps
+    } = parent;
     const subagentSystem = buildSubagentSystemPrompt(this.options.definition);
     const filteredParentSystem = applySystemPromptFilters(
       parent.systemPrompt ?? "",
@@ -288,19 +293,13 @@ export class SubAgentSession {
       ? `${subagentSystem}\n\n${filteredParentSystem}`
       : subagentSystem;
     return {
-      ...parent,
+      ...(subagentModel ? parentWithoutTokenCaps : parent),
       ...(subagentModel
         ? {
             provider: subagentModel.provider,
             model: subagentModel.model,
             ...(subagentModel.modelMultimodal
               ? { modelMultimodal: subagentModel.modelMultimodal }
-              : {}),
-            ...(subagentModel.maxContextTokens !== undefined
-              ? { maxContextTokens: subagentModel.maxContextTokens }
-              : {}),
-            ...(subagentModel.maxOutputTokens !== undefined
-              ? { maxOutputTokens: subagentModel.maxOutputTokens }
               : {}),
           }
         : {}),

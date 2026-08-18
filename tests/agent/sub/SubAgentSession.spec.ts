@@ -431,7 +431,7 @@ test("explore registry ignores an unallowed dynamic execute_code tool without pr
   assert.equal(session.buildConfig().runMode, "ask");
 });
 
-test("subagent config uses configured default model and caps", () => {
+test("subagent config uses configured default model without copying caps to top-level overrides", () => {
   const registry = new ToolRegistry();
   const session = new SubAgentSession({
     definition: SUBAGENT_DEFINITIONS["general-purpose"],
@@ -469,8 +469,15 @@ test("subagent config uses configured default model and caps", () => {
   assert.equal(config.provider, "child");
   assert.equal(config.model, "child-model");
   assert.deepEqual(config.modelMultimodal, { input: ["text", "image"] });
-  assert.equal(config.maxContextTokens, 32000);
-  assert.equal(config.maxOutputTokens, 4096);
+  assert.equal(config.maxContextTokens, undefined);
+  assert.equal(config.maxOutputTokens, undefined);
+  assert.deepEqual(config.subagentModel, {
+    provider: "child",
+    model: "child-model",
+    modelMultimodal: { input: ["text", "image"] },
+    maxContextTokens: 32000,
+    maxOutputTokens: 4096,
+  });
   assert.equal(config.isSubagent, true);
 });
 

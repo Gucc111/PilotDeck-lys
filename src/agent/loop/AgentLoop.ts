@@ -406,7 +406,7 @@ export class AgentLoop {
 
       let pendingContextBudget: TokenBudgetSnapshot | undefined;
       const ctx = this.dependencies.context;
-      const preRoutingMaxContextTokens = this.currentMaxContextTokens(this.config.provider, this.config.model);
+      const preRoutingMaxContextTokens = this.preRoutingMaxContextTokens();
       if (ctx?.tryAutoCompact) {
         try {
           const reservedOutputTokens = this.getReservedOutputTokens();
@@ -2012,22 +2012,58 @@ export class AgentLoop {
   private currentMaxContextTokens(provider: string, model: string): number {
     const transient = this.transientTokenCaps.get(this.tokenCapKey(provider, model))?.maxContextTokens;
     return transient
-      ?? this.config.maxContextTokens
+      ?? this.getBaselineSubagentTokenLimits(provider, model)?.maxContextTokens
+      ?? this.currentConfigMaxContextTokens()
       ?? this.dependencies.getModelMaxContextTokens?.(provider, model)
       ?? this.getModelTokenLimits(provider, model)?.maxContextTokens
       ?? 1_000_000;
   }
 
+  private preRoutingMaxContextTokens(): number {
+    if (this.config.isSubagent && this.config.subagentModel) {
+      return 1_000_000;
+    }
+    return this.currentMaxContextTokens(this.config.provider, this.config.model);
+  }
+
   private currentMaxOutputTokens(provider: string, model: string): number | undefined {
     const transient = this.transientTokenCaps.get(this.tokenCapKey(provider, model));
     const modelMaxOutputTokens = this.getModelTokenLimits(provider, model)?.maxOutputTokens;
-    const requested = transient?.attemptMaxOutputTokens ?? transient?.requestedMaxOutputTokens ?? this.config.maxOutputTokens;
+    const requested = transient?.attemptMaxOutputTokens
+      ?? transient?.requestedMaxOutputTokens
+      ?? this.getBaselineSubagentTokenLimits(provider, model)?.maxOutputTokens
+      ?? this.currentConfigMaxOutputTokens();
     const candidates = [requested, transient?.hardMaxOutputTokens]
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
     if (candidates.length > 0 && typeof modelMaxOutputTokens === "number" && Number.isFinite(modelMaxOutputTokens) && modelMaxOutputTokens > 0) {
       candidates.push(modelMaxOutputTokens);
     }
     return candidates.length > 0 ? Math.min(...candidates.map((value) => Math.floor(value))) : undefined;
+  }
+
+  private getBaselineSubagentTokenLimits(provider: string, model: string): { maxContextTokens?: number; maxOutputTokens?: number } | undefined {
+    const baseline = this.config.subagentModel;
+    if (!baseline || baseline.provider !== provider || baseline.model !== model) {
+      return undefined;
+    }
+    return {
+      maxContextTokens: baseline.maxContextTokens,
+      maxOutputTokens: baseline.maxOutputTokens,
+    };
+  }
+
+  private currentConfigMaxContextTokens(): number | undefined {
+    if (this.config.isSubagent && this.config.subagentModel) {
+      return undefined;
+    }
+    return this.config.maxContextTokens;
+  }
+
+  private currentConfigMaxOutputTokens(): number | undefined {
+    if (this.config.isSubagent && this.config.subagentModel) {
+      return undefined;
+    }
+    return this.config.maxOutputTokens;
   }
 
   private setTransientTokenCap(provider: string, model: string, cap: {
