@@ -904,7 +904,7 @@ function mergeUnconfirmedOptimisticUsers(
   const extrasByServerIndex = new Map<number, NormalizedMessage[]>();
   let previousInsertionIndex: number | null = null;
   for (const message of extra) {
-    let insertionIndex = isOptimisticUserMessage(message)
+    let insertionIndex: number = isOptimisticUserMessage(message)
       ? getInsertionIndex(message)
       : previousInsertionIndex ?? server.length;
     if (previousInsertionIndex != null) {
