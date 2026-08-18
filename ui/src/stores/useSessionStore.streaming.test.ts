@@ -404,6 +404,34 @@ describe('computeMerged', () => {
     expect(getRealtimeMessagesToKeepAfterServerRefresh(realtime, server)).toEqual(realtime);
   });
 
+  it('keeps an id-bearing optimistic send after its captured history tail despite clock skew', () => {
+    const server = [
+      textMessage('persisted-old-user', 'Old prompt', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+        turnId: 'run-old',
+        runId: 'run-old',
+      }),
+      textMessage('persisted-old-answer', 'Old answer', '2026-08-16T09:00:01.000Z', {
+        role: 'assistant',
+        turnId: 'run-old',
+        runId: 'run-old',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_new_user', 'New prompt', '2026-08-16T08:00:00.000Z', {
+        role: 'user',
+        runId: 'run-new',
+        serverTailIdAtStart: 'persisted-old-answer',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-old-user',
+      'persisted-old-answer',
+      'local_new_user',
+    ]);
+  });
+
   it('keeps an unpersisted retry while confirming a same-text send by run id', () => {
     const server = [
       textMessage('persisted-second-user', 'Continue.', '2026-08-16T09:00:00.100Z', {

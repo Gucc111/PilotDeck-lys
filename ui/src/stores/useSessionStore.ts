@@ -348,7 +348,6 @@ function captureOptimisticUserServerTail(
 ): NormalizedMessage {
   if (
     !isOptimisticUserMessage(message)
-    || getMessageTurnId(message)
     || message.serverTailIdAtStart !== undefined
   ) {
     return message;
@@ -594,7 +593,6 @@ function settlePendingOptimisticServerTail(
 ): NormalizedMessage {
   if (
     !isOptimisticUserMessage(message)
-    || getMessageTurnId(message)
     || !message.serverHistoryPendingAtStart
     || serverMessages.length === 0
   ) return message;
@@ -881,13 +879,27 @@ function mergeUnconfirmedOptimisticUsers(
   const result: NormalizedMessage[] = [];
   let userIndex = 0;
 
-  for (const serverMessage of server) {
+  const getTailBoundary = (message: NormalizedMessage): number => {
+    const tailId = message.serverTailIdAtStart;
+    // Historical fixtures and externally-created realtime rows may predate
+    // tail capture. Keep their timestamp-based placement for compatibility.
+    if (tailId === undefined) return 0;
+    if (tailId === null) {
+      return message.serverHistoryPendingAtStart ? server.length : 0;
+    }
+    const tailIndex = server.findIndex((serverMessage) => serverMessage.id === tailId);
+    return tailIndex >= 0 ? tailIndex + 1 : server.length;
+  };
+
+  for (let serverIndex = 0; serverIndex < server.length; serverIndex += 1) {
+    const serverMessage = server[serverIndex];
     const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
     while (userIndex < optimisticUsers.length) {
       const optimisticUser = optimisticUsers[userIndex];
       const optimisticTimestamp = parseTimestampMs(optimisticUser.timestamp);
       if (
-        optimisticTimestamp == null
+        serverIndex < getTailBoundary(optimisticUser)
+        || optimisticTimestamp == null
         || serverTimestamp == null
         || optimisticTimestamp > serverTimestamp
       ) {

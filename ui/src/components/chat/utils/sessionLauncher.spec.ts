@@ -16,7 +16,15 @@ describe('sessionLauncher turn identity', () => {
   it('falls back when Web Crypto is unavailable on an insecure origin', () => {
     vi.stubGlobal('crypto', undefined);
 
-    expect(createUserTurnRunId()).toMatch(/^web-turn-\d+-[a-z0-9]+$/);
+    expect(createUserTurnRunId()).toMatch(/^web-turn-\d+-\d+$/);
+  });
+
+  it('uses getRandomValues when randomUUID is unavailable', () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: (bytes: Uint8Array) => bytes.fill(0),
+    });
+
+    expect(createUserTurnRunId()).toBe('00000000-0000-4000-8000-000000000000');
   });
 
   it('forwards the optimistic user run id in the command options', () => {

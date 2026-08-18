@@ -406,9 +406,10 @@ describe('useSessionStore server request ordering', () => {
       );
     });
 
-    expect(result.current.getSessionSlot('session-1')?.realtimeMessages[0]).not.toHaveProperty(
-      'serverHistoryPendingAtStart',
-    );
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages[0]).toMatchObject({
+      serverTailIdAtStart: null,
+      serverHistoryPendingAtStart: true,
+    });
 
     await act(async () => {
       initial.resolve(response({
@@ -454,7 +455,12 @@ describe('useSessionStore server request ordering', () => {
     });
 
     expect(result.current.getSessionSlot('session-1')?.realtimeMessages).toEqual([
-      expect.objectContaining({ id: 'local_new_user', runId: 'run-new' }),
+      expect.objectContaining({
+        id: 'local_new_user',
+        runId: 'run-new',
+        serverTailIdAtStart: 'persisted-old-user',
+        serverHistoryPendingAtStart: false,
+      }),
     ]);
   });
 });
