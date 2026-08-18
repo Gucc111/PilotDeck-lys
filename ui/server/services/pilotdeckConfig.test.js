@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
     buildDefaultPilotDeckConfig,
     readPilotDeckConfigFile,
+    resolveModel,
     sanitizeProviderCredentials,
     validatePilotDeckConfig,
     writePilotDeckConfig,
@@ -202,6 +203,69 @@ describe('validatePilotDeckConfig gateway validation', () => {
 
         expect(validation.valid).toBe(true);
         expect(validation.errors).toEqual([]);
+    });
+
+    it('accepts null model definitions as empty objects', () => {
+        const validation = validatePilotDeckConfig({
+            agent: { model: 'ollama/qwen3:0.6b' },
+            model: {
+                providers: {
+                    ollama: {
+                        protocol: 'openai',
+                        url: 'http://localhost:11434/v1',
+                        models: {
+                            'qwen3:0.6b': null,
+                        },
+                    },
+                },
+            },
+        });
+
+        expect(validation.valid).toBe(true);
+        expect(validation.errors).toEqual([]);
+        expect(validation.config.model.providers.ollama.models['qwen3:0.6b']).toBeNull();
+        expect(resolveModel(validation.config, 'ollama/qwen3:0.6b').def).toEqual({});
+    });
+
+    it('still treats absent model keys as missing', () => {
+        const validation = validatePilotDeckConfig({
+            agent: { model: 'ollama/missing-model' },
+            model: {
+                providers: {
+                    ollama: {
+                        protocol: 'openai',
+                        url: 'http://localhost:11434/v1',
+                        models: {
+                            'qwen3:0.6b': null,
+                        },
+                    },
+                },
+            },
+        });
+
+        expect(validation.valid).toBe(false);
+        expect(validation.errors).toContain(
+            'agent.model="ollama/missing-model" doesn\'t resolve to a configured provider/model',
+        );
+    });
+
+    it('still rejects non-object model definitions', () => {
+        expect(() => resolveModel({
+            agent: { model: 'ollama/qwen3:0.6b' },
+            model: {
+                providers: {
+                    ollama: {
+                        protocol: 'openai',
+                        url: 'http://localhost:11434/v1',
+                        models: {
+                            'qwen3:0.6b': 'invalid',
+                        },
+                    },
+                },
+            },
+        }, 'ollama/qwen3:0.6b')).toThrow(
+            'Model definition for provider "ollama" must be an object: qwen3:0.6b',
+        );
     });
 
     it('warns instead of failing when agent.subagents.default references a missing provider', () => {

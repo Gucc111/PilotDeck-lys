@@ -190,17 +190,22 @@ export function resolveModel(config, ref, options = {}) {
     if (options.allowMissing) return null;
     throw new Error(`Provider not found for model "${effective}": ${parts.providerId}`);
   }
-  const def = isRecord(provider.models) ? provider.models[parts.modelId] : null;
-  if (!isRecord(def)) {
+  const models = isRecord(provider.models) ? provider.models : {};
+  if (!Object.prototype.hasOwnProperty.call(models, parts.modelId)) {
     if (options.allowMissing) return null;
     throw new Error(`Model not found for provider "${parts.providerId}": ${parts.modelId}`);
+  }
+  const rawDef = models[parts.modelId];
+  if (rawDef !== null && rawDef !== undefined && !isRecord(rawDef)) {
+    if (options.allowMissing) return null;
+    throw new Error(`Model definition for provider "${parts.providerId}" must be an object: ${parts.modelId}`);
   }
   return {
     id: effective,
     providerId: parts.providerId,
     provider,
     model: parts.modelId,
-    def,
+    def: isRecord(rawDef) ? rawDef : {},
   };
 }
 

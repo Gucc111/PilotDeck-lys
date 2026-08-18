@@ -2042,6 +2042,9 @@ export class AgentLoop {
   }
 
   private getBaselineSubagentTokenLimits(provider: string, model: string): { maxContextTokens?: number; maxOutputTokens?: number } | undefined {
+    if (this.config.isSubagent !== true) {
+      return undefined;
+    }
     const baseline = this.config.subagentModel;
     if (!baseline || baseline.provider !== provider || baseline.model !== model) {
       return undefined;

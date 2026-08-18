@@ -145,6 +145,113 @@ test("agent loop respects agent maxContextTokens before and after routing", asyn
   assert.ok(events.some((event) => event.type === "context_budget"));
 });
 
+test("main agent loop ignores matching subagent baseline caps", async () => {
+  const tokenBudget = new TokenBudgetManager();
+  const budgetEvaluations: Array<{ maxContextTokens?: number; reservedOutputTokens?: number }> = [];
+
+  const context: AgentRuntimeDependencies["context"] = {
+    prepareForModel: async (input) => ({
+      messages: input.messages,
+      systemPrompt: undefined,
+      systemPromptParts: [],
+      tools: input.tools,
+      diagnostics: [],
+      boundaries: [],
+    }),
+    applyToolResults: async (input) => ({ messages: input.messages, diagnostics: [] }),
+    recoverFromModelError: async () => ({ type: "give_up", reason: "test" }),
+    captureTurn: async () => undefined,
+    tryAutoCompact: async (input) => {
+      await input.budgetEvaluator?.(input.messages);
+      return {
+        type: "skipped",
+        snapshot: tokenBudget.snapshotFromTokens(1_000, input.maxContextTokens ?? 1_000_000, {
+          reservedOutputTokens: input.reservedOutputTokens,
+        }),
+      };
+    },
+  };
+
+  const router: AgentRouterRuntime = {
+    invalidateSticky: () => ({ orchestrating: false }),
+    decide: async ({ request }) => ({
+      provider: request.provider,
+      model: request.model,
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: async function* (): AsyncIterable<CanonicalModelEvent> {
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "done" };
+      yield { type: "message_end", finishReason: "stop" };
+    },
+    stream: async function* (): AsyncIterable<CanonicalModelEvent> {},
+    materializeRequest: (decision, request) => ({
+      ...request,
+      provider: decision.provider,
+      model: decision.model,
+    }),
+    observeUsage: () => undefined,
+  };
+
+  const loop = new AgentLoop({
+    provider: "openai",
+    model: "same-model",
+    cwd: "/workspace/project",
+    maxContextTokens: 8_000,
+    maxOutputTokens: 1_000,
+    subagentModel: {
+      provider: "openai",
+      model: "same-model",
+      maxContextTokens: 128_000,
+      maxOutputTokens: 32_768,
+    },
+    permissionMode: "bypassPermissions",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "bypassPermissions",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: { registry: new ToolRegistry(), scheduler: { async executeAll() { return []; } } },
+    context,
+    tokenAccounting: {
+      evaluateRequestBudget: async (_request: unknown, options: { maxContextTokens: number; reservedOutputTokens?: number }) => {
+        budgetEvaluations.push({
+          maxContextTokens: options.maxContextTokens,
+          reservedOutputTokens: options.reservedOutputTokens,
+        });
+        return tokenBudget.snapshotFromTokens(1_000, options.maxContextTokens, {
+          reservedOutputTokens: options.reservedOutputTokens,
+        });
+      },
+    } as unknown as AgentRuntimeDependencies["tokenAccounting"],
+    getModelTokenLimits(provider, model) {
+      if (provider === "openai" && model === "same-model") {
+        return { maxContextTokens: 128_000, maxOutputTokens: 32_768 };
+      }
+      return undefined;
+    },
+  });
+
+  for await (const _event of loop.run({
+    sessionId: "main-agent-matching-subagent-baseline",
+    turnId: "turn-main-agent-matching-subagent-baseline",
+    messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+  })) {
+    // Drain the turn.
+  }
+
+  assert.deepEqual(budgetEvaluations, [
+    { maxContextTokens: 8_000, reservedOutputTokens: 1_000 },
+  ]);
+});
+
 test("subagent loop applies baseline caps after router keeps the baseline model", async () => {
   const tokenBudget = new TokenBudgetManager();
   const budgetEvaluations: Array<{ maxContextTokens?: number; reservedOutputTokens?: number }> = [];
