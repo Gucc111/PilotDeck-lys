@@ -1,6 +1,6 @@
 import express from 'express';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
-import { promises as fs } from 'fs';
+import { constants as fsConstants, promises as fs } from 'fs';
 import path from 'path';
 import { addProjectManually } from '../projects.js';
 import { validateWorkspacePath, cloneGitHubRepository } from './projects.js';
@@ -185,12 +185,15 @@ router.put('/model-configuration', async (req, res) => {
       const existingProvider = recordConfig.config?.model?.providers?.[provider.providerId] || {};
       const suppliedKey = req.body?.apiKey;
       let apiKey;
-      if (suppliedKey === null) {
+      if (provider.providerId === 'ollama') {
+        if (typeof suppliedKey === 'string' && suppliedKey.trim()) {
+          return { error: ['INVALID_REQUEST', 'Ollama does not use an apiKey.'] };
+        }
+        apiKey = '';
+      } else if (suppliedKey === null) {
         apiKey = text(existingProvider.apiKey);
       } else if (typeof suppliedKey === 'string' && suppliedKey.trim()) {
         apiKey = suppliedKey.trim();
-      } else if (provider.providerId === 'ollama') {
-        apiKey = '';
       } else {
         return { error: ['INVALID_REQUEST', 'apiKey is required for this provider.'] };
       }
@@ -199,15 +202,29 @@ router.put('/model-configuration', async (req, res) => {
       }
       const configurationId = `cfg_${randomUUID()}`;
       const savedAt = new Date().toISOString();
-      const modelsConfig = Object.fromEntries(record.models.map((model) => [model.modelId, { multimodal: { input: model.imageInput === 'supported' ? ['text', 'image'] : ['text'] } }]));
+      const existingModels = existingProvider.models && typeof existingProvider.models === 'object' ? existingProvider.models : {};
+      const modelsConfig = Object.fromEntries(record.models.map((model) => {
+        const existingModel = existingModels[model.modelId] && typeof existingModels[model.modelId] === 'object' ? existingModels[model.modelId] : {};
+        const existingMultimodal = existingModel.multimodal && typeof existingModel.multimodal === 'object' ? existingModel.multimodal : {};
+        return [model.modelId, {
+          ...existingModel,
+          multimodal: { ...existingMultimodal, input: model.imageInput === 'supported' ? ['text', 'image'] : ['text'] },
+        }];
+      }));
+      const defaultModelId = text(submittedModels[0]?.modelId);
+      const savedProvider = {
+        ...existingProvider,
+        protocol: provider.protocol,
+        url: provider.endpoint,
+        retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs },
+        models: { ...existingModels, ...modelsConfig },
+      };
+      if (provider.providerId === 'ollama') delete savedProvider.apiKey;
+      else savedProvider.apiKey = apiKey;
       const nextConfig = {
         ...recordConfig.config,
-        agent: { ...recordConfig.config.agent, model: `${provider.providerId}/${record.models[0].modelId}` },
-        model: { ...recordConfig.config.model, providers: { ...recordConfig.config.model.providers, [provider.providerId]: {
-          ...existingProvider, protocol: provider.protocol, url: provider.endpoint, ...(apiKey ? { apiKey } : {}),
-          retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs },
-          models: { ...(existingProvider.models && typeof existingProvider.models === 'object' ? existingProvider.models : {}), ...modelsConfig },
-        } } },
+        agent: { ...recordConfig.config.agent, model: `${provider.providerId}/${defaultModelId}` },
+        model: { ...recordConfig.config.model, providers: { ...recordConfig.config.model.providers, [provider.providerId]: savedProvider } },
         webui: { ...recordConfig.config.webui, onboarding: { modelConfigurationId: configurationId, savedAt } },
       };
       suppressNextWatchEvent();
@@ -238,6 +255,7 @@ router.post('/workspaces', async (req, res) => {
     if (type === 'existing') {
       const stat = await fs.stat(workspacePath);
       if (!stat.isDirectory()) return apiError(res, 400, 'PATH_NOT_FOUND', 'Workspace path is not a directory.');
+      await fs.access(workspacePath, fsConstants.W_OK);
       const project = await addProjectManually(workspacePath);
       return res.status(201).json({ id: project.name, type, path: workspacePath, status: 'ready' });
     }
@@ -245,6 +263,7 @@ router.post('/workspaces', async (req, res) => {
       const existing = await fs.stat(workspacePath);
       if (!existing.isDirectory()) return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Workspace path already exists and is not a directory.');
       if ((await fs.readdir(workspacePath)).length > 0) return apiError(res, 409, 'WORKSPACE_CONFLICT', 'New workspace path must be empty.');
+      await fs.access(workspacePath, fsConstants.W_OK);
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
       await fs.mkdir(workspacePath, { recursive: true });
@@ -282,6 +301,7 @@ router.post('/workspaces', async (req, res) => {
     const project = await addProjectManually(projectPath);
     return res.status(201).json({ id: project.name, type, path: projectPath, status: 'ready' });
   } catch (error) {
+    if (['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) return apiError(res, 400, 'PATH_NOT_WRITABLE', 'Workspace path is not writable.');
     if (error?.code === 'ENOENT') return apiError(res, 404, 'PATH_NOT_FOUND', 'Workspace path does not exist.');
     return apiError(res, 409, 'WORKSPACE_CONFLICT', error?.message || 'Unable to create workspace.');
   }

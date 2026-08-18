@@ -96,10 +96,12 @@ describe('onboarding routes', () => {
     const validateWorkspacePath = vi.fn(async (requestedPath) => ({ valid: true, resolvedPath: `/resolved${requestedPath}` }));
     const addProjectManually = vi.fn(async (workspacePath) => ({ name: 'project-id', path: workspacePath }));
     const fsStat = vi.spyOn((await import('fs')).promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+    const fsAccess = vi.spyOn((await import('fs')).promises, 'access').mockResolvedValue(undefined);
     const { request } = await createOnboardingApp({ validateWorkspacePath, addProjectManually });
     const result = await request('/api/v1/workspaces', { method: 'POST', body: JSON.stringify({ type: 'existing', path: '/project' }) });
     expect(result).toEqual({ status: 201, body: { id: 'project-id', type: 'existing', path: '/resolved/project', status: 'ready' } });
     fsStat.mockRestore();
+    fsAccess.mockRestore();
   });
 
   it('expires a test record instead of allowing its manual update', async () => {
