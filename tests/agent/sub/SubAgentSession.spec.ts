@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { afterEach } from "node:test";
 
 import type { AgentRuntimeConfig } from "../../../src/agent/runtime/AgentRuntimeConfig.js";
 import {
@@ -34,6 +37,8 @@ import {
   type PilotDeckToolRuntimeContext,
 } from "../../../src/tool/index.js";
 import type { CanonicalMessage } from "../../../src/model/index.js";
+import { loadPilotConfig } from "../../../src/pilot/index.js";
+import { PilotConfigError } from "../../../src/pilot/config/types.js";
 
 const FINAL_REPORT = [
   "Scope: inspected inputs",
@@ -42,6 +47,14 @@ const FINAL_REPORT = [
   "Files changed: none",
   "Issues: none",
 ].join("\n");
+
+const tempPilotHomes: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempPilotHomes.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 type TestableSubAgentSession = {
   buildScopedRegistry(): ToolRegistry;
@@ -197,6 +210,118 @@ function runtimeContext(config: AgentRuntimeConfig): PilotDeckToolRuntimeContext
     now: () => new Date("2026-07-17T00:00:00.000Z"),
   };
 }
+
+function writePilotConfig(raw: string): string {
+  const pilotHome = mkdtempSync(join(tmpdir(), "pilotdeck-subagent-config-"));
+  tempPilotHomes.push(pilotHome);
+  writeFileSync(join(pilotHome, "pilotdeck.yaml"), raw, "utf8");
+  return pilotHome;
+}
+
+function loadInlinePilotConfig(raw: string) {
+  const pilotHome = writePilotConfig(raw);
+  return loadPilotConfig({ env: { PILOT_HOME: pilotHome } });
+}
+
+function pilotConfigWithSubagentDefault(defaultValue: string): string {
+  return `
+schemaVersion: 1
+agent:
+  model: main/main-model
+  subagents:
+    default: ${defaultValue}
+model:
+  providers:
+    main:
+      protocol: openai
+      url: https://example.invalid/v1
+      apiKey: test
+      models:
+        main-model: {}
+    child:
+      protocol: openai
+      url: https://example.invalid/v1
+      apiKey: test
+      models:
+        child-model: {}
+`;
+}
+
+test("agent.subagents.default inherit keeps subagent model unset", () => {
+  const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("inherit"));
+
+  assert.equal(snapshot.config.agent.subagents?.default, undefined);
+  assert.equal(snapshot.diagnostics.some((diagnostic) => diagnostic.path === "agent.subagents.default"), false);
+});
+
+test("agent.subagents.default resolves a configured model", () => {
+  const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("child/child-model"));
+
+  assert.deepEqual(snapshot.config.agent.subagents?.default, {
+    id: "child/child-model",
+    provider: "child",
+    model: "child-model",
+  });
+});
+
+test("agent.subagents.default inherits with a warning when provider is missing", () => {
+  const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("missing/child-model"));
+
+  assert.equal(snapshot.config.agent.subagents?.default, undefined);
+  assert.deepEqual(
+    snapshot.diagnostics.find((diagnostic) => diagnostic.path === "agent.subagents.default"),
+    {
+      code: "CONFIG_AGENT_SUBAGENT_PROVIDER_NOT_FOUND",
+      severity: "warning",
+      message: "agent.subagents.default references unknown provider missing. Inheriting agent.model instead.",
+      path: "agent.subagents.default",
+      recoverable: true,
+    },
+  );
+});
+
+test("agent.subagents.default inherits with a warning when model is missing", () => {
+  const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("child/missing-model"));
+
+  assert.equal(snapshot.config.agent.subagents?.default, undefined);
+  assert.equal(
+    snapshot.diagnostics.find((diagnostic) => diagnostic.path === "agent.subagents.default")?.code,
+    "CONFIG_AGENT_SUBAGENT_MODEL_NOT_FOUND",
+  );
+});
+
+test("agent.subagents.default inherits with a warning when malformed", () => {
+  const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("missing-format"));
+
+  assert.equal(snapshot.config.agent.subagents?.default, undefined);
+  assert.equal(
+    snapshot.diagnostics.find((diagnostic) => diagnostic.path === "agent.subagents.default")?.code,
+    "CONFIG_AGENT_SUBAGENT_MODEL_INVALID",
+  );
+});
+
+test("agent.model still fails fast when provider is missing", () => {
+  assert.throws(
+    () => loadInlinePilotConfig(`
+schemaVersion: 1
+agent:
+  model: missing/main-model
+  subagents:
+    default: child/child-model
+model:
+  providers:
+    child:
+      protocol: openai
+      url: https://example.invalid/v1
+      apiKey: test
+      models:
+        child-model: {}
+`),
+    (error) =>
+      error instanceof PilotConfigError &&
+      error.diagnostics.some((diagnostic) => diagnostic.code === "CONFIG_AGENT_PROVIDER_NOT_FOUND"),
+  );
+});
 
 test("explore subagent does not probe tool safety before execution", async () => {
   const readOnlyChecks: string[] = [];
