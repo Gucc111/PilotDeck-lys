@@ -388,6 +388,52 @@ function isConfirmedUserMessageDuplicate(
   return findConfirmedUserMessageDuplicateIndex(realtimeMessage, serverMessages) >= 0;
 }
 
+function getConfirmedRealtimeUserIndexes(
+  serverMessages: NormalizedMessage[],
+  realtimeMessages: NormalizedMessage[],
+): Set<number> {
+  const consumedRealtimeIndexes = new Set<number>();
+
+  for (const serverMessage of serverMessages) {
+    if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') continue;
+    const serverIdentity = getConfirmedUserMessageIdentity(serverMessage);
+    if (!serverIdentity.text) continue;
+
+    let closestRealtimeIndex = -1;
+    let closestTimestampDistance = Number.POSITIVE_INFINITY;
+    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
+
+    for (let index = 0; index < realtimeMessages.length; index += 1) {
+      if (consumedRealtimeIndexes.has(index)) continue;
+      const realtimeMessage = realtimeMessages[index];
+      if (!isOptimisticUserMessage(realtimeMessage)) continue;
+
+      const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
+      if (
+        realtimeIdentity.text !== serverIdentity.text
+        || !haveSameUserMessageInputs(realtimeIdentity, serverIdentity)
+      ) {
+        continue;
+      }
+
+      const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
+      const timestampDistance = serverTimestamp != null && realtimeTimestamp != null
+        ? Math.abs(serverTimestamp - realtimeTimestamp)
+        : Number.POSITIVE_INFINITY;
+      if (
+        timestampDistance > 10_000
+        || (closestRealtimeIndex >= 0 && timestampDistance >= closestTimestampDistance)
+      ) continue;
+      closestRealtimeIndex = index;
+      closestTimestampDistance = timestampDistance;
+    }
+
+    if (closestRealtimeIndex >= 0) consumedRealtimeIndexes.add(closestRealtimeIndex);
+  }
+
+  return consumedRealtimeIndexes;
+}
+
 /**
  * The backend pushes a synthetic `interrupted` notice the moment abort fires
 
@@ -629,23 +675,26 @@ export function getUnpersistedRealtimeTurnMessages(
 export function shouldKeepRealtimeAfterServerRefresh(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
-  consumedServerUserIndexes?: Set<number>,
 ): boolean {
   if (realtimeMessage.id.startsWith('__streaming_')) {
     return true;
   }
   if (!PERSISTED_RENDERABLE_KINDS.has(realtimeMessage.kind)) return false;
   if (isOptimisticUserMessage(realtimeMessage)) {
-    const duplicateIndex = findConfirmedUserMessageDuplicateIndex(
-      realtimeMessage,
-      serverMessages,
-      consumedServerUserIndexes,
-    );
-    if (duplicateIndex < 0) return true;
-    consumedServerUserIndexes?.add(duplicateIndex);
-    return false;
+    return !isConfirmedUserMessageDuplicate(realtimeMessage, serverMessages);
   }
   return !isRealtimeMessageRepresentedOnServer(realtimeMessage, serverMessages);
+}
+
+export function getRealtimeMessagesToKeepAfterServerRefresh(
+  realtimeMessages: NormalizedMessage[],
+  serverMessages: NormalizedMessage[],
+): NormalizedMessage[] {
+  const confirmedRealtimeIndexes = getConfirmedRealtimeUserIndexes(serverMessages, realtimeMessages);
+  return realtimeMessages.filter((message, index) => {
+    if (isOptimisticUserMessage(message)) return !confirmedRealtimeIndexes.has(index);
+    return shouldKeepRealtimeAfterServerRefresh(message, serverMessages);
+  });
 }
 
 /**
@@ -658,18 +707,9 @@ export function computeMerged(server: NormalizedMessage[], realtime: NormalizedM
     return server;
   }
   if (server.length === 0) return realtime;
-  const consumedServerUserIndexes = new Set<number>();
-  const extra = realtime.filter((message) => {
-    if (isOptimisticUserMessage(message)) {
-      const duplicateIndex = findConfirmedUserMessageDuplicateIndex(
-        message,
-        server,
-        consumedServerUserIndexes,
-      );
-      if (duplicateIndex < 0) return true;
-      consumedServerUserIndexes.add(duplicateIndex);
-      return false;
-    }
+  const confirmedRealtimeIndexes = getConfirmedRealtimeUserIndexes(server, realtime);
+  const extra = realtime.filter((message, index) => {
+    if (isOptimisticUserMessage(message)) return !confirmedRealtimeIndexes.has(index);
     return !isRealtimeMessageRepresentedOnServer(message, server);
   });
   if (extra.length === 0) return server;
@@ -1032,9 +1072,12 @@ export function useSessionStore() {
         const serverToolIds = new Set(
           messages.filter(m => m.kind === 'tool_use' && m.toolId).map(m => m.toolId!)
         );
-        const consumedServerUserIndexes = new Set<number>();
-        slot.realtimeMessages = slot.realtimeMessages.filter(m => {
-          if (shouldKeepRealtimeAfterServerRefresh(m, messages, consumedServerUserIndexes)) return true;
+        const confirmedRealtimeIndexes = getConfirmedRealtimeUserIndexes(messages, slot.realtimeMessages);
+        slot.realtimeMessages = slot.realtimeMessages.filter((m, index) => {
+          if (isOptimisticUserMessage(m)) {
+            return !confirmedRealtimeIndexes.has(index);
+          }
+          if (shouldKeepRealtimeAfterServerRefresh(m, messages)) return true;
           if (serverIds.has(m.id)) return false;
           if (m.kind === 'tool_use' && m.toolId && serverToolIds.has(m.toolId)) return false;
           return (Date.parse(m.timestamp) || 0) > watermark;
@@ -1445,9 +1488,9 @@ export function useSessionStore() {
       // an equivalent assistant message; otherwise the UI can show "complete"
       // while the model's visible answer disappears.
       if (slot.realtimeMessages.length > 0 && incomingMessages.length > 0) {
-        const consumedServerUserIndexes = new Set<number>();
-        slot.realtimeMessages = slot.realtimeMessages.filter((message) =>
-          shouldKeepRealtimeAfterServerRefresh(message, incomingMessages, consumedServerUserIndexes)
+        slot.realtimeMessages = getRealtimeMessagesToKeepAfterServerRefresh(
+          slot.realtimeMessages,
+          incomingMessages,
         );
       }
       recomputeMergedIfNeeded(slot);

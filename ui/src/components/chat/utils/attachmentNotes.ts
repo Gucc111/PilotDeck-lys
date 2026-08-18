@@ -97,7 +97,7 @@ export function parseUserAttachmentNote(content: unknown): {
   for (const rawLine of note.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line.startsWith('- ')) continue;
-    const separator = line.indexOf(': ');
+    const separator = line.lastIndexOf(': ');
     if (separator < 0) continue;
 
     const name = line.slice(2, separator).trim();

@@ -42,6 +42,23 @@ describe('attachment path notes', () => {
     }]);
   });
 
+  it('preserves a colon in the attachment filename', () => {
+    const filePath = '/tmp/1-report__final.pdf';
+    const parsed = parseUserAttachmentNote([
+      'Review this report',
+      '',
+      marker,
+      `- report: final.pdf: ${filePath}`,
+      '[End files attached by user]',
+    ].join('\n'));
+
+    expect(parsed.attachments).toEqual([{
+      name: 'report: final.pdf',
+      path: filePath,
+      mimeType: 'application/pdf',
+    }]);
+  });
+
   it.each([
     ['PDF metadata', '[PDF attachment: C:\\work\\brief.pdf, 42 bytes]'],
     ['inline text content', '<attachment path="C:\\work\\notes.txt">'],

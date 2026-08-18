@@ -10,6 +10,7 @@ import {
   cancelRunningAgentActivities,
   createRafNotifyScheduler,
   getFinalizedSubagentThinkingId,
+  getRealtimeMessagesToKeepAfterServerRefresh,
   getUnpersistedRealtimeTurnMessages,
   isRealtimeMessageRepresentedOnServer,
   patchMergedStreamingMessage,
@@ -362,6 +363,23 @@ describe('computeMerged', () => {
     ]);
   });
 
+  it('matches a persisted send to the closest optimistic timestamp', () => {
+    const server = [
+      textMessage('persisted-second-user', 'Continue.', '2026-08-16T09:00:00.100Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_failed_first', 'Continue.', '2026-08-16T09:00:00.000Z', { role: 'user' }),
+      textMessage('local_confirmed_second', 'Continue.', '2026-08-16T09:00:00.100Z', { role: 'user' }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-second-user',
+      'local_failed_first',
+    ]);
+  });
+
   it('keeps the second identical optimistic send during server-refresh cleanup', () => {
     const server = [
       textMessage('persisted-first-user', 'Continue.', '2026-08-16T09:00:00.050Z', {
@@ -372,13 +390,25 @@ describe('computeMerged', () => {
       textMessage('local_first', 'Continue.', '2026-08-16T09:00:00.000Z', { role: 'user' }),
       textMessage('local_second', 'Continue.', '2026-08-16T09:00:00.100Z', { role: 'user' }),
     ];
-    const consumedServerUserIndexes = new Set<number>();
-
-    const retained = realtime.filter((message) => (
-      shouldKeepRealtimeAfterServerRefresh(message, server, consumedServerUserIndexes)
-    ));
+    const retained = getRealtimeMessagesToKeepAfterServerRefresh(realtime, server);
 
     expect(retained.map((message) => message.id)).toEqual(['local_second']);
+  });
+
+  it('uses the closest optimistic timestamp during refresh cleanup', () => {
+    const server = [
+      textMessage('persisted-second-user', 'Continue.', '2026-08-16T09:00:00.100Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_failed_first', 'Continue.', '2026-08-16T09:00:00.000Z', { role: 'user' }),
+      textMessage('local_confirmed_second', 'Continue.', '2026-08-16T09:00:00.100Z', { role: 'user' }),
+    ];
+
+    expect(getRealtimeMessagesToKeepAfterServerRefresh(realtime, server).map((message) => message.id)).toEqual([
+      'local_failed_first',
+    ]);
   });
 
   it('keeps optimistic messages whose image input order differs from the persisted message', () => {
