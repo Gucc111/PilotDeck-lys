@@ -58,6 +58,38 @@ test("agent loop drops interrupted tool calls and continues with a chunked-write
   assert.doesNotMatch(JSON.stringify(recoveryRequest.messages), /\"content\":\"partial/);
 });
 
+test("agent loop recovers an unknown finish reason before treating the turn as successful", async () => {
+  const requests: CanonicalModelRequest[] = [];
+  const loop = createLoop(async function* (_decision, request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: "partial" };
+      yield { type: "message_end", finishReason: "unknown" };
+      return;
+    }
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "recovered" };
+    yield { type: "message_end", finishReason: "stop" };
+  }, () => undefined);
+
+  const events: Array<{ type: string }> = [];
+  for await (const event of loop.run({
+    sessionId: "unknown-finish",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "write an answer" }] }],
+  })) {
+    events.push(event);
+  }
+
+  assert.equal(requests.length, 2);
+  assert.ok(events.some((event) => event.type === "turn_continued"));
+  assert.ok(!events.some((event) => event.type === "unknown_finish_reason"));
+  const recoveryText = requests[1]!.messages.at(-1)?.content[0];
+  assert.equal(recoveryText?.type, "text");
+  assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /without a recognized finish reason/);
+});
+
 function createLoop(
   execute: AgentRouterRuntime["execute"],
   onSchedule: () => void,

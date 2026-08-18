@@ -264,6 +264,8 @@ export class AgentLoop {
     let hasAttemptedImageStrip = false;
     const MAX_STREAM_INTERRUPTION_RECOVERIES = 2;
     let streamInterruptionRecoveryCount = 0;
+    const MAX_UNKNOWN_FINISH_RECOVERIES = 2;
+    let unknownFinishRecoveryCount = 0;
     const largeFileRepair = new LargeFileRepair();
 
     /**
@@ -765,6 +767,56 @@ export class AgentLoop {
         return { result, messages };
       }
       streamInterruptionRecoveryCount = 0;
+
+      if (!assembled.error && assembled.finishReason === "unknown") {
+        if (unknownFinishRecoveryCount < MAX_UNKNOWN_FINISH_RECOVERIES) {
+          unknownFinishRecoveryCount++;
+          const partialTextMessage = withoutThinkingBlocks(assistantMessage);
+          if (toolCalls.length === 0 && textFromMessage(partialTextMessage).trim().length > 0) {
+            finalMessage = partialTextMessage;
+            messages.push(partialTextMessage);
+            yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialTextMessage };
+            await input.onDurableMessage?.(partialTextMessage);
+          }
+          pushTransientSyntheticPrompt(
+            buildUnknownFinishRecoveryPrompt(toolCalls),
+            "unknown_finish_recovery",
+          );
+          yield {
+            type: "turn_continued",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            reason: "model_error",
+          };
+          continue;
+        }
+
+        const error = agentError(
+          "agent_model_error",
+          `Unknown finish reason recovery exhausted after ${MAX_UNKNOWN_FINISH_RECOVERIES} attempts.`,
+          undefined,
+          "The provider repeatedly ended the stream without a recognized finish reason. Retry the turn or switch providers.",
+        );
+        await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
+        yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: error.message };
+        const result = this.createTurnResult(input, {
+          type: "error",
+          stopReason: "model_error",
+          usage,
+          permissionDenials,
+          turns: turnCount,
+          startedAt,
+          finalMessage,
+          structuredOutput,
+          errors: [error],
+        });
+        yield await emitStatus(createModelRequestFailedStatus({ error }));
+        yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error };
+        await captureTurn(true);
+        yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+        return { result, messages };
+      }
+      unknownFinishRecoveryCount = 0;
 
       if (assembled.hasPartialTextToolCall) {
         if (maxOutputRecoveryCount < MAX_OUTPUT_RECOVERY_LIMIT) {
@@ -2747,6 +2799,17 @@ function buildStreamInterruptionRecoveryPrompt(
     return "The previous model stream disconnected mid-response. Continue exactly where the visible response ended; do not repeat prior text or recap.";
   }
   return "The previous model stream disconnected before producing a response. Continue the original task directly from the current workspace state.";
+}
+
+function buildUnknownFinishRecoveryPrompt(toolCalls: CanonicalToolCall[]): string {
+  if (toolCalls.length > 0) {
+    return [
+      "The previous response ended without a recognized finish reason after generating tool calls. No tool call was executed.",
+      "Continue the original task from the current workspace state. Inspect relevant files before acting.",
+      "Do not repeat the same large atomic write. Use small focused write_file or edit_file calls.",
+    ].join("\n");
+  }
+  return "The previous response ended without a recognized finish reason. Continue exactly where the visible response ended; do not repeat prior text or recap.";
 }
 
 function isMissingReasoningContentError(error: CanonicalModelError): boolean {
