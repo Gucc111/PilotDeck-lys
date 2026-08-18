@@ -90,6 +90,39 @@ test("agent loop recovers an unknown finish reason before treating the turn as s
   assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /without a recognized finish reason/);
 });
 
+test("unknown finish with partial Hermes tool text uses the specialized recovery", async () => {
+  const requests: CanonicalModelRequest[] = [];
+  let scheduledToolCalls = 0;
+  const partialToolText = '<tool_call>{"name":"write_file","arguments":{"path":"deck.mjs"';
+  const loop = createLoop(async function* (_decision, request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: partialToolText };
+      yield { type: "message_end", finishReason: "unknown" };
+      return;
+    }
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "recovered" };
+    yield { type: "message_end", finishReason: "stop" };
+  }, () => { scheduledToolCalls += 1; });
+
+  for await (const _event of loop.run({
+    sessionId: "unknown-partial-tool",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "write a deck builder" }] }],
+  })) {
+    // Consume the complete recovery flow.
+  }
+
+  assert.equal(requests.length, 2);
+  assert.equal(scheduledToolCalls, 0);
+  const recoveryText = requests[1]!.messages.at(-1)?.content[0];
+  assert.equal(recoveryText?.type, "text");
+  assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
+  assert.equal(requests[1]!.messages.some((message) => message.role === "assistant"), false);
+});
+
 function createLoop(
   execute: AgentRouterRuntime["execute"],
   onSchedule: () => void,

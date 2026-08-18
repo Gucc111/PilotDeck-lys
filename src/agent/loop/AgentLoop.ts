@@ -768,7 +768,7 @@ export class AgentLoop {
       }
       streamInterruptionRecoveryCount = 0;
 
-      if (!assembled.error && assembled.finishReason === "unknown") {
+      if (!assembled.error && !assembled.hasPartialTextToolCall && assembled.finishReason === "unknown") {
         if (unknownFinishRecoveryCount < MAX_UNKNOWN_FINISH_RECOVERIES) {
           unknownFinishRecoveryCount++;
           const partialTextMessage = withoutThinkingBlocks(assistantMessage);
