@@ -205,7 +205,8 @@ router.put('/model-configuration', async (req, res) => {
         agent: { ...recordConfig.config.agent, model: `${provider.providerId}/${record.models[0].modelId}` },
         model: { ...recordConfig.config.model, providers: { ...recordConfig.config.model.providers, [provider.providerId]: {
           ...existingProvider, protocol: provider.protocol, url: provider.endpoint, ...(apiKey ? { apiKey } : {}),
-          retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs }, models: modelsConfig,
+          retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs },
+          models: { ...(existingProvider.models && typeof existingProvider.models === 'object' ? existingProvider.models : {}), ...modelsConfig },
         } } },
         webui: { ...recordConfig.config.webui, onboarding: { modelConfigurationId: configurationId, savedAt } },
       };

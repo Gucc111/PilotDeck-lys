@@ -39,7 +39,12 @@ describe('onboarding routes', () => {
     const { request } = await createOnboardingApp({
       probe: vi.fn().mockResolvedValue({ ok: true }),
       writePilotDeckConfig,
-      config: { schemaVersion: 1, agent: {}, model: { providers: {} }, webui: {} },
+      config: {
+        schemaVersion: 1,
+        agent: {},
+        model: { providers: { openai: { protocol: 'openai', url: 'https://api.openai.com/v1', apiKey: 'key', models: { 'keep-me': { multimodal: { input: ['text'] } } } } } },
+        webui: {},
+      },
     });
     const test = await request('/api/v1/model-connection-tests', {
       method: 'POST', headers: { 'x-user': 'one' }, body: JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['gpt-test'], retryPolicy: retryPolicy() }),
@@ -56,7 +61,7 @@ describe('onboarding routes', () => {
     expect(saved.status).toBe(200);
     expect(writePilotDeckConfig).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ model: 'openai/gpt-test' }),
-      model: expect.objectContaining({ providers: expect.objectContaining({ openai: expect.objectContaining({ retry: expect.objectContaining({ requestMaxRetries: 2 }), models: expect.objectContaining({ 'gpt-test': { multimodal: { input: ['text', 'image'] } } }) }) }) }),
+      model: expect.objectContaining({ providers: expect.objectContaining({ openai: expect.objectContaining({ retry: expect.objectContaining({ requestMaxRetries: 2 }), models: expect.objectContaining({ 'keep-me': { multimodal: { input: ['text'] } }, 'gpt-test': { multimodal: { input: ['text', 'image'] } } }) }) }) }),
     }));
   });
 
