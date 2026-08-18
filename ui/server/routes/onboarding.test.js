@@ -60,6 +60,22 @@ describe('onboarding routes', () => {
     }));
   });
 
+  it('requires the exact tested model set and retry policy when saving', async () => {
+    const { request } = await createOnboardingApp({ probe: vi.fn().mockResolvedValue({ ok: true }) });
+    const test = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['model-a', 'model-b'], retryPolicy: retryPolicy() }),
+    });
+    const duplicateModels = [{ modelId: 'model-a', textInput: true, imageInput: true }, { modelId: 'model-a', textInput: true, imageInput: true }];
+    const duplicate = await request('/api/v1/model-configuration', {
+      method: 'PUT', body: JSON.stringify({ testId: test.body.testId, providerId: 'openai', apiKey: 'key', models: duplicateModels, retryPolicy: retryPolicy() }),
+    });
+    expect(duplicate).toMatchObject({ status: 409, body: { code: 'CONFIGURATION_MISMATCH' } });
+    const changedRetry = await request('/api/v1/model-configuration', {
+      method: 'PUT', body: JSON.stringify({ testId: test.body.testId, providerId: 'openai', apiKey: 'key', models: [{ modelId: 'model-a', textInput: true, imageInput: true }, { modelId: 'model-b', textInput: true, imageInput: true }], retryPolicy: { ...retryPolicy(), maxRetries: 4 } }),
+    });
+    expect(changedRetry).toMatchObject({ status: 409, body: { code: 'CONFIGURATION_MISMATCH' } });
+  });
+
   it('creates existing and new workspaces through the shared helpers', async () => {
     const validateWorkspacePath = vi.fn(async (requestedPath) => ({ valid: true, resolvedPath: `/resolved/${requestedPath}` }));
     const addProjectManually = vi.fn(async (workspacePath) => ({ name: 'project-id', path: workspacePath }));
@@ -82,11 +98,13 @@ describe('onboarding routes', () => {
     expect(expired).toMatchObject({ status: 410, body: { code: 'TEST_EXPIRED' } });
   });
 
-  it('removes only the clone destination when cloning a new workspace fails', async () => {
+  it('removes only its unique staging directory when cloning a new workspace fails', async () => {
     const fs = (await import('fs')).promises;
     const mkdir = vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
     const access = vi.spyOn(fs, 'access').mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' }));
     const rm = vi.spyOn(fs, 'rm').mockResolvedValue(undefined);
+    const open = vi.spyOn(fs, 'open').mockResolvedValue({ close: vi.fn(async () => undefined) });
+    const unlink = vi.spyOn(fs, 'unlink').mockResolvedValue(undefined);
     const cloneGitHubRepository = vi.fn().mockRejectedValue(new Error('clone failed'));
     const { request } = await createOnboardingApp({
       validateWorkspacePath: vi.fn(async () => ({ valid: true, resolvedPath: '/tmp/onboarding-workspace' })),
@@ -96,10 +114,12 @@ describe('onboarding routes', () => {
       method: 'POST', body: JSON.stringify({ type: 'new', path: '/tmp/onboarding-workspace', githubUrl: 'https://github.com/openbmb/PilotDeck.git' }),
     });
     expect(response).toMatchObject({ status: 409, body: { code: 'GIT_CLONE_FAILED' } });
-    expect(rm).toHaveBeenCalledWith('/tmp/onboarding-workspace/PilotDeck', { recursive: true, force: true });
+    expect(rm).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/onboarding-workspace\/\.PilotDeck\.pilotdeck-clone-/), { recursive: true, force: true });
     mkdir.mockRestore();
     access.mockRestore();
     rm.mockRestore();
+    open.mockRestore();
+    unlink.mockRestore();
   });
 });
 

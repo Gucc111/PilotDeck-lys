@@ -131,10 +131,14 @@ router.put('/model-configuration', async (req, res) => {
   const provider = resolveProvider(req.body || {});
   const retry = retryPolicy(req.body?.retryPolicy);
   const submittedModels = Array.isArray(req.body?.models) ? req.body.models : [];
-  if (!hasOnlyKeys(req.body, ['testId', 'providerId', 'protocol', 'endpoint', 'apiKey', 'models', 'retryPolicy']) || !provider || !retry || provider.providerId !== record.provider.providerId || provider.protocol !== record.provider.protocol || provider.endpoint !== record.provider.endpoint || submittedModels.length !== record.models.length) {
+  if (!hasOnlyKeys(req.body, ['testId', 'providerId', 'protocol', 'endpoint', 'apiKey', 'models', 'retryPolicy']) || !provider || !retry || provider.providerId !== record.provider.providerId || provider.protocol !== record.provider.protocol || provider.endpoint !== record.provider.endpoint || submittedModels.length !== record.models.length || Object.keys(retry).some((key) => retry[key] !== record.retry[key])) {
     return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'Configuration does not match the tested provider and models.');
   }
   const expected = new Map(record.models.map((model) => [model.modelId, model]));
+  const submittedIds = submittedModels.map((model) => text(model?.modelId));
+  if (new Set(submittedIds).size !== submittedIds.length || submittedIds.some((id) => !expected.has(id))) {
+    return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'Configuration does not match the tested provider and models.');
+  }
   for (const submitted of submittedModels) {
     const tested = expected.get(text(submitted?.modelId));
     if (!hasOnlyKeys(submitted, ['modelId', 'textInput', 'imageInput']) || !tested || submitted.textInput !== true || submitted.imageInput !== (tested.imageInput === 'supported')) return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'Model capabilities do not match the connection test.');
@@ -193,11 +197,26 @@ router.post('/workspaces', async (req, res) => {
       const repoName = path.basename(parsed.pathname.replace(/\/$/, '').replace(/\.git$/, '')) || 'repository';
       projectPath = path.join(workspacePath, repoName);
       try { await fs.access(projectPath); return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.'); } catch { /* expected */ }
+      const lockPath = `${projectPath}.pilotdeck-clone.lock`;
+      let lockHandle;
       try {
-        await cloneGitHubRepository(githubUrl, projectPath);
+        lockHandle = await fs.open(lockPath, 'wx');
+        await lockHandle.close();
       } catch {
-        try { await fs.rm(projectPath, { recursive: true, force: true }); } catch { /* Preserve the clone error response. */ }
+        return apiError(res, 409, 'WORKSPACE_CONFLICT', 'A clone is already in progress for this destination.');
+      }
+      const stagingPath = path.join(workspacePath, `.${repoName}.pilotdeck-clone-${randomUUID()}`);
+      try {
+        await cloneGitHubRepository(githubUrl, stagingPath);
+        await fs.rename(stagingPath, projectPath);
+      } catch (error) {
+        try { await fs.rm(stagingPath, { recursive: true, force: true }); } catch { /* Staging path is owned by this request. */ }
+        if (error?.code === 'EEXIST' || error?.code === 'ENOTEMPTY') {
+          return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.');
+        }
         return apiError(res, 409, 'GIT_CLONE_FAILED', 'Unable to clone the repository.');
+      } finally {
+        try { await fs.unlink(lockPath); } catch { /* Do not mask the clone result if lock cleanup fails. */ }
       }
     }
     const project = await addProjectManually(projectPath);
