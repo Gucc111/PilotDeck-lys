@@ -1,0 +1,120 @@
+import express from 'express';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const nativeFetch = globalThis.fetch;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.resetModules();
+});
+
+describe('onboarding routes', () => {
+  it('maps prototype provider aliases and requires manual image completion', async () => {
+    const probe = vi.fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, error: 'upstream 500', imageUnsupported: false });
+    const { request } = await createOnboardingApp({ probe });
+    const result = await request('/api/v1/model-connection-tests', {
+      method: 'POST', headers: { 'x-user': 'one' }, body: JSON.stringify({
+        providerId: 'gemini', apiKey: 'key', models: ['gemini-test'], retryPolicy: retryPolicy(), endpoint: 'https://ignored.example', protocol: 'openai',
+      }),
+    });
+    expect(result.status).toBe(200);
+    expect(result.body.status).toBe('manual_input_required');
+    expect(probe).toHaveBeenNthCalledWith(1, expect.objectContaining({ providerId: 'google', protocol: 'google', endpoint: 'https://generativelanguage.googleapis.com' }));
+
+    const incomplete = await request(`/api/v1/model-connection-tests/${result.body.testId}/image-capabilities`, {
+      method: 'PUT', headers: { 'x-user': 'one' }, body: JSON.stringify({ models: [{ modelId: 'wrong-model', imageInput: 'supported' }] }),
+    });
+    expect(incomplete.status).toBe(400);
+
+    const completed = await request(`/api/v1/model-connection-tests/${result.body.testId}/image-capabilities`, {
+      method: 'PUT', headers: { 'x-user': 'one' }, body: JSON.stringify({ models: [{ modelId: 'gemini-test', imageInput: 'supported' }] }),
+    });
+    expect(completed.body.status).toBe('passed');
+  });
+
+  it('isolates test IDs by user and writes the tested model configuration', async () => {
+    const writePilotDeckConfig = vi.fn(async (config) => ({ config }));
+    const { request } = await createOnboardingApp({
+      probe: vi.fn().mockResolvedValue({ ok: true }),
+      writePilotDeckConfig,
+      config: { schemaVersion: 1, agent: {}, model: { providers: {} }, webui: {} },
+    });
+    const test = await request('/api/v1/model-connection-tests', {
+      method: 'POST', headers: { 'x-user': 'one' }, body: JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['gpt-test'], retryPolicy: retryPolicy() }),
+    });
+    const otherUser = await request(`/api/v1/model-connection-tests/${test.body.testId}/image-capabilities`, {
+      method: 'PUT', headers: { 'x-user': 'two' }, body: JSON.stringify({ models: [{ modelId: 'gpt-test', imageInput: 'supported' }] }),
+    });
+    expect(otherUser.status).toBe(404);
+    const saved = await request('/api/v1/model-configuration', {
+      method: 'PUT', headers: { 'x-user': 'one' }, body: JSON.stringify({
+        testId: test.body.testId, providerId: 'openai', apiKey: 'key', models: [{ modelId: 'gpt-test', textInput: true, imageInput: true }], retryPolicy: retryPolicy(),
+      }),
+    });
+    expect(saved.status).toBe(200);
+    expect(writePilotDeckConfig).toHaveBeenCalledWith(expect.objectContaining({
+      agent: expect.objectContaining({ model: 'openai/gpt-test' }),
+      model: expect.objectContaining({ providers: expect.objectContaining({ openai: expect.objectContaining({ retry: expect.objectContaining({ requestMaxRetries: 2 }), models: expect.objectContaining({ 'gpt-test': { multimodal: { input: ['text', 'image'] } } }) }) }) }),
+    }));
+  });
+
+  it('creates existing and new workspaces through the shared helpers', async () => {
+    const validateWorkspacePath = vi.fn(async (requestedPath) => ({ valid: true, resolvedPath: `/resolved/${requestedPath}` }));
+    const addProjectManually = vi.fn(async (workspacePath) => ({ name: 'project-id', path: workspacePath }));
+    const fsStat = vi.spyOn((await import('fs')).promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+    const { request } = await createOnboardingApp({ validateWorkspacePath, addProjectManually });
+    const result = await request('/api/v1/workspaces', { method: 'POST', body: JSON.stringify({ type: 'existing', path: 'project' }) });
+    expect(result).toEqual({ status: 201, body: { id: 'project-id', type: 'existing', path: '/resolved/project', status: 'ready' } });
+    fsStat.mockRestore();
+  });
+
+  it('expires a test record instead of allowing its manual update', async () => {
+    const { request, tests } = await createOnboardingApp({ probe: vi.fn().mockResolvedValue({ ok: true }) });
+    const result = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'ollama', apiKey: '', models: ['local'], retryPolicy: retryPolicy() }),
+    });
+    tests.get(result.body.testId).expiresAt = Date.now() - 1;
+    const expired = await request(`/api/v1/model-connection-tests/${result.body.testId}/image-capabilities`, {
+      method: 'PUT', body: JSON.stringify({ models: [{ modelId: 'local', imageInput: 'supported' }] }),
+    });
+    expect(expired).toMatchObject({ status: 410, body: { code: 'TEST_EXPIRED' } });
+  });
+});
+
+async function createOnboardingApp(overrides = {}) {
+  const probe = overrides.probe ?? vi.fn();
+  const writePilotDeckConfig = overrides.writePilotDeckConfig ?? vi.fn(async (config) => ({ config }));
+  const config = overrides.config ?? { schemaVersion: 1, agent: {}, model: { providers: {} }, webui: {} };
+  vi.doMock('../services/modelConnectionProbe.js', () => ({ probeModelConnection: probe }));
+  vi.doMock('../services/pilotdeckConfig.js', () => ({ readPilotDeckConfigFile: vi.fn(() => ({ config })), writePilotDeckConfig }));
+  vi.doMock('../services/pilotdeckConfigReloader.js', () => ({ reloadPilotDeckConfig: vi.fn(async () => undefined) }));
+  vi.doMock('../services/pilotdeckConfigWatcher.js', () => ({ suppressNextWatchEvent: vi.fn() }));
+  vi.doMock('../projects.js', () => ({ addProjectManually: overrides.addProjectManually ?? vi.fn(async (workspacePath) => ({ name: 'id', path: workspacePath })) }));
+  vi.doMock('./projects.js', () => ({
+    validateWorkspacePath: overrides.validateWorkspacePath ?? vi.fn(async (workspacePath) => ({ valid: true, resolvedPath: workspacePath })),
+    cloneGitHubRepository: overrides.cloneGitHubRepository ?? vi.fn(async () => undefined),
+  }));
+  const onboardingModule = await import('./onboarding.js');
+  const routes = onboardingModule.default;
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { req.user = { id: req.headers['x-user'] || 'one' }; next(); });
+  app.use('/api/v1', routes);
+  return { request: (url, init = {}) => requestStatusJson(app, url, init), tests: onboardingModule.tests };
+}
+
+function retryPolicy() {
+  return { maxRetries: 2, maxStreamRetries: 3, streamIdleTimeoutMs: 30000, baseDelayMs: 1000, maxDelayMs: 60000 };
+}
+
+async function requestStatusJson(app, url, init) {
+  const server = app.listen(0);
+  try {
+    const response = await nativeFetch(`http://127.0.0.1:${server.address().port}${url}`, { ...init, headers: { 'content-type': 'application/json', ...(init.headers || {}) } });
+    return { status: response.status, body: await response.json() };
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}

@@ -64,7 +64,7 @@ describe('config test-connection route', () => {
     expect(requestBody).toMatchObject({
       model: 'kimi-k3',
       max_tokens: 8,
-      messages: [{ role: 'user', content: 'Reply exactly: OK' }],
+      messages: [{ role: 'user', content: 'Reply exactly: 1' }],
     });
   });
 
@@ -224,7 +224,7 @@ describe('config test-connection route', () => {
     expect(calls).toEqual(['https://api.openai.com/v1/chat/completions']);
   });
 
-  it('fails when the provider returns no chat text', async () => {
+  it('accepts a non-error completion response without visible text', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ choices: [{ message: { content: '' } }] })));
 
     const { request } = await createConfigApp();
@@ -238,8 +238,7 @@ describe('config test-connection route', () => {
       }),
     });
 
-    expect(data.ok).toBe(false);
-    expect(data.error).toContain('did not produce any chat text');
+    expect(data.ok).toBe(true);
   });
 
   it('accepts OpenAI-compatible reasoning output from a constrained probe', async () => {

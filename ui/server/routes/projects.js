@@ -631,7 +631,7 @@ router.get('/clone-progress', async (req, res) => {
 /**
  * Helper function to clone a GitHub repository
  */
-function cloneGitHubRepository(githubUrl, destinationPath, githubToken = null) {
+export function cloneGitHubRepository(githubUrl, destinationPath, githubToken = null) {
   return new Promise((resolve, reject) => {
     let cloneUrl = githubUrl;
 

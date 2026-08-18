@@ -107,6 +107,7 @@ import { getAlwaysOnDashboardEvents } from './services/always-on-events.js';
 import agentRoutes from './routes/agent.js';
 import updateRoutes from './routes/update.js';
 import projectsRoutes, { WORKSPACES_ROOT, validateWorkspacePath } from './routes/projects.js';
+import onboardingRoutes from './routes/onboarding.js';
 import userRoutes from './routes/user.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
@@ -562,6 +563,10 @@ app.use('/api/settings', authenticateToken, settingsRoutes);
 
 // PilotDeck unified YAML config routes (protected)
 app.use('/api/config', authenticateToken, configRoutes);
+
+// Versioned onboarding API. It remains behind the global /api API-key gate
+// and the same JWT middleware as the rest of the local UI server.
+app.use('/api/v1', authenticateToken, onboardingRoutes);
 
 // Gateway IM channel setup routes (protected)
 app.use('/api/gateway', authenticateToken, gatewayRoutes);
