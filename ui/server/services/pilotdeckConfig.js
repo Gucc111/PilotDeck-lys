@@ -98,6 +98,18 @@ export function buildDefaultPilotDeckConfig() {
     telemetry: {
       enabled: false,
     },
+    logging: {
+      enabled: true,
+      level: 'info',
+      networkDiagnostics: true,
+      file: {
+        enabled: true,
+        level: 'debug',
+        dir: path.join(PILOT_HOME_DIR, 'logs'),
+        maxSizeMb: 20,
+        maxFiles: 14,
+      },
+    },
   };
 }
 

@@ -20,6 +20,7 @@ import { buildProviderChatEndpointCandidates, isExpectedProviderResponseShape } 
 import { StreamingCheckpointManager } from "./StreamingCheckpoint.js";
 import { buildLiteLLMContinuationRequest } from "./continuationRequest.js";
 import { NetworkFetchError, networkFetch } from "../../network/fetch.js";
+import { getDiagnosticLogger, sanitizeUrlForDiagnostics, serializeErrorForDiagnostics } from "../../diagnostics/logger.js";
 
 export type ModelTransport = typeof fetch;
 
@@ -29,6 +30,13 @@ export type ModelRuntimeOptions = {
   signal?: AbortSignal;
   streamTimeoutMs?: number;
   onRetryProgress?: (progress: ModelStreamRetryProgress) => void;
+  diagnostics?: {
+    sessionKey?: string;
+    projectKey?: string;
+    runId?: string;
+    turnId?: string;
+    purpose?: string;
+  };
 };
 
 export type ModelStreamRetryProgress = {
@@ -71,6 +79,7 @@ export async function complete(
   const { provider } = validateModelRequest(nonStreamingRequest, config);
   const maxRetries = provider.retry?.requestMaxRetries ?? DEFAULT_REQUEST_MAX_RETRIES;
   const retryBaseDelay = provider.retry?.baseDelayMs ?? LITELLM_INITIAL_RETRY_DELAY_MS;
+  logModelRequestPrepared(nonStreamingRequest, provider, false, options, maxRetries);
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     throwIfAborted(options.signal);
@@ -85,6 +94,7 @@ export async function complete(
       } catch (error) {
         if (attempt < maxRetries && isRetryableRequestError(error)) {
           const delayMs = retryBaseDelay * (attempt + 1);
+          logModelRetry(nonStreamingRequest, provider, false, options, error, attempt + 1, maxRetries, delayMs, "request_retry");
           console.warn(
             `[PilotDeck] complete() retry: ${(error as Error).message} ` +
             `(attempt ${attempt + 1}/${maxRetries}, delay=${delayMs}ms)`,
@@ -99,10 +109,11 @@ export async function complete(
     const body = buildModelRequest(nonStreamingRequest, config);
     let response: Response;
     try {
-      response = await sendProviderRequest(provider, body, false, options.fetch ?? fetch, options.signal);
+      response = await sendProviderRequest(provider, body, false, options.fetch ?? fetch, options.signal, options);
     } catch (error) {
       if (attempt < maxRetries && isRetryableRequestError(error)) {
         const delayMs = retryBaseDelay * (attempt + 1);
+        logModelRetry(nonStreamingRequest, provider, false, options, error, attempt + 1, maxRetries, delayMs, "request_retry");
         console.warn(
           `[PilotDeck] complete() retry: ${(error as Error).message} ` +
           `(attempt ${attempt + 1}/${maxRetries}, delay=${delayMs}ms)`,
@@ -138,6 +149,7 @@ export async function* streamModel(
   const { provider } = validateModelRequest(streamingRequest, config);
   const maxRetries = provider.retry?.streamMaxRetries ?? DEFAULT_STREAM_MAX_RETRIES;
   const retryBaseDelay = provider.retry?.baseDelayMs ?? LITELLM_INITIAL_RETRY_DELAY_MS;
+  logModelRequestPrepared(streamingRequest, provider, true, options, maxRetries);
 
   yield {
     type: "request_started",
@@ -179,6 +191,7 @@ export async function* streamModel(
     } catch (error) {
       if (attempt < maxRetries && isRetryableStreamError(error)) {
         const delayMs = calculateRetryDelay(provider, attempt);
+        logModelRetry(currentRequest, provider, true, options, error, attempt + 1, maxRetries, delayMs, "stream_request_retry");
         emitModelRetryProgress(options, "network_error", attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
         continue;
@@ -197,6 +210,7 @@ export async function* streamModel(
       }
       if (error.retryable && attempt < maxRetries) {
         const delayMs = calculateRetryDelay(provider, attempt, error.retryAfterMs);
+        logModelRetry(currentRequest, provider, true, options, error, attempt + 1, maxRetries, delayMs, "stream_status_retry");
         emitModelRetryProgress(options, retryReasonForError(error.code), attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
         continue;
@@ -253,6 +267,7 @@ export async function* streamModel(
         currentRequest = buildLiteLLMContinuationRequest(currentRequest, checkpoint.get().partialText);
         checkpoint.reset();
         const delayMs = calculateRetryDelay(provider, attempt, retryAfterMsForError(error));
+        logModelRetry(currentRequest, provider, true, options, error, attempt + 1, maxRetries, delayMs, "stream_continuation_retry");
         emitModelRetryProgress(options, "continuation", attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
         continue;
@@ -260,6 +275,7 @@ export async function* streamModel(
 
       if (isRetryableStreamError(error) && attempt < maxRetries) {
         const delayMs = calculateRetryDelay(provider, attempt, retryAfterMsForError(error));
+        logModelRetry(currentRequest, provider, true, options, error, attempt + 1, maxRetries, delayMs, "stream_read_retry");
         emitModelRetryProgress(options, retryReasonForThrownError(error), attempt, maxRetries, delayMs, provider, currentRequest.model);
         await delay(delayMs, options.signal);
         continue;
@@ -592,6 +608,7 @@ async function sendProviderRequest(
   signal?: AbortSignal,
   options?: ModelRuntimeOptions,
 ): Promise<Response> {
+  const startedAt = Date.now();
   const controller = new AbortController();
   const detachAbort = signal ? forwardAbort(signal, controller) : undefined;
   const effectiveTimeoutMs = stream ? resolveStreamIdleTimeout(provider, options) : provider.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -604,17 +621,21 @@ async function sendProviderRequest(
     : body;
 
   try {
+    logProviderRequestStart(provider, finalBody, stream, effectiveTimeoutMs, options);
     const fetchOptions: RequestInit = {
       method: "POST",
       headers: buildProviderHeaders(provider),
       body: JSON.stringify(finalBody),
       signal: controller.signal,
     };
-    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions);
+    const response = await sendWithEndpointFallback(provider, stream, transport, fetchOptions, finalBody, options);
+    logProviderRequestSuccess(provider, stream, response.status, startedAt, effectiveTimeoutMs, options);
+    return response;
   } catch (error) {
     if (signal?.aborted) {
       throw createAbortError(signal.reason);
     }
+    logProviderRequestError(provider, stream, error, startedAt, effectiveTimeoutMs, options);
     throw new ModelProviderError(normalizeModelError(provider.id, provider.protocol, error));
   } finally {
     if (timeout) {
@@ -640,15 +661,36 @@ async function sendWithEndpointFallback(
   stream: boolean,
   transport: ModelTransport,
   fetchOptions: RequestInit,
+  body: unknown,
+  options?: ModelRuntimeOptions,
 ): Promise<Response> {
   const endpoints = buildProviderChatEndpointCandidates({ protocol: provider.protocol, baseUrl: provider.url });
   let lastResponse: Response | undefined;
-  for (const endpoint of endpoints) {
+  for (const [index, endpoint] of endpoints.entries()) {
+    logEndpointAttempt(provider, stream, endpoint, index, endpoints.length, options);
     const response = await networkFetch(endpoint, fetchOptions, {
       signal: fetchOptions.signal instanceof AbortSignal ? fetchOptions.signal : undefined,
       fetchImpl: transport === fetch ? undefined : transport,
       timeoutMs: provider.timeoutMs,
       retry: { maxRetries: 0, retryOnPost: true },
+      diagnostics: {
+        module: "model",
+        event: "provider_network_fetch_start",
+        provider: provider.id,
+        model: readModelFromBody(body),
+        sessionKey: readDiagnosticContext(options).sessionKey,
+        projectKey: readDiagnosticContext(options).projectKey,
+        runId: readDiagnosticContext(options).runId,
+        turnId: readDiagnosticContext(options).turnId,
+        metadata: {
+          layer: "gateway_to_provider",
+          stream,
+          protocol: provider.protocol,
+          endpointIndex: index + 1,
+          endpointCount: endpoints.length,
+          bodyBytes: Buffer.byteLength(JSON.stringify(body), "utf8"),
+        },
+      },
     });
     if (await shouldUseEndpointResponse(provider, response, stream, endpoints.length)) {
       return response;
@@ -882,6 +924,214 @@ function readOptionalPositiveEnvMs(name: string, multiplier: number): number | u
     return undefined;
   }
   return value * multiplier;
+}
+
+function logModelRequestPrepared(
+  request: CanonicalModelRequest,
+  provider: ProviderConfig,
+  stream: boolean,
+  options: ModelRuntimeOptions,
+  maxRetries: number,
+): void {
+  getDiagnosticLogger().debug({
+    module: "model",
+    event: "model_request_prepared",
+    message: "Model request prepared",
+    provider: provider.id,
+    model: request.model,
+    ...readDiagnosticContext(options, request),
+    metadata: {
+      layer: "gateway_to_provider",
+      protocol: provider.protocol,
+      providerBaseUrl: sanitizeUrlForDiagnostics(normalizeProviderBaseUrl(provider.url)),
+      stream,
+      timeoutMs: provider.timeoutMs,
+      streamIdleTimeoutMs: stream ? resolveStreamIdleTimeout(provider, options) : undefined,
+      maxRetries,
+      retry: provider.retry,
+      messageCount: request.messages.length,
+      toolCount: request.tools?.length ?? 0,
+      metadataPurpose: readPurpose(options, request),
+      maxOutputTokens: request.maxOutputTokens,
+    },
+  });
+}
+
+function logProviderRequestStart(
+  provider: ProviderConfig,
+  body: unknown,
+  stream: boolean,
+  effectiveTimeoutMs: number,
+  options?: ModelRuntimeOptions,
+): void {
+  getDiagnosticLogger().debug({
+    module: "model",
+    event: "provider_request_start",
+    message: "Provider request started",
+    provider: provider.id,
+    model: readModelFromBody(body),
+    ...readDiagnosticContext(options),
+    metadata: {
+      layer: "gateway_to_provider",
+      protocol: provider.protocol,
+      providerBaseUrl: sanitizeUrlForDiagnostics(normalizeProviderBaseUrl(provider.url)),
+      stream,
+      effectiveTimeoutMs,
+      timeoutSource: stream ? "provider_stream_idle_or_request_timeout" : "provider_request_timeout",
+      configuredTimeoutMs: provider.timeoutMs,
+      bodyBytes: Buffer.byteLength(JSON.stringify(body), "utf8"),
+      messageCount: Array.isArray((body as { messages?: unknown }).messages) ? (body as { messages: unknown[] }).messages.length : undefined,
+      toolCount: Array.isArray((body as { tools?: unknown }).tools) ? (body as { tools: unknown[] }).tools.length : undefined,
+    },
+  });
+}
+
+function logProviderRequestSuccess(
+  provider: ProviderConfig,
+  stream: boolean,
+  status: number,
+  startedAt: number,
+  effectiveTimeoutMs: number,
+  options?: ModelRuntimeOptions,
+): void {
+  getDiagnosticLogger().debug({
+    module: "model",
+    event: "provider_request_success",
+    message: "Provider request returned response",
+    provider: provider.id,
+    ...readDiagnosticContext(options),
+    durationMs: Date.now() - startedAt,
+    metadata: {
+      layer: "gateway_to_provider",
+      protocol: provider.protocol,
+      stream,
+      status,
+      effectiveTimeoutMs,
+    },
+  });
+}
+
+function logProviderRequestError(
+  provider: ProviderConfig,
+  stream: boolean,
+  error: unknown,
+  startedAt: number,
+  effectiveTimeoutMs: number,
+  options?: ModelRuntimeOptions,
+): void {
+  getDiagnosticLogger().warn({
+    module: "model",
+    event: "provider_request_error",
+    message: error instanceof Error ? error.message : String(error),
+    provider: provider.id,
+    ...readDiagnosticContext(options),
+    durationMs: Date.now() - startedAt,
+    error,
+    cause: serializeErrorForDiagnostics(error),
+    metadata: {
+      layer: "gateway_to_provider",
+      protocol: provider.protocol,
+      stream,
+      effectiveTimeoutMs,
+      timeoutSource: isTimeoutLike(error) ? (stream ? "provider_stream_idle_or_request_timeout" : "provider_request_timeout") : undefined,
+    },
+  });
+}
+
+function logEndpointAttempt(
+  provider: ProviderConfig,
+  stream: boolean,
+  endpoint: string,
+  index: number,
+  count: number,
+  options?: ModelRuntimeOptions,
+): void {
+  getDiagnosticLogger().debug({
+    module: "model",
+    event: "provider_endpoint_attempt",
+    message: "Trying provider endpoint",
+    provider: provider.id,
+    ...readDiagnosticContext(options),
+    attempt: index + 1,
+    metadata: {
+      layer: "gateway_to_provider",
+      protocol: provider.protocol,
+      stream,
+      endpoint: sanitizeUrlForDiagnostics(endpoint),
+      endpointCount: count,
+    },
+  });
+}
+
+function logModelRetry(
+  request: CanonicalModelRequest,
+  provider: ProviderConfig,
+  stream: boolean,
+  options: ModelRuntimeOptions,
+  error: unknown,
+  attempt: number,
+  maxAttempts: number,
+  delayMs: number,
+  event: string,
+): void {
+  getDiagnosticLogger().warn({
+    module: "model",
+    event,
+    message: error instanceof Error ? error.message : "Model request retry",
+    provider: provider.id,
+    model: request.model,
+    ...readDiagnosticContext(options, request),
+    attempt,
+    error,
+    cause: serializeErrorForDiagnostics(error),
+    metadata: {
+      layer: "gateway_to_provider",
+      protocol: provider.protocol,
+      stream,
+      maxAttempts,
+      delayMs,
+      timeoutSource: isTimeoutLike(error) ? (stream ? "stream_idle_or_request_timeout" : "provider_request_timeout") : undefined,
+    },
+  });
+}
+
+function readDiagnosticContext(
+  options?: ModelRuntimeOptions,
+  request?: CanonicalModelRequest,
+): {
+  sessionKey?: string;
+  projectKey?: string;
+  runId?: string;
+  turnId?: string;
+} {
+  const metadata = request?.metadata ?? {};
+  return {
+    sessionKey: options?.diagnostics?.sessionKey ?? readString(metadata.sessionId),
+    projectKey: options?.diagnostics?.projectKey ?? readString(metadata.projectPath),
+    runId: options?.diagnostics?.runId ?? readString(metadata.runId),
+    turnId: options?.diagnostics?.turnId ?? readString(metadata.turnId),
+  };
+}
+
+function readPurpose(options: ModelRuntimeOptions, request: CanonicalModelRequest): string | undefined {
+  return options.diagnostics?.purpose ?? readString(request.metadata?.purpose);
+}
+
+function readModelFromBody(body: unknown): string | undefined {
+  if (body && typeof body === "object" && "model" in body) {
+    const model = (body as { model?: unknown }).model;
+    return typeof model === "string" ? model : undefined;
+  }
+  return undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function isTimeoutLike(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? "").toLowerCase();
+  return message.includes("timeout") || message.includes("timed out");
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

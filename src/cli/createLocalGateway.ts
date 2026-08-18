@@ -78,6 +78,7 @@ import { createAgentProjectSessionStorage, listProjectSessions, resumeAgentSessi
 import { sanitizeSessionIdForPath } from "../session/storage/ProjectSessionStorage.js";
 import { createSessionTitleGenerator } from "../session/title/SessionTitleGenerator.js";
 import { readWebSessionMessages, readSubagentWebMessages } from "../web/server/readSessionMessages.js";
+import { configureGlobalDiagnosticLogger, getDiagnosticLogger } from "../diagnostics/logger.js";
 import { forkWebSession } from "../web/server/forkSession.js";
 import { describeWebProject, listWebProjects } from "../web/server/listProjects.js";
 import { BackgroundTaskRuntime, type BackgroundTaskCompletionEvent } from "../task/runtime/BackgroundTaskRuntime.js";
@@ -1287,6 +1288,17 @@ class ProjectRuntimeRegistry {
     }
 
     const snapshot = loadPilotConfig({ projectRoot, env: this.options.env });
+    configureGlobalDiagnosticLogger(snapshot.config.logging, "gateway");
+    getDiagnosticLogger().debug({
+      module: "gateway",
+      event: "project_runtime_loaded",
+      message: "Project runtime loaded",
+      projectKey: projectRoot,
+      metadata: {
+        loggingDir: snapshot.config.logging.file.dir,
+        loggingFileEnabled: snapshot.config.logging.file.enabled,
+      },
+    });
     const model = this.options.modelFactory
       ? this.options.modelFactory(snapshot)
       : createModelRuntime(snapshot.config.model);

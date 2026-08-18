@@ -21,6 +21,7 @@ import {
   getSelfCorrectPrompt,
   detectFormatByText,
 } from "../../model/index.js";
+import { getDiagnosticLogger, serializeErrorForDiagnostics } from "../../diagnostics/logger.js";
 import type {
   PilotDeckToolDefinition,
   PilotDeckReadFileStateMap,
@@ -569,6 +570,26 @@ export class AgentLoop {
         }
         const modelError = error instanceof ModelProviderError ? error.error : undefined;
         const stopFailureMsg = modelError?.message ?? (error instanceof Error ? error.message : String(error));
+        getDiagnosticLogger().error({
+          module: "agent",
+          event: "agent_model_error",
+          message: stopFailureMsg,
+          sessionKey: input.sessionId,
+          projectKey: this.config.cwd,
+          runId: input.turnId,
+          turnId: input.turnId,
+          provider: modelError?.provider,
+          model: modelError?.model,
+          error: modelError ?? error,
+          cause: serializeErrorForDiagnostics(modelError?.raw ?? error),
+          metadata: {
+            layer: "gateway_to_provider",
+            stopReason: "model_error",
+            modelErrorCode: modelError?.code,
+            retryable: modelError?.retryable,
+            turns: turnCount,
+          },
+        });
         await this.dispatchLifecycle(input, "StopFailure", { error: stopFailureMsg });
         yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: stopFailureMsg };
         const result = this.createTurnResult(input, {

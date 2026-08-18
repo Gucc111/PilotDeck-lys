@@ -46,6 +46,7 @@ export type PilotRawConfig = {
   cron?: unknown;
   tools?: unknown;
   telemetry?: unknown;
+  logging?: unknown;
   proxy?: unknown;
   webui?: unknown;
 };
@@ -224,6 +225,21 @@ export type PilotTelemetryConfig = {
   enabled: boolean;
 };
 
+export type PilotLoggingLevel = "debug" | "info" | "warn" | "error";
+
+export type PilotLoggingConfig = {
+  enabled: boolean;
+  level: PilotLoggingLevel;
+  networkDiagnostics: boolean;
+  file: {
+    enabled: boolean;
+    level: PilotLoggingLevel;
+    dir: string;
+    maxSizeMb: number;
+    maxFiles: number;
+  };
+};
+
 export type PilotConfig = {
   agent: PilotAgentConfig;
   model: ModelConfig;
@@ -236,6 +252,7 @@ export type PilotConfig = {
   cron?: CronConfig;
   tools?: PilotToolsConfig;
   telemetry?: PilotTelemetryConfig;
+  logging: PilotLoggingConfig;
   proxy?: PilotProxyConfig;
 };
 

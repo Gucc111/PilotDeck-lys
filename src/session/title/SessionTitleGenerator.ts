@@ -1,5 +1,6 @@
 import type { ModelRuntime } from "../../model/index.js";
 import type { PilotAgentModelSelection } from "../../pilot/config/types.js";
+import { getDiagnosticLogger, serializeErrorForDiagnostics } from "../../diagnostics/logger.js";
 
 export const SESSION_TITLE_MAX_INPUT_CHARS = 1200;
 export const SESSION_TITLE_MAX_OUTPUT_CHARS = 80;
@@ -50,6 +51,21 @@ export function createSessionTitleGenerator(
     const combinedSignal = AbortSignal.any([signal, timeoutSignal]);
 
     try {
+      getDiagnosticLogger().debug({
+        module: "session-title",
+        event: "session_title_generation_start",
+        message: "Session title generation started",
+        sessionKey: sessionId,
+        runId: turnId,
+        turnId,
+        provider: options.agentModel.provider,
+        model: options.agentModel.model,
+        metadata: {
+          purpose: "session_title_generation",
+          timeoutMs,
+          inputChars: prompt.length,
+        },
+      });
       const response = await options.modelRuntime.complete(
         {
           provider: options.agentModel.provider,
@@ -69,15 +85,45 @@ export function createSessionTitleGenerator(
             turnId,
           },
         },
-        { signal: combinedSignal },
+        {
+          signal: combinedSignal,
+          diagnostics: {
+            sessionKey: sessionId,
+            runId: turnId,
+            turnId,
+            purpose: "session_title_generation",
+          },
+        },
       );
 
       return parseGeneratedTitle(response.content);
     } catch (error) {
+      getDiagnosticLogger().warn({
+        module: "session-title",
+        event: "session_title_generation_failed",
+        message: error instanceof Error ? error.message : String(error),
+        sessionKey: sessionId,
+        runId: turnId,
+        turnId,
+        provider: options.agentModel.provider,
+        model: options.agentModel.model,
+        error,
+        cause: serializeErrorForDiagnostics(error),
+        metadata: {
+          purpose: "session_title_generation",
+          timeoutMs,
+          timeoutSource: isSessionTitleTimeout(error) ? "session_title_timeout" : undefined,
+        },
+      });
       logSessionTitleFailure("provider_error", error);
       return null;
     }
   };
+}
+
+function isSessionTitleTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? "").toLowerCase();
+  return message.includes("timeout") || message.includes("timed out") || error instanceof DOMException && error.name === "TimeoutError";
 }
 
 export function normalizeSessionTitleInput(text: string): string | null {

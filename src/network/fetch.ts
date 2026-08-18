@@ -1,4 +1,5 @@
 import { fetch as undiciFetch } from "undici";
+import { getDiagnosticLogger, sanitizeUrlForDiagnostics, serializeErrorForDiagnostics } from "../diagnostics/logger.js";
 
 export type NetworkErrorCode =
   | "network_timeout"
@@ -37,6 +38,17 @@ export type NetworkFetchOptions = {
   signal?: AbortSignal;
   retry?: NetworkRetryOptions;
   fetchImpl?: typeof fetch;
+  diagnostics?: {
+    module?: string;
+    event?: string;
+    provider?: string;
+    model?: string;
+    sessionKey?: string;
+    projectKey?: string;
+    runId?: string;
+    turnId?: string;
+    metadata?: Record<string, unknown>;
+  };
 };
 
 export type NetworkJsonOptions = NetworkFetchOptions & {
@@ -61,16 +73,35 @@ export async function networkFetch(
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const startedAt = Date.now();
     const controller = new AbortController();
     const detachAbort = parentSignal ? forwardAbort(parentSignal, controller) : undefined;
     const timeout = options.timeoutMs && options.timeoutMs > 0
       ? setTimeout(() => controller.abort(new NetworkFetchError("network_timeout", `Network request timed out after ${options.timeoutMs}ms.`)), options.timeoutMs)
       : undefined;
-    if (timeout && typeof timeout === "object" && "unref" in timeout) {
-      (timeout as NodeJS.Timeout).unref();
-    }
 
     try {
+      if (options.diagnostics && getDiagnosticLogger().config.networkDiagnostics) {
+        getDiagnosticLogger().debug({
+          module: options.diagnostics.module ?? "network",
+          event: options.diagnostics.event ?? "network_fetch_start",
+          message: "Network fetch started",
+          provider: options.diagnostics.provider,
+          model: options.diagnostics.model,
+          sessionKey: options.diagnostics.sessionKey,
+          projectKey: options.diagnostics.projectKey,
+          runId: options.diagnostics.runId,
+          turnId: options.diagnostics.turnId,
+          attempt: attempt + 1,
+          metadata: {
+            url: sanitizeUrlForDiagnostics(resolveInputUrl(input)),
+            method,
+            timeoutMs: options.timeoutMs,
+            maxRetries,
+            ...options.diagnostics.metadata,
+          },
+        });
+      }
       const response = await performFetch(input, {
         ...init,
         signal: controller.signal,
@@ -81,15 +112,18 @@ export async function networkFetch(
         attempt < maxRetries &&
         shouldRetryStatus(response.status, retry.retryStatuses)
       ) {
-        await response.body?.cancel().catch(() => undefined);
+        logNetworkFetchStatusRetry(options, input, method, response.status, attempt, maxRetries, startedAt);
+        void response.body?.cancel().catch(() => undefined);
         await delay(resolveRetryDelay(attempt, retry, response.headers.get("retry-after")), parentSignal);
         continue;
       }
 
+      logNetworkFetchSuccess(options, input, method, response.status, attempt, maxRetries, startedAt);
       return response;
     } catch (error) {
       lastError = error;
       const normalized = normalizeNetworkError(error, controller.signal, parentSignal);
+      logNetworkFetchError(options, input, method, normalized, error, attempt, maxRetries, startedAt);
       if (!canRetryMethod || attempt >= maxRetries || !isRetryableNetworkCode(normalized.code)) {
         throw normalized;
       }
@@ -205,6 +239,114 @@ function performFetch(input: string | URL | Request, init: RequestInit, fetchImp
   return undiciFetch(input as Parameters<typeof undiciFetch>[0], init as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>;
 }
 
+function logNetworkFetchSuccess(
+  options: NetworkFetchOptions,
+  input: string | URL | Request,
+  method: string,
+  status: number,
+  attempt: number,
+  maxRetries: number,
+  startedAt: number,
+): void {
+  if (!options.diagnostics || !getDiagnosticLogger().config.networkDiagnostics) return;
+  getDiagnosticLogger().debug({
+    module: options.diagnostics.module ?? "network",
+    event: "network_fetch_success",
+    message: "Network fetch succeeded",
+    provider: options.diagnostics.provider,
+    model: options.diagnostics.model,
+    sessionKey: options.diagnostics.sessionKey,
+    projectKey: options.diagnostics.projectKey,
+    runId: options.diagnostics.runId,
+    turnId: options.diagnostics.turnId,
+    attempt: attempt + 1,
+    durationMs: Date.now() - startedAt,
+    metadata: {
+      url: sanitizeUrlForDiagnostics(resolveInputUrl(input)),
+      method,
+      status,
+      maxRetries,
+      ...options.diagnostics.metadata,
+    },
+  });
+}
+
+function logNetworkFetchStatusRetry(
+  options: NetworkFetchOptions,
+  input: string | URL | Request,
+  method: string,
+  status: number,
+  attempt: number,
+  maxRetries: number,
+  startedAt: number,
+): void {
+  if (!options.diagnostics || !getDiagnosticLogger().config.networkDiagnostics) return;
+  getDiagnosticLogger().debug({
+    module: options.diagnostics.module ?? "network",
+    event: "network_fetch_status_retry",
+    message: "Network fetch status is retryable",
+    provider: options.diagnostics.provider,
+    model: options.diagnostics.model,
+    sessionKey: options.diagnostics.sessionKey,
+    projectKey: options.diagnostics.projectKey,
+    runId: options.diagnostics.runId,
+    turnId: options.diagnostics.turnId,
+    attempt: attempt + 1,
+    durationMs: Date.now() - startedAt,
+    metadata: {
+      url: sanitizeUrlForDiagnostics(resolveInputUrl(input)),
+      method,
+      status,
+      maxRetries,
+      ...options.diagnostics.metadata,
+    },
+  });
+}
+
+function logNetworkFetchError(
+  options: NetworkFetchOptions,
+  input: string | URL | Request,
+  method: string,
+  normalized: NetworkFetchError,
+  rawError: unknown,
+  attempt: number,
+  maxRetries: number,
+  startedAt: number,
+): void {
+  if (!options.diagnostics || !getDiagnosticLogger().config.networkDiagnostics) return;
+  getDiagnosticLogger().debug({
+    module: options.diagnostics.module ?? "network",
+    event: "network_fetch_error",
+    message: normalized.message,
+    provider: options.diagnostics.provider,
+    model: options.diagnostics.model,
+    sessionKey: options.diagnostics.sessionKey,
+    projectKey: options.diagnostics.projectKey,
+    runId: options.diagnostics.runId,
+    turnId: options.diagnostics.turnId,
+    attempt: attempt + 1,
+    durationMs: Date.now() - startedAt,
+    error: normalized,
+    cause: serializeErrorForDiagnostics(rawError),
+    metadata: {
+      url: sanitizeUrlForDiagnostics(resolveInputUrl(input)),
+      method,
+      code: normalized.code,
+      timeoutSource: normalized.code === "network_timeout" ? "network_fetch_timeout" : undefined,
+      retryable: isRetryableNetworkCode(normalized.code),
+      willRetry: attempt < maxRetries && isRetryableNetworkCode(normalized.code),
+      maxRetries,
+      ...options.diagnostics.metadata,
+    },
+  });
+}
+
+function resolveInputUrl(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
 function shouldRetryStatus(status: number, configured?: readonly number[]): boolean {
   if (configured) return configured.includes(status);
   return DEFAULT_RETRY_STATUSES.has(status);
@@ -234,10 +376,7 @@ function parseRetryAfterHeader(headerValue: string | null | undefined): number |
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (!signal) return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (typeof timer === "object" && "unref" in timer) {
-      (timer as NodeJS.Timeout).unref();
-    }
+    setTimeout(resolve, ms);
   });
   if (signal.aborted) return Promise.reject(new NetworkFetchError("network_abort", "Network retry aborted.", signal.reason));
   return new Promise((resolve, reject) => {
@@ -245,9 +384,6 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
       signal.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
-    if (typeof timer === "object" && "unref" in timer) {
-      (timer as NodeJS.Timeout).unref();
-    }
     const onAbort = () => {
       clearTimeout(timer);
       reject(new NetworkFetchError("network_abort", "Network retry aborted.", signal.reason));

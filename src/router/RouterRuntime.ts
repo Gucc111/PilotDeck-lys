@@ -12,6 +12,7 @@ import {
   LITELLM_MAX_RETRY_DELAY_MS,
   LITELLM_RETRY_JITTER,
 } from "../model/streaming/streamModel.js";
+import { getDiagnosticLogger, serializeErrorForDiagnostics } from "../diagnostics/logger.js";
 import { buildLiteLLMContinuationRequest } from "../model/streaming/continuationRequest.js";
 import {
   DEFAULT_SUBAGENT_POLICY,
@@ -559,6 +560,21 @@ export function createRouterRuntime(
     ctx: RouterExecuteContext,
   ): AsyncIterable<CanonicalModelEvent> {
     if (!enabled) {
+      getDiagnosticLogger().debug({
+        module: "router",
+        event: "router_passthrough_execute",
+        message: "Router disabled; executing passthrough model request",
+        sessionKey: ctx.sessionId,
+        projectKey: ctx.projectPath,
+        runId: ctx.turnId,
+        turnId: ctx.turnId,
+        provider: decision.provider,
+        model: decision.model,
+        metadata: {
+          routerEnabled: false,
+          scenarioType: decision.scenarioType,
+        },
+      });
       const passthroughRequest: CanonicalModelRequest = {
         ...request,
         provider: decision.provider,
@@ -755,6 +771,28 @@ export function createRouterRuntime(
                 toModel: next.model,
                 error: outcome.error,
               });
+              getDiagnosticLogger().warn({
+                module: "router",
+                event: "router_fallback",
+                message: outcome.error.message,
+                sessionKey: ctx.sessionId,
+                projectKey: ctx.projectPath,
+                runId: ctx.turnId,
+                turnId: ctx.turnId,
+                provider: attempt.provider,
+                model: attempt.model,
+                error: outcome.error,
+                cause: serializeErrorForDiagnostics(outcome.error.raw),
+                metadata: {
+                  routerEnabled: true,
+                  scenarioType: attemptDecision.scenarioType,
+                  fromProvider: attempt.provider,
+                  fromModel: attempt.model,
+                  toProvider: next.provider,
+                  toModel: next.model,
+                  errorCode: outcome.error.code,
+                },
+              });
               telemetry?.trackFeatureLoopStage({
                 module: "router",
                 ownerModule: "router",
@@ -788,6 +826,27 @@ export function createRouterRuntime(
             console.warn(
               `[PilotDeck] transientRetry: ${outcome.error.code} (attempt ${transientRetryCount + 1}/${transientRetryMax}, delay=${Math.round(delay)}ms)`,
             );
+            getDiagnosticLogger().warn({
+              module: "router",
+              event: "router_transient_retry",
+              message: outcome.error.message,
+              sessionKey: ctx.sessionId,
+              projectKey: ctx.projectPath,
+              runId: ctx.turnId,
+              turnId: ctx.turnId,
+              provider: attempt.provider,
+              model: attempt.model,
+              attempt: transientRetryCount + 1,
+              error: outcome.error,
+              cause: serializeErrorForDiagnostics(outcome.error.raw),
+              metadata: {
+                routerEnabled: true,
+                delayMs: Math.round(delay),
+                maxAttempts: transientRetryMax,
+                errorCode: outcome.error.code,
+                retryReason: classifyRetryReason(outcome.error.code),
+              },
+            });
             events.emit({
               type: "pilotdeck_router_transient_retry",
               sessionId: ctx.sessionId,
@@ -1152,6 +1211,12 @@ async function* streamAttempt(
   try {
     for await (const event of modelRuntime.stream(request, {
       signal: abortSignal,
+      diagnostics: {
+        sessionKey: ctx.sessionId,
+        projectKey: ctx.projectPath,
+        runId: ctx.turnId,
+        turnId: ctx.turnId,
+      },
       onRetryProgress(progress) {
         events.emit({
           type: "pilotdeck_router_retry_progress",

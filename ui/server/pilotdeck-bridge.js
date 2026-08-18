@@ -60,6 +60,7 @@ import {
 } from '../../src/status/agentStatus.js';
 import { createNormalizedMessage } from './pilotdeck-message.js';
 import { readPermissionSettings } from './services/permissionSettings.js';
+import { uiDiagnosticLogger, sanitizeUrlForDiagnostics, serializeErrorForDiagnostics } from './utils/diagnosticLogger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -194,6 +195,16 @@ async function readGatewayToken() {
 async function connectWithRetry() {
     const deadline = Date.now() + GATEWAY_CONNECT_TIMEOUT_MS;
     let lastError;
+    uiDiagnosticLogger.info({
+        module: 'bridge',
+        event: 'gateway_connect_start',
+        message: 'Connecting to PilotDeck gateway',
+        metadata: {
+            layer: 'ui_to_gateway',
+            gatewayUrl: sanitizeUrlForDiagnostics(GATEWAY_URL),
+            timeoutMs: GATEWAY_CONNECT_TIMEOUT_MS,
+        },
+    });
     while (Date.now() < deadline) {
         const token = await readGatewayToken();
         if (token) {
@@ -206,9 +217,30 @@ async function connectWithRetry() {
                 console.log(
                     `[pilotdeck-bridge] connected → ${GATEWAY_URL}`,
                 );
+                uiDiagnosticLogger.info({
+                    module: 'bridge',
+                    event: 'gateway_connect_success',
+                    message: 'Connected to PilotDeck gateway',
+                    metadata: {
+                        layer: 'ui_to_gateway',
+                        gatewayUrl: sanitizeUrlForDiagnostics(GATEWAY_URL),
+                    },
+                });
                 return gateway;
             } catch (error) {
                 lastError = error;
+                uiDiagnosticLogger.debug({
+                    module: 'bridge',
+                    event: 'gateway_connect_retry',
+                    message: error instanceof Error ? error.message : String(error),
+                    error,
+                    cause: serializeErrorForDiagnostics(error),
+                    metadata: {
+                        layer: 'ui_to_gateway',
+                        gatewayUrl: sanitizeUrlForDiagnostics(GATEWAY_URL),
+                        retryDelayMs: GATEWAY_CONNECT_RETRY_INTERVAL_MS,
+                    },
+                });
             }
         }
         await new Promise((resolve) =>
@@ -216,6 +248,18 @@ async function connectWithRetry() {
         );
     }
     const detail = lastError instanceof Error ? `: ${lastError.message}` : '';
+    uiDiagnosticLogger.error({
+        module: 'bridge',
+        event: 'gateway_connect_failed',
+        message: `Gateway connect failed after ${GATEWAY_CONNECT_TIMEOUT_MS}ms${detail}`,
+        error: lastError,
+        cause: serializeErrorForDiagnostics(lastError),
+        metadata: {
+            layer: 'ui_to_gateway',
+            gatewayUrl: sanitizeUrlForDiagnostics(GATEWAY_URL),
+            timeoutMs: GATEWAY_CONNECT_TIMEOUT_MS,
+        },
+    });
     throw new Error(
         `[pilotdeck-bridge] gateway connect failed after ${GATEWAY_CONNECT_TIMEOUT_MS}ms${detail}`,
     );
@@ -1126,8 +1170,29 @@ export async function runChatViaGateway(
     const basePermissionMode = normalizePermissionMode(options?.basePermissionMode);
     const runMode = normalizeRunMode(options?.runMode) || (resolvedMode === 'plan' ? 'plan' : 'agent');
     console.log(`[pilotdeck-bridge] submitTurn runMode=${runMode} mode=${resolvedMode} (options.permissionMode=${options?.permissionMode}, options.mode=${options?.mode})`);
+    uiDiagnosticLogger.info({
+        module: 'bridge',
+        event: 'submit_turn_start',
+        message: 'Submitting turn to gateway',
+        sessionKey,
+        projectKey,
+        runId,
+        turnId: runId,
+        metadata: {
+            layer: 'ui_to_gateway',
+            channelKey,
+            runMode,
+            permissionMode: resolvedMode,
+            basePermissionMode,
+            attachmentCount: attachments.length,
+            imageCount: Array.isArray(options?.images) ? options.images.length : 0,
+            fileAttachmentCount: Array.isArray(options?.attachments) ? options.attachments.length : 0,
+            hasWorkspaceCwd: Boolean(options?.workspaceCwd),
+        },
+    });
 
     let gw = null;
+    const startedAt = Date.now();
     try {
         gw = await ensureGateway();
 
@@ -1184,6 +1249,21 @@ export async function runChatViaGateway(
             }
             if (event && event.type === 'error') {
                 sawGatewayError = true;
+                uiDiagnosticLogger.error({
+                    module: 'bridge',
+                    event: 'gateway_error_event',
+                    message: event.message,
+                    sessionKey,
+                    projectKey,
+                    runId,
+                    turnId: runId,
+                    error: event,
+                    metadata: {
+                        layer: event.code === 'agent_model_error' ? 'gateway_to_provider' : 'ui_to_gateway',
+                        code: event.code,
+                        recoverable: event.recoverable,
+                    },
+                });
                 console.error(
                     '[pilotdeck-bridge] gateway error event:',
                     JSON.stringify(
@@ -1248,6 +1328,21 @@ export async function runChatViaGateway(
             state.hasVisibleFailureStatus = true;
             sendBridgeStatusEvent(writer, statusEvent, sessionKey, provider);
         }
+        uiDiagnosticLogger.info({
+            module: 'bridge',
+            event: 'submit_turn_finished',
+            message: 'Gateway turn stream finished',
+            sessionKey,
+            projectKey,
+            runId,
+            turnId: runId,
+            durationMs: Date.now() - startedAt,
+            metadata: {
+                layer: 'ui_to_gateway',
+                sawTurnCompleted,
+                sawGatewayError,
+            },
+        });
     } catch (error) {
         const rawMessage = error instanceof Error ? error.message : String(error);
         const gatewayUnavailable = !gw || isGatewayUnavailableError(error);
@@ -1255,6 +1350,23 @@ export async function runChatViaGateway(
             resetGatewayConnection();
         }
         const message = gatewayUnavailable ? 'PilotDeck gateway is unavailable.' : rawMessage;
+        uiDiagnosticLogger.error({
+            module: 'bridge',
+            event: gatewayUnavailable ? 'gateway_unavailable' : 'gateway_bridge_error',
+            message,
+            sessionKey,
+            projectKey,
+            runId,
+            turnId: runId,
+            durationMs: Date.now() - startedAt,
+            error,
+            cause: serializeErrorForDiagnostics(error),
+            metadata: {
+                layer: 'ui_to_gateway',
+                gatewayUrl: sanitizeUrlForDiagnostics(GATEWAY_URL),
+                gatewayUnavailable,
+            },
+        });
         const statusEvent = gatewayUnavailable
             ? createBridgeFailureStatusEvent({
                 event: 'gateway_unavailable',

@@ -12,6 +12,12 @@ import { parseMemoryConfig } from "./parseMemoryConfig.js";
 import { parseAdaptersConfig, parseGatewayConfig } from "./parseGatewayConfig.js";
 import { parseToolsConfig } from "./parseToolsConfig.js";
 import { parseRouterConfig } from "../../router/config/parseRouterConfig.js";
+import {
+  applyDiagnosticLoggingEnv,
+  defaultDiagnosticLoggingConfig,
+  parseLevel,
+  type DiagnosticLoggingConfig,
+} from "../../diagnostics/logger.js";
 import { redactConfig } from "./redact.js";
 import {
   PilotConfigError,
@@ -25,6 +31,7 @@ import {
   type PilotConfigSource,
   type PilotRawConfig,
   type PilotTelemetryConfig,
+  type PilotLoggingConfig,
 } from "./types.js";
 
 const SUPPORTED_SCHEMA_VERSION = 1;
@@ -125,6 +132,7 @@ export function loadPilotConfig(options: PilotConfigLoadOptions = {}): PilotConf
   const cron = parseCronConfig(rawConfig.cron, diagnostics);
   const tools = parseToolsConfig(rawConfig.tools, diagnostics);
   const telemetry = parseTelemetryConfig(rawConfig.telemetry);
+  const logging = parseLoggingConfig(rawConfig.logging, diagnostics, env);
   const proxy = parseProxyConfig(rawConfig, diagnostics);
   throwConfigErrorIfFatal(diagnostics);
 
@@ -140,6 +148,7 @@ export function loadPilotConfig(options: PilotConfigLoadOptions = {}): PilotConf
     cron,
     tools,
     telemetry,
+    logging,
     proxy,
   });
   return deepFreeze({
@@ -161,6 +170,7 @@ export function loadPilotConfig(options: PilotConfigLoadOptions = {}): PilotConf
       ...(cron ? { cron } : {}),
       ...(tools ? { tools } : {}),
       telemetry,
+      logging,
       ...(proxy ? { proxy } : {}),
     },
   });
@@ -307,6 +317,7 @@ function validateTopLevel(rawConfig: PilotRawConfig, diagnostics: PilotConfigDia
     "alwaysOn",
     "cron",
     "tools",
+    "logging",
     "proxy",
     // Reserved namespace for ui/server (Web UI Express bridge). The PilotDeck
     // gateway does not parse `webui.*` itself but tolerates it so a single
@@ -326,6 +337,118 @@ function validateTopLevel(rawConfig: PilotRawConfig, diagnostics: PilotConfigDia
       });
     }
   }
+}
+
+function parseLoggingConfig(
+  rawLogging: unknown,
+  diagnostics: PilotConfigDiagnostic[],
+  env: Record<string, string | undefined>,
+): PilotLoggingConfig {
+  const defaults = defaultDiagnosticLoggingConfig(env);
+  let result: DiagnosticLoggingConfig = defaults;
+  if (rawLogging !== undefined) {
+    if (!isRecord(rawLogging)) {
+      diagnostics.push({
+        code: "CONFIG_LOGGING_INVALID",
+        severity: "warning",
+        message: "logging must be an object.",
+        path: "logging",
+        recoverable: true,
+      });
+    } else {
+      const raw = rawLogging as Record<string, unknown>;
+      result = {
+        enabled: readLoggingBoolean(raw.enabled, defaults.enabled, "logging.enabled", diagnostics),
+        level: readLoggingLevel(raw.level, defaults.level, "logging.level", diagnostics),
+        networkDiagnostics: readLoggingBoolean(raw.networkDiagnostics, defaults.networkDiagnostics, "logging.networkDiagnostics", diagnostics),
+        file: {
+          enabled: readLoggingBoolean(readNested(raw.file, "enabled"), defaults.file.enabled, "logging.file.enabled", diagnostics),
+          level: readLoggingLevel(readNested(raw.file, "level"), defaults.file.level, "logging.file.level", diagnostics),
+          dir: readLoggingString(readNested(raw.file, "dir"), defaults.file.dir, "logging.file.dir", diagnostics),
+          maxSizeMb: readLoggingPositiveInteger(readNested(raw.file, "maxSizeMb"), defaults.file.maxSizeMb, "logging.file.maxSizeMb", diagnostics),
+          maxFiles: readLoggingPositiveInteger(readNested(raw.file, "maxFiles"), defaults.file.maxFiles, "logging.file.maxFiles", diagnostics),
+        },
+      };
+    }
+  }
+  return applyDiagnosticLoggingEnv(result, env) as PilotLoggingConfig;
+}
+
+function readNested(parent: unknown, key: string): unknown {
+  return isRecord(parent) ? parent[key] : undefined;
+}
+
+function readLoggingBoolean(
+  value: unknown,
+  fallback: boolean,
+  path: string,
+  diagnostics: PilotConfigDiagnostic[],
+): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") return value;
+  diagnostics.push({
+    code: "CONFIG_LOGGING_INVALID_VALUE",
+    severity: "warning",
+    message: `${path} must be a boolean.`,
+    path,
+    recoverable: true,
+  });
+  return fallback;
+}
+
+function readLoggingLevel(
+  value: unknown,
+  fallback: "debug" | "info" | "warn" | "error",
+  path: string,
+  diagnostics: PilotConfigDiagnostic[],
+): "debug" | "info" | "warn" | "error" {
+  if (value === undefined) return fallback;
+  const level = parseLevel(value);
+  if (level) return level;
+  diagnostics.push({
+    code: "CONFIG_LOGGING_INVALID_VALUE",
+    severity: "warning",
+    message: `${path} must be one of debug, info, warn, error.`,
+    path,
+    recoverable: true,
+  });
+  return fallback;
+}
+
+function readLoggingString(
+  value: unknown,
+  fallback: string,
+  path: string,
+  diagnostics: PilotConfigDiagnostic[],
+): string {
+  if (value === undefined) return fallback;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  diagnostics.push({
+    code: "CONFIG_LOGGING_INVALID_VALUE",
+    severity: "warning",
+    message: `${path} must be a non-empty string.`,
+    path,
+    recoverable: true,
+  });
+  return fallback;
+}
+
+function readLoggingPositiveInteger(
+  value: unknown,
+  fallback: number,
+  path: string,
+  diagnostics: PilotConfigDiagnostic[],
+): number {
+  if (value === undefined) return fallback;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  diagnostics.push({
+    code: "CONFIG_LOGGING_INVALID_VALUE",
+    severity: "warning",
+    message: `${path} must be a positive integer.`,
+    path,
+    recoverable: true,
+  });
+  return fallback;
 }
 
 function parseAgent(
