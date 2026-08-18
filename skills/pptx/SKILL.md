@@ -56,7 +56,7 @@ bash "$PPTX" build \
   --out "$WORKSPACE/tmp/candidate.pptx"
 ```
 
-For template inheritance or an existing PPTX, add `--input "$INPUT_PPTX"`. The builder can call `createTemplatePresentation()` and use the complete pptx-automizer API to select, reorder, preserve, or modify source slides and named objects. Prefer localized edits over reconstruction when the source already contains the desired visual system.
+For template inheritance or an existing PPTX, add `--input "$INPUT_PPTX"`. The builder can call `createTemplatePresentation()` and use the complete pptx-automizer API to select, reorder, preserve, or modify source slides and named objects. On a copied template slide, use `slide.generate()` to add editable PptxGenJS text, shapes, images, charts, or tables, and use `template.setNotes()` to set speaker notes by final output position. Prefer localized edits over reconstruction when the source already contains the desired visual system.
 
 For a new deck, return a PptxGenJS presentation from the builder. Use the complete PptxGenJS API and the optional image crop/contain helpers. Charts, tables, native shapes, prepared graphics, and diagrams are available when they serve the content.
 

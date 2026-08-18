@@ -63,7 +63,10 @@ try {
   const scaffoldedTemplate = pptx('scaffold', '--input', candidate, '--out', templateScaffold);
   assert.equal(scaffoldedTemplate.mode, 'template');
   assert.equal(scaffoldedTemplate.slideCount, 2);
-  assert.match(await fs.readFile(templateScaffold, 'utf8'), /createTemplatePresentation/);
+  const templateScaffoldSource = await fs.readFile(templateScaffold, 'utf8');
+  assert.match(templateScaffoldSource, /createTemplatePresentation/);
+  assert.match(templateScaffoldSource, /slide\.generate/);
+  assert.match(templateScaffoldSource, /template\.setNotes/);
   const scaffoldBuild = pptx(
     'build',
     '--builder', templateScaffold,
@@ -173,6 +176,43 @@ try {
   assert.ok(bomParts > 0);
   assert.ok(absoluteRelationshipTargets > 0);
   assert.ok(localRelationshipNamespaces > 0);
+
+  const notesRelationshipSuffixes = ['/notesSlide', '/notesMaster'];
+  for (const part of Object.keys(compatibilityZip.files).filter((name) => name.endsWith('.rels'))) {
+    const file = compatibilityZip.file(part);
+    if (!file) continue;
+    const document = new xmldom.DOMParser().parseFromString(
+      (await file.async('string')).replace(/^\uFEFF/u, ''),
+      'application/xml',
+    );
+    let changed = false;
+    for (const relationship of elementDescendants(document).filter((node) => node.localName === 'Relationship')) {
+      if (!notesRelationshipSuffixes.some((suffix) => relationship.getAttribute('Type').endsWith(suffix))) continue;
+      relationship.parentNode.removeChild(relationship);
+      changed = true;
+    }
+    if (changed) compatibilityZip.file(part, new xmldom.XMLSerializer().serializeToString(document));
+  }
+  const presentationDocument = new xmldom.DOMParser().parseFromString(
+    (await compatibilityZip.file('ppt/presentation.xml').async('string')).replace(/^\uFEFF/u, ''),
+    'application/xml',
+  );
+  for (const list of elementDescendants(presentationDocument).filter((node) => node.localName === 'notesMasterIdLst')) {
+    list.parentNode.removeChild(list);
+  }
+  compatibilityZip.file('ppt/presentation.xml', new xmldom.XMLSerializer().serializeToString(presentationDocument));
+  const contentTypesDocument = new xmldom.DOMParser().parseFromString(
+    (await compatibilityZip.file('[Content_Types].xml').async('string')).replace(/^\uFEFF/u, ''),
+    'application/xml',
+  );
+  for (const override of elementDescendants(contentTypesDocument).filter((node) => node.localName === 'Override')) {
+    if (!String(override.getAttribute('ContentType')).includes('.notes')) continue;
+    override.parentNode.removeChild(override);
+  }
+  compatibilityZip.file('[Content_Types].xml', new xmldom.XMLSerializer().serializeToString(contentTypesDocument));
+  compatibilityZip.remove('ppt/notesSlides');
+  compatibilityZip.remove('ppt/notesMasters');
+
   await fs.writeFile(compatibilityCandidate, await compatibilityZip.generateAsync({ type: 'nodebuffer' }));
   const compatibilitySourceHash = crypto.createHash('sha256').update(await fs.readFile(compatibilityCandidate)).digest('hex');
   const compatibilityManifest = pptx('inspect', '--input', compatibilityCandidate);
@@ -195,7 +235,12 @@ try {
   await fs.writeFile(editBuilder, [
     'export default async function build({ createTemplatePresentation }) {',
     '  const template = await createTemplatePresentation();',
-    `  template.addSlide(1, (slide) => slide.modifyElement(${JSON.stringify(title.name)}, [template.ModifyTextHelper.setText('Template editing stays model-directed')]));`,
+    '  template.addSlide(1, (slide) => {',
+    `    slide.modifyElement(${JSON.stringify(title.name)}, [template.ModifyTextHelper.setText('Template editing stays model-directed')]);`,
+    "    slide.generate((canvas, pptxgenjs) => canvas.addChart(pptxgenjs.ChartType.bar, [{ name: 'Results', labels: ['A', 'B'], values: [12, 6] }], { x: 0.8, y: 3.5, w: 4.2, h: 2.4, showLegend: false }), 'Generated Chart');",
+    "    slide.generate((canvas) => canvas.addTable([['Metric', 'Value'], ['A', '12'], ['B', '6']], { x: 5.4, y: 3.5, w: 3.6, h: 1.8 }), 'Generated Table');",
+    '  });',
+    "  template.setNotes(1, '[Sources]\\n- candidate-with-ooxml-variants.pptx');",
     '  return template;',
     '}',
     '',
@@ -214,6 +259,62 @@ try {
   );
   const editedManifest = pptx('inspect', '--input', edited);
   assert.match(editedManifest.slides[0].text, /Template editing stays model-directed/);
+  assert.ok(editedManifest.masterCount >= compatibilityManifest.masterCount);
+  assert.ok(editedManifest.layoutCount >= compatibilityManifest.layoutCount);
+  const editedZip = await JSZip.loadAsync(await fs.readFile(edited));
+  const editedPresentation = new xmldom.DOMParser().parseFromString(
+    await editedZip.file('ppt/presentation.xml').async('string'),
+    'application/xml',
+  );
+  const editedPresentationRelationships = new xmldom.DOMParser().parseFromString(
+    await editedZip.file('ppt/_rels/presentation.xml.rels').async('string'),
+    'application/xml',
+  );
+  const activeSlideRelationshipId = elementDescendants(editedPresentation)
+    .find((node) => node.localName === 'sldId')
+    .getAttribute('r:id');
+  const activeSlideRelationship = elementDescendants(editedPresentationRelationships)
+    .find((node) => node.localName === 'Relationship' && node.getAttribute('Id') === activeSlideRelationshipId);
+  const activeSlidePart = path.posix.join('ppt', activeSlideRelationship.getAttribute('Target'));
+  const activeSlideRelationshipsPart = path.posix.join(
+    path.posix.dirname(activeSlidePart),
+    '_rels',
+    `${path.posix.basename(activeSlidePart)}.rels`,
+  );
+  const activeSlideRelationships = new xmldom.DOMParser().parseFromString(
+    await editedZip.file(activeSlideRelationshipsPart).async('string'),
+    'application/xml',
+  );
+  const activeLayoutRelationship = elementDescendants(activeSlideRelationships)
+    .find((node) => node.localName === 'Relationship' && node.getAttribute('Type').endsWith('/slideLayout'));
+  const activeLayoutPart = path.posix.normalize(path.posix.join(
+    path.posix.dirname(activeSlidePart),
+    activeLayoutRelationship.getAttribute('Target'),
+  ));
+  assert.equal(
+    await editedZip.file(activeLayoutPart).async('string'),
+    await editedZip.file('ppt/slideLayouts/slideLayout1.xml').async('string'),
+    'generated content should remain on a copy of the source slide layout',
+  );
+  assert.ok(
+    Object.keys(editedZip.files).some((part) => /^ppt\/charts\/chart\d+\.xml$/u.test(part)),
+    'template generation should preserve an editable chart',
+  );
+  assert.match(await editedZip.file(activeSlidePart).async('string'), /<a:tbl>/u);
+  const activeNotesRelationship = elementDescendants(activeSlideRelationships)
+    .find((node) => node.localName === 'Relationship' && node.getAttribute('Type').endsWith('/notesSlide'));
+  const activeNotesPart = path.posix.normalize(path.posix.join(
+    path.posix.dirname(activeSlidePart),
+    activeNotesRelationship.getAttribute('Target'),
+  ));
+  const editedNotes = await editedZip.file(activeNotesPart).async('string');
+  assert.match(editedNotes, /\[Sources\]/u);
+  assert.match(editedNotes, /candidate-with-ooxml-variants\.pptx/u);
+  assert.ok(editedZip.file('ppt/notesMasters/notesMaster1.xml'));
+  assert.match(
+    await editedZip.file('ppt/presentation.xml').async('string'),
+    /<p:notesMasterIdLst>/u,
+  );
 
   await fs.writeFile(evaluator, [
     'export default async function evaluate({ candidate, helpers }) {',

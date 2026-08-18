@@ -48,14 +48,26 @@ export default async function build({ createTemplatePresentation }) {
     slide.modifyElement('Title 1', [
       template.ModifyTextHelper.setText('Updated audience-facing title'),
     ]);
+
+    slide.generate((canvas, pptxgenjs) => {
+      canvas.addChart(pptxgenjs.ChartType.bar, [{
+        name: 'Results', labels: ['A', 'B'], values: [12, 6],
+      }], { x: 1, y: 1.6, w: 5, h: 3 });
+      canvas.addTable([
+        ['Metric', 'Value'],
+        ['A', '12'],
+        ['B', '6'],
+      ], { x: 6.5, y: 1.6, w: 4.5, h: 2.2 });
+    });
   });
 
   template.addSlide(7);
+  template.setNotes(1, '[Sources]\n- source.pptx');
   return template;
 }
 ```
 
-The returned object exposes the underlying `presentation`, `automizer`, `ModifyTextHelper`, `ModifyImageHelper`, and `modify` APIs. Use pptx-automizer directly for capabilities beyond the convenience methods.
+The returned object exposes the underlying `presentation`, `automizer`, `ModifyTextHelper`, `ModifyImageHelper`, and `modify` APIs. `slide.generate()` supports editable PptxGenJS text, shapes, images, charts, and tables while the copied slide keeps its source master and layout. `template.setNotes(outputSlideNumber, text)` adds or replaces speaker notes by final output position. Use pptx-automizer directly for capabilities beyond the convenience methods.
 
 Use `template.loadMedia(imagePath)` before replacing an image. Refer to object names from `inspect` output. Select, reorder, or repeat source slides according to the request; there is no frame-map schema or fixed action list.
 

@@ -18,7 +18,12 @@ import {
   writeJson,
 } from './lib/paths.mjs';
 import { renderPptx, renderingAvailability } from './lib/render.mjs';
-import { buildToolkit, disposeToolkit } from './lib/toolkit.mjs';
+import { applyTemplateSpeakerNotes } from './lib/notes.mjs';
+import {
+  buildToolkit,
+  disposeToolkit,
+  templateSpeakerNotes,
+} from './lib/toolkit.mjs';
 import { skillRoot } from './lib/runtime.mjs';
 
 function print(value) {
@@ -45,8 +50,14 @@ async function scaffoldCommand(args) {
     '',
     '  // Modify, reorder, repeat, or omit source slides according to the request.',
     `  for (let slideNumber = 1; slideNumber <= ${manifest.slideCount}; slideNumber += 1) {`,
-    '    template.addSlide(slideNumber);',
+    '    template.addSlide(slideNumber, (slide) => {',
+    '      // Use slide.modifyElement(...) for existing objects.',
+    '      // Use slide.generate((canvas, pptxgenjs) => { ... }) for new editable',
+    '      // text, shapes, images, charts, or tables on this template slide.',
+    '    });',
     '  }',
+    '',
+    "  // Add or replace notes by final output position: template.setNotes(1, '[Sources]\\n- source.pptx');",
     '',
     '  return template;',
     '}',
@@ -83,6 +94,7 @@ async function writeBuilderProduct(product, outputPath) {
   const presentation = product?.presentation ?? product;
   if (presentation && typeof presentation.write === 'function') {
     await presentation.write(path.basename(outputPath));
+    await applyTemplateSpeakerNotes(outputPath, product?.[templateSpeakerNotes]);
     return 'pptx-automizer';
   }
   throw new Error('Builder must return a PptxGenJS deck, a template presentation, or an object containing one');

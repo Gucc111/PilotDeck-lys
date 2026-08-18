@@ -5,6 +5,7 @@ import { normalizeTemplatePptx } from './ooxml.mjs';
 import { loadDependencies } from './runtime.mjs';
 
 export const disposeToolkit = Symbol('disposeToolkit');
+export const templateSpeakerNotes = Symbol('templateSpeakerNotes');
 
 export async function imageSizingCrop(imagePath, x, y, w, h) {
   const { sharp } = loadDependencies();
@@ -83,7 +84,8 @@ export async function createTemplatePresentation(inputPath, options = {}) {
   })
     .loadRoot(path.basename(preparedSource))
     .load(path.basename(preparedSource), sourceAlias);
-  return {
+  const speakerNotes = new Map();
+  const template = {
     presentation,
     sourceAlias,
     source,
@@ -99,7 +101,18 @@ export async function createTemplatePresentation(inputPath, options = {}) {
     ModifyTextHelper: automizerModule.ModifyTextHelper,
     ModifyImageHelper: automizerModule.ModifyImageHelper,
     modify: automizerModule.modify,
+    setNotes(outputSlideNumber, notes) {
+      if (!Number.isInteger(outputSlideNumber) || outputSlideNumber < 1) {
+        throw new Error('Speaker notes require a positive output slide number');
+      }
+      const text = Array.isArray(notes) ? notes.join('\n') : notes;
+      if (typeof text !== 'string') throw new Error('Speaker notes must be a string or an array of strings');
+      speakerNotes.set(outputSlideNumber, text);
+      return template;
+    },
+    [templateSpeakerNotes]: speakerNotes,
   };
+  return template;
 }
 
 export async function buildToolkit(options = {}) {
