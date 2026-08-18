@@ -18,6 +18,7 @@ import { getDraftInputStorageKey, safeLocalStorage } from '../utils/chatStorage'
 import { buildAttachmentPathNote } from '../utils/attachmentNotes';
 import {
   createTemporarySessionId,
+  createUserTurnRunId,
   getNotificationSessionSummary,
   isTemporarySessionId,
   startSessionCommand,
@@ -956,12 +957,14 @@ export function useChatComposerState({
 
       const effectiveSessionId = submitTargetSessionId;
       const sessionToActivate = effectiveSessionId || optimisticSessionId;
+      const runId = createUserTurnRunId();
 
       const userMessage: ChatMessage = {
         type: 'user',
         content: userVisibleInput,
         images: uploadedImages as any,
         attachments: [...uploadedFiles, ...documentReferenceAttachments] as any,
+        runId,
         timestamp: new Date(),
       };
 
@@ -1018,6 +1021,7 @@ export function useChatComposerState({
         sendMessage,
         selectedProject,
         command: messageContent,
+        runId,
         userVisibleInput,
         sessionId: effectiveSessionId,
         temporarySessionId: sessionToActivate,

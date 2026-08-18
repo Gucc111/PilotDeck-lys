@@ -111,7 +111,7 @@ import userRoutes from './routes/user.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
 import { closeMemoryServices, startMemoryScheduler, stopMemoryScheduler } from './services/memoryService.js';
-import { createNormalizedMessage } from './pilotdeck-message.js';
+import { createNormalizedMessage, createOptimisticUserFrames } from './pilotdeck-message.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames, userDb } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
@@ -2474,25 +2474,11 @@ function handleChatConnection(ws, request) {
                     if (userVisibleInput) {
                         const nowIso = new Date().toISOString();
                         const provider = data.options?.providerHint || 'pilotdeck';
-                        const optimisticUserFrame = createNormalizedMessage({
-                            id: `local_ws_user_${crypto.randomUUID()}`,
+                        const [optimisticUserFrame, optimisticStatusFrame] = createOptimisticUserFrames({
                             sessionId: commandSessionId,
                             provider,
-                            kind: 'text',
-                            role: 'user',
-                            content: userVisibleInput,
-                            ...(Array.isArray(data.options?.attachments) && data.options.attachments.length > 0
-                                ? { attachments: data.options.attachments }
-                                : {}),
-                            timestamp: nowIso,
-                        });
-                        const optimisticStatusFrame = createNormalizedMessage({
-                            id: `local_ws_status_${crypto.randomUUID()}`,
-                            sessionId: commandSessionId,
-                            provider,
-                            kind: 'status',
-                            text: 'Processing',
-                            canInterrupt: true,
+                            userVisibleInput,
+                            options: data.options,
                             timestamp: nowIso,
                         });
                         // The submitting tab already rendered its optimistic user row.

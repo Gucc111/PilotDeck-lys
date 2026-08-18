@@ -1137,7 +1137,7 @@ export async function runChatViaGateway(
         );
     }
 
-    const runId = randomUUID();
+    const runId = resolveTurnRunId(options?.runId);
     if (!staleRunId) {
         state.runId = runId;
         state.active = true;
@@ -1336,6 +1336,11 @@ export async function runChatViaGateway(
     } finally {
         clearActiveRunIfCurrent(state, runId);
     }
+}
+
+export function resolveTurnRunId(value) {
+    const requestedRunId = typeof value === 'string' ? value.trim() : '';
+    return requestedRunId || randomUUID();
 }
 
 async function recordGatewayStatusMessage(gateway, { sessionKey, turnId, projectKey, event, text, detail }) {
