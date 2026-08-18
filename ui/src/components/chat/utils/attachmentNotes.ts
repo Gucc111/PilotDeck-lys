@@ -12,6 +12,7 @@ import {
 
 const ATTACHMENT_NOTE_MARKER = '[Files attached by user and available for reading in the project:]';
 const ATTACHMENT_NOTE_END_MARKER = '[End files attached by user]';
+const ATTACHMENT_NOTE_JSON_PREFIX = '- attachment-json: ';
 // Older transcripts have no end marker. Their next canonical text block may
 // be concatenated directly onto the final path during history projection.
 const LEGACY_ATTACHMENT_NOTE_TERMINATORS = [
@@ -30,8 +31,40 @@ type AttachmentPathNoteFile = {
 export function buildAttachmentPathNote(files: AttachmentPathNoteFile[]): string {
   if (files.length === 0) return '';
 
-  const lines = files.map((file) => `- ${file.name}: ${file.path}`);
+  const lines = files.map((file) => (
+    `${ATTACHMENT_NOTE_JSON_PREFIX}${JSON.stringify({ name: file.name, path: file.path })}`
+  ));
   return `\n\n${ATTACHMENT_NOTE_MARKER}\n${lines.join('\n')}\n${ATTACHMENT_NOTE_END_MARKER}\n`;
+}
+
+function parseAttachmentPathNoteLine(line: string): AttachmentPathNoteFile | null {
+  if (line.startsWith(ATTACHMENT_NOTE_JSON_PREFIX)) {
+    try {
+      const parsed = JSON.parse(line.slice(ATTACHMENT_NOTE_JSON_PREFIX.length)) as {
+        name?: unknown;
+        path?: unknown;
+      };
+      if (
+        typeof parsed.name !== 'string'
+        || typeof parsed.path !== 'string'
+        || !parsed.name.trim()
+        || !parsed.path.trim()
+      ) {
+        return null;
+      }
+      return { name: parsed.name, path: parsed.path };
+    } catch {
+      return null;
+    }
+  }
+
+  if (!line.startsWith('- ')) return null;
+  const separator = line.lastIndexOf(': ');
+  if (separator < 0) return null;
+
+  const name = line.slice(2, separator).trim();
+  const filePath = line.slice(separator + 2).trim();
+  return name && filePath ? { name, path: filePath } : null;
 }
 
 function sliceBeforeFirstMarker(value: string, markers: string[]): string {
@@ -96,13 +129,9 @@ export function parseUserAttachmentNote(content: unknown): {
 
   for (const rawLine of note.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line.startsWith('- ')) continue;
-    const separator = line.lastIndexOf(': ');
-    if (separator < 0) continue;
-
-    const name = line.slice(2, separator).trim();
-    const filePath = line.slice(separator + 2).trim();
-    if (!name || !filePath) continue;
+    const attachment = parseAttachmentPathNoteLine(line);
+    if (!attachment) continue;
+    const { name, path: filePath } = attachment;
     const mimeType = inferAttachmentMimeType(name, filePath);
     if (isImageAttachmentMime(mimeType)) continue;
 

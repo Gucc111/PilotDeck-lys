@@ -157,10 +157,10 @@ export interface NormalizedMessage {
   /** True when the corresponding transcript entry has non-text prefill content. */
   forkUnsupportedContent?: boolean;
   forkUnsupportedReason?: string;
-  // Streaming-only: id of slot.serverMessages tail at the moment the
-  // streaming row was created. computeMerged uses this for an id-based
-  // same-turn-snapshot test instead of a timestamp window.
-  serverTailIdAtStart?: string;
+  // Server-history tail captured when a live row was created. A null value
+  // means the history was empty. Reconciliation uses this as a turn boundary
+  // so an older persisted row cannot confirm a newer optimistic send.
+  serverTailIdAtStart?: string | null;
 }
 
 // ─── Per-session slot ────────────────────────────────────────────────────────
@@ -339,6 +339,34 @@ function isOptimisticUserMessage(message: NormalizedMessage): boolean {
     && message.id.startsWith('local_');
 }
 
+function captureOptimisticUserServerTail(
+  message: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): NormalizedMessage {
+  if (!isOptimisticUserMessage(message) || message.serverTailIdAtStart !== undefined) {
+    return message;
+  }
+
+  return {
+    ...message,
+    serverTailIdAtStart: serverMessages[serverMessages.length - 1]?.id ?? null,
+  };
+}
+
+function isServerMessageAfterOptimisticTail(
+  realtimeMessage: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+  serverIndex: number,
+): boolean {
+  const tailId = realtimeMessage.serverTailIdAtStart;
+  // Rows created before tail tracking was introduced retain the legacy
+  // timestamp-based reconciliation behavior.
+  if (tailId === undefined || tailId === null) return true;
+
+  const tailIndex = serverMessages.findIndex((message) => message.id === tailId);
+  return tailIndex >= 0 && serverIndex > tailIndex;
+}
+
 function findConfirmedUserMessageDuplicateIndex(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
@@ -353,6 +381,7 @@ function findConfirmedUserMessageDuplicateIndex(
 
   for (let index = 0; index < serverMessages.length; index += 1) {
     if (consumedServerIndexes?.has(index)) continue;
+    if (!isServerMessageAfterOptimisticTail(realtimeMessage, serverMessages, index)) continue;
     const serverMessage = serverMessages[index];
     if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') {
       continue;
@@ -394,7 +423,8 @@ function getConfirmedRealtimeUserIndexes(
 ): Set<number> {
   const consumedRealtimeIndexes = new Set<number>();
 
-  for (const serverMessage of serverMessages) {
+  for (let serverIndex = 0; serverIndex < serverMessages.length; serverIndex += 1) {
+    const serverMessage = serverMessages[serverIndex];
     if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') continue;
     const serverIdentity = getConfirmedUserMessageIdentity(serverMessage);
     if (!serverIdentity.text) continue;
@@ -407,6 +437,7 @@ function getConfirmedRealtimeUserIndexes(
       if (consumedRealtimeIndexes.has(index)) continue;
       const realtimeMessage = realtimeMessages[index];
       if (!isOptimisticUserMessage(realtimeMessage)) continue;
+      if (!isServerMessageAfterOptimisticTail(realtimeMessage, serverMessages, serverIndex)) continue;
 
       const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
       if (
@@ -821,7 +852,10 @@ export function upsertRealtimeMessages(
       indexByKey.set(key, updated.length);
       updated.push(message);
     } else {
-      updated[existingIndex] = message;
+      const existingTailId = updated[existingIndex].serverTailIdAtStart;
+      updated[existingIndex] = existingTailId === undefined
+        ? message
+        : { ...message, serverTailIdAtStart: existingTailId };
     }
   }
   return updated;
@@ -1169,7 +1203,8 @@ export function useSessionStore() {
    */
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
-    let updated = upsertRealtimeMessages(slot.realtimeMessages, [msg]);
+    const capturedMessage = captureOptimisticUserServerTail(msg, slot.serverMessages);
+    let updated = upsertRealtimeMessages(slot.realtimeMessages, [capturedMessage]);
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
@@ -1409,7 +1444,10 @@ export function useSessionStore() {
   const appendRealtimeBatch = useCallback((sessionId: string, msgs: NormalizedMessage[]) => {
     if (msgs.length === 0) return;
     const slot = getSlot(sessionId);
-    let updated = upsertRealtimeMessages(slot.realtimeMessages, msgs);
+    const capturedMessages = msgs.map((message) => (
+      captureOptimisticUserServerTail(message, slot.serverMessages)
+    ));
+    let updated = upsertRealtimeMessages(slot.realtimeMessages, capturedMessages);
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }

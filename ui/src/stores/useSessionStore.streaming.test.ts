@@ -380,6 +380,46 @@ describe('computeMerged', () => {
     ]);
   });
 
+  it('does not confirm a new identical send from the captured server tail', () => {
+    const server = [
+      textMessage('persisted-previous-user', 'Continue.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_new_send', 'Continue.', '2026-08-16T09:00:05.000Z', {
+        role: 'user',
+        serverTailIdAtStart: 'persisted-previous-user',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime).map((message) => message.id)).toEqual([
+      'persisted-previous-user',
+      'local_new_send',
+    ]);
+    expect(getRealtimeMessagesToKeepAfterServerRefresh(realtime, server)).toEqual(realtime);
+  });
+
+  it('confirms an identical send persisted after the captured server tail', () => {
+    const server = [
+      textMessage('persisted-previous-user', 'Continue.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+      }),
+      textMessage('persisted-new-user', 'Continue.', '2026-08-16T09:00:05.050Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_new_send', 'Continue.', '2026-08-16T09:00:05.000Z', {
+        role: 'user',
+        serverTailIdAtStart: 'persisted-previous-user',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime)).toEqual(server);
+    expect(getRealtimeMessagesToKeepAfterServerRefresh(realtime, server)).toEqual([]);
+  });
+
   it('keeps the second identical optimistic send during server-refresh cleanup', () => {
     const server = [
       textMessage('persisted-first-user', 'Continue.', '2026-08-16T09:00:00.050Z', {

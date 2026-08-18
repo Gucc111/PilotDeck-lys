@@ -18,7 +18,7 @@ describe('attachment path notes', () => {
       '',
       '',
       marker,
-      '- 报告.xlsx: .tmp/chat-attachments/run/1-报告.xlsx',
+      '- attachment-json: {"name":"报告.xlsx","path":".tmp/chat-attachments/run/1-报告.xlsx"}',
       '[End files attached by user]',
       '',
     ].join('\n'));
@@ -57,6 +57,25 @@ describe('attachment path notes', () => {
       path: filePath,
       mimeType: 'application/pdf',
     }]);
+  });
+
+  it('round trips colons in both attachment names and paths', () => {
+    const parsed = parseUserAttachmentNote([
+      'Review this report',
+      buildAttachmentPathNote([{
+        name: 'report: final.pdf',
+        path: '/tmp/project: docs/report: final.pdf',
+      }]),
+    ].join(''));
+
+    expect(parsed).toEqual({
+      content: 'Review this report',
+      attachments: [{
+        name: 'report: final.pdf',
+        path: '/tmp/project: docs/report: final.pdf',
+        mimeType: 'application/pdf',
+      }],
+    });
   });
 
   it.each([
