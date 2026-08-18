@@ -380,6 +380,31 @@ describe('computeMerged', () => {
     ]);
   });
 
+  it('maximizes confirmed sends before minimizing timestamp distance', () => {
+    const server = [
+      textMessage('tail-before-sends', 'Previous answer', '2026-08-16T08:59:49.000Z'),
+      textMessage('persisted-first-user', 'Continue.', '2026-08-16T09:00:00.000Z', {
+        role: 'user',
+      }),
+      textMessage('persisted-second-user', 'Continue.', '2026-08-16T09:00:09.000Z', {
+        role: 'user',
+      }),
+    ];
+    const realtime = [
+      textMessage('local_first', 'Continue.', '2026-08-16T08:59:51.000Z', {
+        role: 'user',
+        serverTailIdAtStart: 'tail-before-sends',
+      }),
+      textMessage('local_second', 'Continue.', '2026-08-16T09:00:05.000Z', {
+        role: 'user',
+        serverTailIdAtStart: 'tail-before-sends',
+      }),
+    ];
+
+    expect(computeMerged(server, realtime)).toEqual(server);
+    expect(getRealtimeMessagesToKeepAfterServerRefresh(realtime, server)).toEqual([]);
+  });
+
   it('does not confirm a new identical send from the captured server tail', () => {
     const server = [
       textMessage('persisted-previous-user', 'Continue.', '2026-08-16T09:00:00.000Z', {

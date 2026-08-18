@@ -121,25 +121,29 @@ export function parseUserAttachmentNote(content: unknown): {
   }
 
   const visibleContent = text.slice(0, markerIndex).trimEnd();
-  const note = sliceBeforeFirstMarker(
-    text.slice(markerIndex + ATTACHMENT_NOTE_MARKER.length),
-    LEGACY_ATTACHMENT_NOTE_TERMINATORS,
-  );
+  const note = text.slice(markerIndex + ATTACHMENT_NOTE_MARKER.length);
   const attachments: ChatAttachment[] = [];
 
   for (const rawLine of note.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const attachment = parseAttachmentPathNoteLine(line);
-    if (!attachment) continue;
-    const { name, path: filePath } = attachment;
-    const mimeType = inferAttachmentMimeType(name, filePath);
-    if (isImageAttachmentMime(mimeType)) continue;
+    let line = rawLine.trim();
+    if (line === ATTACHMENT_NOTE_END_MARKER) break;
+    let reachedLegacyTerminator = false;
+    if (!line.startsWith(ATTACHMENT_NOTE_JSON_PREFIX)) {
+      const legacyLine = sliceBeforeFirstMarker(line, LEGACY_ATTACHMENT_NOTE_TERMINATORS);
+      reachedLegacyTerminator = legacyLine.length !== line.length;
+      line = legacyLine.trim();
+      if (!line && reachedLegacyTerminator) break;
+    }
 
-    attachments.push({
-      name,
-      path: filePath,
-      mimeType,
-    });
+    const attachment = parseAttachmentPathNoteLine(line);
+    if (attachment) {
+      const { name, path: filePath } = attachment;
+      const mimeType = inferAttachmentMimeType(name, filePath);
+      if (!isImageAttachmentMime(mimeType)) {
+        attachments.push({ name, path: filePath, mimeType });
+      }
+    }
+    if (reachedLegacyTerminator) break;
   }
 
   return { content: visibleContent, attachments: [...attachments, ...selectionAttachments] };

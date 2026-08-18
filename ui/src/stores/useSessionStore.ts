@@ -161,6 +161,8 @@ export interface NormalizedMessage {
   // means the history was empty. Reconciliation uses this as a turn boundary
   // so an older persisted row cannot confirm a newer optimistic send.
   serverTailIdAtStart?: string | null;
+  /** The optimistic row was created before its initial history request completed. */
+  serverHistoryPendingAtStart?: boolean;
 }
 
 // ─── Per-session slot ────────────────────────────────────────────────────────
@@ -342,6 +344,7 @@ function isOptimisticUserMessage(message: NormalizedMessage): boolean {
 function captureOptimisticUserServerTail(
   message: NormalizedMessage,
   serverMessages: NormalizedMessage[],
+  serverHistoryPending: boolean,
 ): NormalizedMessage {
   if (!isOptimisticUserMessage(message) || message.serverTailIdAtStart !== undefined) {
     return message;
@@ -350,6 +353,7 @@ function captureOptimisticUserServerTail(
   return {
     ...message,
     serverTailIdAtStart: serverMessages[serverMessages.length - 1]?.id ?? null,
+    ...(serverHistoryPending ? { serverHistoryPendingAtStart: true } : {}),
   };
 }
 
@@ -367,6 +371,39 @@ function isServerMessageAfterOptimisticTail(
   return tailIndex >= 0 && serverIndex > tailIndex;
 }
 
+const CONFIRMED_USER_WINDOW_MS = 10_000;
+
+function getConfirmedUserMessageMatchDistance(
+  realtimeMessage: NormalizedMessage,
+  realtimeIdentity: ReturnType<typeof getConfirmedUserMessageIdentity>,
+  serverMessage: NormalizedMessage,
+  serverIdentity: ReturnType<typeof getConfirmedUserMessageIdentity>,
+  serverMessages: NormalizedMessage[],
+  serverIndex: number,
+): number | null {
+  if (!isServerMessageAfterOptimisticTail(realtimeMessage, serverMessages, serverIndex)) return null;
+  if (
+    serverIdentity.text !== realtimeIdentity.text
+    || !haveSameUserMessageInputs(serverIdentity, realtimeIdentity)
+  ) {
+    return null;
+  }
+
+  const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
+  const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
+  if (realtimeMessage.serverHistoryPendingAtStart) {
+    // The initial response is allowed to confirm a send that landed while it
+    // was in flight, but history from before the optimistic send is not.
+    if (realtimeTimestamp == null || serverTimestamp == null || serverTimestamp < realtimeTimestamp) {
+      return null;
+    }
+  }
+  if (realtimeTimestamp == null || serverTimestamp == null) return CONFIRMED_USER_WINDOW_MS;
+
+  const distance = Math.abs(serverTimestamp - realtimeTimestamp);
+  return distance <= CONFIRMED_USER_WINDOW_MS ? distance : null;
+}
+
 function findConfirmedUserMessageDuplicateIndex(
   realtimeMessage: NormalizedMessage,
   serverMessages: NormalizedMessage[],
@@ -377,34 +414,22 @@ function findConfirmedUserMessageDuplicateIndex(
   const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
   if (!realtimeIdentity.text) return -1;
 
-  const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
-
   for (let index = 0; index < serverMessages.length; index += 1) {
     if (consumedServerIndexes?.has(index)) continue;
-    if (!isServerMessageAfterOptimisticTail(realtimeMessage, serverMessages, index)) continue;
     const serverMessage = serverMessages[index];
     if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') {
       continue;
     }
 
     const serverIdentity = getConfirmedUserMessageIdentity(serverMessage);
-    if (
-      serverIdentity.text !== realtimeIdentity.text
-      || !haveSameUserMessageInputs(serverIdentity, realtimeIdentity)
-    ) {
-      continue;
-    }
-
-    if (realtimeTimestamp == null) {
-      return index;
-    }
-
-    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
-    if (serverTimestamp == null) {
-      return index;
-    }
-
-    if (Math.abs(serverTimestamp - realtimeTimestamp) <= 10_000) return index;
+    if (getConfirmedUserMessageMatchDistance(
+      realtimeMessage,
+      realtimeIdentity,
+      serverMessage,
+      serverIdentity,
+      serverMessages,
+      index,
+    ) != null) return index;
   }
 
   return -1;
@@ -421,48 +446,123 @@ function getConfirmedRealtimeUserIndexes(
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
 ): Set<number> {
-  const consumedRealtimeIndexes = new Set<number>();
+  const realtimeCandidates = realtimeMessages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => isOptimisticUserMessage(message))
+    .map(({ message, index }) => ({
+      message,
+      index,
+      identity: getConfirmedUserMessageIdentity(message),
+    }))
+    .filter(({ identity }) => Boolean(identity.text));
+  const serverCandidates = serverMessages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.kind === 'text' && message.role === 'user')
+    .map(({ message, index }) => ({
+      message,
+      index,
+      identity: getConfirmedUserMessageIdentity(message),
+    }))
+    .filter(({ identity }) => Boolean(identity.text));
+  if (realtimeCandidates.length === 0 || serverCandidates.length === 0) return new Set();
 
-  for (let serverIndex = 0; serverIndex < serverMessages.length; serverIndex += 1) {
-    const serverMessage = serverMessages[serverIndex];
-    if (serverMessage.kind !== 'text' || serverMessage.role !== 'user') continue;
-    const serverIdentity = getConfirmedUserMessageIdentity(serverMessage);
-    if (!serverIdentity.text) continue;
-
-    let closestRealtimeIndex = -1;
-    let closestTimestampDistance = Number.POSITIVE_INFINITY;
-    const serverTimestamp = parseTimestampMs(serverMessage.timestamp);
-
-    for (let index = 0; index < realtimeMessages.length; index += 1) {
-      if (consumedRealtimeIndexes.has(index)) continue;
-      const realtimeMessage = realtimeMessages[index];
-      if (!isOptimisticUserMessage(realtimeMessage)) continue;
-      if (!isServerMessageAfterOptimisticTail(realtimeMessage, serverMessages, serverIndex)) continue;
-
-      const realtimeIdentity = getConfirmedUserMessageIdentity(realtimeMessage);
-      if (
-        realtimeIdentity.text !== serverIdentity.text
-        || !haveSameUserMessageInputs(realtimeIdentity, serverIdentity)
-      ) {
-        continue;
-      }
-
-      const realtimeTimestamp = parseTimestampMs(realtimeMessage.timestamp);
-      const timestampDistance = serverTimestamp != null && realtimeTimestamp != null
-        ? Math.abs(serverTimestamp - realtimeTimestamp)
-        : Number.POSITIVE_INFINITY;
-      if (
-        timestampDistance > 10_000
-        || (closestRealtimeIndex >= 0 && timestampDistance >= closestTimestampDistance)
-      ) continue;
-      closestRealtimeIndex = index;
-      closestTimestampDistance = timestampDistance;
+  const rowCount = realtimeCandidates.length;
+  const unmatchedCost = (rowCount + 1) * (CONFIRMED_USER_WINDOW_MS + 1);
+  const forbiddenCost = unmatchedCost * 2;
+  const costs = realtimeCandidates.map(({ message, identity }) => [
+    ...serverCandidates.map((server) => (
+      getConfirmedUserMessageMatchDistance(
+        message,
+        identity,
+        server.message,
+        server.identity,
+        serverMessages,
+        server.index,
+      ) ?? forbiddenCost
+    )),
+    ...Array.from({ length: rowCount }, () => unmatchedCost),
+  ]);
+  const assignment = findMinimumCostAssignment(costs);
+  const confirmedRealtimeIndexes = new Set<number>();
+  assignment.forEach((column, row) => {
+    if (column >= 0 && column < serverCandidates.length && costs[row][column] < unmatchedCost) {
+      confirmedRealtimeIndexes.add(realtimeCandidates[row].index);
     }
+  });
+  return confirmedRealtimeIndexes;
+}
 
-    if (closestRealtimeIndex >= 0) consumedRealtimeIndexes.add(closestRealtimeIndex);
+/** Hungarian assignment for a rectangular matrix with rows <= columns. */
+function findMinimumCostAssignment(costs: number[][]): number[] {
+  const rowCount = costs.length;
+  const columnCount = costs[0]?.length ?? 0;
+  const rowPotential = Array(rowCount + 1).fill(0);
+  const columnPotential = Array(columnCount + 1).fill(0);
+  const matchedRowByColumn = Array(columnCount + 1).fill(0);
+  const previousColumn = Array(columnCount + 1).fill(0);
+
+  for (let row = 1; row <= rowCount; row += 1) {
+    matchedRowByColumn[0] = row;
+    let currentColumn = 0;
+    const minimumReducedCost = Array(columnCount + 1).fill(Number.POSITIVE_INFINITY);
+    const used = Array(columnCount + 1).fill(false);
+
+    do {
+      used[currentColumn] = true;
+      const currentRow = matchedRowByColumn[currentColumn];
+      let delta = Number.POSITIVE_INFINITY;
+      let nextColumn = 0;
+      for (let column = 1; column <= columnCount; column += 1) {
+        if (used[column]) continue;
+        const reducedCost = costs[currentRow - 1][column - 1]
+          - rowPotential[currentRow]
+          - columnPotential[column];
+        if (reducedCost < minimumReducedCost[column]) {
+          minimumReducedCost[column] = reducedCost;
+          previousColumn[column] = currentColumn;
+        }
+        if (minimumReducedCost[column] < delta) {
+          delta = minimumReducedCost[column];
+          nextColumn = column;
+        }
+      }
+      for (let column = 0; column <= columnCount; column += 1) {
+        if (used[column]) {
+          rowPotential[matchedRowByColumn[column]] += delta;
+          columnPotential[column] -= delta;
+        } else {
+          minimumReducedCost[column] -= delta;
+        }
+      }
+      currentColumn = nextColumn;
+    } while (matchedRowByColumn[currentColumn] !== 0);
+
+    do {
+      const nextColumn = previousColumn[currentColumn];
+      matchedRowByColumn[currentColumn] = matchedRowByColumn[nextColumn];
+      currentColumn = nextColumn;
+    } while (currentColumn !== 0);
   }
 
-  return consumedRealtimeIndexes;
+  const assignment = Array(rowCount).fill(-1);
+  for (let column = 1; column <= columnCount; column += 1) {
+    if (matchedRowByColumn[column] > 0) {
+      assignment[matchedRowByColumn[column] - 1] = column - 1;
+    }
+  }
+  return assignment;
+}
+
+function settlePendingOptimisticServerTail(
+  message: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+): NormalizedMessage {
+  if (!isOptimisticUserMessage(message) || !message.serverHistoryPendingAtStart) return message;
+  return {
+    ...message,
+    serverTailIdAtStart: serverMessages[serverMessages.length - 1]?.id ?? null,
+    serverHistoryPendingAtStart: false,
+  };
 }
 
 /**
@@ -722,10 +822,12 @@ export function getRealtimeMessagesToKeepAfterServerRefresh(
   serverMessages: NormalizedMessage[],
 ): NormalizedMessage[] {
   const confirmedRealtimeIndexes = getConfirmedRealtimeUserIndexes(serverMessages, realtimeMessages);
-  return realtimeMessages.filter((message, index) => {
-    if (isOptimisticUserMessage(message)) return !confirmedRealtimeIndexes.has(index);
-    return shouldKeepRealtimeAfterServerRefresh(message, serverMessages);
-  });
+  return realtimeMessages
+    .filter((message, index) => {
+      if (isOptimisticUserMessage(message)) return !confirmedRealtimeIndexes.has(index);
+      return shouldKeepRealtimeAfterServerRefresh(message, serverMessages);
+    })
+    .map((message) => settlePendingOptimisticServerTail(message, serverMessages));
 }
 
 /**
@@ -853,9 +955,16 @@ export function upsertRealtimeMessages(
       updated.push(message);
     } else {
       const existingTailId = updated[existingIndex].serverTailIdAtStart;
-      updated[existingIndex] = existingTailId === undefined
+      const existingHistoryPending = updated[existingIndex].serverHistoryPendingAtStart;
+      updated[existingIndex] = existingTailId === undefined && existingHistoryPending === undefined
         ? message
-        : { ...message, serverTailIdAtStart: existingTailId };
+        : {
+            ...message,
+            ...(existingTailId !== undefined ? { serverTailIdAtStart: existingTailId } : {}),
+            ...(existingHistoryPending !== undefined
+              ? { serverHistoryPendingAtStart: existingHistoryPending }
+              : {}),
+          };
     }
   }
   return updated;
@@ -1107,15 +1216,21 @@ export function useSessionStore() {
           messages.filter(m => m.kind === 'tool_use' && m.toolId).map(m => m.toolId!)
         );
         const confirmedRealtimeIndexes = getConfirmedRealtimeUserIndexes(messages, slot.realtimeMessages);
-        slot.realtimeMessages = slot.realtimeMessages.filter((m, index) => {
-          if (isOptimisticUserMessage(m)) {
-            return !confirmedRealtimeIndexes.has(index);
-          }
-          if (shouldKeepRealtimeAfterServerRefresh(m, messages)) return true;
-          if (serverIds.has(m.id)) return false;
-          if (m.kind === 'tool_use' && m.toolId && serverToolIds.has(m.toolId)) return false;
-          return (Date.parse(m.timestamp) || 0) > watermark;
-        });
+        slot.realtimeMessages = slot.realtimeMessages
+          .filter((m, index) => {
+            if (isOptimisticUserMessage(m)) {
+              return !confirmedRealtimeIndexes.has(index);
+            }
+            if (shouldKeepRealtimeAfterServerRefresh(m, messages)) return true;
+            if (serverIds.has(m.id)) return false;
+            if (m.kind === 'tool_use' && m.toolId && serverToolIds.has(m.toolId)) return false;
+            return (Date.parse(m.timestamp) || 0) > watermark;
+          })
+          .map((message) => settlePendingOptimisticServerTail(message, messages));
+      } else if (slot.realtimeMessages.length > 0) {
+        slot.realtimeMessages = slot.realtimeMessages.map((message) => (
+          settlePendingOptimisticServerTail(message, messages)
+        ));
       }
 
       recomputeMergedIfNeeded(slot);
@@ -1203,7 +1318,11 @@ export function useSessionStore() {
    */
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
-    const capturedMessage = captureOptimisticUserServerTail(msg, slot.serverMessages);
+    const capturedMessage = captureOptimisticUserServerTail(
+      msg,
+      slot.serverMessages,
+      slot._serverAppliedGeneration === 0 && slot._serverLoadingGeneration !== null,
+    );
     let updated = upsertRealtimeMessages(slot.realtimeMessages, [capturedMessage]);
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
@@ -1445,7 +1564,11 @@ export function useSessionStore() {
     if (msgs.length === 0) return;
     const slot = getSlot(sessionId);
     const capturedMessages = msgs.map((message) => (
-      captureOptimisticUserServerTail(message, slot.serverMessages)
+      captureOptimisticUserServerTail(
+        message,
+        slot.serverMessages,
+        slot._serverAppliedGeneration === 0 && slot._serverLoadingGeneration !== null,
+      )
     ));
     let updated = upsertRealtimeMessages(slot.realtimeMessages, capturedMessages);
     if (updated.length > MAX_REALTIME_MESSAGES) {

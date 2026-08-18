@@ -78,6 +78,20 @@ describe('attachment path notes', () => {
     });
   });
 
+  it('round trips an end marker substring inside a JSON attachment path', () => {
+    const filePath = '/tmp/[End files attached by user]/report.pdf';
+    const parsed = parseUserAttachmentNote([
+      'Review this report',
+      buildAttachmentPathNote([{ name: 'report.pdf', path: filePath }]),
+    ].join(''));
+
+    expect(parsed.attachments).toEqual([{
+      name: 'report.pdf',
+      path: filePath,
+      mimeType: 'application/pdf',
+    }]);
+  });
+
   it.each([
     ['PDF metadata', '[PDF attachment: C:\\work\\brief.pdf, 42 bytes]'],
     ['inline text content', '<attachment path="C:\\work\\notes.txt">'],

@@ -48,6 +48,14 @@ function serverMessage(id: string, content: string): NormalizedMessage {
   };
 }
 
+function userMessage(id: string, content: string, timestamp: string): NormalizedMessage {
+  return {
+    ...serverMessage(id, content),
+    timestamp,
+    role: 'user',
+  };
+}
+
 describe('useSessionStore server request ordering', () => {
   beforeEach(() => {
     mocks.authenticatedFetch.mockReset();
@@ -235,5 +243,42 @@ describe('useSessionStore server request ordering', () => {
     const slot = result.current.getSessionSlot('session-1');
     expect(slot?._serverLoadingGeneration).toBeNull();
     expect(slot?.status).toBe('streaming');
+  });
+
+  it('does not confirm an optimistic send from older history loaded after it', async () => {
+    const initial = deferred<TestResponse>();
+    mocks.authenticatedFetch.mockImplementationOnce(() => initial.promise);
+
+    const { result } = renderHook(() => useSessionStore());
+    let initialRequest!: ReturnType<typeof result.current.fetchFromServer>;
+    act(() => {
+      initialRequest = result.current.fetchFromServer('session-1');
+      result.current.appendRealtime(
+        'session-1',
+        userMessage('local_new_send', 'Continue.', '2026-08-04T00:00:05.000Z'),
+      );
+    });
+
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages[0]).toMatchObject({
+      id: 'local_new_send',
+      serverTailIdAtStart: null,
+      serverHistoryPendingAtStart: true,
+    });
+
+    await act(async () => {
+      initial.resolve(response({
+        messages: [userMessage('persisted-old-send', 'Continue.', '2026-08-04T00:00:00.000Z')],
+        total: 1,
+      }));
+      await initialRequest;
+    });
+
+    expect(result.current.getSessionSlot('session-1')?.realtimeMessages).toEqual([
+      expect.objectContaining({
+        id: 'local_new_send',
+        serverTailIdAtStart: 'persisted-old-send',
+        serverHistoryPendingAtStart: false,
+      }),
+    ]);
   });
 });
