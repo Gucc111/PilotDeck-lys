@@ -366,6 +366,7 @@ type CreateWorkspaceRequest = {
 - `new` 创建目录；`githubUrl` 存在时将仓库克隆到目标目录下并注册实际仓库目录。
 - clone 同时进行数限制为每用户 1 个、全局 2 个，最长执行 5 分钟；客户端断开时终止 Git 子进程并清理本次 staging 目录。
 - `modelConfigurationId` 省略时使用当前默认配置；提供时必须匹配最近保存的配置。
+- `modelConfigurationId` 为空字符串非法；`null` 与省略等价。
 - HTTP API 不提供文件夹枚举。目录选择由桌面端原生选择器完成。
 
 已有工作区：

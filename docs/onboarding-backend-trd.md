@@ -105,21 +105,24 @@ ui/server/index.js
 
 ```ts
 type StoredConnectionTest = {
-  testId: string;
+  id: string;
   userId: number | string;
-  providerId: string;
-  canonicalProviderId: string;
-  protocol: "openai" | "openai-responses" | "anthropic" | "google";
-  endpoint: string;
-  modelResults: ModelTestResult[];
-  retryPolicy: RetryPolicy;
+  provider: {
+    providerId: string;
+    protocol: "openai" | "openai-responses" | "anthropic" | "google";
+    endpoint: string;
+    custom: boolean;
+  };
+  retry: RetryPolicy;
+  keyFingerprint: Uint8Array;
+  models: ModelTestResult[];
   status: "passed" | "failed" | "manual_input_required";
-  createdAt: number;
+  testedAt: string;
   expiresAt: number;
 };
 ```
 
-默认 TTL 为 10 分钟。记录按 `userId + testId` 隔离；不存在返回 `404`，已存在但过期返回 `410`。测试记录不保存 API Key、provider 原始响应或完整请求体。保存配置成功后立即删除对应记录，其余记录按访问时惰性清理并由定时任务清理。
+默认 TTL 为 10 分钟。记录按 `userId + id` 隔离；不存在返回 `404`，已存在但过期返回 `410`。`keyFingerprint` 只用于保存时绑定测试凭证，不可逆且不对外返回；测试记录不保存明文 API Key、provider 原始响应或完整请求体。保存配置成功后立即删除对应记录，其余记录按访问时惰性清理并由定时任务清理。
 
 单次请求最多测试 10 个模型，模型按请求顺序串行执行文本和图片探测。同时执行的连接测试限制为每用户 1 个、进程全局 3 个；客户端断开时取消当前 fetch 和重试等待，并立即释放执行名额。
 

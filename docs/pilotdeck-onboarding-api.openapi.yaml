@@ -176,7 +176,7 @@ components:
           schema:
             $ref: "#/components/schemas/ApiError"
     RateLimited:
-      description: Too many connection tests
+      description: Too many connection tests or workspace clones in progress
       content:
         application/json:
           schema:
@@ -218,6 +218,7 @@ components:
         providerId:
           type: string
           minLength: 1
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
           examples: [anthropic]
         protocol:
           anyOf:
@@ -225,8 +226,10 @@ components:
             - type: "null"
           description: Required only for a custom provider
         endpoint:
-          type: [string, "null"]
-          format: uri
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: '^https?:\\/\\/.+$'
           description: Required only for a custom provider; ignored for presets
         apiKey:
           type: string
@@ -236,6 +239,7 @@ components:
         models:
           type: array
           minItems: 1
+          maxItems: 10
           uniqueItems: true
           items:
             type: string
@@ -312,13 +316,16 @@ components:
         providerId:
           type: string
           minLength: 1
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
         protocol:
           anyOf:
             - $ref: "#/components/schemas/Protocol"
             - type: "null"
         endpoint:
-          type: [string, "null"]
-          format: uri
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: '^https?:\\/\\/.+$'
         apiKey:
           type: [string, "null"]
           writeOnly: true
@@ -327,6 +334,8 @@ components:
         models:
           type: array
           minItems: 1
+          maxItems: 10
+          uniqueItems: true
           items:
             type: object
             additionalProperties: false
@@ -362,10 +371,15 @@ components:
         path:
           type: string
           minLength: 1
+          pattern: '^(?:/|[A-Za-z]:[\\/])'
         githubUrl:
-          type: [string, "null"]
-          format: uri
-          description: Optional HTTP(S) or SSH repository URL, valid only for a new workspace
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: '^https?:\\/\\/.+$'
+            - type: string
+              pattern: '^(?:[\\w.-]+@)?[\\w.-]+:[^\\s]+$'
+          description: Optional HTTP(S), ssh://, or SCP-style SSH repository URL, valid only for a new workspace
         modelConfigurationId:
           type: [string, "null"]
           description: Uses the current default configuration when omitted

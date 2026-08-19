@@ -137,7 +137,9 @@ function testStatus(models) {
   return models.some((model) => model.imageInput === 'unknown') ? 'manual_input_required' : 'passed';
 }
 function aggregateError(models, status) {
-  return status === 'passed' ? null : models.find((model) => model.error)?.error || null;
+  if (status === 'passed') return null;
+  if (status === 'failed') return { code: 'TEXT_TEST_FAILED', message: 'One or more models failed the text connection test.' };
+  return { code: 'IMAGE_CAPABILITY_UNKNOWN', message: 'One or more models require manual image capability input.' };
 }
 function publicResult(record) {
   return { testId: record.id, status: record.status, manualInputRequired: record.status === 'manual_input_required', models: record.models, testedAt: record.testedAt, error: record.error || null };
@@ -179,20 +181,32 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
     return apiError(res, 429, 'RATE_LIMITED', 'Too many connection tests are already running.');
   }
   const requestAbort = abortOnDisconnect(req, res);
+  const results = [];
   try {
-    const results = [];
     for (const modelId of models) {
       requestAbort.signal.throwIfAborted();
-      const textProbe = await probeModelConnection({
-        protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, signal: requestAbort.signal,
-      });
+      let textProbe;
+      try {
+        textProbe = await probeModelConnection({
+          protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, signal: requestAbort.signal,
+        });
+      } catch (error) {
+        if (requestAbort.signal.aborted) throw error;
+        textProbe = { ok: false, code: 'ENDPOINT_UNREACHABLE', error: error?.message || 'Connection failed.' };
+      }
       if (!textProbe.ok) {
         results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: textProbe.code || 'TEXT_TEST_FAILED', message: textProbe.error, modelId } });
         continue;
       }
-      const imageProbe = await probeModelConnection({
-        protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, image: true, signal: requestAbort.signal,
-      });
+      let imageProbe;
+      try {
+        imageProbe = await probeModelConnection({
+          protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, image: true, signal: requestAbort.signal,
+        });
+      } catch (error) {
+        if (requestAbort.signal.aborted) throw error;
+        imageProbe = { ok: false, imageUnsupported: false, error: error?.message || 'Image capability could not be determined.' };
+      }
       results.push(imageProbe.ok
         ? { modelId, textInput: 'supported', imageInput: 'supported', error: null }
         : imageProbe.imageUnsupported
@@ -206,7 +220,16 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
     return res.json(publicResult(record));
   } catch (error) {
     if (requestAbort.signal.aborted) return;
-    return apiError(res, 502, 'ENDPOINT_UNREACHABLE', error?.message || 'Unable to test the model connection.');
+    const message = error?.message || 'Unable to test the model connection.';
+    const completed = new Set(results.map((model) => model.modelId));
+    for (const modelId of models) {
+      if (completed.has(modelId)) continue;
+      results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: 'ENDPOINT_UNREACHABLE', message, modelId } });
+    }
+    const status = 'failed';
+    const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status, testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: aggregateError(results, status) };
+    tests.set(record.id, record);
+    return res.json(publicResult(record));
   } finally {
     requestAbort.cleanup();
     release();
@@ -315,7 +338,8 @@ router.post('/workspaces', async (req, res) => {
   const requestedPath = text(req.body?.path);
   if (!hasOnlyKeys(req.body, ['type', 'path', 'githubUrl', 'modelConfigurationId']) || !['existing', 'new'].includes(type) || !requestedPath || !path.isAbsolute(requestedPath)) return apiError(res, 400, 'INVALID_REQUEST', 'type and an absolute path are required.');
   if (type === 'existing' && req.body?.githubUrl != null) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl is only valid for new workspaces.');
-  if (req.body?.modelConfigurationId) {
+  if (Object.hasOwn(req.body || {}, 'modelConfigurationId') && req.body.modelConfigurationId !== null) {
+    if (!text(req.body.modelConfigurationId)) return apiError(res, 400, 'INVALID_REQUEST', 'modelConfigurationId must be a non-empty string or null.');
     const configId = readPilotDeckConfigFile().config?.webui?.onboarding?.modelConfigurationId;
     if (req.body.modelConfigurationId !== configId) return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'modelConfigurationId is not the active configuration.');
   }
@@ -386,7 +410,7 @@ router.post('/workspaces', async (req, res) => {
     return res.status(201).json({ id: project.name, type, path: projectPath, status: 'ready' });
   } catch (error) {
     if (['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) return apiError(res, 400, 'PATH_NOT_WRITABLE', 'Workspace path is not writable.');
-    if (error?.code === 'ENOENT') return apiError(res, 404, 'PATH_NOT_FOUND', 'Workspace path does not exist.');
+    if (error?.code === 'ENOENT') return apiError(res, 400, 'PATH_NOT_FOUND', 'Workspace path does not exist.');
     return apiError(res, 409, 'WORKSPACE_CONFLICT', error?.message || 'Unable to create workspace.');
   }
 });

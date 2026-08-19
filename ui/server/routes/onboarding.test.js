@@ -109,6 +109,14 @@ describe('onboarding routes', () => {
     expect(probe).toHaveBeenCalledWith(expect.objectContaining({ protocol: 'openai', baseUrl: 'https://custom.example/v1' }));
   });
 
+  it('uses the documented aggregate error for text failures', async () => {
+    const { request } = await createOnboardingApp({ probe: vi.fn().mockResolvedValue({ ok: false, code: 'MODEL_NOT_FOUND', error: 'unknown model' }) });
+    const response = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['missing-model'], retryPolicy: retryPolicy() }),
+    });
+    expect(response).toMatchObject({ status: 200, body: { status: 'failed', error: { code: 'TEXT_TEST_FAILED' }, models: [{ error: { code: 'MODEL_NOT_FOUND' } }] } });
+  });
+
   it('limits concurrent model probes per user and passes a cancellation signal', async () => {
     let finishFirstProbe;
     const probe = vi.fn()
@@ -163,6 +171,14 @@ describe('onboarding routes', () => {
     const { request } = await createOnboardingApp();
     const response = await request('/api/v1/workspaces', {
       method: 'POST', body: JSON.stringify({ type: 'existing', path: '/tmp/workspace', githubUrl: 'https://github.com/openbmb/PilotDeck.git' }),
+    });
+    expect(response).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
+  });
+
+  it('rejects an empty model configuration ID', async () => {
+    const { request } = await createOnboardingApp();
+    const response = await request('/api/v1/workspaces', {
+      method: 'POST', body: JSON.stringify({ type: 'existing', path: '/tmp/workspace', modelConfigurationId: '' }),
     });
     expect(response).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
   });
