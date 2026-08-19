@@ -262,6 +262,10 @@ export class AgentLoop {
     let hasAttemptedReasoningContentRetry = false;
     /** Prevent a provider that keeps rejecting text-only retries from looping forever. */
     let hasAttemptedImageStrip = false;
+    const MAX_STREAM_INTERRUPTION_RECOVERIES = 2;
+    let streamInterruptionRecoveryCount = 0;
+    const MAX_UNKNOWN_FINISH_RECOVERIES = 2;
+    let unknownFinishRecoveryCount = 0;
     const largeFileRepair = new LargeFileRepair();
 
     /**
@@ -611,13 +615,18 @@ export class AgentLoop {
       } catch (error) {
         if (input.abortSignal?.aborted) {
           const partialAssembled = assembleAssistantMessage(assembler);
-          if (partialAssembled.message.content.length > 0) {
-            finalMessage = partialAssembled.message;
-            messages.push(partialAssembled.message);
+          const safePartialMessage = safeFinalTextMessage(
+            partialAssembled.message,
+            partialAssembled.hasPartialTextToolCall || partialAssembled.hasTextFallbackToolCalls,
+            partialAssembled.toolCalls,
+          );
+          if (safePartialMessage) {
+            finalMessage = safePartialMessage;
+            messages.push(safePartialMessage);
             expireConsumedTransientPrompts();
             usage = mergeUsage(usage, partialAssembled.usage);
-            yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialAssembled.message };
-            await input.onDurableMessage?.(partialAssembled.message);
+            yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: safePartialMessage };
+            await input.onDurableMessage?.(safePartialMessage);
           }
           const result = this.createTurnResult(input, {
             type: "aborted",
@@ -663,13 +672,18 @@ export class AgentLoop {
 
       if (input.abortSignal?.aborted) {
         const partialAssembled = assembleAssistantMessage(assembler);
-        if (partialAssembled.message.content.length > 0) {
-          finalMessage = partialAssembled.message;
-          messages.push(partialAssembled.message);
+        const safePartialMessage = safeFinalTextMessage(
+          partialAssembled.message,
+          partialAssembled.hasPartialTextToolCall || partialAssembled.hasTextFallbackToolCalls,
+          partialAssembled.toolCalls,
+        );
+        if (safePartialMessage) {
+          finalMessage = safePartialMessage;
+          messages.push(safePartialMessage);
           expireConsumedTransientPrompts();
           usage = mergeUsage(usage, partialAssembled.usage);
-          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialAssembled.message };
-          await input.onDurableMessage?.(partialAssembled.message);
+          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: safePartialMessage };
+          await input.onDurableMessage?.(safePartialMessage);
         }
         const result = this.createTurnResult(input, {
           type: "aborted",
@@ -711,9 +725,140 @@ export class AgentLoop {
       finalMessage = assistantMessage;
       expireConsumedTransientPrompts();
 
+      const streamInterruption = assembled.error?.streamInterruption;
+      if (streamInterruption) {
+        if (streamInterruptionRecoveryCount < MAX_STREAM_INTERRUPTION_RECOVERIES) {
+          streamInterruptionRecoveryCount++;
+          const hasTextToolCall = assembled.hasPartialTextToolCall
+            || assembled.hasTextFallbackToolCalls
+            || toolCalls.length > 0;
+          if (hasTextToolCall) {
+            // Do not expose a text-encoded tool-call fragment if recovery is
+            // cancelled before the replacement response arrives.
+            finalMessage = undefined;
+          }
+          if (streamInterruption.phase === "text" && !hasTextToolCall) {
+            const partialTextMessage = withoutThinkingBlocks(assistantMessage);
+            if (textFromMessage(partialTextMessage).trim().length > 0) {
+              finalMessage = partialTextMessage;
+              messages.push(partialTextMessage);
+              yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialTextMessage };
+              await input.onDurableMessage?.(partialTextMessage);
+            }
+          }
+          const recoveryPrompt = hasTextToolCall
+            ? buildPartialTextToolCallRecoveryPrompt(assembled.partialTextToolCall)
+            : buildStreamInterruptionRecoveryPrompt(streamInterruption);
+          pushTransientSyntheticPrompt(
+            recoveryPrompt,
+            hasTextToolCall ? "max_output_recovery" : "stream_interruption_recovery",
+          );
+          yield {
+            type: "turn_continued",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            reason: "model_error",
+          };
+          continue;
+        }
+
+        const error = agentError(
+          "agent_model_error",
+          `Stream interruption recovery exhausted after ${MAX_STREAM_INTERRUPTION_RECOVERIES} attempts (${streamInterruption.phase}).`,
+          assembled.error,
+          "The model stream repeatedly disconnected. Retry the turn or switch providers.",
+        );
+        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall || assembled.hasTextFallbackToolCalls, toolCalls);
+        finalMessage = exhaustedMessage;
+        if (exhaustedMessage) {
+          messages.push(exhaustedMessage);
+          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: exhaustedMessage };
+          await input.onDurableMessage?.(exhaustedMessage);
+        }
+        await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
+        yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: error.message };
+        const result = this.createTurnResult(input, {
+          type: "error",
+          stopReason: "model_error",
+          usage,
+          permissionDenials,
+          turns: turnCount,
+          startedAt,
+          finalMessage,
+          structuredOutput,
+          errors: [error],
+        });
+        yield await emitStatus(createModelRequestFailedStatus({ error, modelError: assembled.error }));
+        yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error };
+        await captureTurn(true);
+        yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+        return { result, messages };
+      }
+      streamInterruptionRecoveryCount = 0;
+
+      if (!assembled.error && assembled.hasMessageEnd && !assembled.hasPartialTextToolCall && assembled.finishReason === "unknown") {
+        if (unknownFinishRecoveryCount < MAX_UNKNOWN_FINISH_RECOVERIES) {
+          unknownFinishRecoveryCount++;
+          const partialTextMessage = withoutThinkingBlocks(assistantMessage);
+          if (toolCalls.length === 0 && textFromMessage(partialTextMessage).trim().length > 0) {
+            finalMessage = partialTextMessage;
+            messages.push(partialTextMessage);
+            yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialTextMessage };
+            await input.onDurableMessage?.(partialTextMessage);
+          }
+          pushTransientSyntheticPrompt(
+            buildUnknownFinishRecoveryPrompt(toolCalls),
+            "unknown_finish_recovery",
+          );
+          yield {
+            type: "turn_continued",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            reason: "model_error",
+          };
+          continue;
+        }
+
+        const error = agentError(
+          "agent_model_error",
+          `Unknown finish reason recovery exhausted after ${MAX_UNKNOWN_FINISH_RECOVERIES} attempts.`,
+          undefined,
+          "The provider repeatedly ended the stream without a recognized finish reason. Retry the turn or switch providers.",
+        );
+        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall || assembled.hasTextFallbackToolCalls, toolCalls);
+        finalMessage = exhaustedMessage;
+        if (exhaustedMessage) {
+          messages.push(exhaustedMessage);
+          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: exhaustedMessage };
+          await input.onDurableMessage?.(exhaustedMessage);
+        }
+        await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
+        yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: error.message };
+        const result = this.createTurnResult(input, {
+          type: "error",
+          stopReason: "model_error",
+          usage,
+          permissionDenials,
+          turns: turnCount,
+          startedAt,
+          finalMessage,
+          structuredOutput,
+          errors: [error],
+        });
+        yield await emitStatus(createModelRequestFailedStatus({ error }));
+        yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error };
+        await captureTurn(true);
+        yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+        return { result, messages };
+      }
+      unknownFinishRecoveryCount = 0;
+
       if (assembled.hasPartialTextToolCall) {
         if (maxOutputRecoveryCount < MAX_OUTPUT_RECOVERY_LIMIT) {
           maxOutputRecoveryCount++;
+          // The current assistant message contains an unsafe tool fragment;
+          // clear it before yielding so cancellation cannot return it.
+          finalMessage = undefined;
           pushTransientSyntheticPrompt(
             buildPartialTextToolCallRecoveryPrompt(assembled.partialTextToolCall),
             "max_output_recovery",
@@ -730,6 +875,7 @@ export class AgentLoop {
         const detail = assembled.partialTextToolCall
           ? `${assembled.partialTextToolCall.format}/${assembled.partialTextToolCall.reason}`
           : "unknown partial text tool-call";
+        finalMessage = safeFinalTextMessage(assistantMessage, true, toolCalls);
         const result = this.createTurnResult(input, {
           type: "error",
           stopReason: "model_error",
@@ -2705,6 +2851,57 @@ function textFromMessage(message: CanonicalMessage): string {
     .join("\n");
 }
 
+function withoutThinkingBlocks(message: CanonicalMessage): CanonicalMessage {
+  return {
+    ...message,
+    content: messageContent(message).filter((block) => block.type !== "thinking"),
+  };
+}
+
+function safeFinalTextMessage(
+  message: CanonicalMessage,
+  hasPartialTextToolCall: boolean | undefined,
+  toolCalls: CanonicalToolCall[],
+): CanonicalMessage | undefined {
+  if (hasPartialTextToolCall || toolCalls.length > 0) {
+    return undefined;
+  }
+  const textMessage = withoutThinkingBlocks(message);
+  return textFromMessage(textMessage).trim().length > 0 ? textMessage : undefined;
+}
+
+function buildStreamInterruptionRecoveryPrompt(
+  interruption: NonNullable<CanonicalModelError["streamInterruption"]>,
+): string {
+  if (interruption.phase === "tool_call") {
+    const tools = interruption.activeToolCalls?.map((call) => call.name || "unknown").filter(Boolean) ?? [];
+    const toolLabel = tools.length > 0 ? ` (${tools.slice(0, 3).join(", ")})` : "";
+    return [
+      `The previous model stream disconnected while generating a tool call${toolLabel}. No incomplete tool call was executed.`,
+      "Continue the original task from the current workspace state. Inspect relevant files before writing.",
+      "Do not retry the same large atomic write. Create or extend the artifact through small focused write_file or edit_file calls, keeping each tool call well under 8K output tokens.",
+    ].join("\n");
+  }
+  if (interruption.phase === "reasoning") {
+    return "The previous model stream disconnected during reasoning. Continue the original task directly from the current workspace state; do not repeat analysis or recap.";
+  }
+  if (interruption.phase === "text") {
+    return "The previous model stream disconnected mid-response. Continue exactly where the visible response ended; do not repeat prior text or recap.";
+  }
+  return "The previous model stream disconnected before producing a response. Continue the original task directly from the current workspace state.";
+}
+
+function buildUnknownFinishRecoveryPrompt(toolCalls: CanonicalToolCall[]): string {
+  if (toolCalls.length > 0) {
+    return [
+      "The previous response ended without a recognized finish reason after generating tool calls. No tool call was executed.",
+      "Continue the original task from the current workspace state. Inspect relevant files before acting.",
+      "Do not repeat the same large atomic write. Use small focused write_file or edit_file calls.",
+    ].join("\n");
+  }
+  return "The previous response ended without a recognized finish reason. Continue exactly where the visible response ended; do not repeat prior text or recap.";
+}
+
 function isMissingReasoningContentError(error: CanonicalModelError): boolean {
   return /\breasoning_content\b/i.test(error.message) &&
     /thinking\s+mode/i.test(error.message) &&
@@ -2785,7 +2982,7 @@ function buildPartialTextToolCallRecoveryPrompt(
   partial: PartialTextToolCallInfo | undefined,
 ): string {
   const evidence = partial
-    ? `Detected partial text tool-call syntax (${partial.format}/${partial.reason}). Preview: ${partial.preview}`
+    ? `Detected partial text tool-call syntax (${partial.format}/${partial.reason}).`
     : "Detected partial text tool-call syntax.";
   return [
     "The previous response contained partial tool-call XML/text and could not be safely executed.",
@@ -3197,6 +3394,10 @@ export function modelFailureAction(error: CanonicalModelError | undefined): {
     return modelFailureActionResult(hint, "settings", "modelNotFound", { provider: error.provider ?? "the provider", model: error.model });
   }
   if (error.code === "timeout") {
+    if (error.settingsFix?.configPath === "model.providers.<id>.retry.streamIdleTimeoutMs") {
+      const hint = `Increase streamIdleTimeoutMs for${providerLabel} in Settings → Model Provider → Advanced, or check local network/proxy and provider status.`;
+      return modelFailureActionResult(hint, "network", "streamIdleTimeout", { provider: error.provider ?? "the provider" });
+    }
     const hint = `Increase timeoutMs for${providerLabel} in Settings → Model Provider → Advanced, or check local network/proxy and provider status.`;
     return modelFailureActionResult(hint, "network", "timeout", { provider: error.provider ?? "the provider" });
   }
