@@ -128,8 +128,7 @@ async function validateZipRelationships(zip) {
   for (const relationshipsPart of Object.keys(zip.files).filter((name) => name.endsWith('.rels'))) {
     const ownerPart = relationshipOwnerPart(relationshipsPart);
     if (ownerPart === null) throw new Error(`Invalid OOXML relationship part path: ${relationshipsPart}`);
-    const document = parseXml(await zip.file(relationshipsPart).async('string'));
-    for (const relationship of descendants(document, 'Relationship')) {
+    for (const relationship of await readRelationshipsPart(zip, relationshipsPart)) {
       relationshipCount += 1;
       if (String(relationship.getAttribute('TargetMode') ?? '').toLowerCase() === 'external') continue;
       const target = relationship.getAttribute('Target');
@@ -146,6 +145,20 @@ function requiredZipPart(zip, part) {
   const file = zip.file(part);
   if (!file) throw new Error(`Invalid PPTX OPC package: required part ${part} is missing`);
   return file;
+}
+
+async function readRelationshipsPart(zip, part) {
+  const document = parseXml(await requiredZipPart(zip, part).async('string'));
+  const root = document.documentElement;
+  if (root?.localName !== 'Relationships' || root.namespaceURI !== PACKAGE_RELATIONSHIPS_NAMESPACE) {
+    throw new Error(
+      `Invalid PPTX OPC package: ${part} must use namespace ${PACKAGE_RELATIONSHIPS_NAMESPACE}`,
+    );
+  }
+  return elementChildren(root).filter((relationship) => (
+    relationship.localName === 'Relationship'
+    && relationship.namespaceURI === PACKAGE_RELATIONSHIPS_NAMESPACE
+  ));
 }
 
 function canonicalPartName(partName) {
@@ -166,18 +179,7 @@ function partExtension(part) {
 }
 
 async function validateRootOfficeDocument(zip) {
-  const document = parseXml(await requiredZipPart(zip, ROOT_RELATIONSHIPS_PART).async('string'));
-  const root = document.documentElement;
-  if (root?.localName !== 'Relationships' || root.namespaceURI !== PACKAGE_RELATIONSHIPS_NAMESPACE) {
-    throw new Error(
-      `Invalid PPTX OPC package: ${ROOT_RELATIONSHIPS_PART} must use namespace ${PACKAGE_RELATIONSHIPS_NAMESPACE}`,
-    );
-  }
-  const officeDocumentRelationships = elementChildren(root)
-    .filter((relationship) => (
-      relationship.localName === 'Relationship'
-      && relationship.namespaceURI === PACKAGE_RELATIONSHIPS_NAMESPACE
-    ))
+  const officeDocumentRelationships = (await readRelationshipsPart(zip, ROOT_RELATIONSHIPS_PART))
     .filter((relationship) => (
       OFFICE_DOCUMENT_RELATIONSHIP_TYPES.has(relationship.getAttribute('Type'))
       && String(relationship.getAttribute('TargetMode') ?? '').toLowerCase() !== 'external'
