@@ -32,6 +32,7 @@ describe('onboarding routes', () => {
       method: 'PUT', headers: { 'x-user': 'one' }, body: JSON.stringify({ models: [{ modelId: 'gemini-test', imageInput: 'supported' }] }),
     });
     expect(completed.body.status).toBe('passed');
+    expect(completed.body.error).toBeNull();
   });
 
   it('isolates test IDs by user and writes the tested model configuration', async () => {
@@ -42,7 +43,7 @@ describe('onboarding routes', () => {
       config: {
         schemaVersion: 1,
         agent: {},
-        model: { providers: { openai: { protocol: 'openai', url: 'https://api.openai.com/v1', apiKey: 'key', models: { 'keep-me': { multimodal: { input: ['text'] } } } } } },
+        model: { providers: { openai: { protocol: 'openai', url: 'https://api.openai.com/v1', apiKey: 'key', retry: { jitter: true, repeatedChunkLimit: 4 }, models: { 'keep-me': { multimodal: { input: ['text'] } } } } } },
         webui: {},
       },
     });
@@ -61,7 +62,7 @@ describe('onboarding routes', () => {
     expect(saved.status).toBe(200);
     expect(writePilotDeckConfig).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ model: 'openai/gpt-test' }),
-      model: expect.objectContaining({ providers: expect.objectContaining({ openai: expect.objectContaining({ retry: expect.objectContaining({ requestMaxRetries: 2 }), models: expect.objectContaining({ 'keep-me': { multimodal: { input: ['text'] } }, 'gpt-test': { multimodal: { input: ['text', 'image'] } } }) }) }) }),
+      model: expect.objectContaining({ providers: expect.objectContaining({ openai: expect.objectContaining({ retry: expect.objectContaining({ requestMaxRetries: 2, jitter: true, repeatedChunkLimit: 4 }), models: expect.objectContaining({ 'keep-me': { multimodal: { input: ['text'] } }, 'gpt-test': { multimodal: { input: ['text', 'image'] } } }) }) }) }),
     }));
   });
 
@@ -79,6 +80,26 @@ describe('onboarding routes', () => {
       method: 'PUT', body: JSON.stringify({ testId: test.body.testId, providerId: 'openai', apiKey: 'key', models: [{ modelId: 'model-a', textInput: true, imageInput: true }, { modelId: 'model-b', textInput: true, imageInput: true }], retryPolicy: { ...retryPolicy(), maxRetries: 4 } }),
     });
     expect(changedRetry).toMatchObject({ status: 409, body: { code: 'CONFIGURATION_MISMATCH' } });
+  });
+
+  it('rejects loose retry policies and invalid custom provider IDs', async () => {
+    const { request } = await createOnboardingApp({ probe: vi.fn().mockResolvedValue({ ok: true }) });
+    const looseRetry = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['model-a'], retryPolicy: { maxRetries: '2' } }),
+    });
+    expect(looseRetry).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
+    const slashProvider = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'my/team', protocol: 'openai', endpoint: 'https://example.test', apiKey: 'key', models: ['model-a'], retryPolicy: retryPolicy() }),
+    });
+    expect(slashProvider).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
+  });
+
+  it('rejects githubUrl for existing workspaces', async () => {
+    const { request } = await createOnboardingApp();
+    const response = await request('/api/v1/workspaces', {
+      method: 'POST', body: JSON.stringify({ type: 'existing', path: '/tmp/workspace', githubUrl: 'https://github.com/openbmb/PilotDeck.git' }),
+    });
+    expect(response).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
   });
 
   it('requires the saved API key to match the credential used for testing', async () => {

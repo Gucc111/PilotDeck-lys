@@ -48,13 +48,13 @@ function hasOnlyKeys(value, keys) {
     && Object.keys(value).every((key) => keys.includes(key));
 }
 function retryPolicy(value) {
-  const defaults = { maxRetries: 2, maxStreamRetries: 3, streamIdleTimeoutMs: 30000, baseDelayMs: 1000, maxDelayMs: 60000 };
+  const keys = ['maxRetries', 'maxStreamRetries', 'streamIdleTimeoutMs', 'baseDelayMs', 'maxDelayMs'];
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.prototype.hasOwnProperty.call(value, key))) return null;
   const output = {};
-  for (const [key, fallback] of Object.entries(defaults)) {
-    const parsed = Number(value[key] ?? fallback);
-    if (!Number.isInteger(parsed) || parsed < 0) return null;
-    output[key] = parsed;
+  for (const key of keys) {
+    if (typeof value[key] !== 'number' || !Number.isInteger(value[key]) || value[key] < 0) return null;
+    output[key] = value[key];
   }
   if (output.baseDelayMs > output.maxDelayMs) return null;
   return output;
@@ -67,7 +67,7 @@ function resolveProvider(body) {
   const endpoint = text(body.endpoint).replace(/\/+$/, '');
   try {
     const url = new URL(endpoint);
-    if (!providerId || /\s/.test(providerId) || providerId === 'custom' || !PROTOCOLS.has(protocol) || !['http:', 'https:'].includes(url.protocol)) return null;
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(providerId) || providerId === 'custom' || !PROTOCOLS.has(protocol) || !['http:', 'https:'].includes(url.protocol)) return null;
     return { providerId, protocol, endpoint: url.toString().replace(/\/$/, ''), custom: true };
   } catch { return null; }
 }
@@ -84,6 +84,9 @@ function parseCloneUrl(value) {
 function testStatus(models) {
   if (models.some((model) => model.textInput !== 'supported')) return 'failed';
   return models.some((model) => model.imageInput === 'unknown') ? 'manual_input_required' : 'passed';
+}
+function aggregateError(models, status) {
+  return status === 'passed' ? null : models.find((model) => model.error)?.error || null;
 }
 function publicResult(record) {
   return { testId: record.id, status: record.status, manualInputRequired: record.status === 'manual_input_required', models: record.models, testedAt: record.testedAt, error: record.error || null };
@@ -138,8 +141,7 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
         : { modelId, textInput: 'supported', imageInput: 'unknown', error: { code: 'IMAGE_CAPABILITY_UNKNOWN', message: imageProbe.error, modelId } });
   }
   const status = testStatus(results);
-  const aggregateError = results.find((model) => model.error)?.error || null;
-  const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status, testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: aggregateError };
+  const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status, testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: aggregateError(results, status) };
   tests.set(record.id, record);
   return res.json(publicResult(record));
 });
@@ -157,6 +159,7 @@ router.put('/model-connection-tests/:testId/image-capabilities', (req, res) => {
     if (suppliedModel) { model.imageInput = suppliedModel.imageInput; model.error = null; }
   }
   record.status = testStatus(record.models);
+  record.error = aggregateError(record.models, record.status);
   return res.json(publicResult(record));
 });
 
@@ -216,7 +219,7 @@ router.put('/model-configuration', async (req, res) => {
         ...existingProvider,
         protocol: provider.protocol,
         url: provider.endpoint,
-        retry: { requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs },
+        retry: { ...(existingProvider.retry && typeof existingProvider.retry === 'object' ? existingProvider.retry : {}), requestMaxRetries: retry.maxRetries, streamMaxRetries: retry.maxStreamRetries, streamIdleTimeoutMs: retry.streamIdleTimeoutMs, baseDelayMs: retry.baseDelayMs, maxDelayMs: retry.maxDelayMs },
         models: { ...existingModels, ...modelsConfig },
       };
       if (provider.providerId === 'ollama') delete savedProvider.apiKey;
@@ -244,6 +247,7 @@ router.post('/workspaces', async (req, res) => {
   const type = text(req.body?.type);
   const requestedPath = text(req.body?.path);
   if (!hasOnlyKeys(req.body, ['type', 'path', 'githubUrl', 'modelConfigurationId']) || !['existing', 'new'].includes(type) || !requestedPath || !path.isAbsolute(requestedPath)) return apiError(res, 400, 'INVALID_REQUEST', 'type and an absolute path are required.');
+  if (type === 'existing' && req.body?.githubUrl != null) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl is only valid for new workspaces.');
   if (req.body?.modelConfigurationId) {
     const configId = readPilotDeckConfigFile().config?.webui?.onboarding?.modelConfigurationId;
     if (req.body.modelConfigurationId !== configId) return apiError(res, 409, 'CONFIGURATION_MISMATCH', 'modelConfigurationId is not the active configuration.');
