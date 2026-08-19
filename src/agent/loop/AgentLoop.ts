@@ -615,13 +615,18 @@ export class AgentLoop {
       } catch (error) {
         if (input.abortSignal?.aborted) {
           const partialAssembled = assembleAssistantMessage(assembler);
-          if (partialAssembled.message.content.length > 0) {
-            finalMessage = partialAssembled.message;
-            messages.push(partialAssembled.message);
+          const safePartialMessage = safeFinalTextMessage(
+            partialAssembled.message,
+            partialAssembled.hasPartialTextToolCall || partialAssembled.hasTextFallbackToolCalls,
+            partialAssembled.toolCalls,
+          );
+          if (safePartialMessage) {
+            finalMessage = safePartialMessage;
+            messages.push(safePartialMessage);
             expireConsumedTransientPrompts();
             usage = mergeUsage(usage, partialAssembled.usage);
-            yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialAssembled.message };
-            await input.onDurableMessage?.(partialAssembled.message);
+            yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: safePartialMessage };
+            await input.onDurableMessage?.(safePartialMessage);
           }
           const result = this.createTurnResult(input, {
             type: "aborted",
@@ -667,13 +672,18 @@ export class AgentLoop {
 
       if (input.abortSignal?.aborted) {
         const partialAssembled = assembleAssistantMessage(assembler);
-        if (partialAssembled.message.content.length > 0) {
-          finalMessage = partialAssembled.message;
-          messages.push(partialAssembled.message);
+        const safePartialMessage = safeFinalTextMessage(
+          partialAssembled.message,
+          partialAssembled.hasPartialTextToolCall || partialAssembled.hasTextFallbackToolCalls,
+          partialAssembled.toolCalls,
+        );
+        if (safePartialMessage) {
+          finalMessage = safePartialMessage;
+          messages.push(safePartialMessage);
           expireConsumedTransientPrompts();
           usage = mergeUsage(usage, partialAssembled.usage);
-          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: partialAssembled.message };
-          await input.onDurableMessage?.(partialAssembled.message);
+          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: safePartialMessage };
+          await input.onDurableMessage?.(safePartialMessage);
         }
         const result = this.createTurnResult(input, {
           type: "aborted",
@@ -722,6 +732,11 @@ export class AgentLoop {
           const hasTextToolCall = assembled.hasPartialTextToolCall
             || assembled.hasTextFallbackToolCalls
             || toolCalls.length > 0;
+          if (hasTextToolCall) {
+            // Do not expose a text-encoded tool-call fragment if recovery is
+            // cancelled before the replacement response arrives.
+            finalMessage = undefined;
+          }
           if (streamInterruption.phase === "text" && !hasTextToolCall) {
             const partialTextMessage = withoutThinkingBlocks(assistantMessage);
             if (textFromMessage(partialTextMessage).trim().length > 0) {
@@ -841,6 +856,9 @@ export class AgentLoop {
       if (assembled.hasPartialTextToolCall) {
         if (maxOutputRecoveryCount < MAX_OUTPUT_RECOVERY_LIMIT) {
           maxOutputRecoveryCount++;
+          // The current assistant message contains an unsafe tool fragment;
+          // clear it before yielding so cancellation cannot return it.
+          finalMessage = undefined;
           pushTransientSyntheticPrompt(
             buildPartialTextToolCallRecoveryPrompt(assembled.partialTextToolCall),
             "max_output_recovery",

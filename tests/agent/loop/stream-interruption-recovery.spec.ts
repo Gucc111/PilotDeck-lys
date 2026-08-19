@@ -166,6 +166,74 @@ test("stream interruption with partial Hermes tool text does not persist the fra
   assert.doesNotMatch(recoveryText?.type === "text" ? recoveryText.text : "", /deck\.mjs|partial-secret/);
 });
 
+test("cancelling stream interruption recovery does not expose the partial tool call", async () => {
+  const controller = new AbortController();
+  const partialToolText = '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs"';
+  const loop = createLoop(async function* (_decision, _request, context) {
+    if (context.abortSignal?.aborted) {
+      throw new Error("aborted");
+    }
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: partialToolText };
+    yield {
+      type: "error",
+      error: {
+        provider: "test",
+        protocol: "openai",
+        code: "timeout",
+        message: "Stream idle timeout",
+        retryable: true,
+        streamInterruption: { phase: "text" },
+      },
+    };
+  }, () => undefined);
+
+  const events: Array<{ type: string; result?: { finalMessage?: unknown } }> = [];
+  for await (const event of loop.run({
+    sessionId: "cancel-interrupted-partial-tool",
+    turnId: "turn-1",
+    abortSignal: controller.signal,
+    messages: [{ role: "user", content: [{ type: "text", text: "write a file" }] }],
+  })) {
+    events.push(event as typeof events[number]);
+    if (event.type === "turn_continued") {
+      controller.abort();
+    }
+  }
+
+  const completed = events.find((event) => event.type === "turn_completed");
+  assert.equal(completed?.result?.finalMessage, undefined);
+});
+
+test("cancelling partial text tool-call recovery does not expose the partial tool call", async () => {
+  const controller = new AbortController();
+  const partialToolText = '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs"';
+  const loop = createLoop(async function* (_decision, _request, context) {
+    if (context.abortSignal?.aborted) {
+      throw new Error("aborted");
+    }
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: partialToolText };
+    yield { type: "message_end", finishReason: "stop" };
+  }, () => undefined);
+
+  const events: Array<{ type: string; result?: { finalMessage?: unknown } }> = [];
+  for await (const event of loop.run({
+    sessionId: "cancel-partial-tool-recovery",
+    turnId: "turn-1",
+    abortSignal: controller.signal,
+    messages: [{ role: "user", content: [{ type: "text", text: "write a file" }] }],
+  })) {
+    events.push(event as typeof events[number]);
+    if (event.type === "turn_continued") {
+      controller.abort();
+    }
+  }
+
+  const completed = events.find((event) => event.type === "turn_completed");
+  assert.equal(completed?.result?.finalMessage, undefined);
+});
+
 test("stream interruption with complete text fallback tool call does not persist it as text", async () => {
   const requests: CanonicalModelRequest[] = [];
   const completeToolText = 'Prefix <tool_call>{"name":"write_file","arguments":{"path":"safe.mjs","content":"secret"}}</tool_call>';
