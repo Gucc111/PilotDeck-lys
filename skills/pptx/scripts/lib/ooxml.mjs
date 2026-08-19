@@ -8,6 +8,8 @@ const RELATIONSHIPS_NAMESPACE = 'http://schemas.openxmlformats.org/officeDocumen
 const XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/';
 const CONTENT_TYPES_PART = '[Content_Types].xml';
 const ROOT_RELATIONSHIPS_PART = '_rels/.rels';
+const CONTENT_TYPES_NAMESPACE = 'http://schemas.openxmlformats.org/package/2006/content-types';
+const PACKAGE_RELATIONSHIPS_NAMESPACE = 'http://schemas.openxmlformats.org/package/2006/relationships';
 const OFFICE_DOCUMENT_RELATIONSHIP_TYPES = new Set([
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument',
   'http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument',
@@ -165,7 +167,17 @@ function partExtension(part) {
 
 async function validateRootOfficeDocument(zip) {
   const document = parseXml(await requiredZipPart(zip, ROOT_RELATIONSHIPS_PART).async('string'));
-  const officeDocumentRelationships = descendants(document, 'Relationship')
+  const root = document.documentElement;
+  if (root?.localName !== 'Relationships' || root.namespaceURI !== PACKAGE_RELATIONSHIPS_NAMESPACE) {
+    throw new Error(
+      `Invalid PPTX OPC package: ${ROOT_RELATIONSHIPS_PART} must use namespace ${PACKAGE_RELATIONSHIPS_NAMESPACE}`,
+    );
+  }
+  const officeDocumentRelationships = elementChildren(root)
+    .filter((relationship) => (
+      relationship.localName === 'Relationship'
+      && relationship.namespaceURI === PACKAGE_RELATIONSHIPS_NAMESPACE
+    ))
     .filter((relationship) => (
       OFFICE_DOCUMENT_RELATIONSHIP_TYPES.has(relationship.getAttribute('Type'))
       && String(relationship.getAttribute('TargetMode') ?? '').toLowerCase() !== 'external'
@@ -183,12 +195,17 @@ async function validateRootOfficeDocument(zip) {
 
 async function validateContentTypes(zip, officeDocumentPart) {
   const document = parseXml(await requiredZipPart(zip, CONTENT_TYPES_PART).async('string'));
-  if (document.documentElement?.localName !== 'Types') {
-    throw new Error(`Invalid PPTX OPC package: ${CONTENT_TYPES_PART} must contain a Types root`);
+  const root = document.documentElement;
+  if (root?.localName !== 'Types' || root.namespaceURI !== CONTENT_TYPES_NAMESPACE) {
+    throw new Error(
+      `Invalid PPTX OPC package: ${CONTENT_TYPES_PART} must use namespace ${CONTENT_TYPES_NAMESPACE}`,
+    );
   }
 
+  const contentTypeEntries = elementChildren(root)
+    .filter((entry) => entry.namespaceURI === CONTENT_TYPES_NAMESPACE);
   const defaults = new Map();
-  for (const entry of descendants(document, 'Default')) {
+  for (const entry of contentTypeEntries.filter((item) => item.localName === 'Default')) {
     const extension = entry.getAttribute('Extension').replace(/^\./u, '').toLowerCase();
     const contentType = entry.getAttribute('ContentType');
     if (!extension || !contentType) {
@@ -198,7 +215,7 @@ async function validateContentTypes(zip, officeDocumentPart) {
   }
 
   const overrides = new Map();
-  for (const entry of descendants(document, 'Override')) {
+  for (const entry of contentTypeEntries.filter((item) => item.localName === 'Override')) {
     const part = canonicalPartName(entry.getAttribute('PartName'));
     const contentType = entry.getAttribute('ContentType');
     if (!part || !contentType) {

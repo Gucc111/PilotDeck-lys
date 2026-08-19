@@ -48,6 +48,8 @@ try {
   const conversionReview = path.join(workDir, 'conversion-review');
   const missingContentTypesCandidate = path.join(workDir, 'missing-content-types.pptx');
   const missingRootRelationshipsCandidate = path.join(workDir, 'missing-root-relationships.pptx');
+  const invalidContentTypesNamespaceCandidate = path.join(workDir, 'invalid-content-types-namespace.pptx');
+  const invalidRelationshipsNamespaceCandidate = path.join(workDir, 'invalid-relationships-namespace.pptx');
   const wrongPresentationContentTypeCandidate = path.join(workDir, 'wrong-presentation-content-type.pptx');
   const invalidDeliveryCandidate = path.join(workDir, 'invalid-delivery-candidate.pptx');
   const invalidFinal = path.join(outputRoot, 'invalid-final.pptx');
@@ -398,6 +400,24 @@ try {
     zip.remove('_rels/.rels');
   });
   await assertDeliveryRejected(missingRootRelationshipsCandidate, /required part _rels\/\.rels is missing/u);
+
+  await writeDeliveryVariant(invalidContentTypesNamespaceCandidate, async (zip) => {
+    const part = zip.file('[Content_Types].xml');
+    const xml = await part.async('string');
+    const namespace = 'http://schemas.openxmlformats.org/package/2006/content-types';
+    assert.match(xml, new RegExp(namespace, 'u'));
+    zip.file('[Content_Types].xml', xml.replace(namespace, 'urn:invalid-content-types'));
+  });
+  await assertDeliveryRejected(invalidContentTypesNamespaceCandidate, /must use namespace .*content-types/u);
+
+  await writeDeliveryVariant(invalidRelationshipsNamespaceCandidate, async (zip) => {
+    const part = zip.file('_rels/.rels');
+    const xml = await part.async('string');
+    const namespace = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    assert.match(xml, new RegExp(namespace, 'u'));
+    zip.file('_rels/.rels', xml.replace(namespace, 'urn:invalid-relationships'));
+  });
+  await assertDeliveryRejected(invalidRelationshipsNamespaceCandidate, /must use namespace .*relationships/u);
 
   await writeDeliveryVariant(wrongPresentationContentTypeCandidate, async (zip) => {
     const document = new xmldom.DOMParser().parseFromString(
