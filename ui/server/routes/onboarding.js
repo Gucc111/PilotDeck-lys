@@ -239,13 +239,17 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
 router.put('/model-connection-tests/:testId/image-capabilities', (req, res) => {
   const record = getTest(req, res); if (!record) return;
   const supplied = Array.isArray(req.body?.models) ? req.body.models : [];
+  const normalizedSupplied = supplied.map((model) => ({
+    ...model,
+    modelId: text(model?.modelId),
+  }));
   const unknown = record.models.filter((model) => model.imageInput === 'unknown').map((model) => model.modelId).sort();
-  const received = supplied.map((model) => text(model?.modelId)).sort();
-  if (!hasOnlyKeys(req.body, ['models']) || !unknown.length || unknown.length !== received.length || unknown.some((id, index) => id !== received[index]) || supplied.some((model) => !hasOnlyKeys(model, ['modelId', 'imageInput']) || !['supported', 'unsupported'].includes(model?.imageInput))) {
+  const received = normalizedSupplied.map((model) => model.modelId).sort();
+  if (!hasOnlyKeys(req.body, ['models']) || !unknown.length || unknown.length !== received.length || unknown.some((id, index) => id !== received[index]) || normalizedSupplied.some((model) => !hasOnlyKeys(model, ['modelId', 'imageInput']) || !model.modelId || !['supported', 'unsupported'].includes(model?.imageInput))) {
     return apiError(res, 400, 'INVALID_REQUEST', 'models must provide exactly every unknown image capability.');
   }
   for (const model of record.models) {
-    const suppliedModel = supplied.find((item) => item.modelId === model.modelId);
+    const suppliedModel = normalizedSupplied.find((item) => item.modelId === model.modelId);
     if (suppliedModel) { model.imageInput = suppliedModel.imageInput; model.error = null; }
   }
   record.status = testStatus(record.models);
@@ -338,6 +342,12 @@ router.post('/workspaces', async (req, res) => {
   const requestedPath = text(req.body?.path);
   if (!hasOnlyKeys(req.body, ['type', 'path', 'githubUrl', 'modelConfigurationId']) || !['existing', 'new'].includes(type) || !requestedPath || !path.isAbsolute(requestedPath)) return apiError(res, 400, 'INVALID_REQUEST', 'type and an absolute path are required.');
   if (type === 'existing' && req.body?.githubUrl != null) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl is only valid for new workspaces.');
+  let cloneUrl = null;
+  if (type === 'new' && Object.hasOwn(req.body || {}, 'githubUrl') && req.body.githubUrl !== null) {
+    if (typeof req.body.githubUrl !== 'string' || !text(req.body.githubUrl)) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl must be a non-empty HTTP(S) or SSH URL.');
+    cloneUrl = parseCloneUrl(text(req.body.githubUrl));
+    if (!cloneUrl) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl must use HTTP(S) or SSH.');
+  }
   if (Object.hasOwn(req.body || {}, 'modelConfigurationId') && req.body.modelConfigurationId !== null) {
     if (!text(req.body.modelConfigurationId)) return apiError(res, 400, 'INVALID_REQUEST', 'modelConfigurationId must be a non-empty string or null.');
     const configId = readPilotDeckConfigFile().config?.webui?.onboarding?.modelConfigurationId;
@@ -364,10 +374,7 @@ router.post('/workspaces', async (req, res) => {
       await fs.mkdir(workspacePath, { recursive: true });
     }
     let projectPath = workspacePath;
-    const githubUrl = text(req.body?.githubUrl);
-    if (githubUrl) {
-      const cloneUrl = parseCloneUrl(githubUrl);
-      if (!cloneUrl) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl must use HTTP(S) or SSH.');
+    if (cloneUrl) {
       const release = cloneInFlight.tryAcquire(req.user.id);
       if (!release) {
         res.setHeader('Retry-After', '1');

@@ -285,6 +285,29 @@ model:
   );
 });
 
+test("empty agent.subagents.params does not create a warning", () => {
+  const snapshot = loadInlinePilotConfig(`
+schemaVersion: 1
+agent:
+  model: main/main-model
+  subagents:
+    params: {}
+model:
+  providers:
+    main:
+      protocol: openai
+      url: https://example.invalid/v1
+      apiKey: test
+      models:
+        main-model: {}
+`);
+
+  assert.equal(
+    snapshot.diagnostics.some((diagnostic) => diagnostic.path === "agent.subagents.params"),
+    false,
+  );
+});
+
 test("agent.subagents.default resolves a configured model", () => {
   const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("child/child-model"));
 

@@ -378,6 +378,8 @@ components:
             - type: string
               pattern: '^https?:\\/\\/.+$'
             - type: string
+              pattern: '^ssh:\\/\\/.+$'
+            - type: string
               pattern: '^(?:[\\w.-]+@)?[\\w.-]+:[^\\s]+$'
           description: Optional HTTP(S), ssh://, or SCP-style SSH repository URL, valid only for a new workspace
         modelConfigurationId:

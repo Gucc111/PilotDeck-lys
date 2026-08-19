@@ -36,6 +36,21 @@ describe('onboarding routes', () => {
     expect(completed.body.error).toBeNull();
   });
 
+  it('trims manually supplied image capability model IDs before updating', async () => {
+    const { request } = await createOnboardingApp({
+      probe: vi.fn()
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: false, imageUnsupported: false, error: 'unknown' }),
+    });
+    const test = await request('/api/v1/model-connection-tests', {
+      method: 'POST', body: JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['model-a'], retryPolicy: retryPolicy() }),
+    });
+    const completed = await request(`/api/v1/model-connection-tests/${test.body.testId}/image-capabilities`, {
+      method: 'PUT', body: JSON.stringify({ models: [{ modelId: ' model-a ', imageInput: 'supported' }] }),
+    });
+    expect(completed).toMatchObject({ status: 200, body: { status: 'passed', error: null, models: [{ modelId: 'model-a', imageInput: 'supported' }] } });
+  });
+
   it('isolates test IDs by user and writes the tested model configuration', async () => {
     const writePilotDeckConfig = vi.fn(async (config) => ({ config }));
     const { request } = await createOnboardingApp({
@@ -181,6 +196,18 @@ describe('onboarding routes', () => {
       method: 'POST', body: JSON.stringify({ type: 'existing', path: '/tmp/workspace', modelConfigurationId: '' }),
     });
     expect(response).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
+  });
+
+  it('rejects invalid githubUrl before creating the workspace directory', async () => {
+    const fs = (await import('fs')).promises;
+    const mkdir = vi.spyOn(fs, 'mkdir');
+    const { request } = await createOnboardingApp();
+    const response = await request('/api/v1/workspaces', {
+      method: 'POST', body: JSON.stringify({ type: 'new', path: '/tmp/onboarding-invalid-url', githubUrl: 'file:///tmp/repository' }),
+    });
+    expect(response).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
+    expect(mkdir).not.toHaveBeenCalled();
+    mkdir.mockRestore();
   });
 
   it('requires the saved API key to match the credential used for testing', async () => {
