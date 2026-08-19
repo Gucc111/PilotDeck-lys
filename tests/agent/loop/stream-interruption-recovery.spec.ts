@@ -164,6 +164,47 @@ test("stream interruption with partial Hermes tool text does not persist the fra
   assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
 });
 
+test("stream interruption with complete text fallback tool call does not persist it as text", async () => {
+  const requests: CanonicalModelRequest[] = [];
+  const completeToolText = 'Prefix <tool_call>{"name":"write_file","arguments":{"path":"safe.mjs","content":"secret"}}</tool_call>';
+  const loop = createLoop(async function* (_decision, request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: completeToolText };
+      yield {
+        type: "error",
+        error: {
+          provider: "test",
+          protocol: "openai",
+          code: "timeout",
+          message: "Stream idle timeout",
+          retryable: true,
+          streamInterruption: { phase: "text" },
+        },
+      };
+      return;
+    }
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "recovered" };
+    yield { type: "message_end", finishReason: "stop" };
+  }, () => undefined);
+
+  for await (const _event of loop.run({
+    sessionId: "interrupted-complete-tool",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "write a file" }] }],
+  })) {
+    // Consume the complete recovery flow.
+  }
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1]!.messages.some((message) => message.role === "assistant"), false);
+  const recoveryText = requests[1]!.messages.at(-1)?.content[0];
+  assert.equal(recoveryText?.type, "text");
+  assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
+});
+
 test("stream interruption exhaustion persists the final safe text fragment", async () => {
   const durable: string[] = [];
   let attempt = 0;
@@ -220,6 +261,37 @@ test("unknown finish exhaustion persists the final safe text fragment", async ()
   }
 
   assert.ok(durable.some((text) => text.includes("unknown-fragment-3")));
+});
+
+test("stream interruption exhaustion clears unsafe finalMessage tool text", async () => {
+  const partialToolText = '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs","content":"partial-secret-3"';
+  const loop = createLoop(async function* () {
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: partialToolText };
+    yield {
+      type: "error",
+      error: {
+        provider: "test",
+        protocol: "openai",
+        code: "timeout",
+        message: "Stream idle timeout",
+        retryable: true,
+        streamInterruption: { phase: "text" },
+      },
+    };
+  }, () => undefined);
+
+  const events: Array<{ type: string; result?: { finalMessage?: unknown } }> = [];
+  for await (const event of loop.run({
+    sessionId: "interrupted-unsafe-final",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "write a file" }] }],
+  })) {
+    events.push(event as typeof events[number]);
+  }
+
+  const completed = events.find((event) => event.type === "turn_completed");
+  assert.equal(completed?.result?.finalMessage, undefined);
 });
 
 function createLoop(

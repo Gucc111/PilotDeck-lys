@@ -719,7 +719,10 @@ export class AgentLoop {
       if (streamInterruption) {
         if (streamInterruptionRecoveryCount < MAX_STREAM_INTERRUPTION_RECOVERIES) {
           streamInterruptionRecoveryCount++;
-          if (streamInterruption.phase === "text" && !assembled.hasPartialTextToolCall) {
+          const hasTextToolCall = assembled.hasPartialTextToolCall
+            || assembled.hasTextFallbackToolCalls
+            || toolCalls.length > 0;
+          if (streamInterruption.phase === "text" && !hasTextToolCall) {
             const partialTextMessage = withoutThinkingBlocks(assistantMessage);
             if (textFromMessage(partialTextMessage).trim().length > 0) {
               finalMessage = partialTextMessage;
@@ -728,12 +731,12 @@ export class AgentLoop {
               await input.onDurableMessage?.(partialTextMessage);
             }
           }
-          const recoveryPrompt = assembled.hasPartialTextToolCall
+          const recoveryPrompt = hasTextToolCall
             ? buildPartialTextToolCallRecoveryPrompt(assembled.partialTextToolCall)
             : buildStreamInterruptionRecoveryPrompt(streamInterruption);
           pushTransientSyntheticPrompt(
             recoveryPrompt,
-            assembled.hasPartialTextToolCall ? "max_output_recovery" : "stream_interruption_recovery",
+            hasTextToolCall ? "max_output_recovery" : "stream_interruption_recovery",
           );
           yield {
             type: "turn_continued",
@@ -750,9 +753,9 @@ export class AgentLoop {
           assembled.error,
           "The model stream repeatedly disconnected. Retry the turn or switch providers.",
         );
-        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall, toolCalls);
+        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall || assembled.hasTextFallbackToolCalls, toolCalls);
+        finalMessage = exhaustedMessage;
         if (exhaustedMessage) {
-          finalMessage = exhaustedMessage;
           messages.push(exhaustedMessage);
           yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: exhaustedMessage };
           await input.onDurableMessage?.(exhaustedMessage);
@@ -807,9 +810,9 @@ export class AgentLoop {
           undefined,
           "The provider repeatedly ended the stream without a recognized finish reason. Retry the turn or switch providers.",
         );
-        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall, toolCalls);
+        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall || assembled.hasTextFallbackToolCalls, toolCalls);
+        finalMessage = exhaustedMessage;
         if (exhaustedMessage) {
-          finalMessage = exhaustedMessage;
           messages.push(exhaustedMessage);
           yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: exhaustedMessage };
           await input.onDurableMessage?.(exhaustedMessage);
