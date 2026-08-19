@@ -123,6 +123,47 @@ test("unknown finish with partial Hermes tool text uses the specialized recovery
   assert.equal(requests[1]!.messages.some((message) => message.role === "assistant"), false);
 });
 
+test("stream interruption with partial Hermes tool text does not persist the fragment", async () => {
+  const requests: CanonicalModelRequest[] = [];
+  const partialToolText = '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs"';
+  const loop = createLoop(async function* (_decision, request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      yield { type: "message_start", role: "assistant" };
+      yield { type: "text_delta", text: partialToolText };
+      yield {
+        type: "error",
+        error: {
+          provider: "test",
+          protocol: "openai",
+          code: "timeout",
+          message: "Stream idle timeout",
+          retryable: true,
+          streamInterruption: { phase: "text" },
+        },
+      };
+      return;
+    }
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "recovered" };
+    yield { type: "message_end", finishReason: "stop" };
+  }, () => undefined);
+
+  for await (const _event of loop.run({
+    sessionId: "interrupted-partial-tool",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "write a file" }] }],
+  })) {
+    // Consume the complete recovery flow.
+  }
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1]!.messages.some((message) => message.role === "assistant"), false);
+  const recoveryText = requests[1]!.messages.at(-1)?.content[0];
+  assert.equal(recoveryText?.type, "text");
+  assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
+});
+
 function createLoop(
   execute: AgentRouterRuntime["execute"],
   onSchedule: () => void,

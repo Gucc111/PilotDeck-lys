@@ -719,7 +719,7 @@ export class AgentLoop {
       if (streamInterruption) {
         if (streamInterruptionRecoveryCount < MAX_STREAM_INTERRUPTION_RECOVERIES) {
           streamInterruptionRecoveryCount++;
-          if (streamInterruption.phase === "text") {
+          if (streamInterruption.phase === "text" && !assembled.hasPartialTextToolCall) {
             const partialTextMessage = withoutThinkingBlocks(assistantMessage);
             if (textFromMessage(partialTextMessage).trim().length > 0) {
               finalMessage = partialTextMessage;
@@ -728,9 +728,12 @@ export class AgentLoop {
               await input.onDurableMessage?.(partialTextMessage);
             }
           }
+          const recoveryPrompt = assembled.hasPartialTextToolCall
+            ? buildPartialTextToolCallRecoveryPrompt(assembled.partialTextToolCall)
+            : buildStreamInterruptionRecoveryPrompt(streamInterruption);
           pushTransientSyntheticPrompt(
-            buildStreamInterruptionRecoveryPrompt(streamInterruption),
-            "stream_interruption_recovery",
+            recoveryPrompt,
+            assembled.hasPartialTextToolCall ? "max_output_recovery" : "stream_interruption_recovery",
           );
           yield {
             type: "turn_continued",
@@ -768,7 +771,7 @@ export class AgentLoop {
       }
       streamInterruptionRecoveryCount = 0;
 
-      if (!assembled.error && !assembled.hasPartialTextToolCall && assembled.finishReason === "unknown") {
+      if (!assembled.error && assembled.hasMessageEnd && !assembled.hasPartialTextToolCall && assembled.finishReason === "unknown") {
         if (unknownFinishRecoveryCount < MAX_UNKNOWN_FINISH_RECOVERIES) {
           unknownFinishRecoveryCount++;
           const partialTextMessage = withoutThinkingBlocks(assistantMessage);
