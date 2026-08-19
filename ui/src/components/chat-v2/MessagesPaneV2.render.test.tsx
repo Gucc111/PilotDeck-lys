@@ -79,6 +79,7 @@ function createPaneElement({
   activeRunId = null,
   runMode = 'agent',
   planModeActive = false,
+  showThinking = true,
 }: {
   messages: ChatMessage[];
   activityMessages?: ChatMessage[];
@@ -87,6 +88,7 @@ function createPaneElement({
   activeRunId?: string | null;
   runMode?: ChatRunMode;
   planModeActive?: boolean;
+  showThinking?: boolean;
 }) {
   const scrollContainerRef = React.createRef<HTMLDivElement>();
 
@@ -118,6 +120,7 @@ function createPaneElement({
         activeRunId={activeRunId}
         runMode={runMode}
         planModeActive={planModeActive}
+        showThinking={showThinking}
       />
     </FindShortcutProvider>
   );
@@ -131,6 +134,7 @@ function renderPane(options: {
   activeRunId?: string | null;
   runMode?: ChatRunMode;
   planModeActive?: boolean;
+  showThinking?: boolean;
 }) {
   return render(createPaneElement(options));
 }
@@ -171,6 +175,92 @@ function SessionPaneHarness({
 }
 
 describe('MessagesPaneV2 render behavior', () => {
+  it('shows a waiting state before the model produces content', () => {
+    const now = new Date().toISOString();
+    renderPane({
+      messages: [{
+        id: 'user-waiting',
+        type: 'user',
+        content: 'Please analyze this.',
+        timestamp: now,
+      }],
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+    });
+
+    expect(screen.getByText('Waiting for model response...')).toBeTruthy();
+    expect(screen.queryByText('Thinking...')).toBeNull();
+  });
+
+  it('switches to thinking when live reasoning arrives even if reasoning details are hidden', () => {
+    const now = new Date().toISOString();
+    renderPane({
+      messages: [
+        {
+          id: 'user-thinking',
+          type: 'user',
+          content: 'Please analyze this.',
+          timestamp: now,
+        },
+        {
+          id: '__streaming_thinking_session_run',
+          type: 'assistant',
+          content: 'I am comparing the available approaches.',
+          timestamp: now,
+          isThinking: true,
+          isStreaming: true,
+        },
+      ],
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+      showThinking: false,
+    });
+
+    expect(screen.getByText('Thinking...')).toBeTruthy();
+    expect(screen.queryByText('Waiting for model response...')).toBeNull();
+    expect(screen.queryByText('I am comparing the available approaches.')).toBeNull();
+  });
+
+  it('lets the live thinking status row collapse and restore the scrollable reasoning window', () => {
+    const now = new Date().toISOString();
+    const thinkingContent = Array.from(
+      { length: 12 },
+      (_, index) => `Live thinking line ${index + 1}`,
+    ).join('\n');
+    renderPane({
+      messages: [
+        {
+          id: 'user-live-thinking',
+          type: 'user',
+          content: 'Please think this through.',
+          timestamp: now,
+        },
+        {
+          id: '__streaming_thinking_session_live',
+          type: 'assistant',
+          content: thinkingContent,
+          timestamp: now,
+          isThinking: true,
+          isStreaming: true,
+        },
+      ],
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running',
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Thinking...' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Live thinking content' })).toBeTruthy();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('region', { name: 'Live thinking content' })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Live thinking content' })).toBeTruthy();
+  });
+
   it('stops an unfinished subagent from an older run while the next run is active', () => {
     const now = new Date().toISOString();
     const messages: ChatMessage[] = [

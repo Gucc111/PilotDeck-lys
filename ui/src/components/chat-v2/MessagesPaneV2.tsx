@@ -690,8 +690,8 @@ function MessagesPaneV2({
       return Boolean(subagentId && currentRunSubagentIds.has(subagentId));
     }) || null;
   }, [activeRunId, currentRunSubagentIds, sessionRuntimeState, subagentActivities]);
-  const streamingThinkingContent = useMemo(() => {
-    if (!showThinking || !isAssistantWorking) {
+  const liveThinkingContent = useMemo(() => {
+    if (!isAssistantWorking) {
       return null;
     }
     for (let i = visibleMessages.length - 1; i >= 0; i--) {
@@ -702,12 +702,13 @@ function MessagesPaneV2({
       if (msg.type === 'user') break;
     }
     return null;
-  }, [showThinking, isAssistantWorking, visibleMessages]);
+  }, [isAssistantWorking, visibleMessages]);
+  const streamingThinkingContent = showThinking ? liveThinkingContent : null;
   const liveStatusStep = useMemo<ProcessTraceStep>(() => {
-    if (streamingThinkingContent) {
+    if (liveThinkingContent) {
       return {
         id: 'live-thinking',
-        title: t('working.thinking', { defaultValue: 'thinking' }),
+        title: t('working.thinking', { defaultValue: 'Thinking...' }),
         phase: 'thinking',
         state: 'running',
       };
@@ -727,7 +728,7 @@ function MessagesPaneV2({
     hasPendingToolUse,
     nonSubagentLiveActivities,
     runningSubagentActivity,
-    streamingThinkingContent,
+    liveThinkingContent,
     t,
     workingStatus,
   ]);
@@ -1309,16 +1310,24 @@ function MessagesPaneV2({
           ) : null}
 
           {shouldRenderBottomLiveStatus ? (
-            <>
-              <ProcessLiveStatus step={liveStatusStep}>
-                {liveProcessDetailMessages.length > 0 && liveProcessGroups.length === 0
-                  ? renderLiveProcessDetailMessages(liveProcessDetailMessages, 'bottom-live-process')
-                  : null}
-              </ProcessLiveStatus>
-              {!inlineThinking && streamingThinkingContent ? (
-                <StreamingThinkingPreview content={streamingThinkingContent} />
-              ) : null}
-            </>
+            <ProcessLiveStatus
+              key={liveStatusStep.id}
+              step={liveStatusStep}
+              defaultExpanded={Boolean(!inlineThinking && streamingThinkingContent)}
+              contentClassName={!inlineThinking && streamingThinkingContent ? 'pl-0' : undefined}
+            >
+              {(liveProcessDetailMessages.length > 0 && liveProcessGroups.length === 0)
+                || (!inlineThinking && streamingThinkingContent) ? (
+                  <>
+                    {liveProcessDetailMessages.length > 0 && liveProcessGroups.length === 0
+                      ? renderLiveProcessDetailMessages(liveProcessDetailMessages, 'bottom-live-process')
+                      : null}
+                    {!inlineThinking && streamingThinkingContent ? (
+                      <StreamingThinkingPreview content={streamingThinkingContent} scrollable />
+                    ) : null}
+                  </>
+                ) : null}
+            </ProcessLiveStatus>
           ) : null}
         </div>
       )}
@@ -1471,9 +1480,9 @@ function getLiveStatusStep(
         state: 'running',
       }
     : {
-        id: 'live-thinking',
-        title: t('working.thinking', { defaultValue: 'Connecting...' }),
-        phase: 'thinking',
+        id: 'live-waiting-for-model',
+        title: t('working.waitingForModel', { defaultValue: 'Waiting for model response...' }),
+        phase: 'generation',
         state: 'running',
       };
 }
