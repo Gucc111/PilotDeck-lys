@@ -4,6 +4,7 @@ import {
   collectToolCallIds,
   collectToolResultIds,
   ensureTrailingUserMessage,
+  isRealUserRequestMessage,
   stripUnpairedToolCalls,
   stripUnpairedToolResults,
 } from "./toolPairIntegrity.js";
@@ -125,6 +126,7 @@ export class SnipEngine {
       }
     }
     let accumulatedTailTokens = 0;
+    let tailStartIndex = turns.length;
     const tailFloor = Math.min(constrained ? 1 : this.keepTailTurns, turns.length);
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const tokens = this.tokenBudget.estimateMessagesTokens(turns[index]!);
@@ -134,7 +136,12 @@ export class SnipEngine {
         break;
       }
       keepIndexes.add(index);
+      tailStartIndex = index;
       accumulatedTailTokens += tokens;
+    }
+    const requestAnchorIndex = findLatestUserRequestGroupIndex(turns, tailStartIndex);
+    if (requestAnchorIndex !== undefined) {
+      keepIndexes.add(requestAnchorIndex);
     }
     // Protected indexes are relative to the live turn list. Checkpoint
     // messages are intentionally excluded from `turns`, so calculating these
@@ -261,17 +268,24 @@ function collectProtectedCycleIndexes(
       continue;
     }
     protectedIndexes.add(index);
-    if (index > 0 && isStandaloneUserRequest(groups[index - 1]!)) {
-      protectedIndexes.add(index - 1);
+    const requestAnchorIndex = findLatestUserRequestGroupIndex(groups, index);
+    if (requestAnchorIndex !== undefined) {
+      protectedIndexes.add(requestAnchorIndex);
     }
   }
   return protectedIndexes;
 }
 
-function isStandaloneUserRequest(messages: CanonicalMessage[]): boolean {
-  return messages.length === 1
-    && messages[0]?.role === "user"
-    && !isToolResultOnly(messages[0]);
+function findLatestUserRequestGroupIndex(
+  groups: CanonicalMessage[][],
+  atOrBefore: number,
+): number | undefined {
+  for (let index = Math.min(atOrBefore, groups.length - 1); index >= 0; index -= 1) {
+    if (groups[index]!.some(isRealUserRequestMessage)) {
+      return index;
+    }
+  }
+  return undefined;
 }
 
 function stitchKeptTurnsWithBoundaries(

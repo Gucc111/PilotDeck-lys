@@ -3,9 +3,14 @@ import test from "node:test";
 
 import { DefaultContextRuntime } from "../../src/context/DefaultContextRuntime.js";
 import { AutoCompactionPolicy } from "../../src/context/compaction/AutoCompactionPolicy.js";
-import { CompactionEngine } from "../../src/context/compaction/CompactionEngine.js";
+import {
+  CompactionEngine,
+  truncateHeadPreservingCheckpoint,
+} from "../../src/context/compaction/CompactionEngine.js";
 import { MicroCompactionEngine } from "../../src/context/compaction/MicroCompactionEngine.js";
 import { SnipEngine } from "../../src/context/compaction/SnipEngine.js";
+import { isRealUserRequestMessage } from "../../src/context/compaction/toolPairIntegrity.js";
+import { projectToolResults } from "../../src/agent/loop/projectToolResults.js";
 import { TokenBudgetManager } from "../../src/context/budget/TokenBudgetManager.js";
 import type { CanonicalMessage, CanonicalModelRequest } from "../../src/model/index.js";
 
@@ -315,6 +320,118 @@ test("targeted snip can prune tool cycles inside one user task", () => {
   assert.equal(callIds.includes("cycle-0"), false);
   assert.equal(callIds.includes("cycle-5"), true);
   assert.deepEqual(resultIds, callIds);
+  const requestIndex = result.messages.findIndex((message) =>
+    textFrom([message]) === "Inspect each repository file."
+  );
+  const retainedTailIndex = result.messages.findIndex((message) =>
+    message.content.some((block) => block.type === "tool_call" && block.id === "cycle-5")
+  );
+  assert.ok(requestIndex >= 0);
+  assert.ok(retainedTailIndex > requestIndex);
+});
+
+test("emergency head truncation keeps the latest task query", () => {
+  const messages: CanonicalMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Old completed request" }] },
+    { role: "assistant", content: [{ type: "text", text: "Old request completed" }] },
+    { role: "user", content: [{ type: "text", text: "Current request must survive" }] },
+  ];
+  for (let index = 0; index < 4; index += 1) {
+    messages.push(
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: `truncate-${index}`, name: "read_file", input: { path: `file-${index}` } }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          toolCallId: `truncate-${index}`,
+          content: [{ type: "text", text: `result-${index}` }],
+        }],
+      },
+    );
+  }
+
+  const result = truncateHeadPreservingCheckpoint(messages, 0.1);
+  const callIds = result.flatMap((message) => message.content.flatMap((block) =>
+    block.type === "tool_call" ? [block.id] : [],
+  ));
+  const resultIds = result.flatMap((message) => message.content.flatMap((block) =>
+    block.type === "tool_result" ? [block.toolCallId] : [],
+  ));
+
+  assert.match(textFrom(result), /Current request must survive/);
+  assert.doesNotMatch(textFrom(result), /Old completed request/);
+  assert.ok(result.length > 0);
+  assert.deepEqual(resultIds, callIds);
+});
+
+test("query anchoring excludes synthetic and internal user messages", () => {
+  const internalMessages: CanonicalMessage[] = [
+    { role: "user", content: [{ type: "tool_result", toolCallId: "tool-1", content: [] }] },
+    { role: "user", content: [{ type: "text", text: "<memory-context>memory</memory-context>" }] },
+    { role: "user", content: [{ type: "text", text: "<compact-boundary trigger=\"auto\" />" }] },
+    { role: "user", content: [{ type: "text", text: "<snip-boundary turnsSnipped=\"1\" />" }] },
+    { role: "user", content: [{ type: "text", text: "<hook_context source=\"UserPromptSubmit\">Injected context</hook_context>" }] },
+    {
+      role: "user",
+      content: [{ type: "text", text: "retry the generated response" }],
+      metadata: { synthetic: true },
+    },
+    {
+      role: "user",
+      content: [{
+        type: "text",
+        text: "[system: the conversation above has been compacted. please continue with the current task.]",
+      }],
+    },
+  ];
+
+  assert.equal(isRealUserRequestMessage({
+    role: "user",
+    content: [{ type: "text", text: "Actual request" }],
+  }), true);
+  assert.equal(internalMessages.every((message) => !isRealUserRequestMessage(message)), true);
+});
+
+test("query anchoring excludes inline supplemental media from tool results", () => {
+  const projected = projectToolResults([{
+    type: "success",
+    toolCallId: "read-file-1",
+    toolName: "read_file",
+    content: [{ type: "text", text: "Rendered PDF pages." }],
+    supplementalMessages: [{
+      role: "user",
+      isMeta: true,
+      content: [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=", bytes: 5 }],
+    }],
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+  }]);
+
+  const supplemental = projected[1]!;
+  assert.equal(supplemental.metadata?.synthetic, true);
+  assert.equal(supplemental.metadata?.purpose, "tool_result_supplemental");
+  assert.equal(supplemental.metadata?.toolCallId, "read-file-1");
+  assert.equal(isRealUserRequestMessage(supplemental), false);
+});
+
+test("emergency head truncation preserves empty history", () => {
+  assert.deepEqual(truncateHeadPreservingCheckpoint([], 0.1), []);
+});
+
+test("request anchoring skips hook context before a multi-turn tool cycle", () => {
+  const messages: CanonicalMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Actual user request" }] },
+    { role: "user", content: [{ type: "text", text: "<hook_context source=\"UserPromptSubmit\">Injected context</hook_context>" }] },
+    { role: "assistant", content: [{ type: "tool_call", id: "hook-cycle", name: "read_file", input: { path: "a.txt" } }] },
+    { role: "user", content: [{ type: "tool_result", toolCallId: "hook-cycle", content: [{ type: "text", text: "tool output" }] }] },
+  ];
+
+  const result = truncateHeadPreservingCheckpoint(messages, 0.1);
+  assert.match(textFrom(result), /Actual user request/);
+  assert.doesNotMatch(textFrom(result), /Injected context/);
 });
 
 test("full compaction targets 60% of the effective input budget", async () => {

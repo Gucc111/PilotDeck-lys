@@ -43,6 +43,7 @@ import type { AgentRuntimeDependencies } from "../runtime/AgentRuntimeDependenci
 import type { LifecycleDispatchResult } from "../../lifecycle/index.js";
 import type { PilotDeckHookEvent } from "../../extension/hooks/protocol/events.js";
 import { NullContextRuntime } from "../../context/NullContextRuntime.js";
+import { truncateHeadPreservingCheckpoint } from "../../context/compaction/CompactionEngine.js";
 import type { AgentContextRuntime } from "../../context/ContextRuntime.js";
 import type {
   CompactionResult,
@@ -2992,11 +2993,9 @@ function buildPartialTextToolCallRecoveryPrompt(
   ].join("\n");
 }
 
-/** Keep only the trailing `keepRatio` portion of the message history. */
+/** Keep a bounded tail without dropping the user request that initiated it. */
 function truncateHeadKeepRatio(messages: CanonicalMessage[], keepRatio: number): CanonicalMessage[] {
-  const ratio = Math.max(0.05, Math.min(1, keepRatio));
-  const keep = Math.max(1, Math.floor(messages.length * ratio));
-  return messages.slice(-keep);
+  return truncateHeadPreservingCheckpoint(messages, keepRatio);
 }
 
 function buildInvalidFingerprint(results: PilotDeckToolResult[]): string {

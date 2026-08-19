@@ -19,6 +19,7 @@ import {
   collectToolCallIds,
   collectToolResultIds,
   ensureTrailingUserMessage,
+  isRealUserRequestMessage,
   stripUnpairedToolCalls,
   stripUnpairedToolResults,
 } from "./toolPairIntegrity.js";
@@ -535,6 +536,10 @@ function planFullCompactionMessages(
   const prefix = prefixTurns.flatMap((turn) => turn.messages);
   const tail = turns.slice(tailStartTurn).flatMap((turn) => turn.messages);
   const protectedIndexes = collectProtectedGroupIndexes(prefixTurns, { protectedToolNames });
+  const requestAnchorIndex = findLatestUserRequestGroupIndex(turns, tailStartTurn);
+  if (requestAnchorIndex !== undefined && requestAnchorIndex < tailStartTurn) {
+    protectedIndexes.add(requestAnchorIndex);
+  }
   const protectedMessages: CanonicalMessage[] = [];
   const messagesToSummarize: CanonicalMessage[] = [];
 
@@ -659,8 +664,19 @@ function hasProtectedContextMessage(
 
 function isStandaloneUserRequestGroup(messages: CanonicalMessage[]): boolean {
   return messages.length === 1
-    && messages[0]!.role === "user"
-    && !isToolResultOnlyMessage(messages[0]!);
+    && isRealUserRequestMessage(messages[0]!);
+}
+
+function findLatestUserRequestGroupIndex(
+  groups: Array<{ index: number; messages: CanonicalMessage[] }>,
+  atOrBefore: number,
+): number | undefined {
+  for (let index = Math.min(atOrBefore, groups.length - 1); index >= 0; index -= 1) {
+    if (groups[index]!.messages.some(isRealUserRequestMessage)) {
+      return groups[index]!.index;
+    }
+  }
+  return undefined;
 }
 
 function isToolResultOnlyMessage(message: CanonicalMessage): boolean {
@@ -763,7 +779,19 @@ function truncateTailPreservingToolPairs(
   messages: CanonicalMessage[],
   keepRatio: number,
 ): CanonicalMessage[] {
-  const liveTail = truncateHead(messages, keepRatio);
+  if (messages.length === 0) return [];
+  const rawTail = truncateHead(messages, keepRatio);
+  const tailStartIndex = messages.length - rawTail.length;
+  let requestAnchorIndex: number | undefined;
+  for (let index = tailStartIndex; index >= 0; index -= 1) {
+    if (isRealUserRequestMessage(messages[index]!)) {
+      requestAnchorIndex = index;
+      break;
+    }
+  }
+  const liveTail = requestAnchorIndex !== undefined && requestAnchorIndex < tailStartIndex
+    ? [messages[requestAnchorIndex]!, ...rawTail]
+    : rawTail;
   const resultIds = collectToolResultIds(liveTail);
   const pairedCalls = stripUnpairedToolCalls(liveTail, resultIds);
   const callIds = collectToolCallIds(pairedCalls);
