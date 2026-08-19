@@ -10,6 +10,7 @@ import {
 import { MicroCompactionEngine } from "../../src/context/compaction/MicroCompactionEngine.js";
 import { SnipEngine } from "../../src/context/compaction/SnipEngine.js";
 import { isRealUserRequestMessage } from "../../src/context/compaction/toolPairIntegrity.js";
+import { projectToolResults } from "../../src/agent/loop/projectToolResults.js";
 import { TokenBudgetManager } from "../../src/context/budget/TokenBudgetManager.js";
 import type { CanonicalMessage, CanonicalModelRequest } from "../../src/model/index.js";
 
@@ -391,6 +392,32 @@ test("query anchoring excludes synthetic and internal user messages", () => {
     content: [{ type: "text", text: "Actual request" }],
   }), true);
   assert.equal(internalMessages.every((message) => !isRealUserRequestMessage(message)), true);
+});
+
+test("query anchoring excludes inline supplemental media from tool results", () => {
+  const projected = projectToolResults([{
+    type: "success",
+    toolCallId: "read-file-1",
+    toolName: "read_file",
+    content: [{ type: "text", text: "Rendered PDF pages." }],
+    supplementalMessages: [{
+      role: "user",
+      isMeta: true,
+      content: [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=", bytes: 5 }],
+    }],
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+  }]);
+
+  const supplemental = projected[1]!;
+  assert.equal(supplemental.metadata?.synthetic, true);
+  assert.equal(supplemental.metadata?.purpose, "tool_result_supplemental");
+  assert.equal(supplemental.metadata?.toolCallId, "read-file-1");
+  assert.equal(isRealUserRequestMessage(supplemental), false);
+});
+
+test("emergency head truncation preserves empty history", () => {
+  assert.deepEqual(truncateHeadPreservingCheckpoint([], 0.1), []);
 });
 
 test("full compaction targets 60% of the effective input budget", async () => {

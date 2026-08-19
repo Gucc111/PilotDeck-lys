@@ -779,6 +779,7 @@ function truncateTailPreservingToolPairs(
   messages: CanonicalMessage[],
   keepRatio: number,
 ): CanonicalMessage[] {
+  if (messages.length === 0) return [];
   const rawTail = truncateHead(messages, keepRatio);
   const tailStartIndex = messages.length - rawTail.length;
   let requestAnchorIndex: number | undefined;
