@@ -46,6 +46,9 @@ try {
   const reviewDir = path.join(workDir, 'review');
   const converted = path.join(workDir, 'converted.pptx');
   const conversionReview = path.join(workDir, 'conversion-review');
+  const missingContentTypesCandidate = path.join(workDir, 'missing-content-types.pptx');
+  const missingRootRelationshipsCandidate = path.join(workDir, 'missing-root-relationships.pptx');
+  const wrongPresentationContentTypeCandidate = path.join(workDir, 'wrong-presentation-content-type.pptx');
   const invalidDeliveryCandidate = path.join(workDir, 'invalid-delivery-candidate.pptx');
   const invalidFinal = path.join(outputRoot, 'invalid-final.pptx');
   const final = path.join(outputRoot, 'final.pptx');
@@ -365,33 +368,65 @@ try {
     assert.ok(await fs.stat(review.render.pages[0].image).then((stat) => stat.isFile()));
   }
 
-  const invalidDeliveryZip = await JSZip.loadAsync(await fs.readFile(edited));
-  invalidDeliveryZip.remove(activeLayoutPart);
-  await fs.writeFile(
-    invalidDeliveryCandidate,
-    await invalidDeliveryZip.generateAsync({ type: 'nodebuffer' }),
-  );
-  const invalidDelivery = spawnSync('bash', [
-    cli,
-    'deliver',
-    '--input', invalidDeliveryCandidate,
-    '--out', invalidFinal,
-  ], {
-    cwd: skillRoot,
-    env: environment,
-    encoding: 'utf8',
+  const writeDeliveryVariant = async (output, mutate) => {
+    const zip = await JSZip.loadAsync(await fs.readFile(edited));
+    await mutate(zip);
+    await fs.writeFile(output, await zip.generateAsync({ type: 'nodebuffer' }));
+  };
+  const assertDeliveryRejected = async (input, expectedError) => {
+    const result = spawnSync('bash', [
+      cli,
+      'deliver',
+      '--input', input,
+      '--out', invalidFinal,
+    ], {
+      cwd: skillRoot,
+      env: environment,
+      encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, expectedError);
+    assert.equal(await fs.stat(invalidFinal).then(() => true).catch(() => false), false);
+  };
+
+  await writeDeliveryVariant(missingContentTypesCandidate, (zip) => {
+    zip.remove('[Content_Types].xml');
   });
-  assert.notEqual(invalidDelivery.status, 0);
-  assert.match(invalidDelivery.stderr, /targets missing part/u);
-  assert.equal(await fs.stat(invalidFinal).then(() => true).catch(() => false), false);
+  await assertDeliveryRejected(missingContentTypesCandidate, /required part \[Content_Types\]\.xml is missing/u);
+
+  await writeDeliveryVariant(missingRootRelationshipsCandidate, (zip) => {
+    zip.remove('_rels/.rels');
+  });
+  await assertDeliveryRejected(missingRootRelationshipsCandidate, /required part _rels\/\.rels is missing/u);
+
+  await writeDeliveryVariant(wrongPresentationContentTypeCandidate, async (zip) => {
+    const document = new xmldom.DOMParser().parseFromString(
+      await zip.file('[Content_Types].xml').async('string'),
+      'application/xml',
+    );
+    const presentationOverride = elementDescendants(document).find((node) => (
+      node.localName === 'Override' && node.getAttribute('PartName') === '/ppt/presentation.xml'
+    ));
+    assert.ok(presentationOverride);
+    presentationOverride.setAttribute('ContentType', 'application/xml');
+    zip.file('[Content_Types].xml', new xmldom.XMLSerializer().serializeToString(document));
+  });
+  await assertDeliveryRejected(wrongPresentationContentTypeCandidate, /uses unexpected content type application\/xml/u);
+
+  await writeDeliveryVariant(invalidDeliveryCandidate, (zip) => {
+    zip.remove(activeLayoutPart);
+  });
+  await assertDeliveryRejected(invalidDeliveryCandidate, /targets missing part/u);
 
   const delivered = pptx('deliver', '--input', edited, '--out', final);
   assert.equal(delivered.slideCount, 1);
   assert.ok(delivered.validation.textPartCount > 0);
   assert.ok(delivered.validation.relationshipCount > 0);
+  assert.ok(delivered.validation.contentTypeCount > 0);
+  assert.ok(delivered.validation.mappedPartCount > 0);
   assert.ok(await fs.stat(final).then((stat) => stat.isFile()));
   passed = true;
-  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'template-scaffold', 'fallback-patch', 'ooxml-compatibility', 'convert', 'template-edit', 'evaluate', 'compact-review', 'delivery-validation', 'deliver'] })}\n`);
+  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'template-scaffold', 'fallback-patch', 'ooxml-compatibility', 'convert', 'template-edit', 'evaluate', 'compact-review', 'opc-validation', 'delivery-validation', 'deliver'] })}\n`);
 } finally {
   if (passed) await fs.rm(outputRoot, { recursive: true, force: true });
   else process.stderr.write(`PPTX self-test artifacts: ${outputRoot}\n`);

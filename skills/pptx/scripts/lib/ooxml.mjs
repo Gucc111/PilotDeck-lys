@@ -6,6 +6,14 @@ import { loadDependencies } from './runtime.mjs';
 const EMU_PER_INCH = 914400;
 const RELATIONSHIPS_NAMESPACE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/';
+const CONTENT_TYPES_PART = '[Content_Types].xml';
+const ROOT_RELATIONSHIPS_PART = '_rels/.rels';
+const OFFICE_DOCUMENT_RELATIONSHIP_TYPES = new Set([
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument',
+  'http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument',
+]);
+const PRESENTATION_MAIN_CONTENT_TYPE =
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
 
 function parseXml(xml) {
   const { xmldom } = loadDependencies();
@@ -132,6 +140,101 @@ async function validateZipRelationships(zip) {
   return relationshipCount;
 }
 
+function requiredZipPart(zip, part) {
+  const file = zip.file(part);
+  if (!file) throw new Error(`Invalid PPTX OPC package: required part ${part} is missing`);
+  return file;
+}
+
+function canonicalPartName(partName) {
+  const value = String(partName ?? '').replace(/^\/+/u, '');
+  const normalized = path.posix.normalize(value);
+  if (!value || normalized === '.' || normalized.startsWith('../')) return null;
+  try {
+    return decodeURI(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+function partExtension(part) {
+  const basename = path.posix.basename(part);
+  if (/^\.[^.]+$/u.test(basename)) return basename.slice(1).toLowerCase();
+  return path.posix.extname(basename).slice(1).toLowerCase();
+}
+
+async function validateRootOfficeDocument(zip) {
+  const document = parseXml(await requiredZipPart(zip, ROOT_RELATIONSHIPS_PART).async('string'));
+  const officeDocumentRelationships = descendants(document, 'Relationship')
+    .filter((relationship) => (
+      OFFICE_DOCUMENT_RELATIONSHIP_TYPES.has(relationship.getAttribute('Type'))
+      && String(relationship.getAttribute('TargetMode') ?? '').toLowerCase() !== 'external'
+    ));
+  if (officeDocumentRelationships.length !== 1) {
+    throw new Error('Invalid PPTX OPC package: root relationships must contain one officeDocument entry');
+  }
+  const target = officeDocumentRelationships[0].getAttribute('Target');
+  const resolved = resolvePart('', target);
+  if (!zipContainsPart(zip, resolved)) {
+    throw new Error(`Invalid PPTX OPC package: officeDocument targets missing part ${target}`);
+  }
+  return canonicalPartName(resolved);
+}
+
+async function validateContentTypes(zip, officeDocumentPart) {
+  const document = parseXml(await requiredZipPart(zip, CONTENT_TYPES_PART).async('string'));
+  if (document.documentElement?.localName !== 'Types') {
+    throw new Error(`Invalid PPTX OPC package: ${CONTENT_TYPES_PART} must contain a Types root`);
+  }
+
+  const defaults = new Map();
+  for (const entry of descendants(document, 'Default')) {
+    const extension = entry.getAttribute('Extension').replace(/^\./u, '').toLowerCase();
+    const contentType = entry.getAttribute('ContentType');
+    if (!extension || !contentType) {
+      throw new Error(`Invalid PPTX OPC package: ${CONTENT_TYPES_PART} contains an incomplete Default entry`);
+    }
+    defaults.set(extension, contentType);
+  }
+
+  const overrides = new Map();
+  for (const entry of descendants(document, 'Override')) {
+    const part = canonicalPartName(entry.getAttribute('PartName'));
+    const contentType = entry.getAttribute('ContentType');
+    if (!part || !contentType) {
+      throw new Error(`Invalid PPTX OPC package: ${CONTENT_TYPES_PART} contains an incomplete Override entry`);
+    }
+    overrides.set(part, contentType);
+  }
+
+  const contentTypeForPart = (part) => {
+    const canonical = canonicalPartName(part);
+    if (!canonical) return undefined;
+    return overrides.get(canonical) ?? defaults.get(partExtension(canonical));
+  };
+
+  let mappedPartCount = 0;
+  for (const [part, entry] of Object.entries(zip.files)) {
+    if (entry.dir || part === CONTENT_TYPES_PART) continue;
+    if (!contentTypeForPart(part)) {
+      throw new Error(`Invalid PPTX OPC package: no content type is declared for ${part}`);
+    }
+    mappedPartCount += 1;
+  }
+
+  const officeDocumentContentType = contentTypeForPart(officeDocumentPart);
+  if (officeDocumentContentType !== PRESENTATION_MAIN_CONTENT_TYPE) {
+    throw new Error(
+      `Invalid PPTX OPC package: ${officeDocumentPart} uses unexpected content type ${officeDocumentContentType ?? '(missing)'}`,
+    );
+  }
+
+  return {
+    contentTypeCount: defaults.size + overrides.size,
+    mappedPartCount,
+  };
+}
+
 async function loadPptxPackage(inputPath) {
   const absolute = path.resolve(inputPath);
   const buffer = await fs.readFile(absolute);
@@ -151,11 +254,19 @@ async function loadPptxPackage(inputPath) {
 
 export async function validatePptxPackage(inputPath) {
   const { absolute, zip } = await loadPptxPackage(inputPath);
+  const officeDocumentPart = await validateRootOfficeDocument(zip);
+  const contentTypes = await validateContentTypes(zip, officeDocumentPart);
   const textParts = Object.keys(zip.files)
     .filter((name) => !zip.files[name].dir && (name.endsWith('.xml') || name.endsWith('.rels')));
   for (const part of textParts) parseXml(await zip.file(part).async('string'));
   const relationshipCount = await validateZipRelationships(zip);
-  return { file: absolute, textPartCount: textParts.length, relationshipCount };
+  return {
+    file: absolute,
+    textPartCount: textParts.length,
+    relationshipCount,
+    contentTypeCount: contentTypes.contentTypeCount,
+    mappedPartCount: contentTypes.mappedPartCount,
+  };
 }
 
 export async function normalizeTemplatePptx(inputPath, outputPath) {

@@ -54,6 +54,8 @@ export async function deliverPptx(inputPath, outputPath, options = {}) {
       package: 'ooxml',
       textPartCount: packageValidation.textPartCount,
       relationshipCount: packageValidation.relationshipCount,
+      contentTypeCount: packageValidation.contentTypeCount,
+      mappedPartCount: packageValidation.mappedPartCount,
     },
   };
 }
