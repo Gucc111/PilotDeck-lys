@@ -1,4 +1,5 @@
 import express from 'express';
+import { request as httpRequest } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const nativeFetch = globalThis.fetch;
@@ -94,6 +95,70 @@ describe('onboarding routes', () => {
     expect(slashProvider).toMatchObject({ status: 400, body: { code: 'INVALID_REQUEST' } });
   });
 
+  it('treats Object prototype property names as custom providers', async () => {
+    const probe = vi.fn().mockResolvedValue({ ok: true });
+    const { request } = await createOnboardingApp({ probe });
+    for (const providerId of ['constructor', 'toString']) {
+      const response = await request('/api/v1/model-connection-tests', {
+        method: 'POST', body: JSON.stringify({
+          providerId, protocol: 'openai', endpoint: 'https://custom.example/v1', apiKey: 'key', models: ['model-a'], retryPolicy: retryPolicy(),
+        }),
+      });
+      expect(response.status).toBe(200);
+    }
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({ protocol: 'openai', baseUrl: 'https://custom.example/v1' }));
+  });
+
+  it('limits concurrent model probes per user and passes a cancellation signal', async () => {
+    let finishFirstProbe;
+    const probe = vi.fn()
+      .mockImplementationOnce((_options) => new Promise((resolve) => { finishFirstProbe = resolve; }))
+      .mockResolvedValue({ ok: true });
+    const { request } = await createOnboardingApp({ probe });
+    const body = JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['model-a'], retryPolicy: retryPolicy() });
+    const first = request('/api/v1/model-connection-tests', { method: 'POST', headers: { 'x-user': 'busy-user' }, body });
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
+    const signal = probe.mock.calls[0][0].signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+
+    const limited = await request('/api/v1/model-connection-tests', { method: 'POST', headers: { 'x-user': 'busy-user' }, body });
+    expect(limited).toMatchObject({ status: 429, body: { code: 'RATE_LIMITED' } });
+
+    finishFirstProbe({ ok: true });
+    expect((await first).status).toBe(200);
+    expect(signal.aborted).toBe(false);
+  });
+
+  it('cancels model probes and releases their slot when the client disconnects', async () => {
+    let probeSignal;
+    const probe = vi.fn()
+      .mockImplementationOnce(({ signal }) => new Promise((_resolve, reject) => {
+        probeSignal = signal;
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }))
+      .mockResolvedValue({ ok: true });
+    const { app, request } = await createOnboardingApp({ probe });
+    const body = JSON.stringify({ providerId: 'openai', apiKey: 'key', models: ['model-a'], retryPolicy: retryPolicy() });
+    const server = app.listen(0);
+    const client = httpRequest({
+      hostname: '127.0.0.1', port: server.address().port, path: '/api/v1/model-connection-tests', method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'x-user': 'disconnecting-user' },
+    });
+    client.on('error', () => undefined);
+    client.end(body);
+    await vi.waitFor(() => expect(probeSignal).toBeInstanceOf(AbortSignal));
+
+    client.destroy();
+
+    await vi.waitFor(() => expect(probeSignal.aborted).toBe(true));
+    await new Promise((resolve) => server.close(resolve));
+    expect(probeSignal.aborted).toBe(true);
+    const retry = await request('/api/v1/model-connection-tests', {
+      method: 'POST', headers: { 'x-user': 'disconnecting-user' }, body,
+    });
+    expect(retry.status).toBe(200);
+  });
+
   it('rejects githubUrl for existing workspaces', async () => {
     const { request } = await createOnboardingApp();
     const response = await request('/api/v1/workspaces', {
@@ -153,11 +218,48 @@ describe('onboarding routes', () => {
       method: 'POST', body: JSON.stringify({ type: 'new', path: '/tmp/onboarding-workspace', githubUrl: 'https://github.com/openbmb/PilotDeck.git' }),
     });
     expect(response).toMatchObject({ status: 409, body: { code: 'GIT_CLONE_FAILED' } });
+    expect(cloneGitHubRepository).toHaveBeenCalledWith(
+      'https://github.com/openbmb/PilotDeck.git',
+      expect.stringMatching(/^\/tmp\/onboarding-workspace\/\.PilotDeck\.pilotdeck-clone-/),
+      null,
+      expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 300000 }),
+    );
     expect(rm).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/onboarding-workspace\/\.PilotDeck\.pilotdeck-clone-/), { recursive: true, force: true });
     mkdir.mockRestore();
     access.mockRestore();
     rm.mockRestore();
     open.mockRestore();
+    unlink.mockRestore();
+  });
+
+  it('limits concurrent workspace clones per user', async () => {
+    const fs = (await import('fs')).promises;
+    const mkdir = vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
+    const stat = vi.spyOn(fs, 'stat').mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' }));
+    const access = vi.spyOn(fs, 'access').mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' }));
+    const open = vi.spyOn(fs, 'open').mockResolvedValue({ close: vi.fn(async () => undefined) });
+    const rename = vi.spyOn(fs, 'rename').mockResolvedValue(undefined);
+    const unlink = vi.spyOn(fs, 'unlink').mockResolvedValue(undefined);
+    let finishClone;
+    const cloneGitHubRepository = vi.fn().mockImplementationOnce(() => new Promise((resolve) => { finishClone = resolve; }));
+    const { request } = await createOnboardingApp({ cloneGitHubRepository });
+    const first = request('/api/v1/workspaces', {
+      method: 'POST', headers: { 'x-user': 'busy-user' }, body: JSON.stringify({ type: 'new', path: '/tmp/first-workspace', githubUrl: 'https://github.com/openbmb/PilotDeck.git' }),
+    });
+    await vi.waitFor(() => expect(cloneGitHubRepository).toHaveBeenCalledTimes(1));
+
+    const limited = await request('/api/v1/workspaces', {
+      method: 'POST', headers: { 'x-user': 'busy-user' }, body: JSON.stringify({ type: 'new', path: '/tmp/second-workspace', githubUrl: 'https://github.com/openbmb/another.git' }),
+    });
+    expect(limited).toMatchObject({ status: 429, body: { code: 'RATE_LIMITED' } });
+
+    finishClone();
+    expect((await first).status).toBe(201);
+    mkdir.mockRestore();
+    stat.mockRestore();
+    access.mockRestore();
+    open.mockRestore();
+    rename.mockRestore();
     unlink.mockRestore();
   });
 });
@@ -185,7 +287,7 @@ async function createOnboardingApp(overrides = {}) {
   app.use(express.json());
   app.use((req, _res, next) => { req.user = { id: req.headers['x-user'] || 'one' }; next(); });
   app.use('/api/v1', routes);
-  return { request: (url, init = {}) => requestStatusJson(app, url, init), tests: onboardingModule.tests };
+  return { app, request: (url, init = {}) => requestStatusJson(app, url, init), tests: onboardingModule.tests };
 }
 
 function retryPolicy() {

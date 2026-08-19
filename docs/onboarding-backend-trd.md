@@ -121,6 +121,8 @@ type StoredConnectionTest = {
 
 默认 TTL 为 10 分钟。记录按 `userId + testId` 隔离；不存在返回 `404`，已存在但过期返回 `410`。测试记录不保存 API Key、provider 原始响应或完整请求体。保存配置成功后立即删除对应记录，其余记录按访问时惰性清理并由定时任务清理。
 
+单次请求最多测试 10 个模型，模型按请求顺序串行执行文本和图片探测。同时执行的连接测试限制为每用户 1 个、进程全局 3 个；客户端断开时取消当前 fetch 和重试等待，并立即释放执行名额。
+
 ### 7.3 手工图片能力回填
 
 只允许提交当前测试中 `imageInput=unknown` 的模型，且必须一次覆盖全部未知模型。重复、遗漏或额外模型返回 `400`。回填后所有文本成功且图片能力明确时，测试状态变为 `passed`。
@@ -169,6 +171,7 @@ webui:
 - `existing`：路径必须存在、可访问且是目录，随后注册为 PilotDeck 项目。
 - `new`：目标不能与已有非空目录冲突；创建目录后，可选执行无交互 `git clone`。
 - 提供 `githubUrl` 时，仅接受 HTTP(S) 或 SSH Git URL；clone 失败时清理本次创建的部分 clone 目录，不删除调用前已存在的目录。
+- clone 同时执行限制为每用户 1 个、进程全局 2 个，单次最长 5 分钟；客户端断开或超时时终止 Git 子进程并清理本次 staging 目录。
 - 返回的 `path` 是最终注册的项目根目录。带 GitHub URL 时为 clone 后的仓库目录。
 - `modelConfigurationId` 省略时使用当前默认配置；提供时必须匹配 `webui.onboarding.modelConfigurationId`。
 
@@ -206,7 +209,7 @@ type ApiError = {
 | `PATH_NOT_WRITABLE` | 400 | 目标或父目录不可写 |
 | `WORKSPACE_CONFLICT` | 409 | 目标目录或项目已存在 |
 | `GIT_CLONE_FAILED` | 409 | Git clone 失败 |
-| `RATE_LIMITED` | 429 | 连接测试请求过于频繁 |
+| `RATE_LIMITED` | 429 | 连接测试请求过于频繁，或探测/clone 已达到进行中任务上限 |
 
 连接测试使用 HTTP 200 表示请求已执行，具体成功与否由 `status` 和模型结果表达。协议级参数错误、资源不存在和冲突使用对应 HTTP 状态码。鉴权失败沿用共享中间件的 `{ "error": string }`：缺少 JWT 为 `401`，JWT 无效为 `403`。
 

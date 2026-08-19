@@ -112,9 +112,12 @@ function requestFor({ protocol, apiKey, model, image, maxTokens }) {
  */
 // Onboarding needs enough output budget for reasoning models to emit their
 // visible answer. The legacy config endpoint passes its historical 8/16 value.
-export async function probeModelConnection({ protocol, baseUrl, apiKey = '', model, image = false, maxTokens = 256 }) {
+export async function probeModelConnection({ protocol, baseUrl, apiKey = '', model, image = false, maxTokens = 256, signal }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new NetworkFetchError('network_timeout', 'Connection timed out.')), TIMEOUT_MS);
+  const forwardAbort = () => controller.abort(signal.reason);
+  if (signal?.aborted) forwardAbort();
+  else signal?.addEventListener('abort', forwardAbort, { once: true });
   try {
     const urls = buildProviderChatEndpointCandidates({ protocol, baseUrl, model });
     const request = requestFor({ protocol, apiKey, model, image, maxTokens });
@@ -153,9 +156,11 @@ export async function probeModelConnection({ protocol, baseUrl, apiKey = '', mod
     const detail = last?.detail || 'Connection failed.';
     return { ok: false, imageUnsupported: image && looksLikeImageUnsupported(detail), code: classifyProbeError(detail), error: detail };
   } catch (error) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
     const timedOut = error?.name === 'AbortError' || error?.code === 'network_timeout';
     return { ok: false, imageUnsupported: false, code: 'ENDPOINT_UNREACHABLE', error: timedOut ? 'Connection timed out after 10s.' : (error?.message || String(error)) };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', forwardAbort);
   }
 }

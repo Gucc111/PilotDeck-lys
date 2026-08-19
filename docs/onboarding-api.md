@@ -95,11 +95,12 @@ type ModelConnectionTestRequest = {
 
 约束：
 
-- `models` 至少一项，trim 后非空且不能重复。
+- `models` 为 1 到 10 项，trim 后非空且不能重复。
 - 预置服务商只使用 `providerId`，服务端忽略客户端传入的 `protocol` 和 `endpoint`。
 - 自定义服务商必须提交实际服务商 ID、`protocol` 和绝对 HTTP(S) `endpoint`，不能使用保留 ID `custom`。
 - Ollama 允许空 `apiKey`；其他服务商必须提供非空密钥。
 - 请求体不接受未声明字段。
+- 连接测试同时进行数限制为每用户 1 个、全局 3 个；客户端断开后服务端取消未完成探测并释放名额。
 
 预置 ID：`anthropic`、`openai`、`openai-responses`、`dashscope`、`deepseek`、`gemini`、`openrouter`、`ollama`、`minimax`、`kimi`、`volcengine`、`zhipu`。
 
@@ -363,6 +364,7 @@ type CreateWorkspaceRequest = {
 - `path` 必须是本机绝对路径。
 - `existing` 要求路径已存在且是可访问目录，不接受 `githubUrl`。
 - `new` 创建目录；`githubUrl` 存在时将仓库克隆到目标目录下并注册实际仓库目录。
+- clone 同时进行数限制为每用户 1 个、全局 2 个，最长执行 5 分钟；客户端断开时终止 Git 子进程并清理本次 staging 目录。
 - `modelConfigurationId` 省略时使用当前默认配置；提供时必须匹配最近保存的配置。
 - HTTP API 不提供文件夹枚举。目录选择由桌面端原生选择器完成。
 
@@ -419,6 +421,7 @@ type Workspace = {
 | `409` | `WORKSPACE_CONFLICT` | 目录或项目已存在 |
 | `409` | `CONFIGURATION_MISMATCH` | 配置 ID 不是当前配置 |
 | `409` | `GIT_CLONE_FAILED` | Git clone 失败 |
+| `429` | `RATE_LIMITED` | 当前用户或服务器已有过多进行中的 clone |
 
 ## 7. 推荐调用流程
 

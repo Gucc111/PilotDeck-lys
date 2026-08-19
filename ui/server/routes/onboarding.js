@@ -14,6 +14,11 @@ const TEST_TTL_MS = 10 * 60 * 1000;
 const MAX_MODELS_PER_TEST = 10;
 const TEST_RATE_WINDOW_MS = 60 * 1000;
 const TEST_RATE_MAX_REQUESTS = 5;
+const PROBE_GLOBAL_LIMIT = 3;
+const PROBE_PER_USER_LIMIT = 1;
+const CLONE_GLOBAL_LIMIT = 2;
+const CLONE_PER_USER_LIMIT = 1;
+const CLONE_TIMEOUT_MS = 5 * 60 * 1000;
 const tests = new Map();
 const testRateBuckets = new Map();
 const testKeySecret = randomBytes(32);
@@ -33,6 +38,52 @@ const PRESETS = {
   ollama: { protocol: 'openai', endpoint: 'http://localhost:11434/v1' },
 };
 const PROTOCOLS = new Set(['openai', 'openai-responses', 'anthropic', 'google']);
+
+function createInFlightLimiter(globalLimit, perUserLimit) {
+  let total = 0;
+  const perUser = new Map();
+  return {
+    tryAcquire(userId) {
+      const key = String(userId);
+      const userCount = perUser.get(key) || 0;
+      if (total >= globalLimit || userCount >= perUserLimit) return null;
+      total += 1;
+      perUser.set(key, userCount + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        total -= 1;
+        const remaining = (perUser.get(key) || 1) - 1;
+        if (remaining > 0) perUser.set(key, remaining);
+        else perUser.delete(key);
+      };
+    },
+  };
+}
+
+const probeInFlight = createInFlightLimiter(PROBE_GLOBAL_LIMIT, PROBE_PER_USER_LIMIT);
+const cloneInFlight = createInFlightLimiter(CLONE_GLOBAL_LIMIT, CLONE_PER_USER_LIMIT);
+
+function abortOnDisconnect(req, res) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (res.writableEnded || controller.signal.aborted) return;
+    const error = new Error('Client disconnected.');
+    error.name = 'AbortError';
+    error.code = 'CLIENT_DISCONNECTED';
+    controller.abort(error);
+  };
+  req.once('aborted', abort);
+  res.once('close', abort);
+  return {
+    signal: controller.signal,
+    cleanup() {
+      req.removeListener('aborted', abort);
+      res.removeListener('close', abort);
+    },
+  };
+}
 
 function apiError(res, status, code, message, modelId = undefined) {
   return res.status(status).json({ code, message, ...(modelId ? { modelId } : {}) });
@@ -61,8 +112,8 @@ function retryPolicy(value) {
 }
 function resolveProvider(body) {
   const requested = text(body.providerId).toLowerCase();
-  const providerId = ALIASES[requested] || requested;
-  if (PRESETS[providerId]) return { providerId, ...PRESETS[providerId], custom: false };
+  const providerId = Object.hasOwn(ALIASES, requested) ? ALIASES[requested] : requested;
+  if (Object.hasOwn(PRESETS, providerId)) return { providerId, ...PRESETS[providerId], custom: false };
   const protocol = text(body.protocol).toLowerCase();
   const endpoint = text(body.endpoint).replace(/\/+$/, '');
   try {
@@ -122,28 +173,44 @@ router.post('/model-connection-tests', modelTestRateLimiter, async (req, res) =>
   if (!hasOnlyKeys(req.body, ['providerId', 'protocol', 'endpoint', 'apiKey', 'models', 'retryPolicy']) || !provider || !models.length || models.length !== requestedModels.length || models.length > MAX_MODELS_PER_TEST || !retry || (provider.providerId !== 'ollama' && !apiKey)) {
     return apiError(res, 400, 'INVALID_REQUEST', 'providerId, models, retryPolicy, and the required API key are invalid.');
   }
-  const results = [];
-  for (const modelId of models) {
-    const textProbe = await probeModelConnection({
-      protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId,
-    });
-    if (!textProbe.ok) {
-      results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: textProbe.code || 'TEXT_TEST_FAILED', message: textProbe.error, modelId } });
-      continue;
-    }
-    const imageProbe = await probeModelConnection({
-      protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, image: true,
-    });
-    results.push(imageProbe.ok
-      ? { modelId, textInput: 'supported', imageInput: 'supported', error: null }
-      : imageProbe.imageUnsupported
-        ? { modelId, textInput: 'supported', imageInput: 'unsupported', error: null }
-        : { modelId, textInput: 'supported', imageInput: 'unknown', error: { code: 'IMAGE_CAPABILITY_UNKNOWN', message: imageProbe.error, modelId } });
+  const release = probeInFlight.tryAcquire(req.user.id);
+  if (!release) {
+    res.setHeader('Retry-After', '1');
+    return apiError(res, 429, 'RATE_LIMITED', 'Too many connection tests are already running.');
   }
-  const status = testStatus(results);
-  const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status, testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: aggregateError(results, status) };
-  tests.set(record.id, record);
-  return res.json(publicResult(record));
+  const requestAbort = abortOnDisconnect(req, res);
+  try {
+    const results = [];
+    for (const modelId of models) {
+      requestAbort.signal.throwIfAborted();
+      const textProbe = await probeModelConnection({
+        protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, signal: requestAbort.signal,
+      });
+      if (!textProbe.ok) {
+        results.push({ modelId, textInput: 'unsupported', imageInput: 'unknown', error: { code: textProbe.code || 'TEXT_TEST_FAILED', message: textProbe.error, modelId } });
+        continue;
+      }
+      const imageProbe = await probeModelConnection({
+        protocol: provider.protocol, baseUrl: provider.endpoint, apiKey, model: modelId, image: true, signal: requestAbort.signal,
+      });
+      results.push(imageProbe.ok
+        ? { modelId, textInput: 'supported', imageInput: 'supported', error: null }
+        : imageProbe.imageUnsupported
+          ? { modelId, textInput: 'supported', imageInput: 'unsupported', error: null }
+          : { modelId, textInput: 'supported', imageInput: 'unknown', error: { code: 'IMAGE_CAPABILITY_UNKNOWN', message: imageProbe.error, modelId } });
+    }
+    requestAbort.signal.throwIfAborted();
+    const status = testStatus(results);
+    const record = { id: randomUUID(), userId: req.user.id, provider, retry, keyFingerprint: keyFingerprint(apiKey), models: results, status, testedAt: new Date().toISOString(), expiresAt: Date.now() + TEST_TTL_MS, error: aggregateError(results, status) };
+    tests.set(record.id, record);
+    return res.json(publicResult(record));
+  } catch (error) {
+    if (requestAbort.signal.aborted) return;
+    return apiError(res, 502, 'ENDPOINT_UNREACHABLE', error?.message || 'Unable to test the model connection.');
+  } finally {
+    requestAbort.cleanup();
+    release();
+  }
 });
 
 router.put('/model-connection-tests/:testId/image-capabilities', (req, res) => {
@@ -277,29 +344,42 @@ router.post('/workspaces', async (req, res) => {
     if (githubUrl) {
       const cloneUrl = parseCloneUrl(githubUrl);
       if (!cloneUrl) return apiError(res, 400, 'INVALID_REQUEST', 'githubUrl must use HTTP(S) or SSH.');
+      const release = cloneInFlight.tryAcquire(req.user.id);
+      if (!release) {
+        res.setHeader('Retry-After', '1');
+        return apiError(res, 429, 'RATE_LIMITED', 'Too many workspace clones are already running.');
+      }
+      const requestAbort = abortOnDisconnect(req, res);
       const repoName = path.basename(cloneUrl.path.replace(/\/$/, '').replace(/\.git$/, '')) || 'repository';
       projectPath = path.join(workspacePath, repoName);
-      try { await fs.access(projectPath); return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.'); } catch { /* expected */ }
-      const lockPath = `${projectPath}.pilotdeck-clone.lock`;
-      let lockHandle;
       try {
-        lockHandle = await fs.open(lockPath, 'wx');
-        await lockHandle.close();
-      } catch {
-        return apiError(res, 409, 'WORKSPACE_CONFLICT', 'A clone is already in progress for this destination.');
-      }
-      const stagingPath = path.join(workspacePath, `.${repoName}.pilotdeck-clone-${randomUUID()}`);
-      try {
-        await cloneGitHubRepository(cloneUrl.url, stagingPath);
-        await fs.rename(stagingPath, projectPath);
-      } catch (error) {
-        try { await fs.rm(stagingPath, { recursive: true, force: true }); } catch { /* Staging path is owned by this request. */ }
-        if (error?.code === 'EEXIST' || error?.code === 'ENOTEMPTY') {
-          return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.');
+        try { await fs.access(projectPath); return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.'); } catch { /* expected */ }
+        const lockPath = `${projectPath}.pilotdeck-clone.lock`;
+        let lockHandle;
+        try {
+          lockHandle = await fs.open(lockPath, 'wx');
+          await lockHandle.close();
+        } catch {
+          return apiError(res, 409, 'WORKSPACE_CONFLICT', 'A clone is already in progress for this destination.');
         }
-        return apiError(res, 409, 'GIT_CLONE_FAILED', 'Unable to clone the repository.');
+        const stagingPath = path.join(workspacePath, `.${repoName}.pilotdeck-clone-${randomUUID()}`);
+        try {
+          await cloneGitHubRepository(cloneUrl.url, stagingPath, null, { signal: requestAbort.signal, timeoutMs: CLONE_TIMEOUT_MS });
+          requestAbort.signal.throwIfAborted();
+          await fs.rename(stagingPath, projectPath);
+        } catch (error) {
+          try { await fs.rm(stagingPath, { recursive: true, force: true }); } catch { /* Staging path is owned by this request. */ }
+          if (requestAbort.signal.aborted) return;
+          if (error?.code === 'EEXIST' || error?.code === 'ENOTEMPTY') {
+            return apiError(res, 409, 'WORKSPACE_CONFLICT', 'Clone destination already exists.');
+          }
+          return apiError(res, 409, 'GIT_CLONE_FAILED', error?.code === 'GIT_CLONE_TIMEOUT' ? 'Repository clone timed out.' : 'Unable to clone the repository.');
+        } finally {
+          try { await fs.unlink(lockPath); } catch { /* Do not mask the clone result if lock cleanup fails. */ }
+        }
       } finally {
-        try { await fs.unlink(lockPath); } catch { /* Do not mask the clone result if lock cleanup fails. */ }
+        requestAbort.cleanup();
+        release();
       }
     }
     const project = await addProjectManually(projectPath);
@@ -311,5 +391,5 @@ router.post('/workspaces', async (req, res) => {
   }
 });
 
-export { TEST_TTL_MS, tests };
+export { CLONE_TIMEOUT_MS, TEST_TTL_MS, tests };
 export default router;

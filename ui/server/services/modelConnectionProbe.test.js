@@ -29,4 +29,15 @@ describe('model connection probe request formats', () => {
     expect(result).toMatchObject({ ok: false, imageUnsupported: true });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it('cancels an active probe when its caller aborts', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    })));
+    const controller = new AbortController();
+    const reason = new Error('request closed');
+    const pending = probeModelConnection({ protocol: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'key', model: 'test-model', signal: controller.signal });
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  });
 });
