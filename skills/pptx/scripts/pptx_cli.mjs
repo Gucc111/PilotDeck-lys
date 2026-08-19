@@ -176,6 +176,10 @@ function reviewStructure(manifest) {
 async function reviewCommand(args) {
   const input = path.resolve(required(args, 'input'));
   const root = assertInternalPath(required(args, 'out-dir'), 'PPTX review directory');
+  const reportOutput = args.report === undefined
+    ? null
+    : assertInternalPath(required(args, 'report'), 'PPTX review report');
+  assertDistinctPaths({ candidate: input, report: reportOutput });
   const initial = await inspectPptx(input);
   const revisionId = `rev-${initial.sha256.slice(0, 12)}`;
   const evidenceId = `run-${Date.now()}-${crypto.randomBytes(5).toString('hex')}`;
@@ -236,7 +240,7 @@ async function reviewCommand(args) {
     judgment: 'Use the structural findings and rendered slides as evidence. The report does not decide whether the presentation is good or complete.',
   };
   const reportPath = await writeJson(path.join(revisionDir, 'report.json'), report);
-  if (args.report) await writeJson(args.report, report);
+  if (reportOutput) await writeJson(reportOutput, report);
   return {
     status: report.status,
     input: report.input,

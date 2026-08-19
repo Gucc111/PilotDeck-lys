@@ -327,6 +327,27 @@ try {
   ].join('\n'));
   assert.equal(pptx('evaluate', '--input', edited, '--script', evaluator, '--out', evaluation).status, 'ok');
 
+  const editedHashBeforeReviewCollision = crypto.createHash('sha256')
+    .update(await fs.readFile(edited))
+    .digest('hex');
+  const reviewCollision = spawnSync('bash', [
+    cli,
+    'review',
+    '--input', edited,
+    '--out-dir', path.join(workDir, 'review-collision'),
+    '--report', edited,
+  ], {
+    cwd: skillRoot,
+    env: environment,
+    encoding: 'utf8',
+  });
+  assert.notEqual(reviewCollision.status, 0);
+  assert.match(reviewCollision.stderr, /candidate and report must use distinct paths/u);
+  assert.equal(
+    crypto.createHash('sha256').update(await fs.readFile(edited)).digest('hex'),
+    editedHashBeforeReviewCollision,
+  );
+
   const review = pptx('review', '--input', edited, '--out-dir', reviewDir);
   assert.ok(['review_pending', 'evidence_unavailable'].includes(review.status));
   assert.equal(review.structure.slideCount, 1);
