@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { inspectPptx } from './ooxml.mjs';
+import { inspectPptx, validatePptxPackage } from './ooxml.mjs';
 import {
   assertDeliveryPath,
   assertDistinctPaths,
@@ -29,8 +29,10 @@ export async function deliverPptx(inputPath, outputPath, options = {}) {
     path.dirname(output),
     `.${path.basename(output)}.${process.pid}.${Date.now()}.tmp`,
   );
+  let packageValidation;
   try {
     await fs.copyFile(input, temporary);
+    packageValidation = await validatePptxPackage(temporary);
     const copiedManifest = await inspectPptx(temporary);
     if (copiedManifest.sha256 !== digest) throw new Error('Delivered copy does not match the candidate');
     if (outputExists) await fs.rm(output);
@@ -46,6 +48,12 @@ export async function deliverPptx(inputPath, outputPath, options = {}) {
     output,
     sha256: digest,
     slideCount: manifest.slideCount,
-    validation: { status: 'ok', format: 'pptx', package: 'ooxml' },
+    validation: {
+      status: 'ok',
+      format: 'pptx',
+      package: 'ooxml',
+      textPartCount: packageValidation.textPartCount,
+      relationshipCount: packageValidation.relationshipCount,
+    },
   };
 }

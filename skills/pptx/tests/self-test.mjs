@@ -46,6 +46,8 @@ try {
   const reviewDir = path.join(workDir, 'review');
   const converted = path.join(workDir, 'converted.pptx');
   const conversionReview = path.join(workDir, 'conversion-review');
+  const invalidDeliveryCandidate = path.join(workDir, 'invalid-delivery-candidate.pptx');
+  const invalidFinal = path.join(outputRoot, 'invalid-final.pptx');
   const final = path.join(outputRoot, 'final.pptx');
 
   const check = pptx('check');
@@ -363,11 +365,33 @@ try {
     assert.ok(await fs.stat(review.render.pages[0].image).then((stat) => stat.isFile()));
   }
 
+  const invalidDeliveryZip = await JSZip.loadAsync(await fs.readFile(edited));
+  invalidDeliveryZip.remove(activeLayoutPart);
+  await fs.writeFile(
+    invalidDeliveryCandidate,
+    await invalidDeliveryZip.generateAsync({ type: 'nodebuffer' }),
+  );
+  const invalidDelivery = spawnSync('bash', [
+    cli,
+    'deliver',
+    '--input', invalidDeliveryCandidate,
+    '--out', invalidFinal,
+  ], {
+    cwd: skillRoot,
+    env: environment,
+    encoding: 'utf8',
+  });
+  assert.notEqual(invalidDelivery.status, 0);
+  assert.match(invalidDelivery.stderr, /targets missing part/u);
+  assert.equal(await fs.stat(invalidFinal).then(() => true).catch(() => false), false);
+
   const delivered = pptx('deliver', '--input', edited, '--out', final);
   assert.equal(delivered.slideCount, 1);
+  assert.ok(delivered.validation.textPartCount > 0);
+  assert.ok(delivered.validation.relationshipCount > 0);
   assert.ok(await fs.stat(final).then((stat) => stat.isFile()));
   passed = true;
-  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'template-scaffold', 'fallback-patch', 'ooxml-compatibility', 'convert', 'template-edit', 'evaluate', 'compact-review', 'deliver'] })}\n`);
+  process.stdout.write(`${JSON.stringify({ status: 'ok', checks: ['build', 'template-scaffold', 'fallback-patch', 'ooxml-compatibility', 'convert', 'template-edit', 'evaluate', 'compact-review', 'delivery-validation', 'deliver'] })}\n`);
 } finally {
   if (passed) await fs.rm(outputRoot, { recursive: true, force: true });
   else process.stderr.write(`PPTX self-test artifacts: ${outputRoot}\n`);
