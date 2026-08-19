@@ -120,6 +120,7 @@ test("unknown finish with partial Hermes tool text uses the specialized recovery
   const recoveryText = requests[1]!.messages.at(-1)?.content[0];
   assert.equal(recoveryText?.type, "text");
   assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
+  assert.doesNotMatch(recoveryText?.type === "text" ? recoveryText.text : "", /deck\.mjs|partial-secret/);
   assert.equal(requests[1]!.messages.some((message) => message.role === "assistant"), false);
 });
 
@@ -162,6 +163,7 @@ test("stream interruption with partial Hermes tool text does not persist the fra
   const recoveryText = requests[1]!.messages.at(-1)?.content[0];
   assert.equal(recoveryText?.type, "text");
   assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
+  assert.doesNotMatch(recoveryText?.type === "text" ? recoveryText.text : "", /deck\.mjs|partial-secret/);
 });
 
 test("stream interruption with complete text fallback tool call does not persist it as text", async () => {
@@ -203,6 +205,7 @@ test("stream interruption with complete text fallback tool call does not persist
   const recoveryText = requests[1]!.messages.at(-1)?.content[0];
   assert.equal(recoveryText?.type, "text");
   assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
+  assert.doesNotMatch(recoveryText?.type === "text" ? recoveryText.text : "", /safe\.mjs|secret/);
 });
 
 test("stream interruption exhaustion persists the final safe text fragment", async () => {
@@ -261,6 +264,29 @@ test("unknown finish exhaustion persists the final safe text fragment", async ()
   }
 
   assert.ok(durable.some((text) => text.includes("unknown-fragment-3")));
+});
+
+test("partial text tool-call exhaustion clears unsafe finalMessage", async () => {
+  const partialToolText = '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs","content":"partial-secret"';
+  let attempt = 0;
+  const loop = createLoop(async function* () {
+    attempt++;
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: partialToolText };
+  }, () => undefined);
+
+  const events: Array<{ type: string; result?: { finalMessage?: unknown } }> = [];
+  for await (const event of loop.run({
+    sessionId: "partial-tool-exhausted",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "write a file" }] }],
+  })) {
+    events.push(event as typeof events[number]);
+  }
+
+  assert.equal(attempt, 51);
+  const completed = events.find((event) => event.type === "turn_completed");
+  assert.equal(completed?.result?.finalMessage, undefined);
 });
 
 test("stream interruption exhaustion clears unsafe finalMessage tool text", async () => {

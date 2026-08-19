@@ -857,6 +857,7 @@ export class AgentLoop {
         const detail = assembled.partialTextToolCall
           ? `${assembled.partialTextToolCall.format}/${assembled.partialTextToolCall.reason}`
           : "unknown partial text tool-call";
+        finalMessage = safeFinalTextMessage(assistantMessage, true, toolCalls);
         const result = this.createTurnResult(input, {
           type: "error",
           stopReason: "model_error",
@@ -2924,7 +2925,7 @@ function buildPartialTextToolCallRecoveryPrompt(
   partial: PartialTextToolCallInfo | undefined,
 ): string {
   const evidence = partial
-    ? `Detected partial text tool-call syntax (${partial.format}/${partial.reason}). Preview: ${partial.preview}`
+    ? `Detected partial text tool-call syntax (${partial.format}/${partial.reason}).`
     : "Detected partial text tool-call syntax.";
   return [
     "The previous response contained partial tool-call XML/text and could not be safely executed.",
