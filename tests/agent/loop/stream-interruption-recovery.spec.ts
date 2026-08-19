@@ -164,6 +164,64 @@ test("stream interruption with partial Hermes tool text does not persist the fra
   assert.match(recoveryText?.type === "text" ? recoveryText.text : "", /partial tool-call XML\/text/);
 });
 
+test("stream interruption exhaustion persists the final safe text fragment", async () => {
+  const durable: string[] = [];
+  let attempt = 0;
+  const loop = createLoop(async function* (_decision, request) {
+    attempt++;
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "final-fragment-" + attempt };
+    yield {
+      type: "error",
+      error: {
+        provider: "test",
+        protocol: "openai",
+        code: "timeout",
+        message: "Stream idle timeout",
+        retryable: true,
+        streamInterruption: { phase: "text" },
+      },
+    };
+  }, () => undefined);
+
+  for await (const _event of loop.run({
+    sessionId: "interrupted-exhausted",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "answer" }] }],
+    onDurableMessage: async (message) => {
+      durable.push(message.content.filter((block) => block.type === "text").map((block) => block.text).join(""));
+    },
+  })) {
+    // Consume the complete recovery flow.
+  }
+
+  assert.ok(durable.some((text) => text.includes("final-fragment-3")));
+});
+
+test("unknown finish exhaustion persists the final safe text fragment", async () => {
+  const durable: string[] = [];
+  let attempt = 0;
+  const loop = createLoop(async function* (_decision, request) {
+    attempt++;
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "unknown-fragment-" + attempt };
+    yield { type: "message_end", finishReason: "unknown" };
+  }, () => undefined);
+
+  for await (const _event of loop.run({
+    sessionId: "unknown-exhausted",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "answer" }] }],
+    onDurableMessage: async (message) => {
+      durable.push(message.content.filter((block) => block.type === "text").map((block) => block.text).join(""));
+    },
+  })) {
+    // Consume the complete recovery flow.
+  }
+
+  assert.ok(durable.some((text) => text.includes("unknown-fragment-3")));
+});
+
 function createLoop(
   execute: AgentRouterRuntime["execute"],
   onSchedule: () => void,

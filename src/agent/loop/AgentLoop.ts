@@ -750,6 +750,13 @@ export class AgentLoop {
           assembled.error,
           "The model stream repeatedly disconnected. Retry the turn or switch providers.",
         );
+        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall, toolCalls);
+        if (exhaustedMessage) {
+          finalMessage = exhaustedMessage;
+          messages.push(exhaustedMessage);
+          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: exhaustedMessage };
+          await input.onDurableMessage?.(exhaustedMessage);
+        }
         await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
         yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: error.message };
         const result = this.createTurnResult(input, {
@@ -800,6 +807,13 @@ export class AgentLoop {
           undefined,
           "The provider repeatedly ended the stream without a recognized finish reason. Retry the turn or switch providers.",
         );
+        const exhaustedMessage = safeFinalTextMessage(assistantMessage, assembled.hasPartialTextToolCall, toolCalls);
+        if (exhaustedMessage) {
+          finalMessage = exhaustedMessage;
+          messages.push(exhaustedMessage);
+          yield { type: "assistant_message", sessionId: input.sessionId, turnId: input.turnId, message: exhaustedMessage };
+          await input.onDurableMessage?.(exhaustedMessage);
+        }
         await this.dispatchLifecycle(input, "StopFailure", { error: error.message });
         yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: error.message };
         const result = this.createTurnResult(input, {
@@ -2781,6 +2795,18 @@ function withoutThinkingBlocks(message: CanonicalMessage): CanonicalMessage {
     ...message,
     content: messageContent(message).filter((block) => block.type !== "thinking"),
   };
+}
+
+function safeFinalTextMessage(
+  message: CanonicalMessage,
+  hasPartialTextToolCall: boolean | undefined,
+  toolCalls: CanonicalToolCall[],
+): CanonicalMessage | undefined {
+  if (hasPartialTextToolCall || toolCalls.length > 0) {
+    return undefined;
+  }
+  const textMessage = withoutThinkingBlocks(message);
+  return textFromMessage(textMessage).trim().length > 0 ? textMessage : undefined;
 }
 
 function buildStreamInterruptionRecoveryPrompt(
