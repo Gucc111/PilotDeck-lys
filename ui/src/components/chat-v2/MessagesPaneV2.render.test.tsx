@@ -80,6 +80,7 @@ function createPaneElement({
   runMode = 'agent',
   planModeActive = false,
   showThinking = true,
+  inlineThinking = false,
 }: {
   messages: ChatMessage[];
   activityMessages?: ChatMessage[];
@@ -89,6 +90,7 @@ function createPaneElement({
   runMode?: ChatRunMode;
   planModeActive?: boolean;
   showThinking?: boolean;
+  inlineThinking?: boolean;
 }) {
   const scrollContainerRef = React.createRef<HTMLDivElement>();
 
@@ -121,6 +123,7 @@ function createPaneElement({
         runMode={runMode}
         planModeActive={planModeActive}
         showThinking={showThinking}
+        inlineThinking={inlineThinking}
       />
     </FindShortcutProvider>
   );
@@ -135,6 +138,7 @@ function renderPane(options: {
   runMode?: ChatRunMode;
   planModeActive?: boolean;
   showThinking?: boolean;
+  inlineThinking?: boolean;
 }) {
   return render(createPaneElement(options));
 }
@@ -250,7 +254,9 @@ describe('MessagesPaneV2 render behavior', () => {
 
     const toggle = screen.getByRole('button', { name: 'Thinking...' });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByRole('region', { name: 'Live thinking content' })).toBeTruthy();
+    const liveThinkingRegion = screen.getByRole('region', { name: 'Live thinking content' });
+    expect(liveThinkingRegion).toBeTruthy();
+    expect(liveThinkingRegion.closest('[role="status"]')).toBeNull();
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -258,6 +264,72 @@ describe('MessagesPaneV2 render behavior', () => {
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Live thinking content' })).toBeTruthy();
+  });
+
+  it('expands live reasoning when thinking details are enabled during a run', () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = [
+      {
+        id: 'user-toggle-thinking',
+        type: 'user',
+        content: 'Please think this through.',
+        timestamp: now,
+      },
+      {
+        id: '__streaming_thinking_toggle_details',
+        type: 'assistant',
+        content: 'Reasoning that becomes visible later.',
+        timestamp: now,
+        isThinking: true,
+        isStreaming: true,
+      },
+    ];
+    const options = {
+      messages,
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running' as const,
+    };
+    const view = renderPane({ ...options, showThinking: false });
+
+    expect(screen.queryByRole('region', { name: 'Live thinking content' })).toBeNull();
+
+    view.rerender(createPaneElement({ ...options, showThinking: true }));
+
+    expect(screen.getByRole('button', { name: 'Thinking...' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Live thinking content' })).toBeTruthy();
+  });
+
+  it('expands the reasoning window when switching away from inline thinking during a run', () => {
+    const now = new Date().toISOString();
+    const messages: ChatMessage[] = [
+      {
+        id: 'user-toggle-inline-thinking',
+        type: 'user',
+        content: 'Please think this through.',
+        timestamp: now,
+      },
+      {
+        id: '__streaming_thinking_toggle_inline',
+        type: 'assistant',
+        content: 'Reasoning that moves out of the inline message.',
+        timestamp: now,
+        isThinking: true,
+        isStreaming: true,
+      },
+    ];
+    const options = {
+      messages,
+      isAssistantWorking: true,
+      sessionRuntimeState: 'running' as const,
+    };
+    const view = renderPane({ ...options, inlineThinking: true });
+
+    expect(screen.queryByRole('region', { name: 'Live thinking content' })).toBeNull();
+
+    view.rerender(createPaneElement({ ...options, inlineThinking: false }));
+
+    expect(screen.getByRole('button', { name: 'Thinking...' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('region', { name: 'Live thinking content' })).toBeTruthy();
   });
 
@@ -1121,8 +1193,9 @@ describe('MessagesPaneV2 render behavior', () => {
     const firstStatusContainer = firstStatus.closest('[role="status"]');
     expect(firstStatusContainer).not.toBeNull();
     if (!firstStatusContainer) throw new Error('Expected first inline status container');
-    expect(firstStatusContainer.parentElement?.className).toContain('mt-2');
-    expect(firstStatusContainer.parentElement?.className).toContain('gap-2');
+    const firstProcessRow = firstStatusContainer.closest('.process-live-status');
+    expect(firstProcessRow?.parentElement?.className).toContain('mt-2');
+    expect(firstProcessRow?.parentElement?.className).toContain('gap-2');
     const expandButton = firstStatusContainer.querySelector('button');
     expect(expandButton).not.toBeNull();
 

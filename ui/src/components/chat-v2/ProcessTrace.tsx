@@ -125,26 +125,26 @@ export function ProcessLiveStatus({
 
   return (
     <div
-      role="status"
-      aria-live="polite"
       className={`process-live-status ${compact ? 'py-0' : 'pb-1'} text-[14px] leading-relaxed text-neutral-400 dark:text-neutral-500 ${className}`}
     >
-      {hasDetails ? (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-          className={`group inline-flex min-w-0 max-w-full items-start gap-2 text-left transition hover:text-neutral-600 dark:hover:text-neutral-300 ${
-            isRunning ? 'animate-pulse' : ''
-          }`}
-        >
-          {statusContent}
-        </button>
-      ) : (
-        <div className={`inline-flex min-w-0 max-w-full items-start gap-2 ${isRunning ? 'animate-pulse' : ''}`}>
-          {statusContent}
-        </div>
-      )}
+      <div role="status" aria-live="polite">
+        {hasDetails ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            className={`group inline-flex min-w-0 max-w-full items-start gap-2 text-left transition hover:text-neutral-600 dark:hover:text-neutral-300 ${
+              isRunning ? 'animate-pulse' : ''
+            }`}
+          >
+            {statusContent}
+          </button>
+        ) : (
+          <div className={`inline-flex min-w-0 max-w-full items-start gap-2 ${isRunning ? 'animate-pulse' : ''}`}>
+            {statusContent}
+          </div>
+        )}
+      </div>
       {expanded && hasDetails ? (
         <div className={`mt-1.5 space-y-1.5 ${contentClassName ?? 'pl-5'}`}>
           {children}

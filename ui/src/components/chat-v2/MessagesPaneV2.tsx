@@ -402,17 +402,12 @@ function MessagesPaneV2({
 
   const handleProcessExpandedChange = useCallback((processKey: string, expanded: boolean) => {
     setExpandedProcessRows((currentRows) => {
-      const currentExpanded = currentRows.get(processKey) ?? false;
-      if (currentExpanded === expanded) {
+      if (currentRows.get(processKey) === expanded) {
         return currentRows;
       }
 
       const nextRows = new Map(currentRows);
-      if (expanded) {
-        nextRows.set(processKey, true);
-      } else {
-        nextRows.delete(processKey);
-      }
+      nextRows.set(processKey, expanded);
       return nextRows;
     });
   }, []);
@@ -690,19 +685,20 @@ function MessagesPaneV2({
       return Boolean(subagentId && currentRunSubagentIds.has(subagentId));
     }) || null;
   }, [activeRunId, currentRunSubagentIds, sessionRuntimeState, subagentActivities]);
-  const liveThinkingContent = useMemo(() => {
+  const liveThinkingMessage = useMemo(() => {
     if (!isAssistantWorking) {
       return null;
     }
     for (let i = visibleMessages.length - 1; i >= 0; i--) {
       const msg = visibleMessages[i];
       if (isStreamingThinkingMessage(msg) && typeof msg.content === 'string' && msg.content.trim()) {
-        return msg.content;
+        return msg;
       }
       if (msg.type === 'user') break;
     }
     return null;
   }, [isAssistantWorking, visibleMessages]);
+  const liveThinkingContent = liveThinkingMessage?.content || null;
   const streamingThinkingContent = showThinking ? liveThinkingContent : null;
   const liveStatusStep = useMemo<ProcessTraceStep>(() => {
     if (liveThinkingContent) {
@@ -734,6 +730,11 @@ function MessagesPaneV2({
   ]);
   const hasOpenEndedLiveProcessGroup = liveProcessGroups.some((group) => group.isRunning);
   const shouldRenderBottomLiveStatus = isAssistantWorking && !hasOpenEndedLiveProcessGroup;
+  const showStreamingThinkingPanel = Boolean(!inlineThinking && streamingThinkingContent);
+  const bottomLiveProcessKey = liveThinkingMessage
+    ? `live-thinking:${activeRunId || liveThinkingMessage.id || messageWindowScope}`
+    : `bottom-live:${liveStatusStep.id || 'working'}`;
+  const bottomLiveStatusExpanded = isProcessExpanded(bottomLiveProcessKey, showStreamingThinkingPanel);
 
   const bumpHeightVersion = useCallback(() => {
     if (heightVersionRafRef.current !== null) return;
@@ -1311,18 +1312,18 @@ function MessagesPaneV2({
 
           {shouldRenderBottomLiveStatus ? (
             <ProcessLiveStatus
-              key={liveStatusStep.id}
               step={liveStatusStep}
-              defaultExpanded={Boolean(!inlineThinking && streamingThinkingContent)}
-              contentClassName={!inlineThinking && streamingThinkingContent ? 'pl-0' : undefined}
+              expanded={bottomLiveStatusExpanded}
+              onExpandedChange={(expanded) => handleProcessExpandedChange(bottomLiveProcessKey, expanded)}
+              contentClassName={showStreamingThinkingPanel ? 'pl-0' : undefined}
             >
               {(liveProcessDetailMessages.length > 0 && liveProcessGroups.length === 0)
-                || (!inlineThinking && streamingThinkingContent) ? (
+                || showStreamingThinkingPanel ? (
                   <>
                     {liveProcessDetailMessages.length > 0 && liveProcessGroups.length === 0
                       ? renderLiveProcessDetailMessages(liveProcessDetailMessages, 'bottom-live-process')
                       : null}
-                    {!inlineThinking && streamingThinkingContent ? (
+                    {showStreamingThinkingPanel && streamingThinkingContent ? (
                       <StreamingThinkingPreview content={streamingThinkingContent} scrollable />
                     ) : null}
                   </>
