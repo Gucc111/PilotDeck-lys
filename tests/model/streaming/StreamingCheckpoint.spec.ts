@@ -30,6 +30,13 @@ test("text and reasoning interruptions keep distinct recovery phases", () => {
   assert.deepEqual(reasoning.interruption(), { phase: "reasoning" });
 });
 
+test("text tool-call syntax cannot continue across a stream interruption", () => {
+  const checkpoint = new StreamingCheckpointManager();
+  checkpoint.onEvent({ type: "text_delta", text: '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs"' });
+
+  assert.equal(checkpoint.canContinueText(), false);
+});
+
 test("reasoning makes an otherwise text-only stream ineligible for continuation", () => {
   const checkpoint = new StreamingCheckpointManager();
   checkpoint.onEvent({ type: "thinking_delta", text: "reasoning" });

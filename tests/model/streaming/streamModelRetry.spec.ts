@@ -128,6 +128,21 @@ test("continues a pure text stream after interruption", async () => {
   assert.equal(events.some((event) => event.type === "error"), false);
 });
 
+test("does not continue text-encoded tool calls across an interruption", async () => {
+  const config = createConfig();
+  const requestBodies: Array<Record<string, unknown>> = [];
+  const events = await collect(streamModel(createRequest(), config, {
+    fetch: async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return sse('data: {"choices":[{"delta":{"content":"<tool_call>{\\"name\\":\\"write_file\\",\\"arguments\\":{\\"path\\":\\"secret.mjs\\""}}]}\n\n');
+    },
+  }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(requestBodies.length, 1);
+  assert.equal(error?.error.streamInterruption?.phase, "text");
+});
+
 test("retains partial text if its continuation disconnects before output", async () => {
   const config = createConfig({ streamMaxRetries: 1 });
   let requests = 0;
@@ -277,6 +292,34 @@ test("Google recovers a stream ending without a finish event", async () => {
   const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
   assert.equal(error?.error.streamInterruption?.phase, "text");
   assert.equal(events.some((event) => event.type === "message_end"), false);
+});
+
+test("Google does not continue text-encoded tool calls across an interruption", async () => {
+  const config = createGoogleConfig({ streamMaxRetries: 1 });
+  let requests = 0;
+  const googleClientFactory: GoogleClientFactory = () => ({
+    models: {
+      generateContent: async () => ({} as never),
+      generateContentStream: async () => {
+        requests++;
+        return (async function* () {
+          yield {
+            candidates: [{
+              content: {
+                parts: [{ text: '<tool_call>{"name":"write_file","arguments":{"path":"secret.mjs"' }],
+              },
+            }],
+          } as never;
+        })();
+      },
+    },
+  });
+
+  const events = await collect(streamModel(createRequest(), config, { googleClientFactory }));
+
+  const error = events.find((event): event is Extract<CanonicalModelEvent, { type: "error" }> => event.type === "error");
+  assert.equal(requests, 1);
+  assert.equal(error?.error.streamInterruption?.phase, "text");
 });
 
 test("Google stops reading once it emits a terminal event", async () => {
