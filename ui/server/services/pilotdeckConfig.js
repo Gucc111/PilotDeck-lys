@@ -30,6 +30,15 @@ const MASK = '********';
 
 const SECRET_KEY_RE = /(api[_-]?key|token|secret|password|auth[_-]?token|access[_-]?token|bot[_-]?token|app[_-]?token|encoding[_-]?aes[_-]?key)$/i;
 const SECRET_EXACT_KEYS = new Set(['key', 'apiKey', 'api_key', 'authToken', 'accessToken']);
+let configWriteQueue = Promise.resolve();
+
+// Serialize every read-modify-write caller against the same local YAML file.
+// The callback must read the config inside this critical section.
+export function withPilotDeckConfigWrite(operation) {
+  const run = configWriteQueue.then(operation, operation);
+  configWriteQueue = run.catch(() => undefined);
+  return run;
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

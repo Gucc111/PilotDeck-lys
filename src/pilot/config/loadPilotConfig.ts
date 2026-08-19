@@ -393,7 +393,18 @@ function parseAgentSubagents(
     throw new PilotConfigError("CONFIG_AGENT_SUBAGENTS_INVALID", "agent.subagents must be an object.");
   }
   for (const key of Object.keys(value)) {
-    if (key !== "timeoutMs" && key !== "default" && key !== "params") {
+    if (
+      key === "params" &&
+      !(isRecord(value.params) && Object.keys(value.params).length === 0)
+    ) {
+      diagnostics.push({
+        code: "CONFIG_AGENT_SUBAGENTS_PARAMS_UNSUPPORTED",
+        severity: "warning",
+        message: "agent.subagents.params is not supported and will be ignored.",
+        path: "agent.subagents.params",
+        recoverable: true,
+      });
+    } else if (key !== "timeoutMs" && key !== "default" && key !== "params") {
       diagnostics.push({
         code: "CONFIG_AGENT_UNKNOWN_FIELD",
         severity: "warning",

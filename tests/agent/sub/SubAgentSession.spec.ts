@@ -254,6 +254,60 @@ test("agent.subagents.default inherit keeps subagent model unset", () => {
   assert.equal(snapshot.diagnostics.some((diagnostic) => diagnostic.path === "agent.subagents.default"), false);
 });
 
+test("agent.subagents.params is reported as unsupported instead of being silently discarded", () => {
+  const snapshot = loadInlinePilotConfig(`
+schemaVersion: 1
+agent:
+  model: main/main-model
+  subagents:
+    params:
+      maxOutputTokens: 4096
+model:
+  providers:
+    main:
+      protocol: openai
+      url: https://example.invalid/v1
+      apiKey: test
+      models:
+        main-model: {}
+`);
+
+  assert.equal("params" in (snapshot.config.agent.subagents ?? {}), false);
+  assert.deepEqual(
+    snapshot.diagnostics.find((diagnostic) => diagnostic.path === "agent.subagents.params"),
+    {
+      code: "CONFIG_AGENT_SUBAGENTS_PARAMS_UNSUPPORTED",
+      severity: "warning",
+      message: "agent.subagents.params is not supported and will be ignored.",
+      path: "agent.subagents.params",
+      recoverable: true,
+    },
+  );
+});
+
+test("empty agent.subagents.params does not create a warning", () => {
+  const snapshot = loadInlinePilotConfig(`
+schemaVersion: 1
+agent:
+  model: main/main-model
+  subagents:
+    params: {}
+model:
+  providers:
+    main:
+      protocol: openai
+      url: https://example.invalid/v1
+      apiKey: test
+      models:
+        main-model: {}
+`);
+
+  assert.equal(
+    snapshot.diagnostics.some((diagnostic) => diagnostic.path === "agent.subagents.params"),
+    false,
+  );
+});
+
 test("agent.subagents.default resolves a configured model", () => {
   const snapshot = loadInlinePilotConfig(pilotConfigWithSubagentDefault("child/child-model"));
 
