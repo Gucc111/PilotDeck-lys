@@ -3,9 +3,13 @@ import test from "node:test";
 
 import { DefaultContextRuntime } from "../../src/context/DefaultContextRuntime.js";
 import { AutoCompactionPolicy } from "../../src/context/compaction/AutoCompactionPolicy.js";
-import { CompactionEngine } from "../../src/context/compaction/CompactionEngine.js";
+import {
+  CompactionEngine,
+  truncateHeadPreservingCheckpoint,
+} from "../../src/context/compaction/CompactionEngine.js";
 import { MicroCompactionEngine } from "../../src/context/compaction/MicroCompactionEngine.js";
 import { SnipEngine } from "../../src/context/compaction/SnipEngine.js";
+import { isRealUserRequestMessage } from "../../src/context/compaction/toolPairIntegrity.js";
 import { TokenBudgetManager } from "../../src/context/budget/TokenBudgetManager.js";
 import type { CanonicalMessage, CanonicalModelRequest } from "../../src/model/index.js";
 
@@ -315,6 +319,78 @@ test("targeted snip can prune tool cycles inside one user task", () => {
   assert.equal(callIds.includes("cycle-0"), false);
   assert.equal(callIds.includes("cycle-5"), true);
   assert.deepEqual(resultIds, callIds);
+  const requestIndex = result.messages.findIndex((message) =>
+    textFrom([message]) === "Inspect each repository file."
+  );
+  const retainedTailIndex = result.messages.findIndex((message) =>
+    message.content.some((block) => block.type === "tool_call" && block.id === "cycle-5")
+  );
+  assert.ok(requestIndex >= 0);
+  assert.ok(retainedTailIndex > requestIndex);
+});
+
+test("emergency head truncation keeps the latest task query", () => {
+  const messages: CanonicalMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Old completed request" }] },
+    { role: "assistant", content: [{ type: "text", text: "Old request completed" }] },
+    { role: "user", content: [{ type: "text", text: "Current request must survive" }] },
+  ];
+  for (let index = 0; index < 4; index += 1) {
+    messages.push(
+      {
+        role: "assistant",
+        content: [{ type: "tool_call", id: `truncate-${index}`, name: "read_file", input: { path: `file-${index}` } }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          toolCallId: `truncate-${index}`,
+          content: [{ type: "text", text: `result-${index}` }],
+        }],
+      },
+    );
+  }
+
+  const result = truncateHeadPreservingCheckpoint(messages, 0.1);
+  const callIds = result.flatMap((message) => message.content.flatMap((block) =>
+    block.type === "tool_call" ? [block.id] : [],
+  ));
+  const resultIds = result.flatMap((message) => message.content.flatMap((block) =>
+    block.type === "tool_result" ? [block.toolCallId] : [],
+  ));
+
+  assert.match(textFrom(result), /Current request must survive/);
+  assert.doesNotMatch(textFrom(result), /Old completed request/);
+  assert.ok(result.length > 0);
+  assert.deepEqual(resultIds, callIds);
+});
+
+test("query anchoring excludes synthetic and internal user messages", () => {
+  const internalMessages: CanonicalMessage[] = [
+    { role: "user", content: [{ type: "tool_result", toolCallId: "tool-1", content: [] }] },
+    { role: "user", content: [{ type: "text", text: "<memory-context>memory</memory-context>" }] },
+    { role: "user", content: [{ type: "text", text: "<compact-boundary trigger=\"auto\" />" }] },
+    { role: "user", content: [{ type: "text", text: "<snip-boundary turnsSnipped=\"1\" />" }] },
+    {
+      role: "user",
+      content: [{ type: "text", text: "retry the generated response" }],
+      metadata: { synthetic: true },
+    },
+    {
+      role: "user",
+      content: [{
+        type: "text",
+        text: "[system: the conversation above has been compacted. please continue with the current task.]",
+      }],
+    },
+  ];
+
+  assert.equal(isRealUserRequestMessage({
+    role: "user",
+    content: [{ type: "text", text: "Actual request" }],
+  }), true);
+  assert.equal(internalMessages.every((message) => !isRealUserRequestMessage(message)), true);
 });
 
 test("full compaction targets 60% of the effective input budget", async () => {

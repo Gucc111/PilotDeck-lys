@@ -577,6 +577,15 @@ test("auto full compaction summarizes older tool groups inside one user task", a
   assert.ok(findToolCall(summaryRequests[0]!.messages, "tail-fetch"));
   assert.ok(findToolCall(result.messages, "tail-fetch"));
   assert.equal(findToolResult(result.messages, "old-search-0"), undefined);
+  const requestIndex = result.messages.findIndex((message) =>
+    summaryText(message) === "Solve one WCB task with searches and fetches."
+  );
+  const retainedTailIndex = result.messages.findIndex((message) =>
+    message.content.some((block) => block.type === "tool_call" && block.id === "tail-fetch")
+  );
+  assert.ok(requestIndex >= 0);
+  assert.ok(retainedTailIndex > requestIndex);
+  assert.equal(result.messages[requestIndex - 1]?.role, "assistant");
   assert.match(summaryText(result.result?.summaryMessage), /^\[CONTEXT COMPACTION - REFERENCE ONLY\]/);
   assert.deepEqual(events.map((event) => event.type), ["compact_started", "compact_completed"]);
   if (events[0]?.type !== "compact_started" || events[1]?.type !== "compact_completed") {
