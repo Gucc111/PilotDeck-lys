@@ -94,6 +94,7 @@ const INTERNAL_USER_TEXT_PREFIXES = [
   "<snip-boundary",
   "<memory-context>",
   "<internal-compaction-control",
+  "<hook_context",
 ];
 
 /** True only for an end-user request that can anchor a retained live tail. */

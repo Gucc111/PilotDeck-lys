@@ -373,6 +373,7 @@ test("query anchoring excludes synthetic and internal user messages", () => {
     { role: "user", content: [{ type: "text", text: "<memory-context>memory</memory-context>" }] },
     { role: "user", content: [{ type: "text", text: "<compact-boundary trigger=\"auto\" />" }] },
     { role: "user", content: [{ type: "text", text: "<snip-boundary turnsSnipped=\"1\" />" }] },
+    { role: "user", content: [{ type: "text", text: "<hook_context source=\"UserPromptSubmit\">Injected context</hook_context>" }] },
     {
       role: "user",
       content: [{ type: "text", text: "retry the generated response" }],
@@ -418,6 +419,19 @@ test("query anchoring excludes inline supplemental media from tool results", () 
 
 test("emergency head truncation preserves empty history", () => {
   assert.deepEqual(truncateHeadPreservingCheckpoint([], 0.1), []);
+});
+
+test("request anchoring skips hook context before a multi-turn tool cycle", () => {
+  const messages: CanonicalMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Actual user request" }] },
+    { role: "user", content: [{ type: "text", text: "<hook_context source=\"UserPromptSubmit\">Injected context</hook_context>" }] },
+    { role: "assistant", content: [{ type: "tool_call", id: "hook-cycle", name: "read_file", input: { path: "a.txt" } }] },
+    { role: "user", content: [{ type: "tool_result", toolCallId: "hook-cycle", content: [{ type: "text", text: "tool output" }] }] },
+  ];
+
+  const result = truncateHeadPreservingCheckpoint(messages, 0.1);
+  assert.match(textFrom(result), /Actual user request/);
+  assert.doesNotMatch(textFrom(result), /Injected context/);
 });
 
 test("full compaction targets 60% of the effective input budget", async () => {
