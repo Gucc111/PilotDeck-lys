@@ -38,6 +38,8 @@ export type ExecuteCodeOutput = {
 export type CreateExecuteCodeToolOptions = {
   /** Defaults to true. False removes the web_search Python helper and RPC capability. */
   webSearch?: boolean;
+  /** Defaults to true. False removes the web_fetch Python helper and RPC capability. */
+  webFetch?: boolean;
 };
 
 type RpcRequest = {
@@ -72,6 +74,7 @@ export async function handleExecuteCodeRpcLineForTests(
     expectedToken?: string;
     executeTool?: NonNullable<PilotDeckToolRuntimeContext["executeTool"]>;
     webSearch?: boolean;
+    webFetch?: boolean;
   } = {},
 ): Promise<RpcResponse> {
   return handleRpcLine(line, {
@@ -97,7 +100,7 @@ export async function handleExecuteCodeRpcLineForTests(
     nextToolCall: () => 1,
     canCallTool: () => true,
     expectedToken: options.expectedToken,
-    allowedTools: resolveExecuteCodeAllowedTools({ webSearch: options.webSearch }),
+    allowedTools: resolveExecuteCodeAllowedTools({ webSearch: options.webSearch, webFetch: options.webFetch }),
   });
 }
 
@@ -106,7 +109,6 @@ const DEFAULT_MAX_TOOL_CALLS = 50;
 const MAX_STDOUT_BYTES = 50_000;
 const MAX_STDERR_BYTES = 10_000;
 const EXECUTE_CODE_BASE_ALLOWED_TOOLS = [
-  "web_fetch",
   "read_file",
   "write_file",
   "edit_file",
@@ -119,6 +121,9 @@ function resolveExecuteCodeAllowedTools(
   options: CreateExecuteCodeToolOptions,
 ): ReadonlySet<string> {
   const allowed = new Set<string>(EXECUTE_CODE_BASE_ALLOWED_TOOLS);
+  if (options.webFetch !== false) {
+    allowed.add("web_fetch");
+  }
   if (options.webSearch !== false) {
     allowed.add("web_search");
   }
@@ -129,9 +134,11 @@ export function createExecuteCodeTool(
   options: CreateExecuteCodeToolOptions = {},
 ): PilotDeckToolDefinition<ExecuteCodeInput, ExecuteCodeOutput> {
   const webSearchEnabled = options.webSearch !== false;
+  const webFetchEnabled = options.webFetch !== false;
   const allowedTools = resolveExecuteCodeAllowedTools(options);
   const availableHelpers = [
     ...(webSearchEnabled ? ["web_search"] : []),
+    ...(webFetchEnabled ? ["web_fetch"] : []),
     ...EXECUTE_CODE_BASE_ALLOWED_TOOLS,
   ];
   return {
@@ -187,6 +194,7 @@ export function createExecuteCodeTool(
       const result = await runExecuteCode(input, context, startedAt, {
         allowedTools,
         webSearchEnabled,
+        webFetchEnabled,
       });
       return {
         content: [{ type: "text", text: formatExecuteCodeResult(result) }],
@@ -353,6 +361,7 @@ async function runExecuteCode(
   options: {
     allowedTools: ReadonlySet<string>;
     webSearchEnabled: boolean;
+    webFetchEnabled: boolean;
   },
 ): Promise<ExecuteCodeOutput> {
   const timeoutSeconds = input.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS;
@@ -396,7 +405,10 @@ async function runExecuteCode(
   try {
     await writeFile(
       path.join(tempRoot, "pilotdeck_tools.py"),
-      generatePilotDeckToolsModule(transport.kind, options.webSearchEnabled),
+      generatePilotDeckToolsModule(transport.kind, {
+        webSearchEnabled: options.webSearchEnabled,
+        webFetchEnabled: options.webFetchEnabled,
+      }),
       "utf8",
     );
     await writeFile(path.join(tempRoot, "script.py"), input.code, "utf8");
@@ -593,10 +605,10 @@ function formatToolErrorDetails(result: Extract<PilotDeckToolResult, { type: "er
 
 function generatePilotDeckToolsModule(
   kind: RpcTransport["kind"],
-  webSearchEnabled: boolean,
+  options: { webSearchEnabled: boolean; webFetchEnabled: boolean },
 ): string {
   const transportHeader = kind === "tcp" ? TCP_PYTHON_TRANSPORT_HEADER : UDS_PYTHON_TRANSPORT_HEADER;
-  const webSearchHelper = webSearchEnabled ? `
+  const webSearchHelper = options.webSearchEnabled ? `
 def web_search(query, country=None):
     args = {"query": query}
     if country is not None:
@@ -604,9 +616,7 @@ def web_search(query, country=None):
     return _call("web_search", args)
 
 ` : "";
-  return `${transportHeader}
-${webSearchHelper}
-
+  const webFetchHelper = options.webFetchEnabled ? `
 def web_fetch(url, mode=None, prompt=None):
     args = {"url": url}
     if mode is not None:
@@ -615,6 +625,9 @@ def web_fetch(url, mode=None, prompt=None):
         args["prompt"] = prompt
     return _call("web_fetch", args)
 
+` : "";
+  return `${transportHeader}
+${webSearchHelper}${webFetchHelper}
 
 def read_file(file_path, offset=0, limit=None):
     args = {"file_path": file_path}
