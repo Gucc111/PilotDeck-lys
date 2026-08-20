@@ -30,6 +30,23 @@ describe('workspace file identity', () => {
     ));
   });
 
+  it('normalizes Windows file URL pathnames and UNC path casing', () => {
+    expect(getWorkspaceFileIdentity(
+      '/C:/Work/PilotDeck/Docs/Report.xlsx',
+      'c:\\work\\pilotdeck',
+    )).toBe(getWorkspaceFileIdentity(
+      'docs/report.xlsx',
+      'c:\\work\\pilotdeck',
+    ));
+    expect(getWorkspaceFileIdentity(
+      '\\\\server\\share\\pilotdeck\\Docs\\Report.xlsx',
+      '\\\\Server\\Share\\PilotDeck',
+    )).toBe(getWorkspaceFileIdentity(
+      'docs/report.xlsx',
+      '\\\\Server\\Share\\PilotDeck',
+    ));
+  });
+
   it('keeps files with the same basename in different folders distinct', () => {
     expect(getWorkspaceFileIdentity('one/report.xlsx', '/workspace/project-a')).not.toBe(
       getWorkspaceFileIdentity('two/report.xlsx', '/workspace/project-a'),
@@ -62,6 +79,10 @@ describe('getWorkspaceRelativePath', () => {
   it('normalizes Windows paths and compares drive paths case-insensitively', () => {
     expect(getWorkspaceRelativePath(
       'C:\\Work\\PilotDeck\\docs\\report.docx',
+      'c:\\work\\pilotdeck',
+    )).toBe('docs/report.docx');
+    expect(getWorkspaceRelativePath(
+      '/C:/Work/PilotDeck/docs/report.docx',
       'c:\\work\\pilotdeck',
     )).toBe('docs/report.docx');
   });
