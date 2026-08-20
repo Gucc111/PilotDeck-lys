@@ -4,6 +4,7 @@ import type { Project } from '../../../types/app';
 import {
   canonicalizeWorkspaceFilePath,
   getWorkspaceFileIdentity,
+  isWorkspacePathAtOrBelow,
 } from '../../../utils/workspaceFileMention';
 import type { CodeEditorDiffInfo, CodeEditorFile, CodeEditorTab } from '../types/types';
 
@@ -33,9 +34,36 @@ const currentFile = (tab: CodeEditorTab | undefined): CodeEditorFile | null => (
   tab?.fileStack.at(-1) ?? null
 );
 
-const isPathAtOrBelow = (candidatePath: string, parentPath: string): boolean => (
-  candidatePath === parentPath || candidatePath.startsWith(`${parentPath}/`)
+const findTabByFileIdentity = (
+  tabs: CodeEditorTab[],
+  fileIdentity: string,
+  workspaceRoot: string,
+): CodeEditorTab | undefined => (
+  tabs.find((tab) => {
+    const file = currentFile(tab);
+    return file
+      ? getWorkspaceFileIdentity(file.path, workspaceRoot) === fileIdentity
+      : false;
+  })
+  ?? tabs.find((tab) => {
+    const rootFile = tab.fileStack[0];
+    return rootFile
+      ? getWorkspaceFileIdentity(rootFile.path, workspaceRoot) === fileIdentity
+      : false;
+  })
 );
+
+const shouldResetTabForFile = (
+  tab: CodeEditorTab,
+  nextFile: CodeEditorFile,
+): boolean => {
+  const rootFile = tab.fileStack[0];
+  return !tab.dirty && (
+    currentFile(tab)?.path !== nextFile.path
+    || Boolean(rootFile?.diffInfo) !== Boolean(nextFile.diffInfo)
+    || (nextFile.diffInfo !== null && rootFile?.diffInfo !== nextFile.diffInfo)
+  );
+};
 
 type EditorTabsState = {
   tabs: CodeEditorTab[];
@@ -69,19 +97,13 @@ export const useEditorSidebar = ({
       const nextFile = buildEditorFile(filePath, selectedProject?.name, workspaceRoot, diffInfo);
       const nextFileIdentity = getWorkspaceFileIdentity(nextFile.path, workspaceRoot);
       setTabsState((previous) => {
-        const existing = previous.tabs.find((tab) => {
-          const rootFilePath = tab.fileStack[0]?.path;
-          return rootFilePath
-            ? getWorkspaceFileIdentity(rootFilePath, workspaceRoot) === nextFileIdentity
-            : false;
-        });
+        const existing = findTabByFileIdentity(
+          previous.tabs,
+          nextFileIdentity,
+          workspaceRoot,
+        );
         if (existing) {
-          const existingRoot = existing.fileStack[0];
-          const shouldResetView = !existing.dirty && (
-            currentFile(existing)?.path !== nextFile.path
-            || Boolean(existingRoot?.diffInfo) !== Boolean(nextFile.diffInfo)
-            || (nextFile.diffInfo !== null && existingRoot?.diffInfo !== nextFile.diffInfo)
-          );
+          const shouldResetView = shouldResetTabForFile(existing, nextFile);
           return {
             tabs: shouldResetView
               ? previous.tabs.map((tab) => (
@@ -110,7 +132,25 @@ export const useEditorSidebar = ({
   const handlePreviewFileOpen = useCallback(
     (filePath: string) => {
       const nextFile = buildEditorFile(filePath, selectedProject?.name, workspaceRoot);
+      const nextFileIdentity = getWorkspaceFileIdentity(nextFile.path, workspaceRoot);
       setTabsState((previous) => {
+        const existing = findTabByFileIdentity(
+          previous.tabs,
+          nextFileIdentity,
+          workspaceRoot,
+        );
+        if (existing) {
+          const shouldResetView = shouldResetTabForFile(existing, nextFile);
+          return {
+            tabs: shouldResetView
+              ? previous.tabs.map((tab) => (
+                tab.id === existing.id ? { ...tab, fileStack: [nextFile], dirty: false } : tab
+              ))
+              : previous.tabs,
+            activeTabId: existing.id,
+          };
+        }
+
         if (!previous.activeTabId) return previous;
         return {
           ...previous,
@@ -219,7 +259,7 @@ export const useEditorSidebar = ({
       tabs: previous.tabs.map((tab) => ({
         ...tab,
         fileStack: tab.fileStack.map((file) => {
-          if (!isPathAtOrBelow(file.path, normalizedOldPath)) return file;
+          if (!isWorkspacePathAtOrBelow(file.path, normalizedOldPath, workspaceRoot)) return file;
           const path = `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`;
           const preserveDirtyBuffer = tab.dirty && currentFile(tab)?.path === file.path;
           return {
@@ -238,9 +278,16 @@ export const useEditorSidebar = ({
     setTabsState((previous) => {
       const tabs = previous.tabs.flatMap((tab) => {
         const rootFile = tab.fileStack[0];
-        if (!rootFile || isPathAtOrBelow(rootFile.path, normalizedDeletedPath)) return [];
+        if (
+          !rootFile
+          || isWorkspacePathAtOrBelow(rootFile.path, normalizedDeletedPath, workspaceRoot)
+        ) return [];
         const fileStack = tab.fileStack.filter(
-          (file) => !isPathAtOrBelow(file.path, normalizedDeletedPath),
+          (file) => !isWorkspacePathAtOrBelow(
+            file.path,
+            normalizedDeletedPath,
+            workspaceRoot,
+          ),
         );
         return [{ ...tab, fileStack, dirty: false }];
       });

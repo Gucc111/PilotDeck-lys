@@ -180,6 +180,8 @@ function categoryFromMimeType(mimeType?: string): FileVisualCategory | null {
 
 export function getFileVisualCategory(filename: string, mimeType?: string): FileVisualCategory {
   const basename = basenameOf(filename);
+  if (basename.startsWith('.env')) return 'data';
+
   const specialCategory = SPECIAL_FILENAME_CATEGORIES.get(basename);
   if (specialCategory) return specialCategory;
 

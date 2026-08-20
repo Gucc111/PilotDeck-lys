@@ -97,6 +97,18 @@ export function getWorkspaceFileIdentity(
   return caseInsensitive ? canonicalPath.toLowerCase() : canonicalPath;
 }
 
+export function isWorkspacePathAtOrBelow(
+  candidatePath: string,
+  parentPath: string,
+  workspaceRoot = '',
+): boolean {
+  const candidateIdentity = getWorkspaceFileIdentity(candidatePath, workspaceRoot);
+  const parentIdentity = getWorkspaceFileIdentity(parentPath, workspaceRoot);
+  if (!candidateIdentity || !parentIdentity) return false;
+  return candidateIdentity === parentIdentity
+    || candidateIdentity.startsWith(`${parentIdentity}/`);
+}
+
 export type FileMentionInsertion = {
   input: string;
   cursorPosition: number;

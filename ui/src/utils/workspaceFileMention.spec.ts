@@ -5,6 +5,7 @@ import {
   getWorkspaceRelativePath,
   hasWorkspaceFileMention,
   insertWorkspaceFileMention,
+  isWorkspacePathAtOrBelow,
 } from './workspaceFileMention';
 
 describe('workspace file identity', () => {
@@ -33,6 +34,20 @@ describe('workspace file identity', () => {
     expect(getWorkspaceFileIdentity('one/report.xlsx', '/workspace/project-a')).not.toBe(
       getWorkspaceFileIdentity('two/report.xlsx', '/workspace/project-a'),
     );
+  });
+
+  it('compares Windows paths and descendants case-insensitively', () => {
+    const workspaceRoot = 'C:\\Work\\PilotDeck';
+    expect(isWorkspacePathAtOrBelow(
+      'docs/reports/Annual.xlsx',
+      'Docs/Reports',
+      workspaceRoot,
+    )).toBe(true);
+    expect(isWorkspacePathAtOrBelow(
+      'docs/reports-archive/Annual.xlsx',
+      'Docs/Reports',
+      workspaceRoot,
+    )).toBe(false);
   });
 });
 
