@@ -24,7 +24,7 @@ import {
 import type { Project } from '../../types/app';
 import { useFileTreeData } from '../file-tree/hooks/useFileTreeData';
 import type { FileTreeNode } from '../file-tree/types/types';
-import { getFileIconData } from '../file-tree/constants/fileIcons';
+import { FileTypeIcon } from '../file-tree/components/FileTypeIcon';
 import { cn } from '../../lib/utils.js';
 import { api } from '../../utils/api';
 import { copyTextToClipboard } from '../../utils/clipboard';
@@ -730,15 +730,7 @@ export default function FilesV2({
               const isRenaming = inlineEdit?.kind === 'rename' && inlineEdit.path === node.path;
               const isHtmlFile = !isDir && /\.html?$/i.test(node.name);
 
-              let Icon = Folder;
-              let color = 'text-neutral-500 dark:text-neutral-400';
-              if (isDir) {
-                Icon = isOpen ? FolderOpen : Folder;
-              } else {
-                const iconData = getFileIconData(node.name);
-                Icon = iconData.icon;
-                color = iconData.color;
-              }
+              const DirectoryIcon = isOpen ? FolderOpen : Folder;
 
               const showCreateAfter =
                 inlineEdit?.kind === 'create' &&
@@ -759,7 +751,14 @@ export default function FilesV2({
                       ) : (
                         <span className="w-3.5" />
                       )}
-                      <Icon className={cn('h-3.5 w-3.5 shrink-0', color)} strokeWidth={1.75} />
+                      {isDir ? (
+                        <DirectoryIcon
+                          className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-neutral-400"
+                          strokeWidth={1.75}
+                        />
+                      ) : (
+                        <FileTypeIcon filename={node.name} className="h-3.5 w-3.5" />
+                      )}
                       <input
                         ref={inlineInputRef}
                         defaultValue={inlineEdit.currentName}
@@ -798,7 +797,14 @@ export default function FilesV2({
                       ) : (
                         <span className="w-3.5" />
                       )}
-                      <Icon className={cn('h-3.5 w-3.5 shrink-0', color)} strokeWidth={1.75} />
+                      {isDir ? (
+                        <DirectoryIcon
+                          className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-neutral-400"
+                          strokeWidth={1.75}
+                        />
+                      ) : (
+                        <FileTypeIcon filename={node.name} className="h-3.5 w-3.5" />
+                      )}
                       <span
                         className={cn(
                           'min-w-0 flex-1 truncate',
