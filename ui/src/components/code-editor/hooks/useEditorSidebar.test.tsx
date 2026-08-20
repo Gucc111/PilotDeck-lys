@@ -75,6 +75,41 @@ describe('useEditorSidebar file tabs', () => {
     expect(result.current.activeFilePath).toBe('docs/guide.md');
   });
 
+  it('opens a root-history file in a new tab when the current file has unsaved changes', () => {
+    const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
+
+    act(() => result.current.handleFileOpen('README.md'));
+    act(() => result.current.handlePreviewFileOpen('docs/guide.md'));
+    const dirtyTabId = result.current.activeEditorTabId!;
+    act(() => result.current.handleTabDirtyChange(dirtyTabId, true));
+    act(() => result.current.handleFileOpen('/workspace/project-a/README.md'));
+
+    expect(result.current.editorTabs).toHaveLength(2);
+    expect(result.current.editorTabs[0].dirty).toBe(true);
+    expect(result.current.editorTabs[0].fileStack.map((file) => file.path)).toEqual([
+      'README.md',
+      'docs/guide.md',
+    ]);
+    expect(result.current.activeEditorTabId).not.toBe(dirtyTabId);
+    expect(result.current.activeFilePath).toBe('README.md');
+  });
+
+  it('opens preview navigation in a new tab when the current file has unsaved changes', () => {
+    const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
+
+    act(() => result.current.handleFileOpen('README.md'));
+    act(() => result.current.handlePreviewFileOpen('docs/guide.md'));
+    const dirtyTabId = result.current.activeEditorTabId!;
+    act(() => result.current.handleTabDirtyChange(dirtyTabId, true));
+    act(() => result.current.handlePreviewFileOpen('README.md'));
+
+    expect(result.current.editorTabs).toHaveLength(2);
+    expect(result.current.editorTabs[0].dirty).toBe(true);
+    expect(result.current.editorTabs[0].fileStack.at(-1)?.path).toBe('docs/guide.md');
+    expect(result.current.activeEditorTabId).not.toBe(dirtyTabId);
+    expect(result.current.activeFilePath).toBe('README.md');
+  });
+
   it('keeps markdown preview navigation inside its tab and supports going back', () => {
     const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
 

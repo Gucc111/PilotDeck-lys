@@ -46,6 +46,7 @@ const findTabByFileIdentity = (
       : false;
   })
   ?? tabs.find((tab) => {
+    if (tab.dirty) return false;
     const rootFile = tab.fileStack[0];
     return rootFile
       ? getWorkspaceFileIdentity(rootFile.path, workspaceRoot) === fileIdentity
@@ -152,6 +153,19 @@ export const useEditorSidebar = ({
         }
 
         if (!previous.activeTabId) return previous;
+        const activeTab = previous.tabs.find((tab) => tab.id === previous.activeTabId);
+        if (activeTab?.dirty) {
+          const nextTab: CodeEditorTab = {
+            id: `editor-tab-${nextTabIdRef.current++}`,
+            fileStack: [nextFile],
+            dirty: false,
+          };
+          return {
+            tabs: [...previous.tabs, nextTab],
+            activeTabId: nextTab.id,
+          };
+        }
+
         return {
           ...previous,
           tabs: previous.tabs.map((tab) => {
