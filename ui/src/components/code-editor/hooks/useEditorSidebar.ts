@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { Project } from '../../../types/app';
+import {
+  canonicalizeWorkspaceFilePath,
+  getWorkspaceFileIdentity,
+} from '../../../utils/workspaceFileMention';
 import type { CodeEditorDiffInfo, CodeEditorFile, CodeEditorTab } from '../types/types';
 
 type UseEditorSidebarOptions = {
@@ -12,9 +16,10 @@ type UseEditorSidebarOptions = {
 const buildEditorFile = (
   filePath: string,
   projectName: string | undefined,
+  workspaceRoot: string,
   diffInfo: CodeEditorDiffInfo | null = null,
 ): CodeEditorFile => {
-  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPath = canonicalizeWorkspaceFilePath(filePath, workspaceRoot);
   const fileName = normalizedPath.split('/').pop() || filePath;
   return {
     name: fileName,
@@ -57,12 +62,19 @@ export const useEditorSidebar = ({
   const editingFile = currentFile(activeEditorTab ?? undefined);
   const canGoBack = (activeEditorTab?.fileStack.length ?? 0) > 1;
   const parentFile = canGoBack ? activeEditorTab?.fileStack.at(-2) ?? null : null;
+  const workspaceRoot = selectedProject?.fullPath || selectedProject?.path || '';
 
   const handleFileOpen = useCallback(
     (filePath: string, diffInfo: CodeEditorDiffInfo | null = null) => {
-      const nextFile = buildEditorFile(filePath, selectedProject?.name, diffInfo);
+      const nextFile = buildEditorFile(filePath, selectedProject?.name, workspaceRoot, diffInfo);
+      const nextFileIdentity = getWorkspaceFileIdentity(nextFile.path, workspaceRoot);
       setTabsState((previous) => {
-        const existing = previous.tabs.find((tab) => tab.fileStack[0]?.path === nextFile.path);
+        const existing = previous.tabs.find((tab) => {
+          const rootFilePath = tab.fileStack[0]?.path;
+          return rootFilePath
+            ? getWorkspaceFileIdentity(rootFilePath, workspaceRoot) === nextFileIdentity
+            : false;
+        });
         if (existing) {
           const existingRoot = existing.fileStack[0];
           const shouldResetView = !existing.dirty && (
@@ -91,13 +103,13 @@ export const useEditorSidebar = ({
         };
       });
     },
-    [selectedProject?.name],
+    [selectedProject?.name, workspaceRoot],
   );
 
   // Push onto the stack when following a markdown cross-reference inside preview.
   const handlePreviewFileOpen = useCallback(
     (filePath: string) => {
-      const nextFile = buildEditorFile(filePath, selectedProject?.name);
+      const nextFile = buildEditorFile(filePath, selectedProject?.name, workspaceRoot);
       setTabsState((previous) => {
         if (!previous.activeTabId) return previous;
         return {
@@ -115,7 +127,7 @@ export const useEditorSidebar = ({
         };
       });
     },
-    [selectedProject?.name],
+    [selectedProject?.name, workspaceRoot],
   );
 
   const handleFileGoBack = useCallback(() => {
@@ -200,13 +212,15 @@ export const useEditorSidebar = ({
   }, []);
 
   const handleFileRename = useCallback((oldPath: string, newPath: string) => {
+    const normalizedOldPath = canonicalizeWorkspaceFilePath(oldPath, workspaceRoot);
+    const normalizedNewPath = canonicalizeWorkspaceFilePath(newPath, workspaceRoot);
     setTabsState((previous) => ({
       ...previous,
       tabs: previous.tabs.map((tab) => ({
         ...tab,
         fileStack: tab.fileStack.map((file) => {
-          if (!isPathAtOrBelow(file.path, oldPath)) return file;
-          const path = `${newPath}${file.path.slice(oldPath.length)}`;
+          if (!isPathAtOrBelow(file.path, normalizedOldPath)) return file;
+          const path = `${normalizedNewPath}${file.path.slice(normalizedOldPath.length)}`;
           const preserveDirtyBuffer = tab.dirty && currentFile(tab)?.path === file.path;
           return {
             ...file,
@@ -217,14 +231,17 @@ export const useEditorSidebar = ({
         }),
       })),
     }));
-  }, []);
+  }, [workspaceRoot]);
 
   const handleFileDelete = useCallback((deletedPath: string) => {
+    const normalizedDeletedPath = canonicalizeWorkspaceFilePath(deletedPath, workspaceRoot);
     setTabsState((previous) => {
       const tabs = previous.tabs.flatMap((tab) => {
         const rootFile = tab.fileStack[0];
-        if (!rootFile || isPathAtOrBelow(rootFile.path, deletedPath)) return [];
-        const fileStack = tab.fileStack.filter((file) => !isPathAtOrBelow(file.path, deletedPath));
+        if (!rootFile || isPathAtOrBelow(rootFile.path, normalizedDeletedPath)) return [];
+        const fileStack = tab.fileStack.filter(
+          (file) => !isPathAtOrBelow(file.path, normalizedDeletedPath),
+        );
         return [{ ...tab, fileStack, dirty: false }];
       });
 
@@ -234,7 +251,7 @@ export const useEditorSidebar = ({
         activeTabId: activeStillExists ? previous.activeTabId : tabs.at(-1)?.id ?? null,
       };
     });
-  }, []);
+  }, [workspaceRoot]);
 
   // Close all open file tabs when the user switches to a different project so
   // we don't carry a Project A file across into Project B's view. Switching

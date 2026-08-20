@@ -1,9 +1,40 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalizeWorkspaceFilePath,
+  getWorkspaceFileIdentity,
   getWorkspaceRelativePath,
   hasWorkspaceFileMention,
   insertWorkspaceFileMention,
 } from './workspaceFileMention';
+
+describe('workspace file identity', () => {
+  it('canonicalizes absolute and relative paths inside the same workspace', () => {
+    expect(canonicalizeWorkspaceFilePath(
+      '/workspace/project-a/docs/report.xlsx',
+      '/workspace/project-a',
+    )).toBe('docs/report.xlsx');
+    expect(canonicalizeWorkspaceFilePath(
+      './docs/report.xlsx',
+      '/workspace/project-a',
+    )).toBe('docs/report.xlsx');
+  });
+
+  it('normalizes slash and case differences for a Windows workspace identity', () => {
+    expect(getWorkspaceFileIdentity(
+      'C:\\Work\\PilotDeck\\Docs\\Report.xlsx',
+      'c:\\work\\pilotdeck',
+    )).toBe(getWorkspaceFileIdentity(
+      'docs/report.xlsx',
+      'c:\\work\\pilotdeck',
+    ));
+  });
+
+  it('keeps files with the same basename in different folders distinct', () => {
+    expect(getWorkspaceFileIdentity('one/report.xlsx', '/workspace/project-a')).not.toBe(
+      getWorkspaceFileIdentity('two/report.xlsx', '/workspace/project-a'),
+    );
+  });
+});
 
 describe('getWorkspaceRelativePath', () => {
   it('returns a workspace-relative path for POSIX paths', () => {

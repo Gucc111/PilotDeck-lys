@@ -31,6 +31,7 @@ import { copyTextToClipboard } from '../../utils/clipboard';
 import { isImeEnterEvent } from '../../utils/ime';
 import {
   ADD_WORKSPACE_FILE_MENTION_EVENT,
+  getWorkspaceFileIdentity,
   getWorkspaceRelativePath,
 } from '../../utils/workspaceFileMention';
 
@@ -144,6 +145,7 @@ export default function FilesV2({
   const flat = useMemo(() => flatten(files, expanded), [files, expanded]);
 
   const projectName = selectedProject?.name ?? '';
+  const projectRoot = selectedProject?.fullPath || selectedProject?.path || '';
 
   const toggle = useCallback((path: string) => {
     setExpanded((prev) => {
@@ -356,15 +358,19 @@ export default function FilesV2({
           type: node.type === 'directory' ? 'directory' : 'file',
         });
         onFileDelete?.(node.path);
+        const deletedIdentity = getWorkspaceFileIdentity(node.path, projectRoot);
         setActivePath((previous) => (
-          previous === node.path || previous?.startsWith(`${node.path}/`) ? null : previous
+          previous && (
+            getWorkspaceFileIdentity(previous, projectRoot) === deletedIdentity
+            || getWorkspaceFileIdentity(previous, projectRoot).startsWith(`${deletedIdentity}/`)
+          ) ? null : previous
         ));
         await refreshFiles();
       } catch (error) {
         console.error('Delete failed:', error);
       }
     },
-    [closeContextMenu, onFileDelete, projectName, refreshFiles, selectedProject],
+    [closeContextMenu, onFileDelete, projectName, projectRoot, refreshFiles, selectedProject],
   );
 
   const handleCopyPath = useCallback(
@@ -385,8 +391,6 @@ export default function FilesV2({
   );
 
   // --- Upload / Download / Preview ---
-
-  const projectRoot = selectedProject?.fullPath || selectedProject?.path || '';
 
   const handleAddToChat = useCallback(
     (node: FileTreeNode) => {
@@ -499,9 +503,12 @@ export default function FilesV2({
 
   const handleDeleteActive = useCallback(() => {
     if (!activePath) return;
-    const activeNode = flat.find((f) => f.node.path === activePath);
+    const activeIdentity = getWorkspaceFileIdentity(activePath, projectRoot);
+    const activeNode = flat.find(
+      ({ node }) => getWorkspaceFileIdentity(node.path, projectRoot) === activeIdentity,
+    );
     if (activeNode) handleDelete(activeNode.node);
-  }, [activePath, flat, handleDelete]);
+  }, [activePath, flat, handleDelete, projectRoot]);
 
   // --- Depth lookup for context menu target ---
 
@@ -726,7 +733,11 @@ export default function FilesV2({
             {flat.map(({ node, depth }, idx) => {
               const isDir = node.type === 'directory';
               const isOpen = isDir && expanded.has(node.path);
-              const isActive = activePath === node.path;
+              const isActive = Boolean(
+                activePath
+                && getWorkspaceFileIdentity(activePath, projectRoot)
+                  === getWorkspaceFileIdentity(node.path, projectRoot),
+              );
               const isRenaming = inlineEdit?.kind === 'rename' && inlineEdit.path === node.path;
               const isHtmlFile = !isDir && /\.html?$/i.test(node.name);
 

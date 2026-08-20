@@ -24,6 +24,28 @@ describe('useEditorSidebar file tabs', () => {
     expect(result.current.activeFilePath).toBe('docs/one.md');
   });
 
+  it('treats absolute and relative paths to the same workspace file as one tab', () => {
+    const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
+
+    act(() => result.current.handleFileOpen('docs/report.xlsx'));
+    act(() => result.current.handleFileOpen('/workspace/project-a/docs/report.xlsx'));
+
+    expect(result.current.editorTabs).toHaveLength(1);
+    expect(result.current.activeFilePath).toBe('docs/report.xlsx');
+  });
+
+  it('does not merge same-named files from different workspace folders', () => {
+    const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
+
+    act(() => result.current.handleFileOpen('/workspace/project-a/one/report.xlsx'));
+    act(() => result.current.handleFileOpen('two/report.xlsx'));
+
+    expect(result.current.editorTabs.map((tab) => tab.fileStack[0].path)).toEqual([
+      'one/report.xlsx',
+      'two/report.xlsx',
+    ]);
+  });
+
   it('keeps markdown preview navigation inside its tab and supports going back', () => {
     const { result } = renderHook(() => useEditorSidebar({ selectedProject: project, isMobile: false }));
 

@@ -67,6 +67,36 @@ export function getWorkspaceRelativePath(
   return normalizeRelativePath(relativePath);
 }
 
+export function canonicalizeWorkspaceFilePath(
+  filePath: string,
+  workspaceRoot = '',
+): string {
+  const normalizedFilePath = trimTrailingSlashes(normalizeSlashes(filePath.trim()));
+  if (!normalizedFilePath) return '';
+
+  if (workspaceRoot) {
+    const relativePath = getWorkspaceRelativePath(normalizedFilePath, workspaceRoot);
+    if (relativePath) return relativePath;
+  }
+
+  if (!isAbsolutePath(normalizedFilePath)) {
+    return normalizeRelativePath(normalizedFilePath) || normalizedFilePath;
+  }
+
+  return normalizedFilePath;
+}
+
+export function getWorkspaceFileIdentity(
+  filePath: string,
+  workspaceRoot = '',
+): string {
+  const canonicalPath = canonicalizeWorkspaceFilePath(filePath, workspaceRoot);
+  const normalizedRoot = normalizeSlashes(workspaceRoot);
+  const caseInsensitive = /^[A-Za-z]:\//.test(normalizedRoot)
+    || /^[A-Za-z]:\//.test(canonicalPath);
+  return caseInsensitive ? canonicalPath.toLowerCase() : canonicalPath;
+}
+
 export type FileMentionInsertion = {
   input: string;
   cursorPosition: number;
