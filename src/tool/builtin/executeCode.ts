@@ -615,6 +615,7 @@ def web_fetch(url, mode=None, prompt=None):
         args["prompt"] = prompt
     return _call("web_fetch", args)
 
+
 def read_file(file_path, offset=0, limit=None):
     args = {"file_path": file_path}
     if offset is not None and offset > 0:
