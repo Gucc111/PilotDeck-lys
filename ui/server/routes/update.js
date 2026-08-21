@@ -12,7 +12,10 @@ import {
   startDesktopUpdateDownload,
 } from '../services/desktopUpdateService.js';
 import {
+  isSupervisorRestartEnabled,
   normalizeUpdateRuntimeError,
+  requestSupervisorRestart,
+  RESTART_EXIT_CODE,
   resolveBashExecutable,
   resolveRestartCommand,
 } from '../services/updateRuntime.js';
@@ -359,9 +362,9 @@ router.post('/apply', async (req, res) => {
 
 /**
  * POST /api/update/restart
- * Restart PilotDeck by spawning a fresh process, then exiting.
- * Works in both Docker (process manager respawns) and local self-respawn
- * while preserving the original source runtime mode.
+ * Restart PilotDeck. In supervised source runtimes the outer supervisor
+ * relaunches the full process group; direct server runs fall back to
+ * self-respawn.
  */
 router.post('/restart', async (req, res) => {
   res.json({
@@ -378,6 +381,12 @@ router.post('/restart', async (req, res) => {
       if (isDocker) {
         // In Docker, just exit — the container restart policy handles respawn
         process.exit(0);
+      }
+
+      if (isSupervisorRestartEnabled(process.env)) {
+        requestSupervisorRestart({ env: process.env });
+        setTimeout(() => process.exit(RESTART_EXIT_CODE), 500);
+        return;
       }
 
       // Local: spawn a replacement process detached from this one.

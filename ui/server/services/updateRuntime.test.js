@@ -1,7 +1,10 @@
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  getRestartRequestFile,
+  isSupervisorRestartEnabled,
   normalizeUpdateRuntimeError,
+  requestSupervisorRestart,
   resolveBashExecutable,
   resolveRestartCommand,
 } from './updateRuntime.js';
@@ -141,5 +144,47 @@ describe('update runtime resolution', () => {
     expect(normalizeUpdateRuntimeError(Object.assign(new Error('spawn failed'), {
       code: 'ENOENT',
     }))).toContain('PILOTDECK_BASH_PATH');
+  });
+
+  it('detects supervisor restarts only when a request file is configured', () => {
+    expect(isSupervisorRestartEnabled({
+      PILOTDECK_RESTART_SUPERVISOR: '1',
+      PILOTDECK_RESTART_REQUEST_FILE: '/tmp/pilotdeck-restart.json',
+    })).toBe(true);
+    expect(isSupervisorRestartEnabled({
+      PILOTDECK_RESTART_SUPERVISOR: '1',
+    })).toBe(false);
+    expect(isSupervisorRestartEnabled({
+      PILOTDECK_RESTART_REQUEST_FILE: '/tmp/pilotdeck-restart.json',
+    })).toBe(false);
+  });
+
+  it('writes the supervisor restart request file', () => {
+    const mkdir = vi.fn();
+    const writeFile = vi.fn();
+    const filePath = requestSupervisorRestart({
+      env: {
+        PILOTDECK_RESTART_MODE: 'dev',
+        PILOTDECK_RESTART_REQUEST_FILE: '/tmp/pilotdeck/restart.json',
+      },
+      now: () => new Date('2026-08-21T00:00:00.000Z'),
+      mkdir,
+      writeFile,
+    });
+
+    expect(filePath).toBe('/tmp/pilotdeck/restart.json');
+    expect(mkdir).toHaveBeenCalledWith('/tmp/pilotdeck', { recursive: true });
+    expect(writeFile).toHaveBeenCalledWith(
+      '/tmp/pilotdeck/restart.json',
+      expect.stringContaining('"mode": "dev"'),
+    );
+  });
+
+  it('derives a temp restart request file when none is configured', () => {
+    expect(getRestartRequestFile({
+      env: { PILOTDECK_RESTART_MODE: 'start-built' },
+      pid: 123,
+      tmpdir: () => '/tmp',
+    })).toBe(path.join('/tmp', 'pilotdeck-restart-start-built-123.json'));
   });
 });

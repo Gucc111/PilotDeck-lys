@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const defaultExecFileAsync = promisify(execFile);
+export const RESTART_EXIT_CODE = 42;
 
 function appendExistingCandidate(candidates, value, pathExists) {
   const candidate = String(value || '').trim();
@@ -121,6 +123,38 @@ export async function resolveRestartCommand({
     command: bashExecutable,
     args: ['-c', `sleep 2 && cd "${restartDirectory}" && npm run ${restartScript}`],
   };
+}
+
+export function getRestartRequestFile({
+  env = process.env,
+  pid = process.pid,
+  tmpdir = os.tmpdir,
+} = {}) {
+  const configuredPath = String(env.PILOTDECK_RESTART_REQUEST_FILE || '').trim();
+  if (configuredPath) return configuredPath;
+  const mode = env.PILOTDECK_RESTART_MODE === 'dev' ? 'dev' : 'start-built';
+  return path.join(tmpdir(), `pilotdeck-restart-${mode}-${pid}.json`);
+}
+
+export function isSupervisorRestartEnabled(env = process.env) {
+  return env.PILOTDECK_RESTART_SUPERVISOR === '1'
+    && Boolean(String(env.PILOTDECK_RESTART_REQUEST_FILE || '').trim());
+}
+
+export function requestSupervisorRestart({
+  env = process.env,
+  now = () => new Date(),
+  mkdir = mkdirSync,
+  writeFile = writeFileSync,
+} = {}) {
+  const filePath = getRestartRequestFile({ env });
+  mkdir(path.dirname(filePath), { recursive: true });
+  writeFile(filePath, JSON.stringify({
+    requestedAt: now().toISOString(),
+    mode: env.PILOTDECK_RESTART_MODE === 'dev' ? 'dev' : 'start-built',
+    pid: process.pid,
+  }, null, 2));
+  return filePath;
 }
 
 export function normalizeUpdateRuntimeError(error) {

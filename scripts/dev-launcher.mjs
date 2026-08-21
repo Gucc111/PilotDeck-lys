@@ -124,9 +124,9 @@ async function main() {
   };
 
   const child = spawn(
-    'npm',
-    ['--workspace', 'ui', 'run', 'dev:concurrent'],
-    { cwd: repoRoot, env, stdio: 'inherit', shell: true },
+    process.execPath,
+    ['ui/server/webRuntimeSupervisor.js', 'dev'],
+    { cwd: repoRoot, env, stdio: 'inherit' },
   );
 
   const forward = (signal) => {
