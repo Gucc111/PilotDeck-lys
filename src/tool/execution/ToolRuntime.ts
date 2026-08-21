@@ -56,9 +56,19 @@ export class ToolRuntime {
     context = runtimeContext;
     const startedAt = startedAtDate.toISOString();
     let tool = this.registry.get(call.name);
+    let repairedName: string | undefined;
     if (!tool) {
-      const repaired = repairToolName(call.name, this.registry.list(), context.toolAliases);
+      const repaired = repairToolName(
+        call.name,
+        this.registry.list(),
+        context.toolAliases,
+        this.registry.listUnavailableEntries().map(({ diagnostic, aliases }) => ({
+          name: diagnostic.toolName,
+          aliases,
+        })),
+      );
       if (repaired) {
+        repairedName = repaired.name;
         tool = this.registry.get(repaired.name);
       }
     }
@@ -69,7 +79,7 @@ export class ToolRuntime {
     }
 
     if (!tool) {
-      const unavailable = this.registry.getUnavailable(call.name);
+      const unavailable = this.registry.getUnavailable(repairedName ?? call.name);
       if (unavailable) {
         const code: PilotDeckToolErrorCode = unavailable.code === "setup_required"
           ? "setup_required"

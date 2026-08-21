@@ -129,6 +129,9 @@ test("explicitly disabled builtin tools retain an unavailable diagnostic", async
   assert.equal(filtered.registry.getUnavailable("web_fetch")?.code, "unavailable");
   assert.equal(filtered.registry.getUnavailable("web_search")?.code, "unavailable");
 
+  assert.equal(filtered.registry.getUnavailable("WebFetch")?.code, "unavailable");
+  assert.equal(filtered.registry.getUnavailable("WebSearch")?.code, "unavailable");
+
   const result = await new ToolRuntime(filtered.registry, new PermissionRuntime()).execute(
     { id: "call-disabled", name: "web_fetch", input: { url: "https://example.com" } },
     context(),
@@ -136,5 +139,32 @@ test("explicitly disabled builtin tools retain an unavailable diagnostic", async
   assert.equal(result.type, "error");
   if (result.type === "error") {
     assert.equal(result.error.code, "tool_unavailable");
+  }
+
+  const aliasResult = await new ToolRuntime(filtered.registry, new PermissionRuntime()).execute(
+    { id: "call-disabled-alias", name: "WebSearch", input: { query: "test" } },
+    context(),
+  );
+  assert.equal(aliasResult.type, "error");
+  if (aliasResult.type === "error") {
+    assert.equal(aliasResult.error.code, "tool_unavailable");
+  }
+
+  const fetchAliasResult = await new ToolRuntime(filtered.registry, new PermissionRuntime()).execute(
+    { id: "call-disabled-fetch-alias", name: "WebFetch", input: { url: "https://example.com" } },
+    context(),
+  );
+  assert.equal(fetchAliasResult.type, "error");
+  if (fetchAliasResult.type === "error") {
+    assert.equal(fetchAliasResult.error.code, "tool_unavailable");
+  }
+
+  const configuredAliasResult = await new ToolRuntime(filtered.registry, new PermissionRuntime()).execute(
+    { id: "call-disabled-configured-alias", name: "search", input: { query: "test" } },
+    { ...context(), toolAliases: { search: "web_search" } },
+  );
+  assert.equal(configuredAliasResult.type, "error");
+  if (configuredAliasResult.type === "error") {
+    assert.equal(configuredAliasResult.error.code, "tool_unavailable");
   }
 });
