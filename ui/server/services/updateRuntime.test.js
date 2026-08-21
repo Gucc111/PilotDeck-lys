@@ -94,14 +94,47 @@ describe('update runtime resolution', () => {
     })).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('uses cmd.exe for Windows restarts', async () => {
+  it('defaults Windows restarts to the built source server', async () => {
     const command = await resolveRestartCommand({
       platform: 'win32',
       projectRoot: 'C:\\PilotDeck',
     });
 
     expect(command.command).toBe('cmd.exe');
+    expect(command.args.at(-1)).toContain('cd /d "C:\\PilotDeck\\ui" && npm run start:built');
+  });
+
+  it('keeps dev mode for Windows restarts when launched in dev mode', async () => {
+    const command = await resolveRestartCommand({
+      platform: 'win32',
+      env: { PILOTDECK_RESTART_MODE: 'dev' },
+      projectRoot: 'C:\\PilotDeck',
+    });
+
+    expect(command.command).toBe('cmd.exe');
     expect(command.args.at(-1)).toContain('cd /d "C:\\PilotDeck" && npm run dev');
+  });
+
+  it('defaults non-Windows restarts to the built source server', async () => {
+    const command = await resolveRestartCommand({
+      platform: 'darwin',
+      env: {},
+      projectRoot: '/opt/pilotdeck',
+    });
+
+    expect(command.command).toBe('bash');
+    expect(command.args).toEqual(['-c', 'sleep 2 && cd "/opt/pilotdeck/ui" && npm run start:built']);
+  });
+
+  it('keeps dev mode for non-Windows restarts when launched in dev mode', async () => {
+    const command = await resolveRestartCommand({
+      platform: 'darwin',
+      env: { PILOTDECK_RESTART_MODE: 'dev' },
+      projectRoot: '/opt/pilotdeck',
+    });
+
+    expect(command.command).toBe('bash');
+    expect(command.args).toEqual(['-c', 'sleep 2 && cd "/opt/pilotdeck" && npm run dev']);
   });
 
   it('provides an actionable message when bash cannot be spawned', () => {

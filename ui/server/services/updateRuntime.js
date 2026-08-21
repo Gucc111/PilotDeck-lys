@@ -92,6 +92,13 @@ export async function resolveRestartCommand({
   pathExists = existsSync,
   execFileAsync = defaultExecFileAsync,
 } = {}) {
+  const mode = env.PILOTDECK_RESTART_MODE === 'dev' ? 'dev' : 'start-built';
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const restartDirectory = mode === 'dev'
+    ? projectRoot
+    : pathApi.join(projectRoot, 'ui');
+  const restartScript = mode === 'dev' ? 'dev' : 'start:built';
+
   if (platform === 'win32') {
     return {
       command: 'cmd.exe',
@@ -99,7 +106,7 @@ export async function resolveRestartCommand({
         '/d',
         '/s',
         '/c',
-        `timeout /t 2 /nobreak >nul && cd /d "${projectRoot}" && npm run dev`,
+        `timeout /t 2 /nobreak >nul && cd /d "${restartDirectory}" && npm run ${restartScript}`,
       ],
     };
   }
@@ -112,7 +119,7 @@ export async function resolveRestartCommand({
   });
   return {
     command: bashExecutable,
-    args: ['-c', `sleep 2 && cd "${projectRoot}" && npm run dev`],
+    args: ['-c', `sleep 2 && cd "${restartDirectory}" && npm run ${restartScript}`],
   };
 }
 

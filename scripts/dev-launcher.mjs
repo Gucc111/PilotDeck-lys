@@ -119,6 +119,7 @@ async function main() {
     PILOTDECK_GATEWAY_PORT: String(gateway.port),
     PILOTDECK_GATEWAY_URL:
       process.env.PILOTDECK_GATEWAY_URL ?? `ws://127.0.0.1:${gateway.port}/ws`,
+    PILOTDECK_RESTART_MODE: 'dev',
     VITE_PORT: String(vite.port),
   };
 
