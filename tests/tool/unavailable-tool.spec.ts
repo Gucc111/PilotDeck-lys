@@ -87,6 +87,27 @@ test("failed availability checks become a generic tool_unavailable error", async
   }
 });
 
+test("pre-marked unavailable diagnostics preserve aliases through filtering", async () => {
+  const registry = new ToolRegistry();
+  registry.markUnavailable({
+    toolName: "optional_tool",
+    code: "unavailable",
+    reason: "optional_tool is disabled in this session.",
+  }, ["optional"]);
+
+  const filtered = await filterAvailableTools(registry, { cwd: process.cwd() });
+  assert.equal(filtered.registry.getUnavailable("optional")?.toolName, "optional_tool");
+
+  const result = await new ToolRuntime(filtered.registry, new PermissionRuntime()).execute(
+    { id: "call-pre-marked-alias", name: "optional", input: {} },
+    context(),
+  );
+  assert.equal(result.type, "error");
+  if (result.type === "error") {
+    assert.equal(result.error.code, "tool_unavailable");
+  }
+});
+
 test("explicitly disabled builtin tools retain an unavailable diagnostic", async () => {
   const registry = createBuiltinRegistry({ webSearch: false, webFetch: false });
   assert.equal(registry.getUnavailable("web_fetch")?.code, "unavailable");

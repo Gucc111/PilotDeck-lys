@@ -44,3 +44,25 @@ test("normalizeModelError maps exhausted quota messages to billing", () => {
     assert.equal(error.retryable, false, message);
   }
 });
+
+test("rate-limit signals take precedence over exhausted quota", () => {
+  for (const [message, status] of [
+    ["rate limit: quota exhausted", 429],
+    ["quota exhausted, retry later", undefined],
+  ] as const) {
+    const error = normalizeModelError("test", "openai", new Error(message), status);
+
+    assert.equal(error.code, "rate_limit_error", message);
+    assert.equal(error.retryable, true, message);
+  }
+});
+
+test("specific request errors remain ahead of generic retry wording", () => {
+  const error = normalizeModelError(
+    "test",
+    "openai",
+    new Error("prompt is too long; retry after reducing the request"),
+  );
+
+  assert.equal(error.code, "prompt_too_long");
+});

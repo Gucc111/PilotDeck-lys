@@ -10,6 +10,11 @@ export type ToolUnavailableDiagnostic = {
   reason: string;
 };
 
+export type ToolUnavailableDiagnosticEntry = {
+  diagnostic: ToolUnavailableDiagnostic;
+  aliases: string[];
+};
+
 export class ToolRegistry {
   private readonly toolsByName = new Map<string, PilotDeckToolDefinition>();
   private readonly aliases = new Map<string, string>();
@@ -67,11 +72,24 @@ export class ToolRegistry {
   }
 
   listUnavailable(): ToolUnavailableDiagnostic[] {
-    const unique = new Map<string, ToolUnavailableDiagnostic>();
-    for (const diagnostic of this.unavailable.values()) {
-      unique.set(diagnostic.toolName, diagnostic);
+    return this.listUnavailableEntries().map(({ diagnostic }) => diagnostic);
+  }
+
+  listUnavailableEntries(): ToolUnavailableDiagnosticEntry[] {
+    const entries = new Map<string, ToolUnavailableDiagnosticEntry>();
+    for (const [name, diagnostic] of this.unavailable) {
+      let entry = entries.get(diagnostic.toolName);
+      if (!entry) {
+        entry = { diagnostic, aliases: [] };
+        entries.set(diagnostic.toolName, entry);
+      }
+      if (name !== diagnostic.toolName && !entry.aliases.includes(name)) {
+        entry.aliases.push(name);
+      }
     }
-    return [...unique.values()].sort((a, b) => a.toolName.localeCompare(b.toolName));
+    return [...entries.values()]
+      .map((entry) => ({ ...entry, aliases: [...entry.aliases].sort() }))
+      .sort((a, b) => a.diagnostic.toolName.localeCompare(b.diagnostic.toolName));
   }
 
   toCanonicalSchemas(): CanonicalToolSchema[] {
