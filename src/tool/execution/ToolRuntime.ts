@@ -69,6 +69,24 @@ export class ToolRuntime {
     }
 
     if (!tool) {
+      const unavailable = this.registry.getUnavailable(call.name);
+      if (unavailable) {
+        const code: PilotDeckToolErrorCode = unavailable.code === "setup_required"
+          ? "setup_required"
+          : "tool_unavailable";
+        return this.errorResult(
+          call.id,
+          call.name,
+          code,
+          unavailable.reason,
+          startedAt,
+          runtimeContext,
+          {
+            availabilityCode: unavailable.code,
+            reason: unavailable.reason,
+          },
+        );
+      }
       return this.errorResult(
         call.id,
         call.name,

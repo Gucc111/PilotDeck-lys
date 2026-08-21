@@ -53,7 +53,7 @@ export type {
   PilotDeckWriteSnapshotEntry,
   PilotDeckWriteSnapshotMap,
 } from "./protocol/types.js";
-export { ToolRegistry } from "./registry/ToolRegistry.js";
+export { ToolRegistry, type ToolUnavailableDiagnostic } from "./registry/ToolRegistry.js";
 export { createBuiltinRegistry, type CreateBuiltinRegistryOptions } from "./registry/createBuiltinRegistry.js";
 export {
   filterAvailableTools,

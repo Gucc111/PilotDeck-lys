@@ -3,7 +3,7 @@ import type {
   PilotDeckToolAvailabilityContext,
   PilotDeckToolDefinition,
 } from "../protocol/types.js";
-import { ToolRegistry } from "./ToolRegistry.js";
+import { ToolRegistry, type ToolUnavailableDiagnostic } from "./ToolRegistry.js";
 
 export type PilotDeckUnavailableToolDiagnostic = {
   toolName: string;
@@ -34,11 +34,14 @@ export async function filterAvailableTools(
       continue;
     }
 
-    unavailable.push({
+    const diagnostic: PilotDeckUnavailableToolDiagnostic = {
       toolName: tool.name,
       code: availability.code,
       reason: availability.reason,
-    });
+    };
+    unavailable.push(diagnostic);
+    const marked: ToolUnavailableDiagnostic = diagnostic;
+    filtered.markUnavailable(marked, tool.aliases);
   }
 
   return { registry: filtered, unavailable };
