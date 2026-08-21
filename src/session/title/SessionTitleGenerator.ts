@@ -5,6 +5,8 @@ export const SESSION_TITLE_MAX_INPUT_CHARS = 1200;
 export const SESSION_TITLE_MAX_OUTPUT_CHARS = 80;
 export const SESSION_TITLE_TIMEOUT_MS = 30_000;
 
+const SESSION_TITLE_TRUNCATION_MARKER = " ... ";
+
 const SESSION_TITLE_SYSTEM_PROMPT = `Generate a concise title (3-7 words) that captures the main topic or goal of this coding session. The title should be clear enough that the user recognizes the session in a list. For Latin-script languages, use sentence case: capitalize only the first word and proper nouns.
 
 Language requirement (highest priority): write the title in the same natural language as the user's input. Do not translate the user's input into English. If the input contains multiple languages, use the language of the user's main request (or the most recent natural-language request), while leaving product names and code identifiers unchanged. If the user's language cannot be determined, write the title in the system language specified below.
@@ -86,9 +88,13 @@ export function createSessionTitleGenerator(
 }
 
 /** Resolve the host locale for the rare case where an input has no detectable language. */
-export function resolveSystemLanguage(): string {
-  const environmentLocale = process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG;
-  for (const candidate of [environmentLocale, Intl.DateTimeFormat().resolvedOptions().locale]) {
+export function resolveSystemLanguage(env: Record<string, string | undefined> = process.env): string {
+  for (const candidate of [
+    env.LC_ALL,
+    env.LC_MESSAGES,
+    env.LANG,
+    Intl.DateTimeFormat().resolvedOptions().locale,
+  ]) {
     const normalized = normalizeLocale(candidate);
     if (normalized) {
       return normalized;
@@ -102,7 +108,7 @@ function normalizeLocale(value: string | undefined): string | null {
     return null;
   }
   const locale = value.split(/[.@]/, 1)[0]?.replace(/_/g, "-");
-  if (!locale || /^(?:c|posix)$/i.test(locale)) {
+  if (!locale || /^(?:c|posix|und)$/i.test(locale)) {
     return null;
   }
   try {
@@ -117,9 +123,14 @@ export function normalizeSessionTitleInput(text: string): string | null {
   if (!normalized) {
     return null;
   }
-  return normalized.length > SESSION_TITLE_MAX_INPUT_CHARS
-    ? normalized.slice(0, SESSION_TITLE_MAX_INPUT_CHARS)
-    : normalized;
+  if (normalized.length <= SESSION_TITLE_MAX_INPUT_CHARS) {
+    return normalized;
+  }
+
+  const availableChars = SESSION_TITLE_MAX_INPUT_CHARS - SESSION_TITLE_TRUNCATION_MARKER.length;
+  const headChars = Math.floor(availableChars / 2);
+  const tailChars = availableChars - headChars;
+  return `${normalized.slice(0, headChars)}${SESSION_TITLE_TRUNCATION_MARKER}${normalized.slice(-tailChars)}`;
 }
 
 function parseGeneratedTitle(content: Awaited<ReturnType<ModelRuntime["complete"]>>["content"]): string | null {

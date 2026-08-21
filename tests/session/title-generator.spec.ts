@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { CanonicalModelResponse, CanonicalModelRequest } from "../../src/model/index.js";
-import { createSessionTitleGenerator } from "../../src/session/title/SessionTitleGenerator.js";
+import {
+  createSessionTitleGenerator,
+  normalizeSessionTitleInput,
+  resolveSystemLanguage,
+  SESSION_TITLE_MAX_INPUT_CHARS,
+} from "../../src/session/title/SessionTitleGenerator.js";
 
 test("session title generator asks the model to preserve the user's language", async () => {
   let request: CanonicalModelRequest | undefined;
@@ -51,6 +56,28 @@ test("session title generator includes the system language for undetectable inpu
   });
 
   assert.match(request?.systemPrompt ?? "", /System language: zh-CN/);
+});
+
+test("session title input truncation preserves the latest request", () => {
+  const latestRequest = "请修复最后出现的登录错误";
+  const input = `${"Earlier English logs ".repeat(100)} ${latestRequest}`;
+  const normalized = normalizeSessionTitleInput(input);
+
+  assert.ok(normalized);
+  assert.equal(normalized.length, SESSION_TITLE_MAX_INPUT_CHARS);
+  assert.match(normalized, /Earlier English logs/);
+  assert.match(normalized, new RegExp(`${latestRequest}$`));
+});
+
+test("system language checks every locale candidate and rejects und", () => {
+  assert.equal(
+    resolveSystemLanguage({ LC_ALL: "", LC_MESSAGES: "", LANG: "zh_CN.UTF-8" }),
+    "zh-CN",
+  );
+  assert.equal(
+    resolveSystemLanguage({ LC_ALL: "und", LC_MESSAGES: "", LANG: "zh_CN.UTF-8" }),
+    "zh-CN",
+  );
 });
 
 function textResponse(text: string): CanonicalModelResponse {
