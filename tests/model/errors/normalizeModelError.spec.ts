@@ -24,3 +24,23 @@ test("normalizeModelError marks unsupported image model errors as image-strip re
     assert.equal(error.recoverableViaImageStrip, true, message);
   }
 });
+
+test("normalizeModelError maps invalid API key messages to auth_error", () => {
+  for (const message of [
+    "invalid_api_key: the supplied key is invalid",
+    "Incorrect API key provided",
+  ]) {
+    const error = normalizeModelError("test", "openai", new Error(message));
+    assert.equal(error.code, "auth_error", message);
+    assert.equal(error.retryable, false, message);
+  }
+});
+
+test("normalizeModelError maps exhausted quota messages to billing", () => {
+  for (const message of ["quota exhausted for this account", "quota_exhausted: monthly limit reached"]) {
+    const error = normalizeModelError("test", "openai", new Error(message));
+
+    assert.equal(error.code, "billing", message);
+    assert.equal(error.retryable, false, message);
+  }
+});

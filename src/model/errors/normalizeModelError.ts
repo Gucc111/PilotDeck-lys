@@ -4,6 +4,7 @@ import {
   BILLING_PATTERN,
   CONTEXT_OVERFLOW_PATTERN,
   IMAGE_TOO_LARGE_PATTERN,
+  INVALID_API_KEY_PATTERN,
   MAX_OUTPUT_REACHED_PATTERN,
   MODEL_NOT_FOUND_PATTERN,
   MULTIMODAL_PROCESSOR_PATTERN,
@@ -133,6 +134,9 @@ function classifySemanticError(
   status: number | undefined,
   protocol: ModelProtocol,
 ): CanonicalModelErrorCode | undefined {
+  if (INVALID_API_KEY_PATTERN.test(message)) {
+    return "auth_error";
+  }
   if (PROMPT_TOO_LONG_ANTHROPIC_PATTERN.test(message)) {
     return "prompt_too_long";
   }
