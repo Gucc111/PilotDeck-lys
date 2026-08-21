@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { authenticatedFetch } from "../../../../utils/api";
+import { restartAndReload } from "../../../../utils/restartUi";
 import { cn } from "../../../../lib/utils";
 import type { DesktopVersionCheckResult } from "../../Settings";
 import { SettingsCard } from "../../shared/view";
@@ -226,17 +227,21 @@ export default function AboutSections({
     }
   };
 
-  const handleWebRestart = async () => {
+  const handleWebRestart = () => {
     setInstalling(true);
-    try {
-      await authenticatedFetch("/api/update/restart", {
+    stopWebStatusPolling();
+    restartAndReload(
+      () => authenticatedFetch("/api/update/restart", {
         method: "POST",
-      });
-    } catch {
-      // best effort: server can drop connection while restarting
-    } finally {
-      setInstalling(false);
-    }
+        suppressServerErrorToast: true,
+      }),
+      {
+        copy: {
+          title: t("about.restartingTitle"),
+          description: t("about.restartingDescription"),
+        },
+      },
+    );
   };
 
   const showDownloadButton =

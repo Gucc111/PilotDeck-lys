@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopVersionCheckResult } from "../../Settings";
 import { authenticatedFetch } from "../../../../utils/api";
@@ -50,7 +50,11 @@ describe("AboutSections web update status recovery", () => {
 
   afterEach(() => {
     cleanup();
+    vi.clearAllTimers();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+    document.body.removeAttribute("style");
   });
 
   async function flushEffects() {
@@ -152,5 +156,64 @@ describe("AboutSections web update status recovery", () => {
     await advancePollingInterval();
 
     expect(screen.getByText("settingsPage.about.status.unavailable")).toBeTruthy();
+  });
+
+  it("keeps the web restart flow in a full-page restarting state after click", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("server restarting")));
+    mockedFetch
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: false,
+        lastUpdateResult: {
+          success: true,
+          alreadyUpToDate: false,
+          needsRestart: true,
+        },
+      }))
+      .mockResolvedValueOnce(responseJson({ ok: true }));
+
+    renderAbout({ hasUpdate: false });
+    await flushEffects();
+
+    const restartButton = screen.getByRole("button", { name: "about.restartToApply" });
+    vi.useFakeTimers();
+    fireEvent.click(restartButton);
+
+    expect(document.body.textContent).toContain("about.restartingTitle");
+    expect(document.body.textContent).toContain("about.restartingDescription");
+    expect(screen.queryByRole("button", { name: "about.restartToApply" })).toBeNull();
+    expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", {
+      method: "POST",
+      suppressServerErrorToast: true,
+    });
+  });
+
+  it("does not restore the restart button when the restart request disconnects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("server restarting")));
+    mockedFetch
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: false,
+        lastUpdateResult: {
+          success: true,
+          alreadyUpToDate: false,
+          needsRestart: true,
+        },
+      }))
+      .mockRejectedValueOnce(new Error("connection closed"));
+
+    renderAbout({ hasUpdate: false });
+    await flushEffects();
+
+    const restartButton = screen.getByRole("button", { name: "about.restartToApply" });
+    vi.useFakeTimers();
+    fireEvent.click(restartButton);
+
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("about.restartingTitle");
+    expect(screen.queryByRole("button", { name: "about.restartToApply" })).toBeNull();
+    expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", {
+      method: "POST",
+      suppressServerErrorToast: true,
+    });
   });
 });
