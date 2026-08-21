@@ -88,10 +88,27 @@ test("failed availability checks become a generic tool_unavailable error", async
 });
 
 test("explicitly disabled builtin tools retain an unavailable diagnostic", async () => {
-  const registry = createBuiltinRegistry({ webFetch: false });
+  const registry = createBuiltinRegistry({ webSearch: false, webFetch: false });
   assert.equal(registry.getUnavailable("web_fetch")?.code, "unavailable");
+  assert.equal(registry.getUnavailable("web_search")?.code, "unavailable");
 
-  const result = await new ToolRuntime(registry, new PermissionRuntime()).execute(
+  const filtered = await filterAvailableTools(registry, { cwd: process.cwd() });
+  assert.deepEqual(filtered.unavailable, [
+    {
+      toolName: "web_fetch",
+      code: "unavailable",
+      reason: "web_fetch is disabled in this session.",
+    },
+    {
+      toolName: "web_search",
+      code: "unavailable",
+      reason: "web_search is disabled in this session.",
+    },
+  ]);
+  assert.equal(filtered.registry.getUnavailable("web_fetch")?.code, "unavailable");
+  assert.equal(filtered.registry.getUnavailable("web_search")?.code, "unavailable");
+
+  const result = await new ToolRuntime(filtered.registry, new PermissionRuntime()).execute(
     { id: "call-disabled", name: "web_fetch", input: { url: "https://example.com" } },
     context(),
   );

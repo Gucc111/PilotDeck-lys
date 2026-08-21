@@ -22,6 +22,10 @@ export async function filterAvailableTools(
 ): Promise<FilterAvailableToolsResult> {
   const filtered = new ToolRegistry();
   const unavailable: PilotDeckUnavailableToolDiagnostic[] = [];
+  for (const diagnostic of registry.listUnavailable()) {
+    filtered.markUnavailable(diagnostic);
+    unavailable.push(diagnostic);
+  }
   const checkCache = new Map<
     NonNullable<PilotDeckToolDefinition["checkAvailability"]>,
     Promise<PilotDeckToolAvailability>

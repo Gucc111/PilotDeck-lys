@@ -66,6 +66,14 @@ export class ToolRegistry {
     return this.unavailable.get(realName) ?? this.unavailable.get(name);
   }
 
+  listUnavailable(): ToolUnavailableDiagnostic[] {
+    const unique = new Map<string, ToolUnavailableDiagnostic>();
+    for (const diagnostic of this.unavailable.values()) {
+      unique.set(diagnostic.toolName, diagnostic);
+    }
+    return [...unique.values()].sort((a, b) => a.toolName.localeCompare(b.toolName));
+  }
+
   toCanonicalSchemas(): CanonicalToolSchema[] {
     return this.list().map((tool) => ({
       name: tool.name,
