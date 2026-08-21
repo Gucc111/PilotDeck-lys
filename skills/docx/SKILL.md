@@ -34,6 +34,8 @@ mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/review"
 
 Determine the audience, purpose, authoritative sources, required content, expected form, and what must remain unchanged. Distinguish factual sources from visual references.
 
+Treat the user's explicit requirements as the primary acceptance criteria. Preserve the source document's structure and formatting where they support those requirements; when they conflict, make the smallest necessary change that satisfies the requested outcome.
+
 Inspect only relevant content and package facts:
 
 ```bash
@@ -81,6 +83,8 @@ bash "$DOCX" review \
 ```
 
 `review_pending` means structural facts and revision-specific page images are ready; it is not a visual pass. Open the pages that matter for the request and your changes. Check hierarchy, readability, clipping, tables, images, pagination, blank pages, headers, footers, and consistency with supplied references. Keep visual claims within pages actually inspected.
+
+Judge the final document against the user's requested outcome, not merely its similarity to the source or a successful tool result.
 
 After changing the candidate, run review again and inspect images from the new revision. Previous images no longer describe the current file. Use structural facts for comments, revisions, fields, relationships, metadata, package features, and inspection limitations.
 
