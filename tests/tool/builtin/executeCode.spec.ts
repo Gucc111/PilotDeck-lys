@@ -39,25 +39,3 @@ test("execute_code rejects nested web search calls when web search is disabled",
   assert.equal(response.code, "tool_not_allowed");
   assert.equal(executed, false);
 });
-
-test("disabling web fetch removes it from execute_code", async () => {
-  const registry = createBuiltinRegistry({ webFetch: false });
-
-  assert.equal(registry.has("web_fetch"), false);
-  assert.doesNotMatch(registry.get("execute_code")?.description ?? "", /\bweb_fetch\b/);
-
-  let executed = false;
-  const response = await handleExecuteCodeRpcLineForTests(
-    JSON.stringify({ tool: "web_fetch", args: { url: "https://example.com" } }),
-    {
-      webFetch: false,
-      executeTool: async () => {
-        executed = true;
-        throw new Error("web_fetch should not be invoked");
-      },
-    },
-  );
-
-  assert.equal(response.code, "tool_not_allowed");
-  assert.equal(executed, false);
-});

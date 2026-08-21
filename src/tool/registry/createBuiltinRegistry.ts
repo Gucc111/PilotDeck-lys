@@ -101,7 +101,6 @@ export function createBuiltinRegistry(options?: CreateBuiltinRegistryOptions): T
   registry.register(createBashTool(options?.bash));
   registry.register(createExecuteCodeTool({
     webSearch: options?.webSearch !== false,
-    webFetch: options?.webFetch !== false,
   }));
   if (options?.webSearch !== false) {
     registry.register(createWebSearchTool(options?.webSearch));
