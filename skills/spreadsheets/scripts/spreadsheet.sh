@@ -132,7 +132,7 @@ case "${1:-}" in
     cmd_fix "$@"
     ;;
   ""|-h|--help|help)
-    printf 'Usage: spreadsheet.sh <check|fix|inspect|validate|render|deliver|recalculate|compare|convert-legacy|self-test> [options]\n'
+    printf 'Usage: spreadsheet.sh <check|fix|validate|render|deliver|recalculate|compare|convert-legacy|self-test> [options]\n'
     ;;
   *)
     if ! runtime_ready; then

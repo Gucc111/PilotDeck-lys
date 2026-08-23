@@ -210,27 +210,6 @@ async function emitReport(report, filePath = null) {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
-function serializable(value, seen = new WeakSet()) {
-  if (value === undefined) return null;
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (typeof value === "bigint") return value.toString();
-  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : null;
-  if (Buffer.isBuffer(value)) return { bytes: value.length };
-  if (Array.isArray(value)) return value.map((item) => serializable(item, seen));
-  if (typeof value === "object") {
-    if (seen.has(value)) return "[circular]";
-    seen.add(value);
-    const result = {};
-    for (const [key, item] of Object.entries(value)) {
-      if (typeof item === "function") continue;
-      result[key] = serializable(item, seen);
-    }
-    seen.delete(value);
-    return result;
-  }
-  return String(value);
-}
-
 function localName(node) {
   return node?.localName ?? node?.nodeName?.split(":").at(-1) ?? null;
 }
@@ -253,12 +232,13 @@ function directChild(element, name) {
 }
 
 function parseXml(xml, partName = "XML") {
+  const source = String(xml).replace(/^\uFEFF/, "");
   const diagnostics = [];
   const document = new DOMParser({
     onError(level, message) {
       diagnostics.push({ level, message });
     },
-  }).parseFromString(xml, "application/xml");
+  }).parseFromString(source, "application/xml");
   const failures = diagnostics.filter((item) => item.level === "error" || item.level === "fatalError");
   if (!document?.documentElement || failures.length > 0 || elementsByLocalName(document, "parsererror").length > 0) {
     throw new Error(`Malformed XML in ${partName}: ${failures.map((item) => item.message).join("; ") || "parser error"}`);
@@ -292,6 +272,24 @@ async function loadPackage(filePath) {
     if (!zip.file(required)) throw new Error(`The XLSX package is missing ${required}`);
   }
   return { buffer, zip };
+}
+
+function assertSafePackageEntries(zip) {
+  for (const [entryName, entry] of Object.entries(zip.files)) {
+    const originalName = entry.unsafeOriginalName ?? entryName;
+    const normalized = String(originalName).replaceAll("\\", "/");
+    const segments = normalized.split("/");
+    if (
+      originalName !== entryName
+      || originalName.includes("\0")
+      || originalName.includes("\\")
+      || normalized.startsWith("/")
+      || /^[A-Za-z]:\//.test(normalized)
+      || segments.includes("..")
+    ) {
+      throw new Error(`Unsafe XLSX package entry '${originalName}'`);
+    }
+  }
 }
 
 function resolveRelationshipTarget(ownerPart, target) {
@@ -333,8 +331,10 @@ async function workbookSheets(zip) {
 
 async function validatePackageXml(zip) {
   const issues = [];
+  let partCount = 0;
   for (const [entryName, entry] of Object.entries(zip.files)) {
     if (entry.dir || !/\.(?:xml|rels)$/i.test(entryName)) continue;
+    partCount += 1;
     try {
       const document = parseXml(await entry.async("string"), entryName);
       const wanted = expectedRoot(entryName);
@@ -346,6 +346,7 @@ async function validatePackageXml(zip) {
     }
   }
   if (issues.length > 0) throw new Error(`Invalid XLSX package XML: ${JSON.stringify(issues.slice(0, 8))}`);
+  return { partCount };
 }
 
 function formulaKey(record) {
@@ -403,10 +404,10 @@ function countEntries(entries, expression) {
   return entries.filter((entry) => expression.test(entry)).length;
 }
 
-async function packageFacts(zip) {
+async function packageFacts(zip, sheets = null) {
   const entries = Object.keys(zip.files).filter((entry) => !zip.files[entry].dir);
-  const sheets = await workbookSheets(zip);
-  const sheetDetails = await worksheetFacts(zip, sheets);
+  const worksheetList = sheets ?? await workbookSheets(zip);
+  const sheetDetails = await worksheetFacts(zip, worksheetList);
   return {
     entryCount: entries.length,
     worksheets: sheetDetails,
@@ -472,182 +473,92 @@ function formulaCompatibilityIssues(records) {
   return issues;
 }
 
-function formulaReport(records, maxItems = 100) {
+function formulaReport(records, { includeItems = false, maxItems = 100, maxSamples = 10 } = {}) {
   const compatibility = formulaCompatibilityIssues(records);
   const missingCachedResults = records.filter((record) => !record.hasCache);
   const errors = records.filter((record) => String(record.cellType ?? "").toLowerCase() === "e");
   const invalidReferences = records.filter((record) => /#REF!/i.test(record.formula));
-  return {
+  const report = {
     count: records.length,
-    items: records.slice(0, maxItems).map((record) => ({
+    cachedResultCount: records.length - missingCachedResults.length,
+    missingCachedResultCount: missingCachedResults.length,
+    errorCount: errors.length,
+    invalidReferenceCount: invalidReferences.length,
+    compatibilityRiskCount: compatibility.size,
+    samples: {
+      missingCachedResults: missingCachedResults.slice(0, maxSamples).map((record) => ({ sheet: record.sheet, address: record.address, formula: record.formula })),
+      errors: errors.slice(0, maxSamples).map((record) => ({ sheet: record.sheet, address: record.address, error: record.cachedValue })),
+      invalidReferences: invalidReferences.slice(0, maxSamples).map((record) => ({ sheet: record.sheet, address: record.address, formula: record.formula })),
+      compatibilityRisks: [...compatibility.entries()].slice(0, maxSamples).map(([key, reason]) => ({ key, reason })),
+    },
+  };
+  if (includeItems) {
+    report.items = records.slice(0, maxItems).map((record) => ({
       sheet: record.sheet,
       address: record.address,
       formula: record.formula,
       formulaType: record.formulaType,
       value: cachedValue(record),
       cachePresent: record.hasCache,
-    })),
-    missingCachedResults: missingCachedResults.slice(0, 100).map((record) => ({ sheet: record.sheet, address: record.address, formula: record.formula })),
-    errors: errors.slice(0, 100).map((record) => ({ sheet: record.sheet, address: record.address, error: record.cachedValue })),
-    invalidReferences: invalidReferences.slice(0, 100).map((record) => ({ sheet: record.sheet, address: record.address, formula: record.formula })),
-    compatibilityRisks: [...compatibility.entries()].slice(0, 100).map(([key, reason]) => ({ key, reason })),
-  };
-}
-
-function escapeRegularExpression(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }));
+  }
+  return report;
 }
 
 function relationshipOwnerPart(relationshipPart) {
+  if (relationshipPart === "_rels/.rels") return "";
   const match = /^(.*\/)?_rels\/([^/]+)\.rels$/i.exec(relationshipPart);
   if (!match) return null;
   return `${match[1] ?? ""}${match[2]}`;
 }
 
-async function normalizeForExcelJs(buffer) {
-  const zip = await JSZip.loadAsync(buffer);
-  let changed = false;
-  for (const [entryName, entry] of Object.entries(zip.files)) {
-    if (entry.dir || !entryName.endsWith(".xml")) continue;
-    let xml = await entry.async("string");
-    const namespaceMatch = xml.match(/xmlns:([A-Za-z_][\w.-]*)=(["'])http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main\2/);
-    if (namespaceMatch) {
-      const prefix = escapeRegularExpression(namespaceMatch[1]);
-      const quote = namespaceMatch[2];
-      const defaultNamespace = `xmlns=${quote}${MAIN_NS}${quote}`;
-      xml = xml.replace(new RegExp(`(<\\/?)(?:${prefix}):`, "g"), "$1");
-      xml = xml.includes(defaultNamespace) ? xml.replace(namespaceMatch[0], "") : xml.replace(namespaceMatch[0], defaultNamespace);
-    }
-    if (xml !== await entry.async("string")) {
-      zip.file(entryName, xml);
-      changed = true;
-    }
-  }
+async function validatePackageRelationships(zip) {
+  let partCount = 0;
+  let relationshipCount = 0;
+  let rootReferencesWorkbook = false;
   for (const [entryName, entry] of Object.entries(zip.files)) {
     if (entry.dir || !entryName.endsWith(".rels")) continue;
     const owner = relationshipOwnerPart(entryName);
-    if (!owner) continue;
-    const xml = await entry.async("string");
-    const normalized = xml.replace(/(<Relationship\b[^>]*\bTarget=)(["'])(\/[^"']+)\2/gi, (_match, before, quote, target) => {
-      const relative = path.posix.relative(path.posix.dirname(owner), target.slice(1));
-      return `${before}${quote}${relative}${quote}`;
-    });
-    if (normalized !== xml) {
-      zip.file(entryName, normalized);
-      changed = true;
+    if (owner === null) throw new Error(`Relationship part '${entryName}' is not in a valid _rels directory`);
+    if (owner && !zip.file(owner)) throw new Error(`Relationship owner '${owner}' does not exist for ${entryName}`);
+    const document = parseXml(await entry.async("string"), entryName);
+    const identifiers = new Set();
+    partCount += 1;
+    for (const relationship of elementsByLocalName(document, "Relationship")) {
+      const id = relationship.getAttribute("Id");
+      const type = relationship.getAttribute("Type");
+      const target = relationship.getAttribute("Target");
+      if (!id || !type || !target) throw new Error(`Relationship in '${entryName}' is missing Id, Type, or Target`);
+      if (identifiers.has(id)) throw new Error(`Relationship Id '${id}' is duplicated in ${entryName}`);
+      identifiers.add(id);
+      relationshipCount += 1;
+      if (String(relationship.getAttribute("TargetMode") ?? "").toLowerCase() === "external") continue;
+      const resolved = resolveRelationshipTarget(owner, target);
+      if (!zip.file(resolved)) throw new Error(`Relationship target '${target}' from ${entryName} does not exist`);
+      if (entryName === "_rels/.rels" && resolved === "xl/workbook.xml") rootReferencesWorkbook = true;
     }
   }
-  return changed ? zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }) : buffer;
+  if (!rootReferencesWorkbook) throw new Error("The package root relationships do not reference xl/workbook.xml");
+  return { partCount, relationshipCount };
 }
 
-async function loadXlsx(filePath, formulaRecords = null) {
-  const source = await fs.readFile(filePath);
-  let workbook = new ExcelJS.Workbook();
-  let normalized = false;
-  try {
-    await workbook.xlsx.load(source);
-  } catch (firstError) {
-    const fallback = await normalizeForExcelJs(source);
-    workbook = new ExcelJS.Workbook();
-    try {
-      await workbook.xlsx.load(fallback);
-      normalized = fallback !== source;
-    } catch {
-      throw firstError;
-    }
-  }
-  const records = formulaRecords ?? collectFormulaRecords((await loadPackage(filePath)).zip);
-  for (const record of await records) {
-    const worksheet = workbook.getWorksheet(record.sheet);
-    if (!worksheet || !record.address || !record.hasCache) continue;
-    const cell = worksheet.getCell(record.address);
-    const value = cell.value;
-    if (!value || typeof value !== "object" || !("formula" in value || "sharedFormula" in value)) continue;
-    if (Object.hasOwn(value, "result") && value.result !== null && value.result !== undefined) continue;
-    cell.value = { ...value, result: cachedValue(record) };
-  }
-  return { workbook, normalized };
-}
-
-function columnNumber(letters) {
-  let result = 0;
-  for (const character of letters.toUpperCase()) result = result * 26 + character.charCodeAt(0) - 64;
-  return result;
-}
-
-function columnLetters(number) {
-  let value = number;
-  let result = "";
-  while (value > 0) {
-    value -= 1;
-    result = String.fromCharCode(65 + value % 26) + result;
-    value = Math.floor(value / 26);
-  }
-  return result;
-}
-
-function parseRange(range) {
-  const match = /^\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/i.exec(String(range).trim());
-  if (!match) throw new Error(`Invalid cell range '${range}'`);
+async function checkXlsxStructure(zip) {
+  assertSafePackageEntries(zip);
+  const xml = await validatePackageXml(zip);
+  const relationships = await validatePackageRelationships(zip);
+  const sheets = await workbookSheets(zip);
+  if (sheets.length === 0) throw new Error("The workbook has no worksheets");
   return {
-    startCol: columnNumber(match[1]),
-    startRow: Number(match[2]),
-    endCol: columnNumber(match[3] ?? match[1]),
-    endRow: Number(match[4] ?? match[2]),
-  };
-}
-
-function cellStyle(cell) {
-  return serializable({
-    numberFormat: cell.numFmt ?? null,
-    font: cell.font ? { name: cell.font.name, size: cell.font.size, bold: cell.font.bold, italic: cell.font.italic, color: cell.font.color } : null,
-    fill: cell.fill ?? null,
-    alignment: cell.alignment ?? null,
-    border: cell.border ?? null,
-  });
-}
-
-function cellFormula(cell) {
-  const value = cell.value;
-  if (!value || typeof value !== "object" || !("formula" in value || "sharedFormula" in value)) return null;
-  return { formula: value.formula ?? null, sharedFormula: value.sharedFormula ?? null, result: value.result ?? null };
-}
-
-function inspectSelection(worksheet, requestedRange, maxRows, maxCols, styles, formulaRecords = new Map()) {
-  const usedRows = Math.max(worksheet.rowCount, worksheet.actualRowCount, 1);
-  const usedCols = Math.max(worksheet.columnCount, worksheet.actualColumnCount, 1);
-  const requested = requestedRange ? parseRange(requestedRange) : { startRow: 1, startCol: 1, endRow: usedRows, endCol: usedCols };
-  const range = {
-    ...requested,
-    endRow: Math.min(requested.endRow, requested.startRow + maxRows - 1),
-    endCol: Math.min(requested.endCol, requested.startCol + maxCols - 1),
-  };
-  const cells = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startCol; column <= range.endCol; column += 1) {
-      const cell = worksheet.getCell(row, column);
-      const packageFormula = formulaRecords.get(`${worksheet.name}!${cell.address}`);
-      const formula = packageFormula ? {
-        formula: packageFormula.formula,
-        sharedFormula: packageFormula.formulaType === "shared" && !packageFormula.formula
-          ? { sharedIndex: packageFormula.sharedIndex }
-          : null,
-        result: cachedValue(packageFormula),
-      } : cellFormula(cell);
-      if (cell.value === null && !formula && !(styles && cell.hasStyle)) continue;
-      const item = {
-        address: cell.address,
-        value: serializable(formula ? formula.result : cell.value),
-      };
-      if (formula) item.formula = formula.formula ?? { sharedFormula: formula.sharedFormula };
-      if (styles) item.style = cellStyle(cell);
-      cells.push(item);
-    }
-  }
-  return {
-    range: `${columnLetters(range.startCol)}${range.startRow}:${columnLetters(range.endCol)}${range.endRow}`,
-    truncated: !requestedRange && (usedRows > maxRows || usedCols > maxCols),
-    cells,
+    report: {
+      status: "ok",
+      packageReadable: true,
+      entryCount: Object.values(zip.files).filter((entry) => !entry.dir).length,
+      xmlPartCount: xml.partCount,
+      relationshipPartCount: relationships.partCount,
+      relationshipCount: relationships.relationshipCount,
+      worksheetCount: sheets.length,
+    },
+    sheets,
   };
 }
 
@@ -695,44 +606,6 @@ async function inspectDelimited(filePath, options = {}) {
     rows: rows.slice(0, maxRows).map((row) => row.slice(0, maxCols)),
     truncated: rows.length > maxRows || widths.some((width) => width > maxCols),
   };
-}
-
-async function inspectXlsx(filePath, options = {}) {
-  const { zip } = await loadPackage(filePath);
-  await validatePackageXml(zip);
-  const sheets = await workbookSheets(zip);
-  const records = await collectFormulaRecords(zip, sheets);
-  const facts = await packageFacts(zip);
-  const report = {
-    status: "ok",
-    path: path.resolve(filePath),
-    format: "xlsx",
-    workbook: { worksheetCount: sheets.length, worksheets: facts.worksheets },
-    package: { entryCount: facts.entryCount, features: facts.features },
-    formulas: formulaReport(records, integerOption(options, "max-formulas", 100)),
-  };
-  try {
-    const { workbook, normalized } = await loadXlsx(filePath, Promise.resolve(records));
-    const worksheet = options.sheet ? workbook.getWorksheet(String(options.sheet)) : workbook.worksheets[0];
-    if (!worksheet) throw new Error(options.sheet ? `Worksheet '${options.sheet}' was not found` : "Workbook has no worksheets");
-    report.readerNormalization = normalized;
-    report.selection = {
-      sheet: worksheet.name,
-      ...inspectSelection(
-        worksheet,
-        options.range ? String(options.range) : null,
-        integerOption(options, "max-rows", 30),
-        integerOption(options, "max-cols", 20),
-        Boolean(options.styles),
-        new Map(records.map((record) => [formulaKey(record), record])),
-      ),
-    };
-  } catch (error) {
-    report.status = "partial";
-    report.selection = null;
-    report.readerIssue = error instanceof Error ? error.message : String(error);
-  }
-  return report;
 }
 
 function findSoffice() {
@@ -1021,23 +894,29 @@ async function recalculatePreservingPackage(inputPath, outputPath) {
   }
 }
 
-async function validateXlsx(filePath) {
+async function validateXlsx(filePath, options = {}) {
   const { zip } = await loadPackage(filePath);
-  await validatePackageXml(zip);
-  const records = await collectFormulaRecords(zip);
-  const formulas = formulaReport(records, 100);
-  const facts = await packageFacts(zip);
+  const structure = await checkXlsxStructure(zip);
+  const records = await collectFormulaRecords(zip, structure.sheets);
+  const details = Boolean(options.details);
+  const formulas = formulaReport(records, {
+    includeItems: details,
+    maxItems: integerOption(options, "max-formulas", 100),
+    maxSamples: details ? 100 : 10,
+  });
+  const facts = await packageFacts(zip, structure.sheets);
   const findings = [
-    ...formulas.missingCachedResults.map((item) => ({ type: "missing_formula_cache", ...item })),
-    ...formulas.errors.map((item) => ({ type: "formula_error_value", ...item })),
-    ...formulas.invalidReferences.map((item) => ({ type: "formula_invalid_reference", ...item })),
-    ...formulas.compatibilityRisks.map((item) => ({ type: "formula_compatibility_risk", ...item })),
-  ];
+    ["missing_formula_cache", formulas.missingCachedResultCount],
+    ["formula_error_value", formulas.errorCount],
+    ["formula_invalid_reference", formulas.invalidReferenceCount],
+    ["formula_compatibility_risk", formulas.compatibilityRiskCount],
+  ].filter(([, count]) => count > 0).map(([type, count]) => ({ type, count }));
   return {
     status: findings.length > 0 ? "partial" : "ok",
     path: path.resolve(filePath),
     format: "xlsx",
     packageValid: true,
+    structure: structure.report,
     workbook: { worksheetCount: facts.worksheets.length, worksheets: facts.worksheets },
     package: { entryCount: facts.entryCount, features: facts.features },
     formulas,
@@ -1163,21 +1042,6 @@ async function convertLegacyXls(inputPath, outputPath) {
   }
 }
 
-async function inspectSpreadsheet(filePath, options = {}) {
-  const extension = assertSupportedInput(filePath, { legacy: true });
-  if (extension === ".xlsx") return inspectXlsx(filePath, options);
-  if (extension === ".csv" || extension === ".tsv") return inspectDelimited(filePath, options);
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pilotdeck-spreadsheet-inspect-"));
-  try {
-    const converted = path.join(tempRoot, "converted.xlsx");
-    await convertLegacyXls(filePath, converted);
-    const report = await inspectXlsx(converted, options);
-    return { ...report, path: path.resolve(filePath), format: "xls", convertedForInspection: true };
-  } finally {
-    await fs.rm(tempRoot, { recursive: true, force: true });
-  }
-}
-
 function naturalPageSort(left, right) {
   const leftNumber = Number(left.match(/(\d+)(?=\.png$)/)?.[1] ?? 0);
   const rightNumber = Number(right.match(/(\d+)(?=\.png$)/)?.[1] ?? 0);
@@ -1238,19 +1102,12 @@ async function renderSpreadsheet(inputPath, outputDir, explicitPdf = null) {
   }
 }
 
-async function commandInspect(options) {
-  const input = path.resolve(requireOption(options, "input"));
-  const output = options.out ? assertInternalPath(requireOption(options, "out"), "Inspection report") : null;
-  assertDistinctPaths({ input, output });
-  await emitReport(await inspectSpreadsheet(input, options), output);
-}
-
 async function commandValidate(options) {
   const input = path.resolve(requireOption(options, "input"));
   const output = options.out ? assertInternalPath(requireOption(options, "out"), "Validation report") : null;
   assertDistinctPaths({ input, output });
   const extension = assertSupportedInput(input);
-  const report = extension === ".xlsx" ? await validateXlsx(input) : await validateDelimited(input);
+  const report = extension === ".xlsx" ? await validateXlsx(input, options) : await validateDelimited(input);
   await emitReport(report, output);
 }
 
@@ -1316,7 +1173,17 @@ async function deliverSpreadsheet({ input, output, source = null, replaceSource 
   if (replaceSource && !replacingSource) throw new Error("--replace-source requires --source and --out to identify the same source file");
   if (replacingSource && !replaceSource) throw blocked("source-replacement-not-authorized", "Refusing to replace the source workbook without --replace-source");
   if (await pathExists(output) && !replacingSource) throw new Error(`Refusing to overwrite existing deliverable: ${output}`);
-  const validation = inputExtension === ".xlsx" ? await validateXlsx(input) : await validateDelimited(input);
+  let buffer;
+  let structure;
+  if (inputExtension === ".xlsx") {
+    const loaded = await loadPackage(input);
+    buffer = loaded.buffer;
+    structure = { format: "xlsx", ...(await checkXlsxStructure(loaded.zip)).report };
+  } else {
+    buffer = await fs.readFile(input);
+    const decoded = decodeDelimited(buffer, "auto");
+    structure = { status: "ok", format: inputExtension.slice(1), readable: true, encoding: decoded.encoding, byteLength: buffer.length };
+  }
   let recovery = null;
   if (replacingSource) {
     const workDir = pilotDeckWorkDir();
@@ -1325,12 +1192,11 @@ async function deliverSpreadsheet({ input, output, source = null, replaceSource 
     await ensureParent(recovery);
     await fs.copyFile(source, recovery);
   }
-  const buffer = await fs.readFile(input);
   await atomicWriteBuffer(output, buffer);
   const candidateHash = sha256(buffer);
   const outputHash = await fileSha256(output);
   if (candidateHash !== outputHash) throw new Error("Final deliverable does not match the candidate workbook");
-  return { status: "ok", output: path.resolve(output), sha256: outputHash, candidate: { path: path.resolve(input), sha256: candidateHash }, recovery, validation };
+  return { status: "ok", output: path.resolve(output), sha256: outputHash, candidate: { path: path.resolve(input), sha256: candidateHash }, recovery, structure };
 }
 
 async function commandDeliver(options) {
@@ -1384,9 +1250,10 @@ async function commandSelfTest(options) {
     await workbook.xlsx.writeFile(candidate);
     const validation = await validateXlsx(candidate);
     assert(validation.packageValid, "validate package");
-    const inspection = await inspectXlsx(candidate, { sheet: "计算", range: "A1:B5", styles: true });
-    assert(inspection.selection?.cells?.length > 0, "inspect range");
-
+    assert(validation.status === "partial", "validate reports formula findings without rejecting the package");
+    const findingsDeliverable = path.join(root, "formula-findings-final.xlsx");
+    const findingsDelivery = await deliverSpreadsheet({ input: candidate, output: findingsDeliverable });
+    assert(findingsDelivery.structure.packageReadable && await fileSha256(candidate) === await fileSha256(findingsDeliverable), "formula findings do not block structural delivery");
     const beforePackage = await loadPackage(candidate);
     const beforeSheets = await workbookSheets(beforePackage.zip);
     const sheetPart = beforeSheets.find((item) => item.name === "计算").part;
@@ -1428,6 +1295,50 @@ async function commandSelfTest(options) {
     const simple = new ExcelJS.Workbook();
     simple.addWorksheet("Data").addRows([["A"], [1]]);
     await simple.xlsx.writeFile(noFormula);
+
+    const bomCandidate = path.join(workDir, "bom.xlsx");
+    const bomPackage = await JSZip.loadAsync(await fs.readFile(noFormula));
+    const workbookXml = await bomPackage.file("xl/workbook.xml").async("string");
+    bomPackage.file("xl/workbook.xml", `\uFEFF${workbookXml.replace(/^\uFEFF/, "")}`);
+    await fs.writeFile(bomCandidate, await bomPackage.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    const bomDeliverable = path.join(root, "bom-final.xlsx");
+    const bomDelivery = await deliverSpreadsheet({ input: bomCandidate, output: bomDeliverable });
+    assert(bomDelivery.structure.packageReadable && await fileSha256(bomCandidate) === await fileSha256(bomDeliverable), "delivery accepts BOM-prefixed package XML");
+
+    const missingPartCandidate = path.join(workDir, "missing-part.xlsx");
+    const missingPartPackage = await JSZip.loadAsync(await fs.readFile(noFormula));
+    missingPartPackage.remove("xl/worksheets/sheet1.xml");
+    await fs.writeFile(missingPartCandidate, await missingPartPackage.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    let missingPartBlocked = false;
+    try {
+      await deliverSpreadsheet({ input: missingPartCandidate, output: path.join(root, "missing-part-final.xlsx") });
+    } catch {
+      missingPartBlocked = true;
+    }
+    assert(missingPartBlocked, "delivery rejects missing relationship targets");
+
+    const unsafeCandidate = path.join(workDir, "unsafe-entry.xlsx");
+    const unsafePackage = await JSZip.loadAsync(await fs.readFile(noFormula));
+    unsafePackage.file("../escape.xml", "<escape/>");
+    await fs.writeFile(unsafeCandidate, await unsafePackage.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    let unsafeEntryBlocked = false;
+    try {
+      await deliverSpreadsheet({ input: unsafeCandidate, output: path.join(root, "unsafe-entry-final.xlsx") });
+    } catch {
+      unsafeEntryBlocked = true;
+    }
+    assert(unsafeEntryBlocked, "delivery rejects unsafe package paths");
+
+    const malformedCandidate = path.join(workDir, "malformed.xlsx");
+    await fs.writeFile(malformedCandidate, Buffer.from("not an XLSX ZIP package", "utf8"));
+    let malformedBlocked = false;
+    try {
+      await deliverSpreadsheet({ input: malformedCandidate, output: path.join(root, "malformed-final.xlsx") });
+    } catch {
+      malformedBlocked = true;
+    }
+    assert(malformedBlocked, "delivery rejects malformed XLSX ZIP packages");
+
     const noFormulaResult = await recalculatePreservingPackage(noFormula, noFormulaOutput);
     assert(noFormulaResult.outcome === "skipped_no_formulas", "skip workbook without formulas");
     assert(await fileSha256(noFormula) === await fileSha256(noFormulaOutput), "no-formula workbook copied exactly");
@@ -1458,6 +1369,7 @@ async function commandSelfTest(options) {
     const deliveredInput = await pathExists(recalculated) ? recalculated : candidate;
     const delivery = await deliverSpreadsheet({ input: deliveredInput, output: deliverable });
     assert(await fileSha256(deliverable) === await fileSha256(deliveredInput) && delivery.sha256 === await fileSha256(deliveredInput), "atomic delivery bytes");
+    assert(delivery.structure.packageReadable && !Object.hasOwn(delivery, "validation"), "delivery uses structural checks without full validation");
     let overwriteBlocked = false;
     try {
       await deliverSpreadsheet({ input: deliveredInput, output: deliverable });
@@ -1488,13 +1400,12 @@ async function commandSelfTest(options) {
 }
 
 function printHelp() {
-  process.stdout.write(`PilotDeck spreadsheets skill\n\nCore commands:\n  inspect --input book.xlsx [--sheet Sheet1 --range A1:H20 --styles --out report.json]\n  validate --input book.xlsx [--out report.json]\n  render --input book.xlsx --out-dir render [--pdf render.pdf]\n  deliver --input candidate.xlsx --out final.xlsx [--source source.xlsx --replace-source]\n\nOptional mechanical commands:\n  recalculate --input candidate.xlsx --out recalculated.xlsx [--report report.json]\n  compare --before source.xlsx --after candidate.xlsx --out comparison.json\n  convert-legacy --input source.xls --out converted.xlsx\n  self-test [--out directory]\n`);
+  process.stdout.write(`PilotDeck spreadsheets skill\n\nReview commands (optional):\n  validate --input book.xlsx [--details --out report.json]\n  recalculate --input candidate.xlsx --out recalculated.xlsx [--report report.json]\n  render --input book.xlsx --out-dir render [--pdf render.pdf]\n\nDelivery:\n  deliver --input candidate.xlsx --out final.xlsx [--source source.xlsx --replace-source]\n\nOther optional commands:\n  compare --before source.xlsx --after candidate.xlsx --out comparison.json\n  convert-legacy --input source.xls --out converted.xlsx\n  self-test [--out directory]\n`);
 }
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
   switch (command) {
-    case "inspect": await commandInspect(options); break;
     case "validate": await commandValidate(options); break;
     case "compare": await commandCompare(options); break;
     case "recalculate": await commandRecalculate(options); break;

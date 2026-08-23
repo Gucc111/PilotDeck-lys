@@ -1,6 +1,6 @@
 ---
 name: spreadsheets
-description: Create, edit, inspect, review, and finalize standalone XLSX, XLS, CSV, and TSV spreadsheet files. Use for spreadsheet generation, formatting, formulas, charts, data consolidation, source-based calculations, numeric reconciliation, legacy conversion, and visual QA. Do not use for live Microsoft Excel control or macro-enabled workbook editing.
+description: Create, edit, review, and finalize standalone XLSX, XLS, CSV, and TSV spreadsheet files. Use for spreadsheet generation, formatting, formulas, charts, data consolidation, source-based calculations, numeric reconciliation, legacy conversion, and visual QA. Do not use for live Microsoft Excel control or macro-enabled workbook editing.
 ---
 
 # Spreadsheets
@@ -31,10 +31,6 @@ WORKSPACE="${PILOTDECK_WORK_DIR:?PILOTDECK_WORK_DIR is required}/spreadsheets"
 mkdir -p "$WORKSPACE/tmp" "$WORKSPACE/review"
 ```
 
-```bash
-bash "$SHEET" inspect --input "$INPUT" --sheet "Sheet1" --range "A1:H30" --styles
-```
-
 Review package-sensitive features before modifying workbooks containing charts, drawings, pivots, external connections, signatures, or other advanced objects.
 
 ## Build
@@ -51,38 +47,23 @@ For formula caches, Excel/LibreOffice differences, dates, package-sensitive obje
 
 ## Review
 
-Judge the spreadsheet against the user's requested outcome, not whether a tool ran successfully. Choose evidence according to consequence and uncertainty:
+Judge the spreadsheet against the user's requested outcome, not whether a tool ran successfully. Review may be as light as directly checking the result. When mechanical evidence would materially improve confidence, choose any appropriate combination of:
 
-- reread important cells, formulas, and types;
-- reconcile source-dependent figures independently;
-- compare a targeted edit with its source or template;
-- inspect validations, conditional formatting, charts, relationships, or package structure;
-- render and visually inspect the sheets or pages material to the request.
+- `validate` for package, relationship, formula-cache, and formula-error diagnostics;
+- `recalculate` to refresh supported formula caches when changed formulas or dependencies must display calculated results;
+- `render` for visual evidence about layout, pagination, charts, and formatting.
 
-The optional CLI provides facts and images, never a content- or design-quality verdict:
+These are optional tools, not a required pipeline. Decide whether to use them and what to examine according to the task's consequences and uncertainty. If recalculation is needed alongside validation or rendering, recalculate the final candidate first so later evidence describes its final calculation state.
 
-```bash
-bash "$SHEET" validate --input "$WORKSPACE/tmp/candidate.xlsx"
-bash "$SHEET" render \
-  --input "$WORKSPACE/tmp/candidate.xlsx" \
-  --out-dir "$WORKSPACE/review/latest"
-```
+The CLI provides facts and images, never a content- or design-quality verdict. See [optional-tools.md](references/optional-tools.md) only when one of these commands or another mechanical operation would serve the task.
 
 Open relevant full-size page images before making visual claims. After changing the candidate, prior renders no longer describe the current workbook. LibreOffice may paginate, calculate, or substitute fonts differently from Microsoft Excel.
 
-For a simple task, direct inspection may be enough. When correctness depends on sources or non-trivial calculations, write a small task-specific checking script when it materially improves confidence.
+When correctness depends on sources or non-trivial calculations, independently reread or reconcile important cells, formulas, and types, or write a small task-specific checking script when it materially improves confidence. Use `compare` after a package-sensitive edit only when distinguishing intended changes from unrelated package changes matters.
 
 ## Deliver
 
-When formulas or their dependencies changed and cached results matter to previewers or downstream readers, recalculate the final candidate once before delivery. Do not recalculate files without formulas, and do not bypass an unsupported or unsafe result. The command preserves the original package and merges only calculated formula caches:
-
-```bash
-bash "$SHEET" recalculate \
-  --input "$WORKSPACE/tmp/candidate.xlsx" \
-  --out "$WORKSPACE/tmp/recalculated.xlsx"
-```
-
-Publish the reviewed internal candidate through the delivery command:
+Publish the chosen internal candidate through the delivery command:
 
 ```bash
 bash "$SHEET" deliver \
@@ -92,6 +73,6 @@ bash "$SHEET" deliver \
 
 For an edit, add `--source "$INPUT"`. Replace that exact source only when explicitly requested, using `--source "$INPUT" --out "$INPUT" --replace-source`; a recovery copy remains internal.
 
-`deliver` protects the source, checks package validity, and publishes the exact candidate atomically. It does not decide whether the content, formulas, design, or requested outcome are good enough; that judgment belongs to the model's review.
+`deliver` protects the source, rejects structurally unsafe or unreadable packages, and publishes the exact candidate atomically. It does not run `validate`, `recalculate`, or `render`, and it does not decide whether the content, formulas, design, or requested outcome are good enough; those judgments belong to the model.
 
-Use optional mechanical commands such as `compare` and `convert-legacy` only when they directly serve the request. See [optional-tools.md](references/optional-tools.md) when one is needed.
+Use optional mechanical commands such as `compare` and `convert-legacy` only when they directly serve the request.
