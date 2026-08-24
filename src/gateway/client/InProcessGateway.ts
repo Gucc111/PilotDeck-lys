@@ -498,6 +498,7 @@ export class InProcessGateway implements Gateway {
             source: modelSelection.source,
             reasoning: modelSelection.selection.reasoning,
             temperature: modelSelection.selection.temperature,
+            speed: modelSelection.selection.speed,
             runId,
           };
           this.recordActiveTurnEvent(input.sessionKey, event);
@@ -525,6 +526,7 @@ export class InProcessGateway implements Gateway {
                 provider: modelSelection.selection.provider,
                 model: modelSelection.selection.model,
                 temperature: modelSelection.selection.temperature,
+                speed: modelSelection.selection.speed,
                 ...(modelSelection.selection.reasoning !== undefined ? {
                   thinking: {
                     enabled: modelSelection.selection.reasoning > 0,

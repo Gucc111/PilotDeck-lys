@@ -217,6 +217,7 @@ function parseCapabilities(
     "supportsStreaming",
     "supportsParallelToolCalls",
     "supportsThinking",
+    "supportsSpeed",
     "supportsJsonSchema",
     "supportsSystemPrompt",
     "supportsPromptCache",

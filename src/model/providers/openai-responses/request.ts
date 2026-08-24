@@ -20,6 +20,7 @@ export type OpenAIResponsesRequestBody = {
   max_output_tokens: number;
   stream?: boolean;
   temperature?: number;
+  speed?: number;
   metadata?: Record<string, unknown>;
   tools?: OpenAIResponsesTool[];
   tool_choice?: unknown;
@@ -80,6 +81,7 @@ export function buildOpenAIResponsesRequest(
     tools: request.tools?.map(toResponsesTool),
     tool_choice: toResponsesToolChoice(request.toolChoice),
     temperature: request.temperature,
+    speed: model.capabilities.supportsSpeed === true ? request.speed : undefined,
     stream: request.stream,
     metadata: request.metadata
       ? Object.fromEntries(

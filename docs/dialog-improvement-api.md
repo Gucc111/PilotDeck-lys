@@ -383,6 +383,7 @@ type ModelCatalogItem = {
   capabilities: {
     reasoning?: ModelCapability;
     temperature?: ModelCapability;
+    speed?: ModelCapability;
   };
 };
 
@@ -399,6 +400,8 @@ type ModelsResponse = {
 
 - `reasoning`：推理强度，归一化范围 `0..1`。
 - `temperature`：采样温度，范围 `0..1`。
+- `speed`：Provider 请求速度参数，范围 `0..1`；仅在模型显式声明支持时返回。
+- 未显式声明 `supportsThinking` 的模型按协议默认支持 reasoning；显式 `supportsThinking: false` 时不返回 reasoning。
 - `range` 使用 `min`、`max`、`step`；`enum` 使用 `values`。
 - 未返回的能力表示该模型不支持对应参数。
 - Router 开启且支持 auto 时，接口可返回 `{ provider: "router", model: "auto" }` 虚拟条目。
@@ -418,6 +421,7 @@ type SessionModelSelection =
       model: string;
       reasoning?: number;
       temperature?: number;
+      speed?: number;
     };
 
 type SessionModelResponse = {
@@ -430,6 +434,7 @@ type SessionModelResponse = {
     source: "session" | "router" | "default";
     reasoning?: number;
     temperature?: number;
+    speed?: number;
   };
 };
 ```
@@ -450,7 +455,7 @@ type SetSessionModelRequest = {
 };
 ```
 
-`mode=model` 时校验模型存在、可用，并校验 reasoning、temperature。`mode=auto` 仅在 Router 开启时允许，否则返回 `ROUTER_AUTO_UNAVAILABLE`。
+`mode=model` 时校验模型存在、可用，并校验 reasoning、temperature、speed。`mode=auto` 仅在 Router 开启时允许，否则返回 `ROUTER_AUTO_UNAVAILABLE`。
 
 设置写入会话 metadata，对后续 turn 持续生效；会话恢复后继续生效。成功返回 `SessionModelResponse`。
 
@@ -494,6 +499,7 @@ type SessionModelOverride = {
   model: string;
   reasoning?: number;
   temperature?: number;
+  speed?: number;
 };
 
 type UploadedAttachmentRef = {
@@ -520,7 +526,7 @@ type SubmitTurnRequest = {
 服务端校验：
 
 - `modelOverride.provider/model` 必须存在且可用。
-- reasoning、temperature 必须满足模型 capabilities。
+- reasoning、temperature、speed 必须满足模型 capabilities；speed 使用 `0..1` 的统一数值语义。
 - `uploadedAttachments` 必须属于同一 `projectKey`、状态为 completed 且未过期。
 - `mode` 和 `basePermissionMode` 必须属于声明枚举。
 - 校验失败时不得启动模型调用。
@@ -538,6 +544,7 @@ type ModelSelectionChangedEvent = {
   parameters?: {
     reasoning?: number;
     temperature?: number;
+    speed?: number;
   };
   runId?: string;
 };

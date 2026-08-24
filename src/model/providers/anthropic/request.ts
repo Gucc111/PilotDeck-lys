@@ -19,6 +19,7 @@ export type AnthropicRequestBody = {
   tools?: AnthropicTool[];
   tool_choice?: Record<string, unknown>;
   temperature?: number;
+  speed?: number;
   thinking?: {
     type: "enabled" | "adaptive";
     budget_tokens?: number;
@@ -97,6 +98,7 @@ export function buildAnthropicRequest(
     tools: tools.length > 0 ? tools : undefined,
     tool_choice: toolChoice,
     temperature: request.temperature,
+    speed: model.capabilities.supportsSpeed === true ? request.speed : undefined,
     thinking: thinkingPlan.enabled && thinkingPlan.thinkingType
       ? {
           type: thinkingPlan.thinkingType === "adaptive" ? "adaptive" : "enabled",

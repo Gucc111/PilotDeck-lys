@@ -24,6 +24,7 @@ export type OpenAIRequestBody = {
   tools?: OpenAITool[];
   tool_choice?: unknown;
   temperature?: number;
+  speed?: number;
   stream?: boolean;
   metadata?: Record<string, unknown>;
   reasoning?: { effort?: string };
@@ -84,6 +85,7 @@ export function buildOpenAIRequest(
     tools: request.tools?.map((tool) => toOpenAITool(tool, googleOpenAICompatible)),
     tool_choice: toOpenAIToolChoice(request.toolChoice),
     temperature: thinkingPlan.omitTemperature ? undefined : request.temperature,
+    speed: model.capabilities.supportsSpeed === true ? request.speed : undefined,
     stream: request.stream,
     metadata: request.metadata
       ? Object.fromEntries(
