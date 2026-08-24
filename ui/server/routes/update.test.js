@@ -1,4 +1,5 @@
 import express from 'express';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { createUpdateRouter } from './update.js';
 import { RESTART_EXIT_CODE } from '../services/updateRuntime.js';
@@ -80,7 +81,12 @@ describe('update restart route', () => {
 
   it('accepts direct restarts after spawning a replacement process', async () => {
     const unref = vi.fn();
-    const spawnImpl = vi.fn(() => ({ unref }));
+    const child = new EventEmitter();
+    child.unref = unref;
+    const spawnImpl = vi.fn(() => {
+      setImmediate(() => child.emit('spawn'));
+      return child;
+    });
     const setTimeoutImpl = vi.fn();
     const exit = vi.fn();
     const app = createApp(createUpdateRouter({
@@ -137,6 +143,34 @@ describe('update restart route', () => {
 
     expect(response.status).toBe(500);
     expect(response.body.message).toBe('spawn failed');
+    expect(setTimeoutImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when direct replacement spawning emits an async error', async () => {
+    const unref = vi.fn();
+    const child = new EventEmitter();
+    child.unref = unref;
+    const setTimeoutImpl = vi.fn();
+    const app = createApp(createUpdateRouter({
+      env: { PILOTDECK_RESTART_MODE: 'start-built' },
+      resolveRestartCommandImpl: vi.fn(async () => ({
+        command: 'missing',
+        args: [],
+      })),
+      spawnImpl: vi.fn(() => {
+        setImmediate(() => child.emit('error', new Error('spawn ENOENT')));
+        return child;
+      }),
+      setTimeoutImpl,
+      log: vi.fn(),
+      error: vi.fn(),
+    }));
+
+    const response = await requestJson(app, '/api/update/restart', { method: 'POST' });
+
+    expect(response.status).toBe(500);
+    expect(response.body.message).toBe('spawn ENOENT');
+    expect(unref).not.toHaveBeenCalled();
     expect(setTimeoutImpl).not.toHaveBeenCalled();
   });
 });

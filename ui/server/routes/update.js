@@ -407,6 +407,18 @@ export function createRestartHandler({
         env: { ...env },
         windowsHide: platform === 'win32',
       });
+
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          callback(value);
+        };
+        child.once('spawn', () => settle(resolve));
+        child.once('error', (spawnError) => settle(reject, spawnError));
+      });
+
       child.unref();
 
       res.status(202).json({ status: 'accepted', restartMode: 'direct' });

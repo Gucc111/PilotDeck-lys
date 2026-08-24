@@ -29,6 +29,7 @@ type HealthSnapshot = {
 
 type PollHealthInternalOptions = PollHealthOptions & {
   baseline?: HealthSnapshot | null;
+  sawUnavailableBeforePolling?: boolean;
 };
 
 const DEFAULT_TITLE = "Restarting PilotDeck...";
@@ -141,8 +142,9 @@ export function pollHealthAndReload({
   setIntervalImpl = window.setInterval,
   clearIntervalImpl = window.clearInterval,
   baseline = null,
+  sawUnavailableBeforePolling = false,
 }: PollHealthInternalOptions = {}) {
-  let sawUnavailable = false;
+  let sawUnavailable = sawUnavailableBeforePolling;
   const startedAtMs = Date.now();
   const poll = setIntervalImpl(() => {
     void (async () => {
@@ -173,6 +175,12 @@ export function pollHealthAndReload({
           return;
         }
 
+        if (!baseline && sawUnavailable && snapshot.marker) {
+          clearIntervalImpl(poll);
+          reload();
+          return;
+        }
+
         if (!baseline?.marker && !snapshot.marker && sawUnavailable) {
           clearIntervalImpl(poll);
           reload();
@@ -193,9 +201,11 @@ export function restartAndReload(
   void (async () => {
     const fetchImpl = options.fetchImpl ?? fetch;
     let baseline: HealthSnapshot | null = null;
+    let sawUnavailable = false;
     try {
       baseline = await readHealthSnapshot(fetchImpl);
     } catch {
+      sawUnavailable = true;
       baseline = null;
     }
 
@@ -211,6 +221,6 @@ export function restartAndReload(
       // The restart request can be interrupted when the server exits.
     }
 
-    pollHealthAndReload({ ...options, baseline });
+    pollHealthAndReload({ ...options, baseline, sawUnavailableBeforePolling: sawUnavailable });
   })();
 }

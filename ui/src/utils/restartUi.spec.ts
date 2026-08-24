@@ -157,6 +157,22 @@ describe("restartUi", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
+  it("reloads when baseline health fails and polling later sees a marked instance", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("baseline unavailable"))
+      .mockResolvedValueOnce(healthResponse({ instanceId: "new" }));
+    const reload = vi.fn();
+
+    restartAndReload(() => Promise.resolve(statusResponse(true)), { fetchImpl, reload });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
   it("times out without reloading when restart is not confirmed", async () => {
     vi.useFakeTimers();
     const fetchImpl = vi.fn().mockResolvedValue(healthResponse({ instanceId: "same" }));
