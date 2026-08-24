@@ -106,11 +106,10 @@ export function createRuntimeSupervisor({
       return null;
     }
     replacementSupervisor = supervisor;
-    supervisor.once('error', (spawnError) => {
-      error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
-      exit(1);
-    });
-    supervisor.once('close', (code, signal) => {
+    let settled = false;
+    const finishReplacement = (code, signal) => {
+      if (settled) return;
+      settled = true;
       replacementSupervisor = null;
       if (stopping) {
         exit(pendingSignal === 'SIGINT' ? 0 : (typeof code === 'number' ? code : 1));
@@ -121,6 +120,13 @@ export function createRuntimeSupervisor({
         return;
       }
       exit(typeof code === 'number' ? code : 0);
+    };
+    supervisor.once('error', (spawnError) => {
+      error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
+      finishReplacement(1, null);
+    });
+    supervisor.once('close', (code, signal) => {
+      finishReplacement(code, signal);
     });
     return supervisor;
   };

@@ -159,6 +159,35 @@ describe('web runtime supervisor', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
+  it('exits once when the replacement supervisor emits an async error', () => {
+    const firstChild = createFakeChild();
+    const replacementSupervisor = createFakeChild();
+    const spawnImpl = vi.fn()
+      .mockReturnValueOnce(firstChild)
+      .mockReturnValueOnce(replacementSupervisor);
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    createRuntimeSupervisor({
+      mode: 'start-built',
+      spawnImpl,
+      exists: () => true,
+      unlink: vi.fn(),
+      processLike: createFakeProcess(),
+      exit,
+      log: vi.fn(),
+      error,
+    }).run();
+
+    firstChild.emit('close', 1, null);
+    replacementSupervisor.emit('error', new Error('spawn ENOENT'));
+    replacementSupervisor.emit('close', 1, null);
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Failed to start replacement supervisor'));
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('forwards SIGINT and does not restart on signal shutdown', () => {
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);

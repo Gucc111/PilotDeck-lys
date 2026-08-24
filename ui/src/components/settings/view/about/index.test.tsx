@@ -16,10 +16,11 @@ vi.mock("react-i18next", () => ({
 
 const mockedFetch = vi.mocked(authenticatedFetch);
 
-function responseJson(payload: unknown, ok = true) {
+function responseJson(payload: unknown, ok = true): Response {
   return {
     ok,
     json: async () => payload,
+    clone: () => responseJson(payload, ok),
   } as Response;
 }
 
@@ -234,7 +235,7 @@ describe("AboutSections web update status recovery", () => {
     expect(screen.getByText("settingsPage.about.status.unavailable")).toBeTruthy();
   });
 
-  it("keeps the web restart flow in a full-page restarting state after click", async () => {
+  it("shows the web restart waiting overlay after click", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("server restarting")));
     mockedFetch
       .mockResolvedValueOnce(responseJson({
@@ -255,8 +256,8 @@ describe("AboutSections web update status recovery", () => {
     fireEvent.click(restartButton);
     await flushEffects();
 
-    expect(document.body.textContent).toContain("about.restartingTitle");
-    expect(document.body.textContent).toContain("about.restartingDescription");
+    expect(screen.getByText("about.restartingTitle")).toBeTruthy();
+    expect(screen.getByText("about.restartWaitingDescription")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "about.restartToApply" })).toBeNull();
     expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", {
       method: "POST",
@@ -286,11 +287,45 @@ describe("AboutSections web update status recovery", () => {
 
     await flushEffects();
 
-    expect(document.body.textContent).toContain("about.restartingTitle");
+    expect(screen.getByText("about.restartingTitle")).toBeTruthy();
+    expect(screen.getByText("about.restartWaitingDescription")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "about.restartToApply" })).toBeNull();
     expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", {
       method: "POST",
       suppressServerErrorToast: true,
     });
+  });
+
+  it("shows manual restart guidance when restart confirmation times out", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("server unavailable")));
+    mockedFetch
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: false,
+        lastUpdateResult: {
+          success: true,
+          alreadyUpToDate: false,
+          needsRestart: true,
+        },
+      }))
+      .mockResolvedValueOnce(responseJson({
+        status: "accepted",
+        restartMode: "supervisor",
+      }));
+
+    renderAbout({ hasUpdate: false });
+    await flushEffects();
+
+    const restartButton = screen.getByRole("button", { name: "about.restartToApply" });
+    vi.useFakeTimers();
+    fireEvent.click(restartButton);
+    await flushEffects();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+
+    expect(screen.getByText("about.restartFailedTitle")).toBeTruthy();
+    expect(screen.getByText("about.restartFailedDescription")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "about.refreshPage" })).toBeTruthy();
   });
 });

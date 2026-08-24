@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { authenticatedFetch } from "../../../../utils/api";
-import { restartAndReload } from "../../../../utils/restartUi";
+import { restartAndReload, type RestartUiStatus } from "../../../../utils/restartUi";
 import { cn } from "../../../../lib/utils";
 import type { DesktopVersionCheckResult } from "../../Settings";
 import { SettingsCard } from "../../shared/view";
@@ -42,6 +42,7 @@ type WebUpdateStatusPayload = {
 };
 
 type WebUpdatePollDecision = "continue" | "stop";
+type RestartModalStatus = Exclude<RestartUiStatus, "confirmed">;
 
 function formatDateTime(value: string | null): string {
   if (!value) return "-";
@@ -64,6 +65,7 @@ export default function AboutSections({
   const [installing, setInstalling] = useState(false);
   const [localUpdateResult, setLocalUpdateResult] = useState<LocalUpdateResult>(null);
   const [downloadedFilePath, setDownloadedFilePath] = useState<string | null>(null);
+  const [restartStatus, setRestartStatus] = useState<RestartModalStatus | null>(null);
   const webStatusPollRef = useRef<number | null>(null);
   const hasObservedWebUpdateRef = useRef(false);
   const isDesktop = versionInfo.mode === "desktop";
@@ -250,7 +252,12 @@ export default function AboutSections({
       {
         copy: {
           title: t("about.restartingTitle"),
-          description: t("about.restartingDescription"),
+          description: t("about.restartWaitingDescription"),
+        },
+        onStatusChange: (status) => {
+          if (status === "confirmed") return;
+          setRestartStatus(status);
+          if (status !== "restarting") setInstalling(false);
         },
       },
     );
@@ -351,6 +358,41 @@ export default function AboutSections({
           )}
         </div>
       </SettingsCard>
+
+      {restartStatus && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-sm rounded-xl border border-neutral-200 bg-white p-6 text-center shadow-2xl dark:border-neutral-700 dark:bg-neutral-900">
+            {restartStatus === "restarting" ? (
+              <>
+                <Loader2 className="mx-auto mb-4 h-8 w-8 animate-spin text-blue-600" />
+                <h3 className="mb-2 text-base font-semibold text-neutral-900 dark:text-neutral-100">
+                  {t("about.restartingTitle")}
+                </h3>
+                <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                  {t("about.restartWaitingDescription")}
+                </p>
+              </>
+            ) : (
+              <>
+                <X className="mx-auto mb-4 h-8 w-8 text-red-500" />
+                <h3 className="mb-2 text-base font-semibold text-neutral-900 dark:text-neutral-100">
+                  {t("about.restartFailedTitle")}
+                </h3>
+                <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                  {t("about.restartFailedDescription")}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="mt-5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                >
+                  {t("about.refreshPage")}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -48,7 +48,10 @@ describe("VersionBadge", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restart to Apply" }));
 
     expect(restartAndReload).toHaveBeenCalledTimes(1);
-    expect(restartAndReload).toHaveBeenCalledWith(expect.any(Function));
+    expect(restartAndReload).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ onStatusChange: expect.any(Function) }),
+    );
   });
 
   it("passes the restart response through to the shared helper", async () => {
@@ -66,5 +69,48 @@ describe("VersionBadge", () => {
 
     const requestRestart = vi.mocked(restartAndReload).mock.calls[0][0];
     await expect(requestRestart()).resolves.toBe(restartResponse);
+  });
+
+  it("shows a restart waiting overlay after clicking restart", async () => {
+    triggerUpdate.mockResolvedValue({ success: true, lines: ["updated"] });
+
+    render(<VersionBadge />);
+
+    fireEvent.click(screen.getByRole("button", { name: /abc1234/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Update Now" }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Restart to Apply" }));
+
+    const options = vi.mocked(restartAndReload).mock.calls[0][1];
+    expect(options).toBeTruthy();
+    act(() => {
+      options!.onStatusChange?.("restarting");
+    });
+
+    expect(screen.getByText("Restarting PilotDeck")).toBeTruthy();
+    expect(screen.getByText("Restart may take a little while. Please wait.")).toBeTruthy();
+  });
+
+  it("switches the restart overlay to manual restart guidance when rejected", async () => {
+    triggerUpdate.mockResolvedValue({ success: true, lines: ["updated"] });
+
+    render(<VersionBadge />);
+
+    fireEvent.click(screen.getByRole("button", { name: /abc1234/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Update Now" }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Restart to Apply" }));
+
+    const options = vi.mocked(restartAndReload).mock.calls[0][1];
+    expect(options).toBeTruthy();
+    act(() => {
+      options!.onStatusChange?.("request-rejected");
+    });
+
+    expect(screen.getByText("Automatic restart ran into a problem")).toBeTruthy();
+    expect(screen.getByText("Restart PilotDeck manually from the command line, then refresh this page.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
   });
 });
