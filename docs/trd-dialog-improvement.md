@@ -217,6 +217,8 @@ type UploadedAttachmentRef = {
 
 协议默认将未显式声明的模型视为支持 reasoning；模型可通过 `capabilities.supportsThinking: false` 关闭。speed 通过 `capabilities.supportsSpeed: true` 显式开启。
 
+自定义兼容 provider 还必须显式声明 `speedMapping`：OpenAI 使用 `openai_service_tier`，Anthropic 使用 `anthropic_speed`。统一 speed 在 adapter 层转换为 provider 原生枚举；`speed < 0.5` 为低档，`speed >= 0.5` 为高档。Google 不声明 speed。
+
 `includeAuto` 仅在 Router 开启时允许，返回虚拟模型 `router/auto`。
 
 ### 9.2 `submit_turn` 扩展
@@ -247,7 +249,7 @@ type GatewaySubmitTurnInput = ExistingGatewaySubmitTurnInput & {
 
 `submit_turn.modelOverride` 只覆盖本轮，不修改会话保存值。模型解析顺序：本轮 `modelOverride` > 会话保存模型 > Router auto/路由决策 > `agent.model` 默认模型。
 
-`provider/model` 不存在或不可用返回 `INVALID_MODEL_OVERRIDE`；reasoning、temperature 或 speed 不满足模型能力返回 `UNSUPPORTED_MODEL_PARAMETER`。未声明支持的参数不发送给 Provider。支持 speed 的 Provider 适配器将统一 speed 字段作为顶层请求参数透传到目标协议；Google Provider 不声明或接收 speed。
+`provider/model` 不存在或不可用返回 `INVALID_MODEL_OVERRIDE`；reasoning、temperature 或 speed 不满足模型能力返回 `UNSUPPORTED_MODEL_PARAMETER`。未声明支持的参数不发送给 Provider。speed 必须在 canonical request 入口通过 `0..1` 校验，再由支持 speed 的 Provider adapter 映射为原生字段；Google Provider 不声明或接收 speed。
 
 模型确定后发出 `model_selection_changed`，包含 provider、model、来源（session/router/default）和已生效参数。
 

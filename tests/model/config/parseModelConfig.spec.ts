@@ -93,6 +93,36 @@ test("all protocol defaults enable thinking for undeclared models", () => {
   }
 });
 
+test("custom providers require an explicit protocol-compatible speed mapping", () => {
+  const config = parseModelConfig({
+    providers: {
+      custom: {
+        protocol: "openai",
+        url: "https://example.test/v1",
+        apiKey: "test-key",
+        speedMapping: "openai_service_tier",
+        models: { "speed-model": {} },
+      },
+    },
+  });
+  assert.equal(config.providers.custom.speedMapping, "openai_service_tier");
+
+  assert.throws(
+    () => parseModelConfig({
+      providers: {
+        custom: {
+          protocol: "openai",
+          url: "https://example.test/v1",
+          apiKey: "test-key",
+          speedMapping: "anthropic_speed",
+          models: { "speed-model": {} },
+        },
+      },
+    }),
+    (error: unknown) => (error as { code?: string }).code === "invalid_config_value",
+  );
+});
+
 test("custom providers do not infer image input from a cross-provider model name", () => {
   const config = parseModelConfig({
     providers: {

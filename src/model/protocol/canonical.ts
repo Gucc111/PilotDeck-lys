@@ -300,6 +300,8 @@ export type ProviderRetryConfig = {
   jitter?: number;
 };
 
+export type SpeedMapping = "openai_service_tier" | "anthropic_speed";
+
 export type ProviderConfig = {
   id: string;
   protocol: ModelProtocol;
@@ -309,6 +311,8 @@ export type ProviderConfig = {
   headers: Record<string, string>;
   /** Arbitrary fields merged into every request body (e.g. OpenRouter provider preferences). */
   extraBody?: Record<string, unknown>;
+  /** Explicit native mapping for the normalized model speed preference. */
+  speedMapping?: SpeedMapping;
   retry?: ProviderRetryConfig;
   models: Record<string, ModelDefinition>;
 };

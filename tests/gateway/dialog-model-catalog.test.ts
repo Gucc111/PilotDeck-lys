@@ -21,6 +21,7 @@ model:
       protocol: openai
       url: https://example.test/v1
       apiKey: test-key
+      speedMapping: openai_service_tier
       models:
         default-model: {}
         no-thinking:
