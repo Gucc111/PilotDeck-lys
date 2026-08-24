@@ -403,7 +403,7 @@ type ModelsResponse = {
 - `speed`：Provider 请求速度参数，范围 `0..1`；仅在模型显式声明支持且目标 Provider 有对应适配时返回。Google Provider 当前不支持该字段。
 - 未显式声明 `supportsThinking` 的模型按协议默认支持 reasoning；显式 `supportsThinking: false` 时不返回 reasoning。
 - 自定义 OpenAI-compatible provider 只有在 provider 配置显式设置 `speedMapping: openai_service_tier` 后才会返回 speed；自定义 Anthropic-compatible provider 对应设置 `speedMapping: anthropic_speed`。
-- `speed < 0.5` 使用 OpenAI 默认 service tier（省略 `service_tier`）/ Anthropic `speed: "standard"`；`speed >= 0.5` 映射为 OpenAI `service_tier: "priority"` / Anthropic `speed: "fast"`。Anthropic fast mode 同时自动添加 beta header `fast-mode-2026-02-01`。
+- `speed < 0.5` 使用 OpenAI 和 Anthropic 默认速度（省略 `service_tier` / `speed`）；`speed >= 0.5` 映射为 OpenAI `service_tier: "priority"` / Anthropic `speed: "fast"`。Anthropic fast mode 同时自动添加 beta header `fast-mode-2026-02-01`。
 - `range` 使用 `min`、`max`、`step`；`enum` 使用 `values`。
 - 未返回的能力表示该模型不支持对应参数。
 - Router 开启且支持 auto 时，接口可返回 `{ provider: "router", model: "auto" }` 虚拟条目。

@@ -38,7 +38,7 @@ test("native speed mappings preserve low and high normalized tiers", () => {
   const anthropicHigh = buildModelRequest(request("anthropic", 0.5), modelConfig("anthropic")) as Record<string, unknown>;
   assert.equal(openaiLow.service_tier, undefined);
   assert.equal(openaiHigh.service_tier, "priority");
-  assert.equal(anthropicLow.speed, "standard");
+  assert.equal(anthropicLow.speed, undefined);
   assert.equal(anthropicHigh.speed, "fast");
 });
 
@@ -48,7 +48,7 @@ test("anthropic fast mode adds the required beta header and preserves existing b
   const headers = buildProviderHeaders(provider, { speed: "fast" }) as Record<string, string>;
   assert.equal(headers["anthropic-beta"], "prompt-caching-2024-07-31, fast-mode-2026-02-01");
 
-  const standardHeaders = buildProviderHeaders(provider, { speed: "standard" }) as Record<string, string>;
+  const standardHeaders = buildProviderHeaders(provider, {}) as Record<string, string>;
   assert.equal(standardHeaders["anthropic-beta"], "prompt-caching-2024-07-31");
 
   const duplicateHeaders = buildProviderHeaders({

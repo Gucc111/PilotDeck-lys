@@ -21,7 +21,7 @@ export type AnthropicRequestBody = {
   tools?: AnthropicTool[];
   tool_choice?: Record<string, unknown>;
   temperature?: number;
-  speed?: "standard" | "fast";
+  speed?: "fast";
   thinking?: {
     type: "enabled" | "adaptive";
     budget_tokens?: number;
