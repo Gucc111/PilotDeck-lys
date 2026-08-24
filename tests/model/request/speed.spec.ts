@@ -11,13 +11,15 @@ import type {
 } from "../../../src/model/index.js";
 
 test("all provider request builders pass speed only when configured", () => {
-  for (const protocol of ["openai", "openai-responses", "anthropic", "google"] as const) {
+  for (const protocol of ["openai", "openai-responses", "anthropic"] as const) {
     const withSpeed = buildModelRequest(request(protocol, 0.65), modelConfig(protocol)) as Record<string, unknown>;
     assert.equal(withSpeed.speed, 0.65, `${protocol} should pass speed`);
 
     const withoutSpeed = buildModelRequest(request(protocol), modelConfig(protocol)) as Record<string, unknown>;
     assert.equal(withoutSpeed.speed, undefined, `${protocol} should omit unset speed`);
   }
+  const googleBody = buildModelRequest(request("google", 0.65), modelConfig("google")) as Record<string, unknown>;
+  assert.equal(googleBody.speed, undefined, "google should not advertise an unsupported top-level speed field");
 });
 
 test("provider request builders omit speed for models without the capability", () => {

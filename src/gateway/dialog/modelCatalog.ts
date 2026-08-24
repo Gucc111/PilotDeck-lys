@@ -30,7 +30,7 @@ export function listModelCatalog(input: ModelCatalogListInput, env: NodeJS.Proce
           .filter(([, mode]) => !resolveThinkingPlan({ mode, enabled: mode !== "off" }, provider, model).unsupportedReason)
           .map(([value]) => value)
         : [];
-      const speed = model.capabilities.supportsSpeed === true;
+      const speed = model.capabilities.supportsSpeed === true && provider.protocol !== "google";
       items.push({
         id: `${providerId}/${modelId}`,
         provider: providerId,

@@ -24,7 +24,7 @@ import { cleanSchemaForGoogle, normalizeGoogleToolSchema } from "./schema.js";
 import { resolveThinkingPlan, throwIfUnsupportedThinkingPlan } from "../../thinking/registry.js";
 import { formatToolResultReferenceText } from "../toolResultReferenceText.js";
 
-export type GoogleRequestBody = GenerateContentParameters & { speed?: number };
+export type GoogleRequestBody = GenerateContentParameters;
 
 export function buildGoogleRequest(
   request: CanonicalModelRequest,
@@ -50,7 +50,6 @@ export function buildGoogleRequest(
     model: normalizeGoogleModelId(request.model),
     contents: sanitizeGoogleContents(toGoogleContents(request.messages)),
     config: compactObject(config) as GenerateContentConfig,
-    speed: model.capabilities.supportsSpeed === true ? request.speed : undefined,
   };
 }
 

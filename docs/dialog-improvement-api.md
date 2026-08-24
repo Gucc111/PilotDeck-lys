@@ -400,7 +400,7 @@ type ModelsResponse = {
 
 - `reasoning`：推理强度，归一化范围 `0..1`。
 - `temperature`：采样温度，范围 `0..1`。
-- `speed`：Provider 请求速度参数，范围 `0..1`；仅在模型显式声明支持时返回。
+- `speed`：Provider 请求速度参数，范围 `0..1`；仅在模型显式声明支持且目标 Provider 有对应适配时返回。Google Provider 当前不支持该字段。
 - 未显式声明 `supportsThinking` 的模型按协议默认支持 reasoning；显式 `supportsThinking: false` 时不返回 reasoning。
 - `range` 使用 `min`、`max`、`step`；`enum` 使用 `values`。
 - 未返回的能力表示该模型不支持对应参数。
