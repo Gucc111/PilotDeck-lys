@@ -2017,12 +2017,16 @@ export class AgentLoop {
     if (this.config.runMode === "ask") {
       tools = filterAskModeTools(toolDefinitions);
     }
+    const requestProvider = input.modelOverride?.provider ?? this.config.provider;
+    const requestModel = input.modelOverride?.model ?? this.config.model;
     const prepared = await contextRuntime.prepareForModel({
       sessionId: input.sessionId,
       turnId: input.turnId,
       cwd: this.config.cwd,
-      provider: this.config.provider,
-      model: this.config.model,
+      provider: requestProvider,
+      model: requestModel,
+      protocol: this.dependencies.getModelProtocol?.(requestProvider),
+      supportsPromptCache: this.dependencies.getModelSupportsPromptCache?.(requestProvider, requestModel),
       permissionMode: this.config.permissionMode,
       runMode: this.config.runMode ?? "agent",
       additionalWorkingDirectories: this.config.permissionContext.additionalWorkingDirectories,
@@ -2055,8 +2059,8 @@ export class AgentLoop {
     }
 
     return {
-      provider: input.modelOverride?.provider ?? this.config.provider,
-      model: input.modelOverride?.model ?? this.config.model,
+      provider: requestProvider,
+      model: requestModel,
       messages: this.config.permissionMode === "plan"
         ? appendPlanModeReminder(materialized.messages)
         : materialized.messages,
@@ -2069,6 +2073,7 @@ export class AgentLoop {
       stream: true,
       metadata: this.config.metadata,
       cacheBreakpoints: prepared.cacheBreakpoints,
+      cachePlan: prepared.cachePlan,
     };
   }
 
@@ -2097,6 +2102,7 @@ export class AgentLoop {
           systemPrompt: candidateRequest.systemPrompt,
           tools: candidateRequest.tools,
           cacheBreakpoints: candidateRequest.cacheBreakpoints,
+          cachePlan: candidateRequest.cachePlan,
         };
         candidateRequest = this.dependencies.router.materializeRequest
           ? this.dependencies.router.materializeRequest(options.decision, materializedRequest)

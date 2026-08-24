@@ -39,8 +39,14 @@ type AnthropicTool = {
   name: string;
   description?: string;
   input_schema: Record<string, unknown>;
+  cache_control?: { type: "ephemeral"; ttl: "5m" };
 };
 
+const ANTHROPIC_PROMPT_CACHE_TTL = "5m" as const;
+
+function createPromptCacheControl(): { type: "ephemeral"; ttl: "5m" } {
+  return { type: "ephemeral", ttl: ANTHROPIC_PROMPT_CACHE_TTL };
+}
 /**
  * Reserved tool name for Anthropic structured-output enforcement.
  * Exported so `extractStructuredOutput` and tests can recognize it.
@@ -57,7 +63,9 @@ export function buildAnthropicRequest(
   // user-supplied tools so the dispatch order is stable, but Anthropic
   // does not actually care about ordering. We force `tool_choice` to point
   // at it unless `outputSchema.strict === false`.
-  const baseTools = request.tools?.map(toAnthropicTool) ?? [];
+  const baseTools = request.tools
+    ? [...request.tools].sort((left, right) => left.name.localeCompare(right.name)).map(toAnthropicTool)
+    : [];
   const outputTool = request.outputSchema
     ? toAnthropicStructuredOutputTool(request.outputSchema)
     : null;
@@ -70,14 +78,23 @@ export function buildAnthropicRequest(
   }
 
   const tools: AnthropicTool[] = outputTool ? [outputTool, ...baseTools] : baseTools;
+  const cacheTools = request.cachePlan?.tools === true && tools.length > 0;
+  if (cacheTools) {
+    const lastTool = tools[tools.length - 1];
+    if (lastTool) {
+      tools[tools.length - 1] = { ...lastTool, cache_control: createPromptCacheControl() };
+    }
+  }
 
-  // Anthropic allows at most 4 cache_control blocks per request.
-  // Reserve 1 for the system prompt; keep the 3 most recent message breakpoints.
-  const MAX_MESSAGE_BREAKPOINTS = 3;
-  const trimmedBreakpoints = request.cacheBreakpoints
-    ? request.cacheBreakpoints.length > MAX_MESSAGE_BREAKPOINTS
-      ? request.cacheBreakpoints.slice(-MAX_MESSAGE_BREAKPOINTS)
-      : request.cacheBreakpoints
+  // Anthropic allows at most 4 cache_control blocks per request. The default
+  // PilotDeck layout uses system + recent3; an explicit tools marker consumes
+  // one slot and therefore trims message breakpoints to two.
+  const MAX_MESSAGE_BREAKPOINTS = cacheTools ? 2 : 3;
+  const requestedBreakpoints = request.cachePlan?.messages ?? request.cacheBreakpoints;
+  const trimmedBreakpoints = requestedBreakpoints
+    ? requestedBreakpoints.length > MAX_MESSAGE_BREAKPOINTS
+      ? requestedBreakpoints.slice(-MAX_MESSAGE_BREAKPOINTS)
+      : requestedBreakpoints
     : null;
   const cacheBreakpoints = trimmedBreakpoints
     ? new Set(trimmedBreakpoints)
@@ -90,8 +107,9 @@ export function buildAnthropicRequest(
       toAnthropicMessage(message, cacheBreakpoints?.has(index) ?? false),
     ),
     system: request.systemPrompt
-      ? cacheBreakpoints
-        ? [{ type: "text", text: request.systemPrompt, cache_control: { type: "ephemeral" } }]
+      ? (request.cachePlan?.system === true
+        || (request.cachePlan === undefined && request.cacheBreakpoints !== undefined))
+        ? [{ type: "text", text: request.systemPrompt, cache_control: createPromptCacheControl() }]
         : request.systemPrompt
       : undefined,
     tools: tools.length > 0 ? tools : undefined,
@@ -131,16 +149,16 @@ function toAnthropicMessage(
 ): AnthropicMessage {
   const content = messageContent(message).map(toAnthropicContentBlock);
 
-  // A4: attach `cache_control: { type: "ephemeral" }` to the LAST content
+  // A4: attach `cache_control: { type: "ephemeral", ttl: "5m" }` to the LAST content
   // block of this message. Anthropic anchors the cache breakpoint at this
   // block, so the prefix up to and including it is cached. Caller
-  // (`CachedMicroCompactionEngine`) chooses which messages to mark.
+  // The context runtime chooses the recent message breakpoints.
   if (markCacheBreakpoint && content.length > 0) {
     const last = content[content.length - 1];
     if (last && typeof last === "object") {
       content[content.length - 1] = {
         ...(last as Record<string, unknown>),
-        cache_control: { type: "ephemeral" },
+        cache_control: createPromptCacheControl(),
       };
     }
   }
