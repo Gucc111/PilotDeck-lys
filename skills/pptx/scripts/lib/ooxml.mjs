@@ -15,9 +15,17 @@ const PRESENTATION_MAIN_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
 const PRESENTATION_SLIDE_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.presentationml.slide+xml';
+const PRESENTATION_NOTES_SLIDE_CONTENT_TYPE =
+  'application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml';
+const DRAWINGML_CHART_CONTENT_TYPE =
+  'application/vnd.openxmlformats-officedocument.drawingml.chart+xml';
 const PRESENTATION_MAIN_NAMESPACES = new Set([
   'http://schemas.openxmlformats.org/presentationml/2006/main',
   'http://purl.oclc.org/ooxml/presentationml/main',
+]);
+const DRAWINGML_CHART_NAMESPACES = new Set([
+  'http://schemas.openxmlformats.org/drawingml/2006/chart',
+  'http://purl.oclc.org/ooxml/drawingml/chart',
 ]);
 const LEGACY_MAGIC = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
 
@@ -321,6 +329,15 @@ async function presentationSlides(context, officeDocumentPart, contentTypeFor) {
       if (!chartPart || !context.partIndex.has(chartPart)) {
         throw new Error(`Invalid PPTX presentation: ${part} targets missing or unsafe chart part ${relationship.target}`);
       }
+      const chartContentType = contentTypeFor(chartPart);
+      if (chartContentType !== DRAWINGML_CHART_CONTENT_TYPE) {
+        throw new Error(`Invalid PPTX presentation: chart relationship from ${part} targets ${chartPart} with unexpected content type ${chartContentType ?? '(missing)'}`);
+      }
+      const chartDocument = parseXml(await requiredPart(context, chartPart).file.async('string'), chartPart);
+      const chartRoot = chartDocument.documentElement;
+      if (chartRoot.localName !== 'chartSpace' || !DRAWINGML_CHART_NAMESPACES.has(chartRoot.namespaceURI)) {
+        throw new Error(`Invalid PPTX presentation: ${chartPart} is not a DrawingML chart part`);
+      }
       activeCharts.add(chartPart);
     }
     const notesRelationship = slideRelationships.find((relationship) => (
@@ -333,8 +350,16 @@ async function presentationSlides(context, officeDocumentPart, contentTypeFor) {
       if (!notesPart || !context.partIndex.has(notesPart)) {
         throw new Error(`Invalid PPTX presentation: ${part} targets missing or unsafe notes part ${notesRelationship.target}`);
       }
-      activeNotes.add(notesPart);
+      const notesContentType = contentTypeFor(notesPart);
+      if (notesContentType !== PRESENTATION_NOTES_SLIDE_CONTENT_TYPE) {
+        throw new Error(`Invalid PPTX presentation: notes relationship from ${part} targets ${notesPart} with unexpected content type ${notesContentType ?? '(missing)'}`);
+      }
       const notesDocument = parseXml(await requiredPart(context, notesPart).file.async('string'), notesPart);
+      const notesRoot = notesDocument.documentElement;
+      if (notesRoot.localName !== 'notes' || !PRESENTATION_MAIN_NAMESPACES.has(notesRoot.namespaceURI)) {
+        throw new Error(`Invalid PPTX presentation: ${notesPart} is not a presentation notes slide part`);
+      }
+      activeNotes.add(notesPart);
       notes = normalizedText(notesDocument);
     }
     slides.push({

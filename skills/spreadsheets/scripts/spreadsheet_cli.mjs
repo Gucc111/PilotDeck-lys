@@ -31,6 +31,11 @@ const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationsh
 const CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types";
 const TRANSITIONAL_REL_BASE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const STRICT_REL_BASE = "http://purl.oclc.org/ooxml/officeDocument/relationships";
+const OFFICE_DOCUMENT_RELATIONSHIP_TYPES = new Set([
+  `${TRANSITIONAL_REL_BASE}/officeDocument`,
+  `${STRICT_REL_BASE}/officeDocument`,
+]);
+const WORKBOOK_MAIN_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
 const SPREADSHEET_MAIN_NAMESPACES = new Set([MAIN_NS, STRICT_MAIN_NS]);
 const SHEET_PART_SPECS = [
   {
@@ -231,6 +236,31 @@ async function atomicWriteBuffer(filePath, buffer) {
       await fs.rm(temporary, { force: true });
       throw replaceError;
     }
+  }
+}
+
+async function assertNewArtifactPath(filePath, purpose) {
+  const resolved = path.resolve(filePath);
+  if (await pathExists(resolved)) {
+    throw blocked("artifact-already-exists", `${purpose} already exists; use a new output path`, { output: resolved });
+  }
+  return resolved;
+}
+
+async function atomicWriteNewBuffer(filePath, buffer, purpose) {
+  const resolved = path.resolve(filePath);
+  await ensureParent(resolved);
+  const temporary = path.join(path.dirname(resolved), `.${path.basename(resolved)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(temporary, buffer, { flag: "wx" });
+  try {
+    await fs.link(temporary, resolved);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw blocked("artifact-already-exists", `${purpose} already exists; use a new output path`, { output: resolved });
+    }
+    throw error;
+  } finally {
+    await fs.rm(temporary, { force: true });
   }
 }
 
@@ -604,7 +634,7 @@ function relationshipOwnerPart(relationshipPart) {
 async function validatePackageRelationships(zip) {
   let partCount = 0;
   let relationshipCount = 0;
-  let rootReferencesWorkbook = false;
+  const rootOfficeDocuments = [];
   for (const [entryName, entry] of Object.entries(zip.files)) {
     if (entry.dir || !entryName.endsWith(".rels")) continue;
     const owner = relationshipOwnerPart(entryName);
@@ -624,10 +654,14 @@ async function validatePackageRelationships(zip) {
       if (String(relationship.getAttribute("TargetMode") ?? "").toLowerCase() === "external") continue;
       const resolved = resolveRelationshipTarget(owner, target);
       if (!zip.file(resolved)) throw new Error(`Relationship target '${target}' from ${entryName} does not exist`);
-      if (entryName === "_rels/.rels" && resolved === "xl/workbook.xml") rootReferencesWorkbook = true;
+      if (entryName === "_rels/.rels" && OFFICE_DOCUMENT_RELATIONSHIP_TYPES.has(type)) {
+        rootOfficeDocuments.push(resolved);
+      }
     }
   }
-  if (!rootReferencesWorkbook) throw new Error("The package root relationships do not reference xl/workbook.xml");
+  if (rootOfficeDocuments.length !== 1 || rootOfficeDocuments[0] !== "xl/workbook.xml") {
+    throw new Error("The package root relationships must contain one officeDocument entry targeting xl/workbook.xml");
+  }
   return { partCount, relationshipCount };
 }
 
@@ -635,6 +669,16 @@ async function checkXlsxStructure(zip) {
   assertSafePackageEntries(zip);
   const xml = await validatePackageXml(zip);
   const relationships = await validatePackageRelationships(zip);
+  const contentTypes = await spreadsheetContentTypes(zip);
+  const workbookContentType = contentTypes.contentTypeFor("xl/workbook.xml");
+  if (workbookContentType !== WORKBOOK_MAIN_CONTENT_TYPE) {
+    throw new Error(`Workbook part xl/workbook.xml uses unexpected content type '${workbookContentType ?? "(missing)"}'`);
+  }
+  const workbookDocument = parseXml(await zip.file("xl/workbook.xml").async("string"), "xl/workbook.xml");
+  const workbookRoot = workbookDocument.documentElement;
+  if (localName(workbookRoot) !== "workbook" || !SPREADSHEET_MAIN_NAMESPACES.has(workbookRoot.namespaceURI)) {
+    throw new Error("Workbook part xl/workbook.xml is not a valid spreadsheet workbook part");
+  }
   const sheetEntries = await workbookSheetEntries(zip);
   if (sheetEntries.length === 0) throw new Error("The workbook has no sheets");
   const sheets = sheetEntries.filter((sheet) => sheet.kind === "worksheet");
@@ -836,12 +880,13 @@ function diffHashMaps(before, after) {
 }
 
 async function recalculatePreservingPackage(inputPath, outputPath) {
+  await assertNewArtifactPath(outputPath, "Recalculation output");
   const { buffer: originalBuffer, zip: originalZip } = await loadPackage(inputPath);
   await validatePackageXml(originalZip);
   const originalSheets = await workbookSheets(originalZip);
   const originalRecords = await collectFormulaRecords(originalZip, originalSheets);
   if (originalRecords.length === 0) {
-    await atomicWriteBuffer(outputPath, originalBuffer);
+    await atomicWriteNewBuffer(outputPath, originalBuffer, "Recalculation output");
     return {
       status: "ok",
       outcome: "skipped_no_formulas",
@@ -968,7 +1013,7 @@ async function recalculatePreservingPackage(inputPath, outputPath) {
     const updated = [...updatesByPart.values()].reduce((sum, updates) => sum + updates.length, 0);
     if (updated === 0) {
       if (verified > 0) {
-        await atomicWriteBuffer(outputPath, originalBuffer);
+        await atomicWriteNewBuffer(outputPath, originalBuffer, "Recalculation output");
         return {
           status: "ok",
           outcome: "verified_cache_current",
@@ -987,7 +1032,7 @@ async function recalculatePreservingPackage(inputPath, outputPath) {
         formulas: { total: originalRecords.length, updated: 0, verified: 0, preserved: skipped.length, skipped: skipped.slice(0, 100) },
       };
     }
-    await atomicWriteBuffer(outputPath, outputBuffer);
+    await atomicWriteNewBuffer(outputPath, outputBuffer, "Recalculation output");
     return {
       status: "ok",
       outcome: "recalculated",
@@ -1486,6 +1531,52 @@ async function commandSelfTest(options) {
     }
     assert(!wrongSheetRelationshipValidated, "validation rejects non-worksheet relationship types for workbook sheets");
 
+    const wrongRootRelationshipType = path.join(workDir, "wrong-root-relationship-type.xlsx");
+    const wrongRootRelationshipPackage = await JSZip.loadAsync(await fs.readFile(noFormula));
+    const rootRelationships = await wrongRootRelationshipPackage.file("_rels/.rels").async("string");
+    wrongRootRelationshipPackage.file("_rels/.rels", rootRelationships.replace('/relationships/officeDocument"', '/relationships/styles"'));
+    await fs.writeFile(wrongRootRelationshipType, await wrongRootRelationshipPackage.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    let wrongRootRelationshipValidated = true;
+    try {
+      await validateXlsx(wrongRootRelationshipType);
+    } catch {
+      wrongRootRelationshipValidated = false;
+    }
+    assert(!wrongRootRelationshipValidated, "validation rejects non-officeDocument root relationships");
+    let wrongRootRelationshipDelivered = true;
+    try {
+      await deliverSpreadsheet({ input: wrongRootRelationshipType, output: path.join(root, "wrong-root-relationship-final.xlsx") });
+    } catch {
+      wrongRootRelationshipDelivered = false;
+    }
+    assert(!wrongRootRelationshipDelivered, "delivery rejects non-officeDocument root relationships");
+
+    const wrongWorkbookContentType = path.join(workDir, "wrong-workbook-content-type.xlsx");
+    const wrongWorkbookContentPackage = await JSZip.loadAsync(await fs.readFile(noFormula));
+    const workbookContentTypes = await wrongWorkbookContentPackage.file("[Content_Types].xml").async("string");
+    wrongWorkbookContentPackage.file("[Content_Types].xml", workbookContentTypes.replace(WORKBOOK_MAIN_CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"));
+    await fs.writeFile(wrongWorkbookContentType, await wrongWorkbookContentPackage.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    let wrongWorkbookContentValidated = true;
+    try {
+      await validateXlsx(wrongWorkbookContentType);
+    } catch {
+      wrongWorkbookContentValidated = false;
+    }
+    assert(!wrongWorkbookContentValidated, "validation rejects workbook parts with the wrong content type");
+
+    const wrongWorkbookRoot = path.join(workDir, "wrong-workbook-root.xlsx");
+    const wrongWorkbookRootPackage = await JSZip.loadAsync(await fs.readFile(noFormula));
+    const workbookPartXml = await wrongWorkbookRootPackage.file("xl/workbook.xml").async("string");
+    wrongWorkbookRootPackage.file("xl/workbook.xml", workbookPartXml.replace(MAIN_NS, "urn:invalid-spreadsheet-main"));
+    await fs.writeFile(wrongWorkbookRoot, await wrongWorkbookRootPackage.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
+    let wrongWorkbookRootValidated = true;
+    try {
+      await validateXlsx(wrongWorkbookRoot);
+    } catch {
+      wrongWorkbookRootValidated = false;
+    }
+    assert(!wrongWorkbookRootValidated, "validation rejects workbook parts with the wrong root namespace");
+
     const unsafeCandidate = path.join(workDir, "unsafe-entry.xlsx");
     const unsafePackage = await JSZip.loadAsync(await fs.readFile(noFormula));
     unsafePackage.file("../escape.xml", "<escape/>");
@@ -1529,6 +1620,17 @@ async function commandSelfTest(options) {
     mixedSheet.getCell("A2").value = { formula: "A1+1", result: 8 };
     await mixed.xlsx.writeFile(mixedFormula);
     const mixedHash = await fileSha256(mixedFormula);
+    const staleOutput = path.join(workDir, "stale-recalculated.xlsx");
+    await fs.copyFile(noFormula, staleOutput);
+    const staleOutputHash = await fileSha256(staleOutput);
+    let staleOutputBlocked = false;
+    try {
+      await recalculatePreservingPackage(mixedFormula, staleOutput);
+    } catch (error) {
+      staleOutputBlocked = error instanceof SpreadsheetProtocolError && error.code === "artifact-already-exists";
+    }
+    assert(staleOutputBlocked, "recalculation refuses an existing output candidate");
+    assert(await fileSha256(staleOutput) === staleOutputHash, "recalculation preserves an existing output candidate when blocked");
     const mixedResult = await recalculatePreservingPackage(mixedFormula, mixedOutput);
     assert(mixedResult.status === "unsupported" && mixedResult.output === null && mixedResult.formulas.preserved === 2, "reject mixed recalculation with incompatible formula dependencies");
     assert(!await pathExists(mixedOutput), "mixed incompatible recalculation emits no candidate");

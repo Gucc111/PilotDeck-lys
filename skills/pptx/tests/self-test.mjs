@@ -203,6 +203,44 @@ try {
   assert.notEqual(failed.status, 0);
   assert.match(failed.stderr, /not a presentation slide part/u);
 
+  const wrongNotesTarget = path.join(workDir, 'wrong-notes-target.pptx');
+  await mutateDeck(candidate, wrongNotesTarget, async (zip) => {
+    const part = zip.file('ppt/slides/_rels/slide1.xml.rels');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', (await part.async('string')).replace('../notesSlides/notesSlide1.xml', '../presentation.xml'));
+  });
+  failed = rawPptx('validate', '--input', wrongNotesTarget);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /notes relationship.*unexpected content type/u);
+
+  const wrongNotesRoot = path.join(workDir, 'wrong-notes-root.pptx');
+  await mutateDeck(candidate, wrongNotesRoot, async (zip) => {
+    const part = zip.file('ppt/notesSlides/notesSlide1.xml');
+    const xml = await part.async('string');
+    zip.file('ppt/notesSlides/notesSlide1.xml', xml.replace('<p:notes ', '<p:presentation ').replace('</p:notes>', '</p:presentation>'));
+  });
+  failed = rawPptx('validate', '--input', wrongNotesRoot);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /not a presentation notes slide part/u);
+
+  const wrongChartTarget = path.join(workDir, 'wrong-chart-target.pptx');
+  await mutateDeck(standardChartCandidate, wrongChartTarget, async (zip) => {
+    const part = zip.file('ppt/slides/_rels/slide1.xml.rels');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', (await part.async('string')).replace('../charts/chart1.xml', '../presentation.xml'));
+  });
+  failed = rawPptx('validate', '--input', wrongChartTarget);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /chart relationship.*unexpected content type/u);
+
+  const wrongChartRoot = path.join(workDir, 'wrong-chart-root.pptx');
+  await mutateDeck(standardChartCandidate, wrongChartRoot, async (zip) => {
+    const part = zip.file('ppt/charts/chart1.xml');
+    const xml = await part.async('string');
+    zip.file('ppt/charts/chart1.xml', xml.replace('<c:chartSpace ', '<c:notChart ').replace('</c:chartSpace>', '</c:notChart>'));
+  });
+  failed = rawPptx('validate', '--input', wrongChartRoot);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /not a DrawingML chart part/u);
+
   const unsafeTarget = path.join(workDir, 'unsafe-target.pptx');
   await mutateDeck(candidate, unsafeTarget, async (zip) => {
     const part = zip.file('ppt/_rels/presentation.xml.rels');
@@ -257,6 +295,12 @@ try {
   failed = rawPptx('deliver', '--input', wrongSlideTarget, '--out', invalidFinal);
   assert.notEqual(failed.status, 0);
   assert.equal(await fs.stat(invalidFinal).then(() => true).catch(() => false), false);
+  for (const [name, invalidCandidate] of [['notes', wrongNotesTarget], ['chart', wrongChartTarget]]) {
+    const relatedInvalidFinal = path.join(outputRoot, `invalid-${name}-final.pptx`);
+    failed = rawPptx('deliver', '--input', invalidCandidate, '--out', relatedInvalidFinal);
+    assert.notEqual(failed.status, 0);
+    assert.equal(await fs.stat(relatedInvalidFinal).then(() => true).catch(() => false), false);
+  }
 
   const replaceSource = path.join(outputRoot, 'replace-source.pptx');
   await fs.copyFile(source, replaceSource);
@@ -338,6 +382,7 @@ try {
       'warning-nonblocking',
       'broken-package-rejection',
       'slide-target-semantics',
+      'notes-chart-target-semantics',
       'unsafe-path-rejection',
       'factual-comparison',
       'active-chart-counting',
