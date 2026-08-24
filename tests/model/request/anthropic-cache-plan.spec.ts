@@ -90,7 +90,7 @@ test("explicit tools marker remains compatible and consumes one message slot", (
     },
   }), model);
 
-  assert.deepEqual(body.tools?.map((tool) => tool.name), ["a_tool", "z_tool"]);
+  assert.deepEqual(body.tools?.map((tool) => tool.name), ["z_tool", "a_tool"]);
   assert.deepEqual(body.tools?.map((tool) => tool.cache_control?.ttl), [undefined, "5m"]);
   assert.deepEqual(markedMessageIndexes(body), [2, 3]);
 });

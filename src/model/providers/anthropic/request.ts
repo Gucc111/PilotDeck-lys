@@ -63,9 +63,7 @@ export function buildAnthropicRequest(
   // user-supplied tools so the dispatch order is stable, but Anthropic
   // does not actually care about ordering. We force `tool_choice` to point
   // at it unless `outputSchema.strict === false`.
-  const baseTools = request.tools
-    ? [...request.tools].sort((left, right) => left.name.localeCompare(right.name)).map(toAnthropicTool)
-    : [];
+  const baseTools = request.tools?.map(toAnthropicTool) ?? [];
   const outputTool = request.outputSchema
     ? toAnthropicStructuredOutputTool(request.outputSchema)
     : null;
