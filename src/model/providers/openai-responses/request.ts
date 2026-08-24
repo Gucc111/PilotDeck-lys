@@ -21,7 +21,7 @@ export type OpenAIResponsesRequestBody = {
   max_output_tokens: number;
   stream?: boolean;
   temperature?: number;
-  service_tier?: "fast" | "priority";
+  service_tier?: "priority";
   metadata?: Record<string, unknown>;
   tools?: OpenAIResponsesTool[];
   tool_choice?: unknown;

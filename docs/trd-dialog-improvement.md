@@ -217,7 +217,7 @@ type UploadedAttachmentRef = {
 
 协议默认将未显式声明的模型视为支持 reasoning；模型可通过 `capabilities.supportsThinking: false` 关闭。speed 通过 `capabilities.supportsSpeed: true` 显式开启。
 
-自定义兼容 provider 还必须显式声明 `speedMapping`：OpenAI 使用 `openai_service_tier`，Anthropic 使用 `anthropic_speed`。统一 speed 在 adapter 层转换为 provider 原生枚举；`speed < 0.5` 为低档，`speed >= 0.5` 为高档。Google 不声明 speed。
+自定义兼容 provider 还必须显式声明 `speedMapping`：OpenAI 使用 `openai_service_tier`，Anthropic 使用 `anthropic_speed`。统一 speed 在 adapter 层转换为 provider 原生枚举；OpenAI 低档省略 `service_tier`、高档使用 `priority`；Anthropic 低档使用 `standard`、高档使用 `fast`。Anthropic fast mode 自动合并 beta header `fast-mode-2026-02-01`。Google 不声明 speed。
 
 `includeAuto` 仅在 Router 开启时允许，返回虚拟模型 `router/auto`。
 

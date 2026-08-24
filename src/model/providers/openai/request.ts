@@ -25,7 +25,7 @@ export type OpenAIRequestBody = {
   tools?: OpenAITool[];
   tool_choice?: unknown;
   temperature?: number;
-  service_tier?: "fast" | "priority";
+  service_tier?: "priority";
   stream?: boolean;
   metadata?: Record<string, unknown>;
   reasoning?: { effort?: string };

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildModelRequest } from "../../../src/model/index.js";
+import { buildProviderHeaders } from "../../../src/model/streaming/streamModel.js";
 import type {
   CanonicalModelRequest,
   ModelCapabilities,
@@ -35,10 +36,26 @@ test("native speed mappings preserve low and high normalized tiers", () => {
   const openaiHigh = buildModelRequest(request("openai", 0.5), modelConfig("openai")) as Record<string, unknown>;
   const anthropicLow = buildModelRequest(request("anthropic", 0.49), modelConfig("anthropic")) as Record<string, unknown>;
   const anthropicHigh = buildModelRequest(request("anthropic", 0.5), modelConfig("anthropic")) as Record<string, unknown>;
-  assert.equal(openaiLow.service_tier, "fast");
+  assert.equal(openaiLow.service_tier, undefined);
   assert.equal(openaiHigh.service_tier, "priority");
   assert.equal(anthropicLow.speed, "standard");
   assert.equal(anthropicHigh.speed, "fast");
+});
+
+test("anthropic fast mode adds the required beta header and preserves existing beta values", () => {
+  const provider = modelConfig("anthropic").providers.anthropic;
+  provider.headers = { "anthropic-beta": "prompt-caching-2024-07-31" };
+  const headers = buildProviderHeaders(provider, { speed: "fast" }) as Record<string, string>;
+  assert.equal(headers["anthropic-beta"], "prompt-caching-2024-07-31, fast-mode-2026-02-01");
+
+  const standardHeaders = buildProviderHeaders(provider, { speed: "standard" }) as Record<string, string>;
+  assert.equal(standardHeaders["anthropic-beta"], "prompt-caching-2024-07-31");
+
+  const duplicateHeaders = buildProviderHeaders({
+    ...provider,
+    headers: { "Anthropic-Beta": "fast-mode-2026-02-01" },
+  }, { speed: "fast" }) as Record<string, string>;
+  assert.equal(duplicateHeaders["Anthropic-Beta"], "fast-mode-2026-02-01");
 });
 
 test("shared request validation rejects speed for models without the capability", () => {
