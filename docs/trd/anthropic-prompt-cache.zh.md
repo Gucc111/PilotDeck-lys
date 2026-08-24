@@ -17,10 +17,11 @@
 1. 只有实际 `protocol === "anthropic"` 且模型声明 `supportsPromptCache === true` 时启用缓存。
 2. 默认布局必须是 `system + recent3`：system prompt 一个断点，投影后最后三个非 system message 各一个断点。
 3. recent3 按消息位置选择，不过滤未完成 tool call、tool result、permission 或 elicitation 消息。
-4. 默认不为 tool schema 添加断点；显式 `cachePlan.tools === true` 仍兼容，并将消息断点限制为两个。
-5. 所有 marker 使用 `ttl: "5m"`，单请求最多四个断点。
-6. `cache_control` 只允许出现在 provider request，禁止写入 canonical transcript。
-7. system、tool schema、provider、model 或 recent3 内容变化时 fingerprint 必须变化；压缩或路由切换不得复用旧计划。
+4. thinking block 不得添加 `cache_control`；若消息末尾是 thinking，marker 回退到最近的可缓存 block；thinking-only 消息跳过 marker。
+5. 默认不为 tool schema 添加断点；显式 `cachePlan.tools === true` 仍兼容，并将消息断点限制为两个。
+6. 所有 marker 使用 `ttl: "5m"`，单请求最多四个断点。
+7. `cache_control` 只允许出现在 provider request，禁止写入 canonical transcript。
+8. system、tool schema、provider、model 或 recent3 内容变化时 fingerprint 必须变化；压缩或路由切换不得复用旧计划。
 
 ## 正常与恢复流程
 

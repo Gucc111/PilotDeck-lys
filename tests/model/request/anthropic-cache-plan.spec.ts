@@ -109,3 +109,48 @@ test("cache plan can disable system and tools markers explicitly", () => {
   assert.equal(body.system, "stable system");
   assert.deepEqual(markedMessageIndexes(body), []);
 });
+
+test("Anthropic skips a cache marker for a thinking-only recent message", () => {
+  const body = buildAnthropicRequest(request({
+    messages: [
+      { role: "user", content: [{ type: "text", text: "request" }] },
+      { role: "assistant", content: [{ type: "thinking", text: "unfinished reasoning" }] },
+    ],
+    cachePlan: {
+      system: true,
+      tools: false,
+      messages: [1],
+      fingerprint: "thinking-only",
+      generation: 1,
+    },
+  }), model);
+
+  const thinking = body.messages[1]?.content[0] as { type?: string; cache_control?: unknown };
+  assert.equal(thinking.type, "thinking");
+  assert.equal(thinking.cache_control, undefined);
+});
+
+test("Anthropic anchors before a trailing thinking block", () => {
+  const body = buildAnthropicRequest(request({
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "partial answer" },
+          { type: "thinking", text: "unfinished reasoning" },
+        ],
+      },
+    ],
+    cachePlan: {
+      system: true,
+      tools: false,
+      messages: [0],
+      fingerprint: "text-before-thinking",
+      generation: 1,
+    },
+  }), model);
+
+  const content = body.messages[0]?.content as Array<{ type?: string; cache_control?: { ttl?: string } }>;
+  assert.equal(content[0]?.cache_control?.ttl, "5m");
+  assert.equal(content[1]?.cache_control, undefined);
+});

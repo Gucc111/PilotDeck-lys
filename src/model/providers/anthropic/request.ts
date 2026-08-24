@@ -147,17 +147,20 @@ function toAnthropicMessage(
 ): AnthropicMessage {
   const content = messageContent(message).map(toAnthropicContentBlock);
 
-  // A4: attach `cache_control: { type: "ephemeral", ttl: "5m" }` to the LAST content
-  // block of this message. Anthropic anchors the cache breakpoint at this
-  // block, so the prefix up to and including it is cached. Caller
-  // The context runtime chooses the recent message breakpoints.
+  // A4: attach `cache_control: { type: "ephemeral", ttl: "5m" }` to the
+  // last cacheable content block. Anthropic thinking blocks cannot carry a
+  // cache marker, so a thinking-only message is left unmarked.
   if (markCacheBreakpoint && content.length > 0) {
-    const last = content[content.length - 1];
-    if (last && typeof last === "object") {
-      content[content.length - 1] = {
-        ...(last as Record<string, unknown>),
+    for (let index = content.length - 1; index >= 0; index--) {
+      const candidate = content[index];
+      if (!candidate || typeof candidate !== "object" || (candidate as { type?: string }).type === "thinking") {
+        continue;
+      }
+      content[index] = {
+        ...(candidate as Record<string, unknown>),
         cache_control: createPromptCacheControl(),
       };
+      break;
     }
   }
 
