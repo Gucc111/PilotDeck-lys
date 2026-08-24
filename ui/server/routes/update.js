@@ -366,48 +366,63 @@ router.post('/apply', async (req, res) => {
  * relaunches the full process group; direct server runs fall back to
  * self-respawn.
  */
-router.post('/restart', async (req, res) => {
-  res.json({
-    message: 'Restart initiated.',
-    status: 'restarting',
-  });
-
-  setTimeout(async () => {
+export function createRestartHandler({
+  env = process.env,
+  spawnImpl = spawn,
+  exit = process.exit,
+  setTimeoutImpl = setTimeout,
+  requestSupervisorRestartImpl = requestSupervisorRestart,
+  resolveRestartCommandImpl = resolveRestartCommand,
+  isSupervisorRestartEnabledImpl = isSupervisorRestartEnabled,
+  projectRoot = PROJECT_ROOT,
+  platform = process.platform,
+  log = console.log,
+  error = console.error,
+} = {}) {
+  return async (_req, res) => {
     try {
-      console.log('[update] Spawning replacement process and exiting...');
+      log('[update] Preparing replacement process and exit...');
 
-      const isDocker = process.env.DOCKER === '1' || process.env.container === 'docker';
+      const isDocker = env.DOCKER === '1' || env.container === 'docker';
 
       if (isDocker) {
-        // In Docker, just exit — the container restart policy handles respawn
-        process.exit(0);
+        res.status(202).json({ status: 'accepted', restartMode: 'docker' });
+        setTimeoutImpl(() => exit(0), 500);
+        return;
       }
 
-      if (isSupervisorRestartEnabled(process.env)) {
-        requestSupervisorRestart({ env: process.env });
-        setTimeout(() => process.exit(RESTART_EXIT_CODE), 500);
+      if (isSupervisorRestartEnabledImpl(env)) {
+        requestSupervisorRestartImpl({ env });
+        res.status(202).json({ status: 'accepted', restartMode: 'supervisor' });
+        setTimeoutImpl(() => exit(RESTART_EXIT_CODE), 500);
         return;
       }
 
       // Local: spawn a replacement process detached from this one.
-      const projectRoot = PROJECT_ROOT;
-      const restartCommand = await resolveRestartCommand({ projectRoot });
-      const child = spawn(restartCommand.command, restartCommand.args, {
+      const restartCommand = await resolveRestartCommandImpl({ projectRoot, env });
+      const child = spawnImpl(restartCommand.command, restartCommand.args, {
         cwd: projectRoot,
         detached: true,
         stdio: 'ignore',
-        env: { ...process.env },
-        windowsHide: process.platform === 'win32',
+        env: { ...env },
+        windowsHide: platform === 'win32',
       });
       child.unref();
 
-      // Exit after giving the response time to flush
-      setTimeout(() => process.exit(0), 500);
-    } catch (error) {
-      console.error(`[update] Restart failed: ${normalizeUpdateRuntimeError(error)}`);
+      res.status(202).json({ status: 'accepted', restartMode: 'direct' });
+      setTimeoutImpl(() => exit(0), 500);
+    } catch (caughtError) {
+      const message = normalizeUpdateRuntimeError(caughtError);
+      error(`[update] Restart failed: ${message}`);
+      res.status(500).json({
+        error: 'Failed to restart PilotDeck',
+        message,
+      });
     }
-  }, 1000);
-});
+  };
+}
+
+router.post('/restart', createRestartHandler());
 
 /**
  * GET /api/update/status
@@ -435,6 +450,12 @@ function toLegacyCompatibleDesktopStatus(status) {
     currentCommit: status.current?.commit || '',
     hasUpdate: status.hasUpdate,
   };
+}
+
+export function createUpdateRouter(options = {}) {
+  const restartRouter = express.Router();
+  restartRouter.post('/restart', createRestartHandler(options));
+  return restartRouter;
 }
 
 export default router;

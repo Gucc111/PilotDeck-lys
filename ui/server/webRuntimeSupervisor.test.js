@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createRuntimeSupervisor,
+  getSupervisorArgs,
   getRuntimeArgs,
   normalizeSupervisorMode,
 } from './webRuntimeSupervisor.js';
@@ -58,16 +59,14 @@ describe('web runtime supervisor', () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it('restarts once when the request file exists', () => {
+  it('starts a replacement supervisor when the request file exists', () => {
     const firstChild = createFakeChild();
-    const secondChild = createFakeChild();
+    const replacementSupervisor = createFakeChild();
     const spawnImpl = vi.fn()
       .mockReturnValueOnce(firstChild)
-      .mockReturnValueOnce(secondChild);
+      .mockReturnValueOnce(replacementSupervisor);
     const unlink = vi.fn();
-    const exists = vi.fn()
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(false);
+    const exists = vi.fn().mockReturnValueOnce(true);
     const exit = vi.fn();
 
     createRuntimeSupervisor({
@@ -82,11 +81,50 @@ describe('web runtime supervisor', () => {
     }).run();
 
     firstChild.emit('close', 1, null);
-    secondChild.emit('close', 0, null);
+    replacementSupervisor.emit('spawn');
 
     expect(unlink).toHaveBeenCalledTimes(1);
     expect(spawnImpl).toHaveBeenCalledTimes(2);
+    expect(spawnImpl).toHaveBeenNthCalledWith(
+      2,
+      process.execPath,
+      getSupervisorArgs('start-built'),
+      expect.objectContaining({
+        stdio: 'inherit',
+        env: expect.objectContaining({
+          PILOTDECK_RESTART_MODE: 'start-built',
+        }),
+      }),
+    );
     expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('exits with failure when the replacement supervisor cannot be started', () => {
+    const child = createFakeChild();
+    const spawnImpl = vi.fn()
+      .mockReturnValueOnce(child)
+      .mockImplementationOnce(() => {
+        throw new Error('spawn failed');
+      });
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    createRuntimeSupervisor({
+      mode: 'start-built',
+      spawnImpl,
+      exists: () => true,
+      unlink: vi.fn(),
+      processLike: createFakeProcess(),
+      exit,
+      log: vi.fn(),
+      error,
+    }).run();
+
+    child.emit('close', 1, null);
+
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Failed to start replacement supervisor'));
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it('forwards SIGINT and does not restart on signal shutdown', () => {

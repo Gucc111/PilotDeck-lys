@@ -41,6 +41,8 @@ type WebUpdateStatusPayload = {
   } | null;
 };
 
+type WebUpdatePollDecision = "continue" | "stop";
+
 function formatDateTime(value: string | null): string {
   if (!value) return "-";
   const d = new Date(value);
@@ -63,6 +65,7 @@ export default function AboutSections({
   const [localUpdateResult, setLocalUpdateResult] = useState<LocalUpdateResult>(null);
   const [downloadedFilePath, setDownloadedFilePath] = useState<string | null>(null);
   const webStatusPollRef = useRef<number | null>(null);
+  const hasObservedWebUpdateRef = useRef(false);
   const isDesktop = versionInfo.mode === "desktop";
 
   const stopWebStatusPolling = useCallback(() => {
@@ -72,48 +75,53 @@ export default function AboutSections({
     }
   }, []);
 
-  const applyWebUpdateStatus = useCallback((payload: WebUpdateStatusPayload): boolean => {
+  const applyWebUpdateStatus = useCallback((payload: WebUpdateStatusPayload): WebUpdatePollDecision => {
     const result = payload.lastUpdateResult;
     if (result?.needsRestart) {
+      hasObservedWebUpdateRef.current = false;
       setWebUpdating(false);
       setLocalUpdateResult("webUpdated");
-      return false;
+      return "stop";
     }
     if (result?.alreadyUpToDate) {
+      hasObservedWebUpdateRef.current = false;
       setWebUpdating(false);
       setLocalUpdateResult("webUpToDate");
-      return false;
+      return "stop";
     }
     if (result?.success === false || result?.error) {
+      hasObservedWebUpdateRef.current = false;
       setWebUpdating(false);
       setLocalUpdateResult("failed");
-      return false;
+      return "stop";
     }
     if (payload.updateInProgress) {
+      hasObservedWebUpdateRef.current = true;
       setWebUpdating(true);
-      return true;
+      return "continue";
     }
+    hasObservedWebUpdateRef.current = false;
     setWebUpdating(false);
-    return false;
+    return "stop";
   }, []);
 
-  const refreshWebUpdateStatus = useCallback(async (): Promise<boolean> => {
-    if (isDesktop) return false;
+  const refreshWebUpdateStatus = useCallback(async (): Promise<WebUpdatePollDecision> => {
+    if (isDesktop) return "stop";
     try {
       const res = await authenticatedFetch("/api/update/status");
-      if (!res.ok) return false;
+      if (!res.ok) return hasObservedWebUpdateRef.current ? "continue" : "stop";
       const payload = await res.json() as WebUpdateStatusPayload;
       return applyWebUpdateStatus(payload);
     } catch {
-      return false;
+      return hasObservedWebUpdateRef.current ? "continue" : "stop";
     }
   }, [applyWebUpdateStatus, isDesktop]);
 
   const startWebStatusPolling = useCallback(() => {
     if (webStatusPollRef.current !== null) return;
     webStatusPollRef.current = window.setInterval(() => {
-      void refreshWebUpdateStatus().then((shouldContinue) => {
-        if (!shouldContinue) stopWebStatusPolling();
+      void refreshWebUpdateStatus().then((decision) => {
+        if (decision === "stop") stopWebStatusPolling();
       });
     }, 1000);
   }, [refreshWebUpdateStatus, stopWebStatusPolling]);
@@ -125,8 +133,8 @@ export default function AboutSections({
     }
 
     let active = true;
-    void refreshWebUpdateStatus().then((shouldPoll) => {
-      if (active && shouldPoll) startWebStatusPolling();
+    void refreshWebUpdateStatus().then((decision) => {
+      if (active && decision === "continue") startWebStatusPolling();
     });
 
     return () => {
@@ -190,6 +198,7 @@ export default function AboutSections({
   };
 
   const handleWebUpdate = async () => {
+    hasObservedWebUpdateRef.current = true;
     setWebUpdating(true);
     setLocalUpdateResult(null);
     try {
@@ -207,8 +216,11 @@ export default function AboutSections({
             ? "webUpToDate"
             : "webUpdated",
       );
+      hasObservedWebUpdateRef.current = false;
       stopWebStatusPolling();
     } catch {
+      hasObservedWebUpdateRef.current = false;
+      stopWebStatusPolling();
       setLocalUpdateResult("failed");
     } finally {
       setWebUpdating(false);

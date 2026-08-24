@@ -23,6 +23,15 @@ function responseJson(payload: unknown, ok = true) {
   } as Response;
 }
 
+function invalidJsonResponse() {
+  return {
+    ok: true,
+    json: async () => {
+      throw new Error("invalid json");
+    },
+  } as unknown as Response;
+}
+
 function renderAbout(versionInfo: Partial<DesktopVersionCheckResult> = {}) {
   const defaults: DesktopVersionCheckResult = {
     mode: "web",
@@ -132,6 +141,73 @@ describe("AboutSections web update status recovery", () => {
     expect(screen.getByRole("button", { name: "about.restartToApply" })).toBeTruthy();
   });
 
+  it("keeps polling after a temporary status failure once update progress was observed", async () => {
+    vi.useFakeTimers();
+    mockedFetch
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: true,
+        lastUpdateResult: null,
+      }))
+      .mockRejectedValueOnce(new Error("temporary network failure"))
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: false,
+        lastUpdateResult: {
+          success: true,
+          alreadyUpToDate: false,
+          needsRestart: true,
+        },
+      }));
+
+    renderAbout({ hasUpdate: false });
+    await flushEffects();
+
+    expect(screen.getByRole("button", { name: "about.updating" })).toBeTruthy();
+
+    await advancePollingInterval();
+    expect(screen.getByRole("button", { name: "about.updating" })).toBeTruthy();
+
+    await advancePollingInterval();
+    expect(screen.getByRole("button", { name: "about.restartToApply" })).toBeTruthy();
+  });
+
+  it("keeps polling after an invalid status payload once update progress was observed", async () => {
+    vi.useFakeTimers();
+    mockedFetch
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: true,
+        lastUpdateResult: null,
+      }))
+      .mockResolvedValueOnce(invalidJsonResponse())
+      .mockResolvedValueOnce(responseJson({
+        updateInProgress: false,
+        lastUpdateResult: {
+          success: true,
+          alreadyUpToDate: false,
+          needsRestart: true,
+        },
+      }));
+
+    renderAbout({ hasUpdate: false });
+    await flushEffects();
+
+    await advancePollingInterval();
+    expect(screen.getByRole("button", { name: "about.updating" })).toBeTruthy();
+
+    await advancePollingInterval();
+    expect(screen.getByRole("button", { name: "about.restartToApply" })).toBeTruthy();
+  });
+
+  it("does not start infinite polling when the initial status request fails", async () => {
+    vi.useFakeTimers();
+    mockedFetch.mockRejectedValue(new Error("status unavailable"));
+
+    renderAbout({ hasUpdate: false });
+    await flushEffects();
+
+    await advancePollingInterval();
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("switches from in-progress polling to failed status when the update fails", async () => {
     vi.useFakeTimers();
     mockedFetch
@@ -177,6 +253,7 @@ describe("AboutSections web update status recovery", () => {
     const restartButton = screen.getByRole("button", { name: "about.restartToApply" });
     vi.useFakeTimers();
     fireEvent.click(restartButton);
+    await flushEffects();
 
     expect(document.body.textContent).toContain("about.restartingTitle");
     expect(document.body.textContent).toContain("about.restartingDescription");

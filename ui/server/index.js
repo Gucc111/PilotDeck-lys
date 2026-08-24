@@ -7,6 +7,7 @@ installGlobalProxy();
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
@@ -15,6 +16,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const installMode = fs.existsSync(path.join(__dirname, '..', '..', '.git')) ? 'git' : 'npm';
+const serverInstanceId = crypto.randomUUID();
+const serverStartedAt = new Date().toISOString();
+const serverPid = process.pid;
 
 // ANSI color codes for terminal output
 const colors = {
@@ -477,7 +481,10 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        installMode
+        installMode,
+        instanceId: serverInstanceId,
+        startedAt: serverStartedAt,
+        pid: serverPid
     });
 });
 

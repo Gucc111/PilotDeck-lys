@@ -1,6 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pollHealthAndReload, restartAndReload, showRestartSplash } from "./restartUi";
 
+function healthResponse(payload: unknown = {}) {
+  return {
+    ok: true,
+    json: async () => payload,
+  } as Response;
+}
+
+function statusResponse(ok: boolean) {
+  return {
+    ok,
+    json: async () => ({}),
+  } as Response;
+}
+
+async function flushPromises() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("restartUi", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -26,16 +46,18 @@ describe("restartUi", () => {
     expect(document.body.textContent).toContain("Back soon");
   });
 
-  it("shows the splash before calling the restart request", () => {
+  it("shows the splash before calling the restart request", async () => {
     const requestRestart = vi.fn(() => {
       expect(document.body.textContent).toContain("Restarting PilotDeck...");
-      return Promise.resolve();
+      return Promise.resolve(statusResponse(true));
     });
 
     restartAndReload(requestRestart, {
-      fetchImpl: vi.fn(),
+      fetchImpl: vi.fn().mockResolvedValue(healthResponse({ instanceId: "old" })),
       setIntervalImpl: vi.fn() as unknown as typeof window.setInterval,
     });
+
+    await flushPromises();
 
     expect(requestRestart).toHaveBeenCalledTimes(1);
   });
@@ -57,17 +79,98 @@ describe("restartUi", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it("reloads once health succeeds", async () => {
+  it("does not reload when health stays on the same instance", async () => {
     vi.useFakeTimers();
-    const fetchImpl = vi.fn().mockResolvedValue({ ok: true });
+    const fetchImpl = vi.fn().mockResolvedValue(healthResponse({ instanceId: "same" }));
     const reload = vi.fn();
 
-    pollHealthAndReload({ fetchImpl, reload });
+    restartAndReload(() => Promise.resolve(statusResponse(true)), { fetchImpl, reload });
 
+    await flushPromises();
     await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(2000);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("reloads when health reports a new instance id", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse({ instanceId: "old" }))
+      .mockResolvedValueOnce(healthResponse({ instanceId: "new" }));
+    const reload = vi.fn();
+
+    restartAndReload(() => Promise.resolve(statusResponse(true)), { fetchImpl, reload });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads after an unavailable-to-healthy transition when no instance marker exists", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse())
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce(healthResponse());
+    const reload = vi.fn();
+
+    restartAndReload(() => Promise.resolve(statusResponse(true)), { fetchImpl, reload });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows failure and does not reload when restart is rejected", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn().mockResolvedValue(healthResponse({ instanceId: "old" }));
+    const reload = vi.fn();
+
+    restartAndReload(() => Promise.resolve(statusResponse(false)), { fetchImpl, reload });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Restart request was rejected");
+  });
+
+  it("continues polling when restart request disconnects and reloads on a new instance", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse({ instanceId: "old" }))
+      .mockResolvedValueOnce(healthResponse({ instanceId: "new" }));
+    const reload = vi.fn();
+
+    restartAndReload(() => Promise.reject(new Error("connection closed")), { fetchImpl, reload });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out without reloading when restart is not confirmed", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn().mockResolvedValue(healthResponse({ instanceId: "same" }));
+    const reload = vi.fn();
+
+    restartAndReload(
+      () => Promise.resolve(statusResponse(true)),
+      { fetchImpl, reload, timeoutMs: 3000 },
+    );
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Restart was not confirmed");
   });
 });

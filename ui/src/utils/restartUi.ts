@@ -7,6 +7,7 @@ type RestartSplashCopy = {
 type PollHealthOptions = {
   fetchImpl?: typeof fetch;
   intervalMs?: number;
+  timeoutMs?: number;
   reload?: () => void;
   setIntervalImpl?: typeof window.setInterval;
   clearIntervalImpl?: typeof window.clearInterval;
@@ -16,8 +17,82 @@ type RestartAndReloadOptions = PollHealthOptions & {
   copy?: RestartSplashCopy;
 };
 
+type HealthPayload = {
+  instanceId?: unknown;
+  startedAt?: unknown;
+  pid?: unknown;
+};
+
+type HealthSnapshot = {
+  marker: string | null;
+};
+
+type PollHealthInternalOptions = PollHealthOptions & {
+  baseline?: HealthSnapshot | null;
+};
+
 const DEFAULT_TITLE = "Restarting PilotDeck...";
 const DEFAULT_DESCRIPTION = "Page will reload automatically when server is ready.";
+const DEFAULT_TIMEOUT_MS = 120_000;
+
+function renderRestartFailure(message: string) {
+  const errorEl = document.createElement("p");
+  errorEl.textContent = message;
+  errorEl.style.cssText = "color:#f87171;font-size:0.85rem;margin:16px 0 0";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Refresh";
+  button.style.cssText =
+    "margin-top:14px;border:1px solid #525252;background:#171717;color:#e5e5e5;border-radius:6px;padding:6px 12px;cursor:pointer";
+  button.addEventListener("click", () => window.location.reload());
+
+  document.body.querySelector("div")?.append(errorEl, button);
+}
+
+async function readHealthSnapshot(fetchImpl: typeof fetch): Promise<HealthSnapshot | null> {
+  const res = await fetchImpl("/health");
+  if (!res.ok) return null;
+
+  let payload: HealthPayload = {};
+  try {
+    payload = await res.json();
+  } catch {
+    payload = {};
+  }
+
+  if (typeof payload.instanceId === "string" && payload.instanceId) {
+    return {
+      marker: `instance:${payload.instanceId}`,
+    };
+  }
+
+  const pid = typeof payload.pid === "number" || typeof payload.pid === "string"
+    ? String(payload.pid)
+    : "";
+  const startedAt = typeof payload.startedAt === "string" ? payload.startedAt : "";
+  if (pid && startedAt) {
+    return {
+      marker: `legacy:${pid}:${startedAt}`,
+    };
+  }
+
+  return {
+    marker: null,
+  };
+}
+
+function hasAcceptedRestart(value: unknown) {
+  if (
+    value
+    && typeof value === "object"
+    && "ok" in value
+    && typeof (value as { ok?: unknown }).ok === "boolean"
+  ) {
+    return (value as { ok: boolean }).ok;
+  }
+  return true;
+}
 
 export function showRestartSplash(copy: RestartSplashCopy = {}) {
   const title = copy.title ?? DEFAULT_TITLE;
@@ -61,20 +136,49 @@ export function showRestartSplash(copy: RestartSplashCopy = {}) {
 export function pollHealthAndReload({
   fetchImpl = fetch,
   intervalMs = 2000,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
   reload = () => window.location.reload(),
   setIntervalImpl = window.setInterval,
   clearIntervalImpl = window.clearInterval,
-}: PollHealthOptions = {}) {
+  baseline = null,
+}: PollHealthInternalOptions = {}) {
+  let sawUnavailable = false;
+  const startedAtMs = Date.now();
   const poll = setIntervalImpl(() => {
     void (async () => {
+      if (Date.now() - startedAtMs >= timeoutMs) {
+        clearIntervalImpl(poll);
+        renderRestartFailure("Restart was not confirmed. Refresh the page or try again.");
+        return;
+      }
+
       try {
-        const res = await fetchImpl("/health");
-        if (res.ok) {
+        const snapshot = await readHealthSnapshot(fetchImpl);
+        if (!snapshot) {
+          sawUnavailable = true;
+          return;
+        }
+
+        if (baseline?.marker && snapshot.marker) {
+          if (snapshot.marker !== baseline.marker) {
+            clearIntervalImpl(poll);
+            reload();
+          }
+          return;
+        }
+
+        if (baseline && !baseline.marker && snapshot.marker) {
+          clearIntervalImpl(poll);
+          reload();
+          return;
+        }
+
+        if (!baseline?.marker && !snapshot.marker && sawUnavailable) {
           clearIntervalImpl(poll);
           reload();
         }
       } catch {
-        // The server is expected to be unavailable while restarting.
+        sawUnavailable = true;
       }
     })();
   }, intervalMs);
@@ -86,9 +190,27 @@ export function restartAndReload(
   requestRestart: () => Promise<unknown>,
   options: RestartAndReloadOptions = {},
 ) {
-  showRestartSplash(options.copy);
-  void requestRestart().catch(() => {
-    // The restart request can be interrupted when the server exits.
-  });
-  return pollHealthAndReload(options);
+  void (async () => {
+    const fetchImpl = options.fetchImpl ?? fetch;
+    let baseline: HealthSnapshot | null = null;
+    try {
+      baseline = await readHealthSnapshot(fetchImpl);
+    } catch {
+      baseline = null;
+    }
+
+    showRestartSplash(options.copy);
+
+    try {
+      const restartResponse = await requestRestart();
+      if (!hasAcceptedRestart(restartResponse)) {
+        renderRestartFailure("Restart request was rejected. Refresh the page or try again.");
+        return;
+      }
+    } catch {
+      // The restart request can be interrupted when the server exits.
+    }
+
+    pollHealthAndReload({ ...options, baseline });
+  })();
 }

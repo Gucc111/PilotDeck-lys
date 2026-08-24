@@ -44,6 +44,10 @@ export function getRuntimeCommand() {
   return process.execPath;
 }
 
+export function getSupervisorArgs(mode) {
+  return [__filename, normalizeSupervisorMode(mode)];
+}
+
 export function createRuntimeSupervisor({
   mode,
   env = process.env,
@@ -83,6 +87,33 @@ export function createRuntimeSupervisor({
     return child;
   };
 
+  const restartSupervisor = () => {
+    let supervisor;
+    try {
+      supervisor = spawnImpl(process.execPath, getSupervisorArgs(normalizedMode), {
+        cwd,
+        stdio: 'inherit',
+        env: {
+          ...env,
+          PILOTDECK_RESTART_MODE: normalizedMode,
+        },
+        windowsHide: platform === 'win32',
+      });
+    } catch (spawnError) {
+      error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
+      exit(1);
+      return null;
+    }
+    supervisor.once('error', (spawnError) => {
+      error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
+      exit(1);
+    });
+    supervisor.once('spawn', () => {
+      exit(0);
+    });
+    return supervisor;
+  };
+
   const stop = (signal) => {
     stopping = true;
     pendingSignal = signal;
@@ -105,8 +136,8 @@ export function createRuntimeSupervisor({
       } catch (unlinkError) {
         error(`[restart-supervisor] Failed to remove restart request: ${unlinkError.message}`);
       }
-      log(`[restart-supervisor] Restart requested; relaunching ${normalizedMode} runtime...`);
-      startChild().once('close', handleClose);
+      log(`[restart-supervisor] Restart requested; relaunching ${normalizedMode} supervisor...`);
+      restartSupervisor();
       return;
     }
 
