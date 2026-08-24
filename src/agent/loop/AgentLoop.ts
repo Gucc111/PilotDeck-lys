@@ -2013,6 +2013,9 @@ export class AgentLoop {
       );
     }
     const requestMessages = normalizeMessagesForModelRequest(messages);
+    const contextMessages = this.config.permissionMode === "plan"
+      ? appendPlanModeReminder(requestMessages)
+      : requestMessages;
     let tools = toolDefinitions.map(toolToCanonicalSchema);
     if (this.config.runMode === "ask") {
       tools = filterAskModeTools(toolDefinitions);
@@ -2030,7 +2033,7 @@ export class AgentLoop {
       permissionMode: this.config.permissionMode,
       runMode: this.config.runMode ?? "agent",
       additionalWorkingDirectories: this.config.permissionContext.additionalWorkingDirectories,
-      messages: cloneMessages(requestMessages),
+      messages: cloneMessages(contextMessages),
       tools,
       maxMessages: this.config.maxContextMessages,
       customSystemPrompt: this.config.systemPrompt,
@@ -2061,9 +2064,7 @@ export class AgentLoop {
     return {
       provider: requestProvider,
       model: requestModel,
-      messages: this.config.permissionMode === "plan"
-        ? appendPlanModeReminder(materialized.messages)
-        : materialized.messages,
+      messages: materialized.messages,
       systemPrompt: prepared.systemPrompt ?? this.config.systemPrompt,
       tools: prepared.tools,
       toolChoice: this.config.toolChoice,

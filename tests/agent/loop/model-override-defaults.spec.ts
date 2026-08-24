@@ -4,6 +4,7 @@ import test from "node:test";
 import { AgentLoop, type AgentLoopInput } from "../../../src/agent/loop/AgentLoop.js";
 import type { AgentRuntimeConfig } from "../../../src/agent/runtime/AgentRuntimeConfig.js";
 import type { AgentRuntimeDependencies } from "../../../src/agent/runtime/AgentRuntimeDependencies.js";
+import { DefaultContextRuntime } from "../../../src/context/DefaultContextRuntime.js";
 import type { CanonicalMessage, CanonicalModelRequest } from "../../../src/model/index.js";
 import { createDefaultPermissionContext } from "../../../src/permission/index.js";
 import { ToolRegistry } from "../../../src/tool/index.js";
@@ -51,4 +52,52 @@ test("provider and model overrides retain configured temperature and thinking de
   assert.equal(request.model, "selected-model");
   assert.equal(request.temperature, 0.35);
   assert.deepEqual(request.thinking, thinking);
+});
+
+test("plan-mode reminder is included before recent3 cache indices are computed", async () => {
+  const config: AgentRuntimeConfig = {
+    provider: "modelbest",
+    model: "claude-test",
+    cwd: "/workspace/project",
+    systemPrompt: "stable system",
+    permissionMode: "plan",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "plan",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  };
+  const loop = new AgentLoop(config, {
+    router: {} as AgentRuntimeDependencies["router"],
+    context: new DefaultContextRuntime(),
+    tools: {
+      registry: new ToolRegistry(),
+      scheduler: { executeAll: async () => [] },
+    },
+    getModelProtocol: () => "anthropic",
+    getModelSupportsPromptCache: () => true,
+  });
+  const messages: CanonicalMessage[] = Array.from({ length: 5 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" as const : "assistant" as const,
+    content: [{ type: "text" as const, text: `message-${index}` }],
+  }));
+  const input: AgentLoopInput = {
+    sessionId: "plan-cache-session",
+    turnId: "plan-cache-turn",
+    messages,
+  };
+
+  const request = await (loop as unknown as {
+    createModelRequest(
+      messages: CanonicalMessage[],
+      input: AgentLoopInput,
+      options: { emitInstructionEvents?: boolean },
+    ): Promise<CanonicalModelRequest>;
+  }).createModelRequest(messages, input, { emitInstructionEvents: false });
+
+  assert.equal(request.messages.length, 6);
+  assert.equal(request.messages[5]?.metadata?.purpose, "plan_mode_reminder");
+  assert.deepEqual(request.cachePlan?.messages, [3, 4, 5]);
+  assert.deepEqual(request.cacheBreakpoints, [3, 4, 5]);
 });
