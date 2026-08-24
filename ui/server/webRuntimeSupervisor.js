@@ -65,6 +65,7 @@ export function createRuntimeSupervisor({
   const normalizedMode = normalizeSupervisorMode(mode);
   const runtimeArgs = getRuntimeArgs(normalizedMode);
   let child = null;
+  let replacementSupervisor = null;
   let stopping = false;
   let pendingSignal = null;
 
@@ -104,12 +105,22 @@ export function createRuntimeSupervisor({
       exit(1);
       return null;
     }
+    replacementSupervisor = supervisor;
     supervisor.once('error', (spawnError) => {
       error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
       exit(1);
     });
-    supervisor.once('spawn', () => {
-      exit(0);
+    supervisor.once('close', (code, signal) => {
+      replacementSupervisor = null;
+      if (stopping) {
+        exit(pendingSignal === 'SIGINT' ? 0 : (typeof code === 'number' ? code : 1));
+        return;
+      }
+      if (signal) {
+        exit(1);
+        return;
+      }
+      exit(typeof code === 'number' ? code : 0);
     });
     return supervisor;
   };
@@ -117,6 +128,10 @@ export function createRuntimeSupervisor({
   const stop = (signal) => {
     stopping = true;
     pendingSignal = signal;
+    if (replacementSupervisor && !replacementSupervisor.killed) {
+      replacementSupervisor.kill(signal);
+      return;
+    }
     if (child && !child.killed) {
       child.kill(signal);
       return;

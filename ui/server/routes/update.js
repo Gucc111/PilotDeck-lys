@@ -376,24 +376,36 @@ export function createRestartHandler({
   isSupervisorRestartEnabledImpl = isSupervisorRestartEnabled,
   projectRoot = PROJECT_ROOT,
   platform = process.platform,
+  getInstanceInfo = (req) => req.app?.locals?.restartInstanceInfo,
   log = console.log,
   error = console.error,
 } = {}) {
-  return async (_req, res) => {
+  const createAcceptedBody = (req, restartMode) => {
+    const instanceInfo = getInstanceInfo(req) || {};
+    return {
+      status: 'accepted',
+      restartMode,
+      previousInstanceId: instanceInfo.instanceId ?? null,
+      previousStartedAt: instanceInfo.startedAt ?? null,
+      previousPid: instanceInfo.pid ?? null,
+    };
+  };
+
+  return async (req, res) => {
     try {
       log('[update] Preparing replacement process and exit...');
 
       const isDocker = env.DOCKER === '1' || env.container === 'docker';
 
       if (isDocker) {
-        res.status(202).json({ status: 'accepted', restartMode: 'docker' });
+        res.status(202).json(createAcceptedBody(req, 'docker'));
         setTimeoutImpl(() => exit(0), 500);
         return;
       }
 
       if (isSupervisorRestartEnabledImpl(env)) {
         requestSupervisorRestartImpl({ env });
-        res.status(202).json({ status: 'accepted', restartMode: 'supervisor' });
+        res.status(202).json(createAcceptedBody(req, 'supervisor'));
         setTimeoutImpl(() => exit(RESTART_EXIT_CODE), 500);
         return;
       }
@@ -421,7 +433,7 @@ export function createRestartHandler({
 
       child.unref();
 
-      res.status(202).json({ status: 'accepted', restartMode: 'direct' });
+      res.status(202).json(createAcceptedBody(req, 'direct'));
       setTimeoutImpl(() => exit(0), 500);
     } catch (caughtError) {
       const message = normalizeUpdateRuntimeError(caughtError);

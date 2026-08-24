@@ -59,7 +59,7 @@ describe('web runtime supervisor', () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it('starts a replacement supervisor when the request file exists', () => {
+  it('starts a replacement supervisor and waits for it when the request file exists', () => {
     const firstChild = createFakeChild();
     const replacementSupervisor = createFakeChild();
     const spawnImpl = vi.fn()
@@ -96,6 +96,38 @@ describe('web runtime supervisor', () => {
         }),
       }),
     );
+    expect(exit).not.toHaveBeenCalled();
+
+    replacementSupervisor.emit('close', 0, null);
+
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('forwards SIGINT to the replacement supervisor while bridging', () => {
+    const firstChild = createFakeChild();
+    const replacementSupervisor = createFakeChild();
+    const spawnImpl = vi.fn()
+      .mockReturnValueOnce(firstChild)
+      .mockReturnValueOnce(replacementSupervisor);
+    const processLike = createFakeProcess();
+    const exit = vi.fn();
+
+    createRuntimeSupervisor({
+      mode: 'start-built',
+      spawnImpl,
+      exists: () => true,
+      unlink: vi.fn(),
+      processLike,
+      exit,
+      log: vi.fn(),
+      error: vi.fn(),
+    }).run();
+
+    firstChild.emit('close', 1, null);
+    processLike.emitSignal('SIGINT');
+    replacementSupervisor.emit('close', null, 'SIGINT');
+
+    expect(replacementSupervisor.kill).toHaveBeenCalledWith('SIGINT');
     expect(exit).toHaveBeenCalledWith(0);
   });
 

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { restartAndReload } from "../../utils/restartUi";
 import { VersionBadge } from "./VersionBadge";
@@ -33,6 +33,7 @@ vi.mock("../../hooks/useGitVersion", () => ({
 describe("VersionBadge", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    cleanup();
   });
 
   it("uses the shared restart helper after a successful update", async () => {
@@ -48,5 +49,22 @@ describe("VersionBadge", () => {
 
     expect(restartAndReload).toHaveBeenCalledTimes(1);
     expect(restartAndReload).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it("passes the restart response through to the shared helper", async () => {
+    const restartResponse = { ok: false, status: 500 } as Response;
+    triggerUpdate.mockResolvedValue({ success: true, lines: ["updated"] });
+    triggerRestart.mockResolvedValue(restartResponse);
+
+    render(<VersionBadge />);
+
+    fireEvent.click(screen.getByRole("button", { name: /abc1234/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Update Now" }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Restart to Apply" }));
+
+    const requestRestart = vi.mocked(restartAndReload).mock.calls[0][0];
+    await expect(requestRestart()).resolves.toBe(restartResponse);
   });
 });

@@ -8,10 +8,11 @@ function healthResponse(payload: unknown = {}) {
   } as Response;
 }
 
-function statusResponse(ok: boolean) {
+function statusResponse(ok: boolean, payload: unknown = {}): Response {
   return {
     ok,
-    json: async () => ({}),
+    json: async () => payload,
+    clone: () => statusResponse(ok, payload),
   } as Response;
 }
 
@@ -157,17 +158,56 @@ describe("restartUi", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("reloads when baseline health fails and polling later sees a marked instance", async () => {
+  it("does not reload when baseline health fails and polling later sees a marked instance without restart proof", async () => {
     vi.useFakeTimers();
     const fetchImpl = vi
       .fn()
       .mockRejectedValueOnce(new Error("baseline unavailable"))
+      .mockResolvedValueOnce(healthResponse({ instanceId: "same" }));
+    const reload = vi.fn();
+
+    restartAndReload(() => Promise.resolve(statusResponse(true)), { fetchImpl, reload });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("reloads when baseline health fails but restart response identifies the previous instance", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("baseline unavailable"))
+      .mockResolvedValueOnce(healthResponse({ instanceId: "old" }))
+      .mockResolvedValueOnce(healthResponse({ instanceId: "new" }));
+    const reload = vi.fn();
+
+    restartAndReload(
+      () => Promise.resolve(statusResponse(true, { previousInstanceId: "old" })),
+      { fetchImpl, reload },
+    );
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads after a post-request unavailable-to-healthy transition when no previous marker exists", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("baseline unavailable"))
+      .mockRejectedValueOnce(new Error("down after request"))
       .mockResolvedValueOnce(healthResponse({ instanceId: "new" }));
     const reload = vi.fn();
 
     restartAndReload(() => Promise.resolve(statusResponse(true)), { fetchImpl, reload });
 
     await flushPromises();
+    await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(reload).toHaveBeenCalledTimes(1);

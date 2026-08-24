@@ -28,6 +28,12 @@ async function requestJson(app, path, init = {}) {
 }
 
 describe('update restart route', () => {
+  const instanceInfo = {
+    instanceId: 'old-instance',
+    startedAt: '2026-08-24T04:00:00.000Z',
+    pid: 12345,
+  };
+
   it('accepts supervisor restarts after writing the request file', async () => {
     const requestSupervisorRestartImpl = vi.fn();
     const setTimeoutImpl = vi.fn();
@@ -40,6 +46,7 @@ describe('update restart route', () => {
       requestSupervisorRestartImpl,
       setTimeoutImpl,
       exit,
+      getInstanceInfo: () => instanceInfo,
       log: vi.fn(),
       error: vi.fn(),
     }));
@@ -48,12 +55,46 @@ describe('update restart route', () => {
 
     expect(response).toEqual({
       status: 202,
-      body: { status: 'accepted', restartMode: 'supervisor' },
+      body: {
+        status: 'accepted',
+        restartMode: 'supervisor',
+        previousInstanceId: 'old-instance',
+        previousStartedAt: '2026-08-24T04:00:00.000Z',
+        previousPid: 12345,
+      },
     });
     expect(requestSupervisorRestartImpl).toHaveBeenCalledTimes(1);
     expect(setTimeoutImpl).toHaveBeenCalledWith(expect.any(Function), 500);
     setTimeoutImpl.mock.calls[0][0]();
     expect(exit).toHaveBeenCalledWith(RESTART_EXIT_CODE);
+  });
+
+  it('accepts docker restarts with previous instance metadata', async () => {
+    const setTimeoutImpl = vi.fn();
+    const exit = vi.fn();
+    const app = createApp(createUpdateRouter({
+      env: { DOCKER: '1' },
+      setTimeoutImpl,
+      exit,
+      getInstanceInfo: () => instanceInfo,
+      log: vi.fn(),
+      error: vi.fn(),
+    }));
+
+    const response = await requestJson(app, '/api/update/restart', { method: 'POST' });
+
+    expect(response).toEqual({
+      status: 202,
+      body: {
+        status: 'accepted',
+        restartMode: 'docker',
+        previousInstanceId: 'old-instance',
+        previousStartedAt: '2026-08-24T04:00:00.000Z',
+        previousPid: 12345,
+      },
+    });
+    setTimeoutImpl.mock.calls[0][0]();
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   it('returns 500 when supervisor request file writing fails', async () => {
@@ -99,6 +140,7 @@ describe('update restart route', () => {
       spawnImpl,
       setTimeoutImpl,
       exit,
+      getInstanceInfo: () => instanceInfo,
       log: vi.fn(),
       error: vi.fn(),
     }));
@@ -107,7 +149,13 @@ describe('update restart route', () => {
 
     expect(response).toEqual({
       status: 202,
-      body: { status: 'accepted', restartMode: 'direct' },
+      body: {
+        status: 'accepted',
+        restartMode: 'direct',
+        previousInstanceId: 'old-instance',
+        previousStartedAt: '2026-08-24T04:00:00.000Z',
+        previousPid: 12345,
+      },
     });
     expect(spawnImpl).toHaveBeenCalledWith(
       'bash',

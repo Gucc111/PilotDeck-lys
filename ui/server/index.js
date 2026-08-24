@@ -352,6 +352,11 @@ async function setupProjectsWatcher() {
 
 
 const app = express();
+app.locals.restartInstanceInfo = {
+    instanceId: serverInstanceId,
+    startedAt: serverStartedAt,
+    pid: serverPid
+};
 const server = http.createServer(app);
 
 const ptySessionsMap = new Map();
@@ -477,13 +482,14 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
+    const instanceInfo = req.app.locals.restartInstanceInfo || {};
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
         installMode,
-        instanceId: serverInstanceId,
-        startedAt: serverStartedAt,
-        pid: serverPid
+        instanceId: instanceInfo.instanceId,
+        startedAt: instanceInfo.startedAt,
+        pid: instanceInfo.pid
     });
 });
 

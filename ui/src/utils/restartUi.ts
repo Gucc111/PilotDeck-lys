@@ -23,13 +23,18 @@ type HealthPayload = {
   pid?: unknown;
 };
 
+type RestartAcceptedPayload = {
+  previousInstanceId?: unknown;
+  previousStartedAt?: unknown;
+  previousPid?: unknown;
+};
+
 type HealthSnapshot = {
   marker: string | null;
 };
 
 type PollHealthInternalOptions = PollHealthOptions & {
   baseline?: HealthSnapshot | null;
-  sawUnavailableBeforePolling?: boolean;
 };
 
 const DEFAULT_TITLE = "Restarting PilotDeck...";
@@ -95,6 +100,46 @@ function hasAcceptedRestart(value: unknown) {
   return true;
 }
 
+function isResponseLike(value: unknown): value is Response {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && "ok" in value
+    && typeof (value as { ok?: unknown }).ok === "boolean",
+  );
+}
+
+function markerFromRestartPayload(payload: RestartAcceptedPayload): HealthSnapshot | null {
+  if (typeof payload.previousInstanceId === "string" && payload.previousInstanceId) {
+    return {
+      marker: `instance:${payload.previousInstanceId}`,
+    };
+  }
+
+  const pid = typeof payload.previousPid === "number" || typeof payload.previousPid === "string"
+    ? String(payload.previousPid)
+    : "";
+  const startedAt = typeof payload.previousStartedAt === "string" ? payload.previousStartedAt : "";
+  if (pid && startedAt) {
+    return {
+      marker: `legacy:${pid}:${startedAt}`,
+    };
+  }
+
+  return null;
+}
+
+async function readRestartBaseline(value: unknown): Promise<HealthSnapshot | null> {
+  if (!isResponseLike(value) || !value.ok) return null;
+
+  try {
+    const payload = await value.clone().json() as RestartAcceptedPayload;
+    return markerFromRestartPayload(payload);
+  } catch {
+    return null;
+  }
+}
+
 export function showRestartSplash(copy: RestartSplashCopy = {}) {
   const title = copy.title ?? DEFAULT_TITLE;
   const description = copy.description ?? DEFAULT_DESCRIPTION;
@@ -142,9 +187,8 @@ export function pollHealthAndReload({
   setIntervalImpl = window.setInterval,
   clearIntervalImpl = window.clearInterval,
   baseline = null,
-  sawUnavailableBeforePolling = false,
 }: PollHealthInternalOptions = {}) {
-  let sawUnavailable = sawUnavailableBeforePolling;
+  let sawUnavailable = false;
   const startedAtMs = Date.now();
   const poll = setIntervalImpl(() => {
     void (async () => {
@@ -201,11 +245,9 @@ export function restartAndReload(
   void (async () => {
     const fetchImpl = options.fetchImpl ?? fetch;
     let baseline: HealthSnapshot | null = null;
-    let sawUnavailable = false;
     try {
       baseline = await readHealthSnapshot(fetchImpl);
     } catch {
-      sawUnavailable = true;
       baseline = null;
     }
 
@@ -217,10 +259,11 @@ export function restartAndReload(
         renderRestartFailure("Restart request was rejected. Refresh the page or try again.");
         return;
       }
+      baseline = await readRestartBaseline(restartResponse) ?? baseline;
     } catch {
       // The restart request can be interrupted when the server exits.
     }
 
-    pollHealthAndReload({ ...options, baseline, sawUnavailableBeforePolling: sawUnavailable });
+    pollHealthAndReload({ ...options, baseline });
   })();
 }
