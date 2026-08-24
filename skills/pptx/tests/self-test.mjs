@@ -184,6 +184,25 @@ try {
   assert.notEqual(failed.status, 0);
   assert.match(failed.stderr, /targets missing part/u);
 
+  const wrongSlideTarget = path.join(workDir, 'wrong-slide-target.pptx');
+  await mutateDeck(candidate, wrongSlideTarget, async (zip) => {
+    const part = zip.file('ppt/_rels/presentation.xml.rels');
+    zip.file('ppt/_rels/presentation.xml.rels', (await part.async('string')).replace('slides/slide1.xml', 'presentation.xml'));
+  });
+  failed = rawPptx('validate', '--input', wrongSlideTarget);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /unexpected content type/u);
+
+  const wrongSlideRoot = path.join(workDir, 'wrong-slide-root.pptx');
+  await mutateDeck(candidate, wrongSlideRoot, async (zip) => {
+    const part = zip.file('ppt/slides/slide1.xml');
+    const xml = await part.async('string');
+    zip.file('ppt/slides/slide1.xml', xml.replace('<p:sld ', '<p:presentation ').replace('</p:sld>', '</p:presentation>'));
+  });
+  failed = rawPptx('validate', '--input', wrongSlideRoot);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /not a presentation slide part/u);
+
   const unsafeTarget = path.join(workDir, 'unsafe-target.pptx');
   await mutateDeck(candidate, unsafeTarget, async (zip) => {
     const part = zip.file('ppt/_rels/presentation.xml.rels');
@@ -235,7 +254,7 @@ try {
   assert.equal(overwritten.sha256, await fs.readFile(changedCandidate).then(sha256));
 
   const invalidFinal = path.join(outputRoot, 'invalid-final.pptx');
-  failed = rawPptx('deliver', '--input', missingTarget, '--out', invalidFinal);
+  failed = rawPptx('deliver', '--input', wrongSlideTarget, '--out', invalidFinal);
   assert.notEqual(failed.status, 0);
   assert.equal(await fs.stat(invalidFinal).then(() => true).catch(() => false), false);
 
@@ -318,6 +337,7 @@ try {
       'bom-compatibility',
       'warning-nonblocking',
       'broken-package-rejection',
+      'slide-target-semantics',
       'unsafe-path-rejection',
       'factual-comparison',
       'active-chart-counting',

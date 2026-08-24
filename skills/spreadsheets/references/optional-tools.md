@@ -22,7 +22,7 @@ Use once on a final XLSX candidate when formulas or their dependencies changed a
 bash "$SHEET" recalculate --input "$CANDIDATE" --out "$RECALCULATED" --report "$WORKSPACE/review/recalculation.json"
 ```
 
-The command runs LibreOffice only on a temporary copy, keeps the original formula and package structure, and merges supported cached results by worksheet and cell address. Do not retry `partial`, `unsupported`, or `blocked` results with a risky round-trip option.
+The command runs LibreOffice only on a temporary copy, keeps the original formula and package structure, and merges calculated caches by worksheet and cell address. If any formula is known to be incompatible or any result cannot be merged safely, it returns `unsupported` without emitting a candidate so dependent caches cannot be polluted. Do not retry `unsupported` or `blocked` results with a risky round-trip option.
 
 If recalculation is used with `validate` or `render`, run those later checks against the recalculated candidate.
 

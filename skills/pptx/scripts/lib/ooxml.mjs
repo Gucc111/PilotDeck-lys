@@ -13,6 +13,12 @@ const OFFICE_DOCUMENT_RELATIONSHIP_TYPES = new Set([
 ]);
 const PRESENTATION_MAIN_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
+const PRESENTATION_SLIDE_CONTENT_TYPE =
+  'application/vnd.openxmlformats-officedocument.presentationml.slide+xml';
+const PRESENTATION_MAIN_NAMESPACES = new Set([
+  'http://schemas.openxmlformats.org/presentationml/2006/main',
+  'http://purl.oclc.org/ooxml/presentationml/main',
+]);
 const LEGACY_MAGIC = Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
 
 function normalizeXmlSource(xml) {
@@ -209,7 +215,7 @@ async function validateContentTypes(context, officeDocumentPart) {
   if (mainType !== PRESENTATION_MAIN_CONTENT_TYPE) {
     throw new Error(`Invalid PPTX OPC package: ${officeDocumentPart} uses unexpected content type ${mainType ?? '(missing)'}`);
   }
-  return { contentTypeCount: defaults.size + overrides.size, mappedPartCount };
+  return { contentTypeCount: defaults.size + overrides.size, mappedPartCount, contentTypeFor };
 }
 
 async function findOfficeDocumentPart(context) {
@@ -270,7 +276,7 @@ function normalizedText(document) {
     .trim();
 }
 
-async function presentationSlides(context, officeDocumentPart) {
+async function presentationSlides(context, officeDocumentPart, contentTypeFor) {
   const presentationDocument = parseXml(
     await requiredPart(context, officeDocumentPart).file.async('string'),
     officeDocumentPart,
@@ -289,6 +295,10 @@ async function presentationSlides(context, officeDocumentPart) {
     if (!part || !context.partIndex.has(part)) {
       throw new Error(`Invalid PPTX presentation: slide relationship ${id} targets missing or unsafe part ${relationship.target}`);
     }
+    const contentType = contentTypeFor(part);
+    if (contentType !== PRESENTATION_SLIDE_CONTENT_TYPE) {
+      throw new Error(`Invalid PPTX presentation: slide relationship ${id} targets ${part} with unexpected content type ${contentType ?? '(missing)'}`);
+    }
     slideParts.push(part);
   }
   if (!slideParts.length) throw new Error('Invalid PPTX presentation: no active slides were found');
@@ -299,6 +309,10 @@ async function presentationSlides(context, officeDocumentPart) {
   for (let index = 0; index < slideParts.length; index += 1) {
     const part = slideParts[index];
     const document = parseXml(await requiredPart(context, part).file.async('string'), part);
+    const root = document.documentElement;
+    if (root.localName !== 'sld' || !PRESENTATION_MAIN_NAMESPACES.has(root.namespaceURI)) {
+      throw new Error(`Invalid PPTX presentation: ${part} is not a presentation slide part`);
+    }
     const slideRelationships = await readRelationships(context, relationshipsPartFor(part));
     for (const relationship of slideRelationships.filter((item) => (
       !item.external && /\/chart$/u.test(item.type)
@@ -384,7 +398,7 @@ export async function readPptxFacts(inputPath, options = {}) {
   const contentTypes = await validateContentTypes(context, officeDocumentPart);
   const textPartCount = await validateAllXml(context);
   const relationships = await validateAllRelationships(context);
-  const presentation = await presentationSlides(context, officeDocumentPart);
+  const presentation = await presentationSlides(context, officeDocumentPart, contentTypes.contentTypeFor);
   const parts = [...context.partIndex.keys()].sort();
   const activeSlides = new Set(presentation.slides.map((slide) => slide.part));
   const orphanSlides = parts.filter((part) => /^ppt\/slides\/slide\d+\.xml$/u.test(part) && !activeSlides.has(part));

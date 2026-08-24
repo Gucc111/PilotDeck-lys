@@ -6,7 +6,7 @@ Read only the sections relevant to the current workbook.
 
 An XLSX formula cell can contain both the formula and a cached result. Libraries such as openpyxl and ExcelJS can write formulas without calculating them; previewers and readers that do not run Excel may then show blanks or stale values.
 
-Use `recalculate` once on the final candidate when formulas or their dependencies changed and cached values matter. It calculates a temporary copy and merges only supported formula results into the original package. `partial`, `unsupported`, or `blocked` results identify cells that were deliberately not changed; do not bypass them with a destructive round trip.
+Use `recalculate` once on the final candidate when formulas or their dependencies changed and cached values matter. It calculates a temporary copy and merges safe formula results into the original package. If the workbook contains a known incompatible formula or any result cannot be merged safely, it returns `unsupported` without creating a candidate because other formulas may depend on that result. Do not bypass `unsupported` or `blocked` results with a destructive round trip.
 
 LibreOffice is not Microsoft Excel. Treat external workbook references, VBA or add-in functions, data tables, array and dynamic-array formulas, cube and data-model formulas, and formulas marked with `_xlfn`, `_xlws`, or `_xludf` as higher risk. Preserve the formula and report the limitation when the available engine cannot calculate it reliably.
 
