@@ -1,14 +1,5 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 import { readPptxFacts } from './ooxml.mjs';
-
-function hashText(value) {
-  return crypto.createHash('sha256').update(String(value ?? ''), 'utf8').digest('hex');
-}
-
-function slideSignature(slide) {
-  return hashText(`${slide?.text ?? ''}\0${slide?.notes ?? ''}`);
-}
 
 function changedFeatureCounts(before, after) {
   const changes = {};
@@ -59,9 +50,6 @@ export async function comparePptx(sourcePath, candidatePath) {
   }
   const packageParts = packageDifferences(source.partHashes, candidate.partHashes);
   const featureCounts = changedFeatureCounts(source.report.presentation, candidate.report.presentation);
-  const sourceSequence = source.slides.map(slideSignature);
-  const candidateSequence = candidate.slides.map(slideSignature);
-  const slideSequenceChanged = JSON.stringify(sourceSequence) !== JSON.stringify(candidateSequence);
   const changed = source.report.sha256 !== candidate.report.sha256;
   return {
     status: 'ok',
@@ -77,7 +65,7 @@ export async function comparePptx(sourcePath, candidatePath) {
       slideCount: candidate.slides.length,
     },
     summary: {
-      slideSequenceChanged,
+      slideCountChanged: source.slides.length !== candidate.slides.length,
       changedSlidePositions: slides.length,
       textChangedSlidePositions: slides.filter((slide) => slide.text.changed).length,
       notesChangedSlidePositions: slides.filter((slide) => slide.notes.changed).length,

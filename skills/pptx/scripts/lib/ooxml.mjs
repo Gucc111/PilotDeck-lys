@@ -295,10 +295,20 @@ async function presentationSlides(context, officeDocumentPart) {
 
   const slides = [];
   const activeNotes = new Set();
+  const activeCharts = new Set();
   for (let index = 0; index < slideParts.length; index += 1) {
     const part = slideParts[index];
     const document = parseXml(await requiredPart(context, part).file.async('string'), part);
     const slideRelationships = await readRelationships(context, relationshipsPartFor(part));
+    for (const relationship of slideRelationships.filter((item) => (
+      !item.external && /\/chart$/u.test(item.type)
+    ))) {
+      const chartPart = resolveRelationshipTarget(part, relationship.target);
+      if (!chartPart || !context.partIndex.has(chartPart)) {
+        throw new Error(`Invalid PPTX presentation: ${part} targets missing or unsafe chart part ${relationship.target}`);
+      }
+      activeCharts.add(chartPart);
+    }
     const notesRelationship = slideRelationships.find((relationship) => (
       !relationship.external && /\/notesSlide$/u.test(relationship.type)
     ));
@@ -321,17 +331,17 @@ async function presentationSlides(context, officeDocumentPart) {
       notes,
     });
   }
-  return { slides, activeNotes };
+  return { slides, activeNotes, activeCharts };
 }
 
-function featureCounts(parts, externalRelationshipCount) {
+function featureCounts(parts, externalRelationshipCount, activeChartCount) {
   const count = (pattern) => parts.filter((part) => pattern.test(part)).length;
   return {
     masterCount: count(/^ppt\/slideMasters\/slideMaster\d+\.xml$/u),
     layoutCount: count(/^ppt\/slideLayouts\/slideLayout\d+\.xml$/u),
     themeCount: count(/^ppt\/theme\/theme\d+\.xml$/u),
     notesSlideCount: count(/^ppt\/notesSlides\/notesSlide\d+\.xml$/u),
-    chartCount: count(/^ppt\/charts\/chart\d+\.xml$/u),
+    chartCount: activeChartCount,
     mediaCount: count(/^ppt\/media\//u),
     embeddingCount: count(/^ppt\/embeddings\//u),
     oleObjectCount: count(/^ppt\/embeddings\/oleObject/u),
@@ -385,7 +395,7 @@ export async function readPptxFacts(inputPath, options = {}) {
   }
   if (orphanSlides.length) warnings.push({ code: 'orphan-slide-parts', parts: orphanSlides });
   if (orphanNotes.length) warnings.push({ code: 'orphan-notes-parts', parts: orphanNotes });
-  const features = featureCounts(parts, relationships.externalRelationshipCount);
+  const features = featureCounts(parts, relationships.externalRelationshipCount, presentation.activeCharts.size);
   const report = {
     status: 'ok',
     input: context.absolute,

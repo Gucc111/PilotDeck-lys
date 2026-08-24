@@ -57,6 +57,8 @@ try {
   async function writeDeck(output, options = {}) {
     const texts = options.texts ?? ['Alpha', 'Beta'];
     const notes = options.notes ?? ['Source note', ''];
+    const chartPart = options.chartPart ?? null;
+    const orphanChartPart = options.orphanChartPart ?? null;
     const prefix = options.bom ? '\uFEFF  \n' : '';
     const zip = new JSZip();
     const overrides = [
@@ -65,6 +67,9 @@ try {
       ...notes.map((value, index) => value
         ? `<Override PartName="/ppt/notesSlides/notesSlide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>`
         : ''),
+      ...[chartPart, orphanChartPart].filter(Boolean).map((part) => (
+        `<Override PartName="/${part}" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`
+      )),
     ];
     if (options.orphanSlide) {
       overrides.push('<Override PartName="/ppt/slides/slide99.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>');
@@ -97,12 +102,25 @@ try {
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Text ${number}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(texts[index])}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
 </p:sld>`);
+      const slideRelationships = [];
       if (notes[index]) {
+        slideRelationships.push(`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${number}.xml"/>`);
+      }
+      if (index === 0 && chartPart) {
+        slideRelationships.push(`<Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="${escapeXml(options.chartTarget)}"/>`);
+      }
+      if (slideRelationships.length) {
         zip.file(`ppt/slides/_rels/slide${number}.xml.rels`, `${prefix}<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${number}.xml"/></Relationships>`);
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${slideRelationships.join('')}</Relationships>`);
+      }
+      if (notes[index]) {
         zip.file(`ppt/notesSlides/notesSlide${number}.xml`, `${prefix}<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Notes"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(notes[index])}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`);
       }
+    }
+    for (const part of [chartPart, orphanChartPart].filter(Boolean)) {
+      zip.file(part, `${prefix}<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea/></c:chart></c:chartSpace>`);
     }
     if (options.orphanSlide) {
       zip.file('ppt/slides/slide99.xml', `${prefix}<?xml version="1.0" encoding="UTF-8"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld/></p:sld>`);
@@ -122,11 +140,24 @@ try {
   const changedCandidate = path.join(workDir, 'changed.pptx');
   const bomCandidate = path.join(workDir, 'bom.pptx');
   const orphanCandidate = path.join(workDir, 'orphan.pptx');
+  const standardChartCandidate = path.join(workDir, 'standard-chart.pptx');
+  const nonstandardChartCandidate = path.join(workDir, 'nonstandard-chart.pptx');
+  const shorterCandidate = path.join(workDir, 'shorter.pptx');
   await writeDeck(source);
   await fs.copyFile(source, candidate);
   await writeDeck(changedCandidate, { texts: ['Alpha revised', 'Beta'], notes: ['Revised source note', ''], media: true });
   await writeDeck(bomCandidate, { bom: true });
   await writeDeck(orphanCandidate, { orphanSlide: true });
+  await writeDeck(standardChartCandidate, {
+    chartPart: 'ppt/charts/chart1.xml',
+    chartTarget: '../charts/chart1.xml',
+  });
+  await writeDeck(nonstandardChartCandidate, {
+    chartPart: 'ppt/slides/charts/chart1.xml',
+    chartTarget: 'charts/chart1.xml',
+    orphanChartPart: 'ppt/charts/chart99.xml',
+  });
+  await writeDeck(shorterCandidate, { texts: ['Alpha'], notes: ['Source note'] });
 
   const valid = pptx('validate', '--input', candidate);
   assert.equal(valid.status, 'ok');
@@ -135,6 +166,8 @@ try {
   assert.equal(valid.warnings.length, 0);
   assert.equal(pptx('validate', '--input', bomCandidate).status, 'ok');
   assert.ok(pptx('validate', '--input', orphanCandidate).warnings.some((warning) => warning.code === 'orphan-slide-parts'));
+  assert.equal(pptx('validate', '--input', standardChartCandidate).presentation.chartCount, 1);
+  assert.equal(pptx('validate', '--input', nonstandardChartCandidate).presentation.chartCount, 1);
 
   const missingContentTypes = path.join(workDir, 'missing-content-types.pptx');
   await mutateDeck(candidate, missingContentTypes, (zip) => zip.remove('[Content_Types].xml'));
@@ -179,10 +212,13 @@ try {
   assert.equal(comparison.summary.textChangedSlidePositions, 1);
   assert.equal(comparison.summary.notesChangedSlidePositions, 1);
   assert.equal(comparison.summary.addedPartCount, 1);
+  assert.equal(comparison.summary.slideCountChanged, false);
+  assert.equal(Object.hasOwn(comparison.summary, 'slideSequenceChanged'), false);
   const fullComparison = JSON.parse(await fs.readFile(comparisonPath, 'utf8'));
   assert.equal(fullComparison.slides[0].text.source, 'Alpha');
   assert.equal(fullComparison.slides[0].notes.candidate, 'Revised source note');
   assert.equal(pptx('compare', '--source', source, '--candidate', candidate).changed, false);
+  assert.equal(pptx('compare', '--source', source, '--candidate', shorterCandidate).summary.slideCountChanged, true);
 
   const final = path.join(outputRoot, 'final.pptx');
   const delivered = pptx('deliver', '--input', candidate, '--out', final, '--source', source);
@@ -284,6 +320,7 @@ try {
       'broken-package-rejection',
       'unsafe-path-rejection',
       'factual-comparison',
+      'active-chart-counting',
       'atomic-delivery',
       'source-protection',
       'recovery-copy',
