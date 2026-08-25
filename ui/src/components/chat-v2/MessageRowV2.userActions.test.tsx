@@ -132,7 +132,7 @@ describe('MessageRowV2 user actions', () => {
 });
 
 describe('MessageRowV2 assistant actions', () => {
-  it('keeps copy and branch hidden at the bottom left until the response is hovered or focused', () => {
+  it('keeps time, copy, and branch hidden at the bottom left until the response is hovered or focused', () => {
     const message: ChatMessage = {
       id: 'assistant-1',
       entryId: 'assistant-entry-1',
@@ -160,6 +160,9 @@ describe('MessageRowV2 assistant actions', () => {
     expect(actionRow.className).toContain('group-hover/assistant-msg:pointer-events-auto');
     expect(actionRow.className).toContain('group-hover/assistant-msg:opacity-100');
     expect(actionRow.className).toContain('group-focus-within/assistant-msg:opacity-100');
+    expect(actionRow.querySelector('time')?.getAttribute('datetime')).toBe(message.timestamp);
+    expect(Array.from(actionRow.children).map((element) => element.tagName.toLowerCase()))
+      .toEqual(['time', 'button', 'button']);
     expect(Array.from(actionRow.querySelectorAll('button')).map((button) => button.getAttribute('aria-label')))
       .toEqual([
         'Copy message',

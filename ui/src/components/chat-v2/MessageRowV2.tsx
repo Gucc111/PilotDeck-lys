@@ -586,9 +586,14 @@ function MessageRowV2({
   const hasAssistantProse = contentDisplayText.trim().length > 0;
   const showStreamingCursor = Boolean(message.isStreaming && !contentDisplayText);
   const resolvedShowAssistantActions = showAssistantActions ?? true;
+  const assistantMessageTime = resolvedShowAssistantActions
+    ? formatMessageTime(message.timestamp)
+    : null;
   const showAssistantCopyButton = resolvedShowAssistantActions && hasAssistantProse;
   const canRenderAssistantForkButton = Boolean(resolvedShowAssistantActions && onFork && hasAssistantProse);
-  const shouldRenderAssistantActions = showAssistantCopyButton || canRenderAssistantForkButton;
+  const shouldRenderAssistantActions = Boolean(
+    assistantMessageTime || showAssistantCopyButton || canRenderAssistantForkButton,
+  );
   const assistantForkDisabled = Boolean(
     forkDisabled || isSessionRunning || message.isStreaming || !message.entryId,
   );
@@ -612,6 +617,15 @@ function MessageRowV2({
           data-testid="assistant-message-actions"
           className="pointer-events-none mt-1.5 flex h-6 items-center justify-start gap-1 opacity-0 transition-opacity duration-150 group-hover/assistant-msg:pointer-events-auto group-hover/assistant-msg:opacity-100 group-focus-within/assistant-msg:pointer-events-auto group-focus-within/assistant-msg:opacity-100"
         >
+          {assistantMessageTime ? (
+            <time
+              dateTime={assistantMessageTime.dateTime}
+              title={assistantMessageTime.title}
+              className="mr-1 text-xs tabular-nums text-neutral-400 dark:text-neutral-500"
+            >
+              {assistantMessageTime.label}
+            </time>
+          ) : null}
           {showAssistantCopyButton ? <CopyMarkdownButton content={formattedContent} t={t} /> : null}
           {canRenderAssistantForkButton ? (
             <ForkMessageButton
