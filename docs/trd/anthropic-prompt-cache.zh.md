@@ -22,7 +22,7 @@
 5. 默认不为 tool schema 添加断点；显式 `cachePlan.tools === true` 仍兼容，并将消息断点限制为两个。
 6. 所有 marker 使用 `ttl: "5m"`，单请求最多四个断点。
 7. `cache_control` 只允许出现在 provider request，禁止写入 canonical transcript。
-8. system、tool schema、provider、model 或 recent3 内容变化时 fingerprint 必须变化；压缩或路由切换不得复用旧计划。
+8. system、tool schema、provider、model 或 recent3 内容变化时 fingerprint 必须变化；fingerprint 使用固定长度 SHA-256 摘要，不得保存媒体 base64 或其他完整输入；压缩或路由切换不得复用旧计划。
 9. plan mode 的 synthetic reminder 不得参与消息投影配额或 memory retrieval；它在 projection 完成后追加，并与最终请求消息一起重新计算 recent3。
 10. 流式续传追加 partial assistant 和 continuation instruction 后，必须重算缓存计划或显式清除旧计划，禁止沿用失效的消息下标。
 
@@ -42,6 +42,7 @@
 - `tests/model/request/anthropic-cache-plan.spec.ts`：system/recent3、5m TTL、tools 兼容和四断点上限。
 - `tests/agent/loop/model-override-defaults.spec.ts`：plan reminder 不占 projection 配额，memory 使用真实用户请求，最终断点与消息序列一致。
 - `tests/model/streaming/continuation-cache.spec.ts`：续传不复用旧缓存断点。
+- `tests/context/cache-plan.spec.ts`：媒体消息 fingerprint 固定长度，避免 base64 在缓存计划中重复驻留。
 - `pnpm run build`：编译后的 provider/request 入口可用。
 - ModelBest 或 Anthropic 真实命中率属于 external smoke/nightly，不作为离线单测证据。
 

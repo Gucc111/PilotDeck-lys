@@ -84,3 +84,21 @@ test("cache fingerprint changes for every stable cache input", () => {
   assert.notEqual(fingerprint, buildCachePlan({ ...base, tools: [{ ...tool, description: "changed" }] }, 1)?.fingerprint);
   assert.notEqual(fingerprint, buildCachePlan({ ...base, messages: [textMessage("user", "changed"), textMessage("assistant", "two")] }, 1)?.fingerprint);
 });
+
+test("cache fingerprint stays fixed-size when recent messages contain base64 media", () => {
+  const media = "a".repeat(1024 * 1024);
+  const plan = buildCachePlan({
+    provider: "modelbest",
+    model: "claude-test",
+    systemPrompt: "system",
+    tools: [],
+    messages: [{
+      role: "user",
+      content: [{ type: "image", source: "base64", data: media, mimeType: "image/png", bytes: media.length }],
+    }],
+    enabled: true,
+  }, 1);
+
+  assert.match(plan?.fingerprint ?? "", /^[a-f0-9]{64}$/);
+  assert.ok(!(plan?.fingerprint ?? "").includes(media));
+});

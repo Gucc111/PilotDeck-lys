@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CachePlan, CanonicalMessage, CanonicalToolSchema } from "../../model/index.js";
 export type { CachePlan } from "../../model/index.js";
 
@@ -29,6 +30,14 @@ export function stableSerialize(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key])}`).join(",")}}`;
 }
 
+/**
+ * Keep the cache plan compact even when recent messages contain base64 media.
+ * The serialized value is used only as hash input and is never retained.
+ */
+function fingerprintFor(value: unknown): string {
+  return createHash("sha256").update(stableSerialize(value), "utf8").digest("hex");
+}
+
 export function buildCachePlan(input: CachePlanInput, generation: number): CachePlan | undefined {
   if (!input.enabled) return undefined;
   const messages = selectRecentMessageBreakpoints(input.messages);
@@ -42,7 +51,7 @@ export function buildCachePlan(input: CachePlanInput, generation: number): Cache
     system: Boolean(input.systemPrompt),
     tools: false,
     messages,
-    fingerprint: stableSerialize({
+    fingerprint: fingerprintFor({
       provider: input.provider ?? "",
       model: input.model ?? "",
       system: input.systemPrompt ?? "",
