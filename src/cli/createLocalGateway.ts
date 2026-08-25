@@ -15,7 +15,6 @@ import {
 import { resolveRoutedModelMaxContextTokens } from "../agent/runtime/modelContextWindow.js";
 import {
   AutoCompactionPolicy,
-  CachedMicroCompactionEngine,
   CompactionEngine,
   ContextOverflowRecovery,
   DefaultContextRuntime,
@@ -1212,6 +1211,14 @@ class ProjectRuntimeRegistry {
           return undefined;
         }
       },
+      getModelProtocol: (provider) => runtime.model.getProviderProtocol(provider),
+      getModelSupportsPromptCache: (provider, model) => {
+        try {
+          return runtime.model.getCapabilities(provider, model).supportsPromptCache;
+        } catch {
+          return undefined;
+        }
+      },
     };
     const sessionTitleGenerator = createSessionTitleGenerator({
       modelRuntime: runtime.model,
@@ -1255,7 +1262,6 @@ class ProjectRuntimeRegistry {
         eventEmitter: eventBuf.emitter,
       });
       const autoCompactionPolicy = new AutoCompactionPolicy({ tokenBudget });
-      const microcompactEngine = new CachedMicroCompactionEngine({ enabled: true });
       const microCompaction = new MicroCompactionEngine({
         protectedToolNames: DEFAULT_PROTECTED_TOOL_RESULT_NAMES,
       });
@@ -1282,7 +1288,6 @@ class ProjectRuntimeRegistry {
         tokenBudget,
         compactionEngine,
         autoCompactionPolicy,
-        microcompactEngine,
         microCompaction,
         snipEngine,
         overflowRecovery,
