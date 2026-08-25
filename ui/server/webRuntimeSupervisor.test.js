@@ -138,6 +138,36 @@ describe('web runtime supervisor', () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
+  it('exits without restarting when the restart request cannot be consumed', () => {
+    const child = createFakeChild();
+    const spawnImpl = vi.fn().mockReturnValueOnce(child);
+    const unlink = vi.fn(() => {
+      throw new Error('permission denied');
+    });
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    createRuntimeSupervisor({
+      mode: 'start-built',
+      spawnImpl,
+      exists: () => true,
+      unlink,
+      processLike: createFakeProcess(),
+      exit,
+      log: vi.fn(),
+      error,
+    }).run();
+
+    child.emit('close', 1, null);
+    child.emit('close', 1, null);
+
+    expect(unlink).toHaveBeenCalledTimes(1);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Failed to consume restart request'));
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('exits with failure when the restarted runtime cannot be started', () => {
     const child = createFakeChild();
     const spawnImpl = vi.fn()
@@ -162,6 +192,7 @@ describe('web runtime supervisor', () => {
 
     expect(spawnImpl).toHaveBeenCalledTimes(2);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Failed to start runtime'));
+    expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(1);
   });
 

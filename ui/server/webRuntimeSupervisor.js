@@ -121,7 +121,9 @@ export function createRuntimeSupervisor({
       try {
         unlink(requestFile);
       } catch (unlinkError) {
-        error(`[restart-supervisor] Failed to remove restart request: ${unlinkError.message}`);
+        error(`[restart-supervisor] Failed to consume restart request: ${unlinkError.message}`);
+        exit(1);
+        return;
       }
       log(`[restart-supervisor] Restart requested; relaunching ${normalizedMode} runtime...`);
       startSupervisedChild();
