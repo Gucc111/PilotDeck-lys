@@ -1205,6 +1205,7 @@ export async function runChatViaGateway(
             ...(basePermissionMode ? { basePermissionMode } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(options.workspaceCwd ? { workspaceCwd: options.workspaceCwd } : {}),
+            ...(Array.isArray(options?.syntheticMessages) ? { syntheticMessages: options.syntheticMessages } : {}),
         });
 
         let sawTurnCompleted = false;
@@ -1379,6 +1380,31 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck') {
         console.warn('[pilotdeck-bridge] abortTurn failed:', error);
         return false;
     }
+}
+
+/**
+ * Stop the active run (if any), remove the latest transcript turn, and evict
+ * the cached gateway session. The caller can then submit the edited prompt to
+ * the same session key without racing the old transcript writer.
+ */
+export async function replaceLastTurnViaGateway(sessionId, expectedTurnId, options = {}) {
+    const gw = await ensureGateway();
+    const sessionKey = isPilotDeckSessionKey(sessionId) ? sessionId : null;
+    if (!sessionKey) throw new Error('A normal PilotDeck session is required to edit a message.');
+
+    const projectKey = options.projectPath || options.cwd || GENERAL_HOME;
+    const result = await gw.replaceLastTurn({
+        sessionKey,
+        projectKey,
+        expectedTurnId,
+    });
+    const state = sessionState.get(sessionKey);
+    if (state) {
+        state.active = false;
+        state.runId = undefined;
+        state.hasVisibleFailureStatus = false;
+    }
+    return result;
 }
 
 export async function decidePermissionViaGateway(requestId, decision, options = {}) {

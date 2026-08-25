@@ -69,6 +69,7 @@ import { sanitizeSessionIdForPath } from "../session/storage/ProjectSessionStora
 import { createSessionTitleGenerator } from "../session/title/SessionTitleGenerator.js";
 import { readWebSessionMessages, readSubagentWebMessages } from "../web/server/readSessionMessages.js";
 import { forkWebSession } from "../web/server/forkSession.js";
+import { replaceLastWebSessionTurn } from "../web/server/replaceLastTurn.js";
 import { describeWebProject, listWebProjects } from "../web/server/listProjects.js";
 import { BackgroundTaskRuntime, type BackgroundTaskCompletionEvent } from "../task/runtime/BackgroundTaskRuntime.js";
 import { createBuiltinRegistry, createPlanFileManager, filterAvailableTools } from "../tool/index.js";
@@ -419,6 +420,11 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
         pilotHome,
         now,
+      }),
+    replaceLastTurn: (input) =>
+      replaceLastWebSessionTurn(input, {
+        projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
+        pilotHome,
       }),
     async recordAgentStatusMessage(input) {
       const storage = createAgentProjectSessionStorage({

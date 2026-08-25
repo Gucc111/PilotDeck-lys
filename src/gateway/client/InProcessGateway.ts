@@ -47,6 +47,8 @@ import type {
   WebReadSubagentMessagesResult,
   WebForkSessionInput,
   WebForkSessionResult,
+  WebReplaceLastTurnInput,
+  WebReplaceLastTurnResult,
   ProjectFilesListInput,
   ProjectFilesListResult,
   CommandsListInput,
@@ -120,6 +122,7 @@ export type InProcessGatewayOptions = {
   readSessionMessages?: (input: WebReadSessionMessagesInput) => Promise<WebReadSessionMessagesResult>;
   readSubagentMessages?: (input: WebReadSubagentMessagesInput) => Promise<WebReadSubagentMessagesResult>;
   forkSession?: (input: WebForkSessionInput) => Promise<WebForkSessionResult>;
+  replaceLastTurn?: (input: WebReplaceLastTurnInput) => Promise<WebReplaceLastTurnResult>;
   recordAgentStatusMessage?: (input: GatewayRecordAgentStatusMessageInput) => Promise<{ recorded: boolean }>;
   /**
    * Web Phase 3 — pluggable project enumerator + describer.
@@ -883,6 +886,22 @@ export class InProcessGateway implements Gateway {
       );
     }
     return this.options.forkSession(input);
+  }
+
+  async replaceLastTurn(input: WebReplaceLastTurnInput): Promise<WebReplaceLastTurnResult> {
+    if (!this.options.replaceLastTurn) {
+      throw new Error(
+        "replace_last_turn is not configured. Wire `replaceLastTurn` via createLocalGateway.",
+      );
+    }
+    // The transcript cannot be rewritten while its writer is still appending.
+    // abortTurn resolves only after the active turn has fully unwound.
+    await this.abortTurn({ sessionKey: input.sessionKey, reason: "message_replaced" });
+    const result = await this.options.replaceLastTurn(input);
+    // The cached AgentSession and transcript writer still reflect the old tail.
+    // Evict them so the replacement submit resumes from the rewritten JSONL.
+    await this.router.close(input.sessionKey);
+    return result;
   }
 
   async listProjects(): Promise<WebListProjectsResult> {

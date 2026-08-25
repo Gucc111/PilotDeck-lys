@@ -145,6 +145,7 @@ export type WebGatewayMethod =
   | "read_session_messages"
   | "read_subagent_messages"
   | "fork_session"
+  | "replace_last_turn"
   | "rename_session"
   | "delete_session"
   | "list_projects"
@@ -176,6 +177,7 @@ export type WebSubmitTurnInput = {
   allowPlanModeTools?: boolean;
   canPrompt?: boolean;
   runId?: string;
+  syntheticMessages?: Array<{ text: string; purpose?: string }>;
 };
 
 export type WebMatchRange = { field: string; start: number; end: number };
@@ -333,6 +335,19 @@ export type WebForkSessionResult = {
   carriedMessageCount: number;
   runMode?: WebAgentRunMode;
   mode?: WebGatewayMode;
+};
+
+export type WebReplaceLastTurnInput = {
+  sessionKey: string;
+  projectKey?: string;
+  /** Guards against replacing a turn that is no longer the transcript tail. */
+  expectedTurnId: string;
+};
+
+export type WebReplaceLastTurnResult = {
+  sessionKey: string;
+  replacedTurnId: string;
+  removedEntryCount: number;
 };
 
 export type WebActiveTurnSnapshotInput = {

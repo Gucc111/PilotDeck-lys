@@ -62,6 +62,7 @@ import { getOpenUrlSpawnCommand } from './utils/processSpawn.js';
 import { getProjects, getProjectCronJobsOverview, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import {
     runChatViaGateway,
+    replaceLastTurnViaGateway,
     abortViaGateway,
     decidePermissionViaGateway,
     grantSessionPermissionViaGateway,
@@ -2506,6 +2507,51 @@ function handleChatConnection(ws, request) {
                 }
                 const providerHint = data.options?.providerHint || data.type.replace('-command', '');
                 await runChatViaGateway(data.command, data.options, streamWriter, providerHint);
+            } else if (data.type === 'regenerate-last-message') {
+                const sessionId = normalizeSessionId(data.sessionId || data.options?.sessionId);
+                const requestId = typeof data.requestId === 'string' ? data.requestId : null;
+                const expectedTurnId = typeof data.expectedTurnId === 'string'
+                    ? data.expectedTurnId.trim()
+                    : '';
+                const provider = data.options?.providerHint || 'pilotdeck';
+                try {
+                    if (!sessionId || !expectedTurnId) {
+                        throw new Error('The last message could not be identified for editing.');
+                    }
+                    sessionWatchRegistry.watch(sessionId, ws);
+                    const result = await replaceLastTurnViaGateway(
+                        sessionId,
+                        expectedTurnId,
+                        data.options || {},
+                    );
+                    const replacementRunId = data.options?.runId;
+                    streamWriter.send({
+                        type: 'session-turn-replaced',
+                        requestId,
+                        sessionId,
+                        replacedTurnId: result.replacedTurnId,
+                        replacementRunId,
+                        provider,
+                        content: data.options?.userVisibleInput ?? data.command ?? '',
+                        images: data.options?.images || [],
+                        attachments: data.options?.attachments || [],
+                    });
+                    writer.send({
+                        type: 'regenerate-last-message-result',
+                        requestId,
+                        sessionId,
+                        success: true,
+                    });
+                    await runChatViaGateway(data.command, data.options, streamWriter, provider);
+                } catch (error) {
+                    writer.send({
+                        type: 'regenerate-last-message-result',
+                        requestId,
+                        sessionId,
+                        success: false,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                }
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
                 const provider = data.provider || 'pilotdeck';
