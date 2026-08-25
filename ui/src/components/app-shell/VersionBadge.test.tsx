@@ -68,7 +68,9 @@ describe("VersionBadge", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restart to Apply" }));
 
     const requestRestart = vi.mocked(restartAndReload).mock.calls[0][0];
-    await expect(requestRestart()).resolves.toBe(restartResponse);
+    const signal = new AbortController().signal;
+    await expect(requestRestart({ signal })).resolves.toBe(restartResponse);
+    expect(triggerRestart).toHaveBeenCalledWith({ signal });
   });
 
   it("shows a restart waiting overlay after clicking restart", async () => {

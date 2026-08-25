@@ -259,10 +259,11 @@ describe("AboutSections web update status recovery", () => {
     expect(screen.getByText("about.restartingTitle")).toBeTruthy();
     expect(screen.getByText("about.restartWaitingDescription")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "about.restartToApply" })).toBeNull();
-    expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", {
+    expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", expect.objectContaining({
       method: "POST",
       suppressServerErrorToast: true,
-    });
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   it("does not restore the restart button when the restart request disconnects", async () => {
@@ -290,10 +291,11 @@ describe("AboutSections web update status recovery", () => {
     expect(screen.getByText("about.restartingTitle")).toBeTruthy();
     expect(screen.getByText("about.restartWaitingDescription")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "about.restartToApply" })).toBeNull();
-    expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", {
+    expect(mockedFetch).toHaveBeenLastCalledWith("/api/update/restart", expect.objectContaining({
       method: "POST",
       suppressServerErrorToast: true,
-    });
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   it("shows manual restart guidance when restart confirmation times out", async () => {

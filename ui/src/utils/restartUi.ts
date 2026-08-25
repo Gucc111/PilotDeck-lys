@@ -4,6 +4,12 @@ type RestartSplashCopy = {
   documentTitle?: string;
 };
 
+type RestartRequestContext = {
+  signal: AbortSignal;
+};
+
+type RestartRequest = (context: RestartRequestContext) => Promise<unknown>;
+
 export type RestartUiStatus =
   | "restarting"
   | "request-rejected"
@@ -43,12 +49,89 @@ type HealthSnapshot = {
 type PollHealthInternalOptions = PollHealthOptions & {
   baseline?: HealthSnapshot | null;
   onStatusChange?: (status: RestartUiStatus) => void;
+  deadline?: RestartDeadline;
 };
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
-async function readHealthSnapshot(fetchImpl: typeof fetch): Promise<HealthSnapshot | null> {
-  const res = await fetchImpl("/health");
+class RestartTimeoutError extends Error {
+  constructor() {
+    super("Restart confirmation timed out");
+    this.name = "RestartTimeoutError";
+  }
+}
+
+type RestartDeadline = {
+  signal: AbortSignal;
+  remainingMs: () => number;
+  run: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+  finish: () => void;
+  hasExpired: () => boolean;
+};
+
+function createRestartDeadline(timeoutMs: number, onTimeout: () => void): RestartDeadline {
+  const timeout = Math.max(0, timeoutMs);
+  const expiresAt = Date.now() + timeout;
+  const controller = new AbortController();
+  let finished = false;
+  let timeoutNotified = false;
+
+  const notifyTimeout = () => {
+    if (finished || timeoutNotified) return;
+    timeoutNotified = true;
+    controller.abort();
+    onTimeout();
+  };
+
+  const timer = window.setTimeout(notifyTimeout, timeout);
+
+  const finish = () => {
+    finished = true;
+    window.clearTimeout(timer);
+  };
+
+  const remainingMs = () => Math.max(0, expiresAt - Date.now());
+
+  const run = async <T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    if (controller.signal.aborted || remainingMs() <= 0) {
+      notifyTimeout();
+      throw new RestartTimeoutError();
+    }
+
+    let operationTimer: number | null = null;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      operationTimer = window.setTimeout(() => {
+        notifyTimeout();
+        reject(new RestartTimeoutError());
+      }, remainingMs());
+    });
+
+    try {
+      return await Promise.race([
+        operation(controller.signal),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (operationTimer !== null) window.clearTimeout(operationTimer);
+    }
+  };
+
+  return {
+    signal: controller.signal,
+    remainingMs,
+    run,
+    finish,
+    hasExpired: () => controller.signal.aborted || remainingMs() <= 0,
+  };
+}
+
+function isRestartTimeout(error: unknown) {
+  return error instanceof RestartTimeoutError
+    || (error instanceof DOMException && error.name === "AbortError");
+}
+
+async function readHealthSnapshot(fetchImpl: typeof fetch, signal?: AbortSignal): Promise<HealthSnapshot | null> {
+  const res = await fetchImpl("/health", signal ? { signal } : undefined);
   if (!res.ok) return null;
 
   let payload: HealthPayload = {};
@@ -120,11 +203,13 @@ function markerFromRestartPayload(payload: RestartAcceptedPayload): HealthSnapsh
   return null;
 }
 
-async function readRestartBaseline(value: unknown): Promise<HealthSnapshot | null> {
+async function readRestartBaseline(value: unknown, deadline?: RestartDeadline): Promise<HealthSnapshot | null> {
   if (!isResponseLike(value) || !value.ok) return null;
 
   try {
-    const payload = await value.clone().json() as RestartAcceptedPayload;
+    const payload = await (deadline
+      ? deadline.run(() => value.clone().json() as Promise<RestartAcceptedPayload>)
+      : value.clone().json() as Promise<RestartAcceptedPayload>);
     return markerFromRestartPayload(payload);
   } catch {
     return null;
@@ -140,19 +225,22 @@ export function pollHealthAndReload({
   clearIntervalImpl = window.clearInterval,
   baseline = null,
   onStatusChange,
+  deadline,
 }: PollHealthInternalOptions = {}) {
   let sawUnavailable = false;
   const startedAtMs = Date.now();
   const poll = setIntervalImpl(() => {
     void (async () => {
-      if (Date.now() - startedAtMs >= timeoutMs) {
+      if (deadline?.hasExpired() || Date.now() - startedAtMs >= timeoutMs) {
         clearIntervalImpl(poll);
         onStatusChange?.("not-confirmed");
         return;
       }
 
       try {
-        const snapshot = await readHealthSnapshot(fetchImpl);
+        const snapshot = await (deadline
+          ? deadline.run((signal) => readHealthSnapshot(fetchImpl, signal))
+          : readHealthSnapshot(fetchImpl));
         if (!snapshot) {
           sawUnavailable = true;
           return;
@@ -187,6 +275,11 @@ export function pollHealthAndReload({
           reload();
         }
       } catch {
+        if (deadline?.hasExpired()) {
+          clearIntervalImpl(poll);
+          onStatusChange?.("not-confirmed");
+          return;
+        }
         sawUnavailable = true;
       }
     })();
@@ -196,10 +289,17 @@ export function pollHealthAndReload({
 }
 
 export function restartAndReload(
-  requestRestart: () => Promise<unknown>,
+  requestRestart: RestartRequest | (() => Promise<unknown>),
   options: RestartAndReloadOptions = {},
 ) {
   void (async () => {
+    let settled = false;
+    const markNotConfirmed = () => {
+      if (settled) return;
+      settled = true;
+      options.onStatusChange?.("not-confirmed");
+    };
+    const deadline = createRestartDeadline(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, markNotConfirmed);
     options.onStatusChange?.("restarting");
     if (options.copy?.documentTitle || options.copy?.title) {
       document.title = options.copy.documentTitle ?? options.copy.title ?? document.title;
@@ -207,21 +307,44 @@ export function restartAndReload(
     const fetchImpl = options.fetchImpl ?? fetch;
     let baseline: HealthSnapshot | null = null;
     try {
-      baseline = await readHealthSnapshot(fetchImpl);
-    } catch {
+      baseline = await deadline.run((signal) => readHealthSnapshot(fetchImpl, signal));
+    } catch (error) {
+      if (isRestartTimeout(error)) return;
       baseline = null;
     }
     try {
-      const restartResponse = await requestRestart();
+      const restartResponse = await deadline.run((signal) => (
+        requestRestart as RestartRequest
+      )({ signal }));
       if (!hasAcceptedRestart(restartResponse)) {
+        settled = true;
+        deadline.finish();
         options.onStatusChange?.("request-rejected");
         return;
       }
-      baseline = await readRestartBaseline(restartResponse) ?? baseline;
-    } catch {
+      baseline = await readRestartBaseline(restartResponse, deadline) ?? baseline;
+    } catch (error) {
+      if (isRestartTimeout(error)) return;
       // The restart request can be interrupted when the server exits.
     }
 
-    pollHealthAndReload({ ...options, baseline, onStatusChange: options.onStatusChange });
+    if (deadline.hasExpired()) return;
+    pollHealthAndReload({
+      ...options,
+      timeoutMs: deadline.remainingMs(),
+      baseline,
+      deadline,
+      onStatusChange: (status) => {
+        if (status === "confirmed") {
+          settled = true;
+          deadline.finish();
+          options.onStatusChange?.(status);
+        } else if (status === "not-confirmed") {
+          markNotConfirmed();
+        } else {
+          options.onStatusChange?.(status);
+        }
+      },
+    });
   })();
 }

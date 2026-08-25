@@ -94,10 +94,11 @@ export function useGitVersion() {
     }
   }, []);
 
-  const triggerRestart = useCallback(async () => {
+  const triggerRestart = useCallback(async (options: { signal?: AbortSignal } = {}) => {
     return authenticatedFetch('/api/update/restart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: options.signal,
     });
   }, []);
 

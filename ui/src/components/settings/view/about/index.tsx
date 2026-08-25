@@ -245,9 +245,10 @@ export default function AboutSections({
     setInstalling(true);
     stopWebStatusPolling();
     restartAndReload(
-      () => authenticatedFetch("/api/update/restart", {
+      (context) => authenticatedFetch("/api/update/restart", {
         method: "POST",
         suppressServerErrorToast: true,
+        signal: context?.signal,
       }),
       {
         copy: {

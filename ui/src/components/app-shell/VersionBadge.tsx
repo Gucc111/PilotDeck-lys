@@ -55,7 +55,7 @@ export function VersionBadge() {
   const handleRestart = useCallback(() => {
     setShowDialog(false);
     restartAndReload(
-      () => triggerRestart(),
+      (context) => triggerRestart({ signal: context?.signal }),
       {
         copy: {
           title: RESTART_COPY.restartingTitle,

@@ -65,7 +65,6 @@ export function createRuntimeSupervisor({
   const normalizedMode = normalizeSupervisorMode(mode);
   const runtimeArgs = getRuntimeArgs(normalizedMode);
   let child = null;
-  let replacementSupervisor = null;
   let stopping = false;
   let pendingSignal = null;
 
@@ -81,63 +80,30 @@ export function createRuntimeSupervisor({
       },
       windowsHide: platform === 'win32',
     });
-    child.once('error', (spawnError) => {
-      error(`[restart-supervisor] Failed to start runtime: ${spawnError.message}`);
-      exit(1);
-    });
     return child;
   };
 
-  const restartSupervisor = () => {
-    let supervisor;
-    try {
-      supervisor = spawnImpl(process.execPath, getSupervisorArgs(normalizedMode), {
-        cwd,
-        stdio: 'inherit',
-        env: {
-          ...env,
-          PILOTDECK_RESTART_MODE: normalizedMode,
-        },
-        windowsHide: platform === 'win32',
-      });
-    } catch (spawnError) {
-      error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
-      exit(1);
-      return null;
-    }
-    replacementSupervisor = supervisor;
+  const startSupervisedChild = () => {
+    const nextChild = startChild();
     let settled = false;
-    const finishReplacement = (code, signal) => {
+    const settle = (callback, ...args) => {
       if (settled) return;
       settled = true;
-      replacementSupervisor = null;
-      if (stopping) {
-        exit(pendingSignal === 'SIGINT' ? 0 : (typeof code === 'number' ? code : 1));
-        return;
-      }
-      if (signal) {
-        exit(1);
-        return;
-      }
-      exit(typeof code === 'number' ? code : 0);
+      callback(...args);
     };
-    supervisor.once('error', (spawnError) => {
-      error(`[restart-supervisor] Failed to start replacement supervisor: ${spawnError.message}`);
-      finishReplacement(1, null);
+    nextChild.once('error', (spawnError) => {
+      error(`[restart-supervisor] Failed to start runtime: ${spawnError.message}`);
+      settle(exit, 1);
     });
-    supervisor.once('close', (code, signal) => {
-      finishReplacement(code, signal);
+    nextChild.once('close', (code, signal) => {
+      settle(handleClose, code, signal);
     });
-    return supervisor;
+    return nextChild;
   };
 
   const stop = (signal) => {
     stopping = true;
     pendingSignal = signal;
-    if (replacementSupervisor && !replacementSupervisor.killed) {
-      replacementSupervisor.kill(signal);
-      return;
-    }
     if (child && !child.killed) {
       child.kill(signal);
       return;
@@ -157,8 +123,8 @@ export function createRuntimeSupervisor({
       } catch (unlinkError) {
         error(`[restart-supervisor] Failed to remove restart request: ${unlinkError.message}`);
       }
-      log(`[restart-supervisor] Restart requested; relaunching ${normalizedMode} supervisor...`);
-      restartSupervisor();
+      log(`[restart-supervisor] Restart requested; relaunching ${normalizedMode} runtime...`);
+      startSupervisedChild();
       return;
     }
 
@@ -171,7 +137,7 @@ export function createRuntimeSupervisor({
   const run = () => {
     processLike.on('SIGINT', () => stop('SIGINT'));
     processLike.on('SIGTERM', () => stop('SIGTERM'));
-    startChild().once('close', handleClose);
+    startSupervisedChild();
   };
 
   return {

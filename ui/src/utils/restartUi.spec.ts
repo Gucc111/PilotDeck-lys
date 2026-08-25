@@ -17,9 +17,9 @@ function statusResponse(ok: boolean, payload: unknown = {}): Response {
 }
 
 async function flushPromises() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe("restartUi", () => {
@@ -220,6 +220,78 @@ describe("restartUi", () => {
 
     await flushPromises();
     await vi.advanceTimersByTimeAsync(4000);
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(onStatusChange).toHaveBeenCalledWith("not-confirmed");
+  });
+
+  it("times out from the full flow start when baseline health hangs", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => {}));
+    const requestRestart = vi.fn(() => Promise.resolve(statusResponse(true)));
+    const reload = vi.fn();
+    const onStatusChange = vi.fn();
+
+    restartAndReload(requestRestart, {
+      fetchImpl,
+      reload,
+      timeoutMs: 3000,
+      onStatusChange,
+    });
+
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(requestRestart).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(onStatusChange).toHaveBeenCalledWith("not-confirmed");
+  });
+
+  it("times out from the full flow start when restart request hangs", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn().mockResolvedValue(healthResponse({ instanceId: "old" }));
+    const requestRestart = vi.fn((_context: { signal: AbortSignal }) => new Promise<Response>(() => {}));
+    const reload = vi.fn();
+    const onStatusChange = vi.fn();
+
+    restartAndReload(requestRestart, {
+      fetchImpl,
+      reload,
+      timeoutMs: 3000,
+      onStatusChange,
+    });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(requestRestart).toHaveBeenCalledWith(expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }));
+    expect(reload).not.toHaveBeenCalled();
+    expect(onStatusChange).toHaveBeenCalledWith("not-confirmed");
+    expect((requestRestart.mock.calls[0][0] as { signal: AbortSignal }).signal.aborted).toBe(true);
+  });
+
+  it("times out when parsing the accepted restart response hangs", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn().mockResolvedValue(healthResponse({ instanceId: "old" }));
+    const restartResponse = {
+      ok: true,
+      clone: () => ({
+        json: () => new Promise(() => {}),
+      }),
+    } as Response;
+    const reload = vi.fn();
+    const onStatusChange = vi.fn();
+
+    restartAndReload(() => Promise.resolve(restartResponse), {
+      fetchImpl,
+      reload,
+      timeoutMs: 3000,
+      onStatusChange,
+    });
+
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(3000);
 
     expect(reload).not.toHaveBeenCalled();
     expect(onStatusChange).toHaveBeenCalledWith("not-confirmed");
