@@ -5,6 +5,7 @@ import { AgentLoop, type AgentLoopInput } from "../../../src/agent/loop/AgentLoo
 import type { AgentRuntimeConfig } from "../../../src/agent/runtime/AgentRuntimeConfig.js";
 import type { AgentRuntimeDependencies } from "../../../src/agent/runtime/AgentRuntimeDependencies.js";
 import { DefaultContextRuntime } from "../../../src/context/DefaultContextRuntime.js";
+import type { MemoryResolver } from "../../../src/context/memory/MemoryResolver.js";
 import type { CanonicalMessage, CanonicalModelRequest } from "../../../src/model/index.js";
 import { createDefaultPermissionContext } from "../../../src/permission/index.js";
 import { ToolRegistry } from "../../../src/tool/index.js";
@@ -54,7 +55,7 @@ test("provider and model overrides retain configured temperature and thinking de
   assert.deepEqual(request.thinking, thinking);
 });
 
-test("plan-mode reminder is included before recent3 cache indices are computed", async () => {
+test("plan-mode reminder is appended after projection and recent3 cache indices are computed", async () => {
   const config: AgentRuntimeConfig = {
     provider: "modelbest",
     model: "claude-test",
@@ -100,4 +101,95 @@ test("plan-mode reminder is included before recent3 cache indices are computed",
   assert.equal(request.messages[5]?.metadata?.purpose, "plan_mode_reminder");
   assert.deepEqual(request.cachePlan?.messages, [3, 4, 5]);
   assert.deepEqual(request.cacheBreakpoints, [3, 4, 5]);
+});
+
+test("plan-mode reminder does not consume the context message limit", async () => {
+  const config: AgentRuntimeConfig = {
+    provider: "modelbest",
+    model: "claude-test",
+    cwd: "/workspace/project",
+    permissionMode: "plan",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "plan",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+    maxContextMessages: 1,
+  };
+  const loop = new AgentLoop(config, {
+    router: {} as AgentRuntimeDependencies["router"],
+    context: new DefaultContextRuntime(),
+    tools: {
+      registry: new ToolRegistry(),
+      scheduler: { executeAll: async () => [] },
+    },
+    getModelProtocol: () => "anthropic",
+    getModelSupportsPromptCache: () => true,
+  });
+  const input: AgentLoopInput = {
+    sessionId: "plan-limit-session",
+    turnId: "plan-limit-turn",
+    messages: [{ role: "user", content: [{ type: "text", text: "REAL USER REQUEST" }] }],
+  };
+
+  const request = await (loop as unknown as {
+    createModelRequest(
+      messages: CanonicalMessage[],
+      input: AgentLoopInput,
+      options: { emitInstructionEvents?: boolean },
+    ): Promise<CanonicalModelRequest>;
+  }).createModelRequest(input.messages, input, { emitInstructionEvents: false });
+
+  assert.equal(request.messages.length, 2);
+  assert.equal(request.messages[0]?.content[0]?.type, "text");
+  assert.equal(request.messages[0]?.content[0]?.text, "REAL USER REQUEST");
+  assert.equal(request.messages[1]?.metadata?.purpose, "plan_mode_reminder");
+  assert.deepEqual(request.cacheBreakpoints, [0, 1]);
+});
+
+test("plan-mode memory retrieval uses the real user request", async () => {
+  let query: string | undefined;
+  const memoryResolver: MemoryResolver = {
+    async retrieve(input) {
+      query = input.query;
+      return { systemContext: "relevant memory", diagnostics: [] };
+    },
+    async captureTurn() {},
+  };
+  const config: AgentRuntimeConfig = {
+    provider: "modelbest",
+    model: "claude-test",
+    cwd: "/workspace/project",
+    permissionMode: "plan",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "plan",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  };
+  const loop = new AgentLoop(config, {
+    router: {} as AgentRuntimeDependencies["router"],
+    context: new DefaultContextRuntime({ memoryResolver }),
+    tools: {
+      registry: new ToolRegistry(),
+      scheduler: { executeAll: async () => [] },
+    },
+  });
+  const input: AgentLoopInput = {
+    sessionId: "plan-memory-session",
+    turnId: "plan-memory-turn",
+    messages: [{ role: "user", content: [{ type: "text", text: "REAL USER REQUEST" }] }],
+  };
+
+  await (loop as unknown as {
+    createModelRequest(
+      messages: CanonicalMessage[],
+      input: AgentLoopInput,
+      options: { emitInstructionEvents?: boolean },
+    ): Promise<CanonicalModelRequest>;
+  }).createModelRequest(input.messages, input, { emitInstructionEvents: false });
+
+  assert.equal(query, "REAL USER REQUEST");
 });
