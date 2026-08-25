@@ -7,6 +7,7 @@ installGlobalProxy();
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
@@ -15,6 +16,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const installMode = fs.existsSync(path.join(__dirname, '..', '..', '.git')) ? 'git' : 'npm';
+const serverInstanceId = crypto.randomUUID();
+const serverStartedAt = new Date().toISOString();
+const serverPid = process.pid;
 
 // ANSI color codes for terminal output
 const colors = {
@@ -42,7 +46,6 @@ console.log('SERVER_PORT from runtime config:', process.env.SERVER_PORT);
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import bcrypt from 'bcrypt';
-import crypto from 'crypto';
 import os from 'os';
 import http from 'http';
 import cors from 'cors';
@@ -349,6 +352,11 @@ async function setupProjectsWatcher() {
 
 
 const app = express();
+app.locals.restartInstanceInfo = {
+    instanceId: serverInstanceId,
+    startedAt: serverStartedAt,
+    pid: serverPid
+};
 const server = http.createServer(app);
 
 const ptySessionsMap = new Map();
@@ -474,10 +482,14 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
+    const instanceInfo = req.app.locals.restartInstanceInfo || {};
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        installMode
+        installMode,
+        instanceId: instanceInfo.instanceId,
+        startedAt: instanceInfo.startedAt,
+        pid: instanceInfo.pid
     });
 });
 
