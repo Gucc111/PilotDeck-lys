@@ -71,6 +71,7 @@ import { readWebSessionMessages, readSubagentWebMessages } from "../web/server/r
 import { forkWebSession } from "../web/server/forkSession.js";
 import {
   finalizeLastWebSessionTurnReplacement,
+  recoverPendingLastTurnReplacements,
   replaceLastWebSessionTurn,
 } from "../web/server/replaceLastTurn.js";
 import { describeWebProject, listWebProjects } from "../web/server/listProjects.js";
@@ -172,6 +173,21 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
   const baseEnv = options.env ?? process.env;
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
   const pilotHome = options.pilotHome ?? resolvePilotHome(baseEnv);
+  const replacementRecovery = recoverPendingLastTurnReplacements(pilotHome);
+  if (replacementRecovery.committed > 0 || replacementRecovery.rolledBack > 0) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[pilotdeck] Recovered last-turn replacements: committed=${replacementRecovery.committed} ` +
+      `rolledBack=${replacementRecovery.rolledBack}.`,
+    );
+  }
+  for (const failure of replacementRecovery.failures) {
+    // Keep the backup/journal in place so a later startup can retry safely.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[pilotdeck] Could not recover replacement transaction for ${failure.transcriptPath}: ${failure.message}`,
+    );
+  }
   const env = options.pilotHome ? { ...baseEnv, PILOT_HOME: pilotHome } : baseEnv;
   const builtinSkillsRoot = resolveBuiltinSkillsRoot(options.builtinSkillsRoot, env);
   const legacySkillMigration = migrateLegacyBundledSkillCopies({ pilotHome, builtinSkillsRoot });

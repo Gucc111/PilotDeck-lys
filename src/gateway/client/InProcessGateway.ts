@@ -108,6 +108,7 @@ import { listProjectFiles } from "../dialog/projectFiles.js";
 const PLAN_COMMAND_USAGE = "用法：/plan <任务>\n例如：/plan 设计一个新功能";
 const MAX_GATEWAY_TOOL_RESULT_PREVIEW_CHARS = 20_000;
 const MAX_GATEWAY_TOOL_DATA_STRING_CHARS = 4_000;
+const DEFAULT_REPLACEMENT_TRANSACTION_TIMEOUT_MS = 60_000;
 
 export type InProcessGatewayOptions = {
   /** Absolute command used by the model to install bundled FunASR assets. */
@@ -128,6 +129,8 @@ export type InProcessGatewayOptions = {
   finalizeLastTurnReplacement?: (
     input: WebFinalizeLastTurnReplacementInput,
   ) => Promise<WebFinalizeLastTurnReplacementResult>;
+  /** Roll back a prepared edit that never reaches durable input acceptance. */
+  replacementTransactionTimeoutMs?: number;
   recordAgentStatusMessage?: (input: GatewayRecordAgentStatusMessageInput) => Promise<{ recorded: boolean }>;
   /**
    * Web Phase 3 — pluggable project enumerator + describer.
@@ -217,11 +220,14 @@ type PendingTurnReplacement = {
   transactionId: string;
   replacementTurnId: string;
   projectKey?: string;
+  timeout?: ReturnType<typeof setTimeout>;
+  finalizing?: boolean;
 };
 
 export class InProcessGateway implements Gateway {
   private readonly now: () => Date;
   private readonly uuid: () => string;
+  private readonly replacementTransactionTimeoutMs: number;
   /**
    * B1 — registry of active per-session emit sinks. The gateway shares this
    * map with the per-session `GatewayElicitationChannel` so an `askUser`
@@ -230,7 +236,7 @@ export class InProcessGateway implements Gateway {
    */
   private readonly emitSinks = new Map<string, (event: GatewayEvent) => void>();
   private readonly activeTurnReplays = new Map<string, ActiveTurnReplay>();
-  private readonly replacementReservations = new Set<string>();
+  private readonly transcriptWriteReservations = new Set<string>();
   private readonly pendingTurnReplacements = new Map<string, PendingTurnReplacement>();
   /** B1 — pending askUser() promises keyed by sessionKey + requestId. */
   private readonly elicitationBus = new GatewayElicitationBus();
@@ -256,6 +262,10 @@ export class InProcessGateway implements Gateway {
   ) {
     this.now = options.now ?? (() => new Date());
     this.uuid = options.uuid ?? randomUUID;
+    this.replacementTransactionTimeoutMs = Math.max(
+      1,
+      options.replacementTransactionTimeoutMs ?? DEFAULT_REPLACEMENT_TRANSACTION_TIMEOUT_MS,
+    );
   }
 
   /**
@@ -358,14 +368,14 @@ export class InProcessGateway implements Gateway {
       }
     }
     const runId = input.runId ?? this.uuid();
-    if (this.replacementReservations.has(input.sessionKey)) {
+    if (this.transcriptWriteReservations.has(input.sessionKey)) {
       yield {
         type: "error",
         runId,
         code: "replace_turn_pending",
-        message: "This session is currently preparing an edited replacement turn.",
+        message: "This session transcript is currently being updated.",
         recoverable: true,
-        userHint: "Wait for the message edit to finish, then try again.",
+        userHint: "Wait for the session update to finish, then try again.",
       };
       return;
     }
@@ -804,12 +814,35 @@ export class InProcessGateway implements Gateway {
 
   async sessionModelSet(input: SessionModelSetInput): Promise<SessionModelResult> {
     if (!this.options.sessionModelSet) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "session_model_set is unavailable.");
-    return this.options.sessionModelSet(input);
+    this.reserveTranscriptWrite(input.sessionKey, "change the session model");
+    try {
+      return await this.options.sessionModelSet(input);
+    } finally {
+      this.transcriptWriteReservations.delete(input.sessionKey);
+    }
   }
 
   async sessionModelClear(input: SessionModelInput): Promise<void> {
     if (!this.options.sessionModelClear) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "session_model_clear is unavailable.");
-    await this.options.sessionModelClear(input);
+    this.reserveTranscriptWrite(input.sessionKey, "clear the session model");
+    try {
+      await this.options.sessionModelClear(input);
+    } finally {
+      this.transcriptWriteReservations.delete(input.sessionKey);
+    }
+  }
+
+  private reserveTranscriptWrite(sessionKey: string, operation: string): void {
+    if (
+      this.transcriptWriteReservations.has(sessionKey)
+      || this.pendingTurnReplacements.has(sessionKey)
+    ) {
+      throw new DialogGatewayError(
+        "SESSION_BUSY",
+        `Cannot ${operation} while another transcript update is pending.`,
+      );
+    }
+    this.transcriptWriteReservations.add(sessionKey);
   }
 
   private async resolveUploadedAttachments(input: GatewaySubmitTurnInput): Promise<ChannelAttachment[]> {
@@ -938,7 +971,7 @@ export class InProcessGateway implements Gateway {
       throw new DialogGatewayError("replace_invalid_input", "replacementTurnId is required.");
     }
     if (
-      this.replacementReservations.has(input.sessionKey)
+      this.transcriptWriteReservations.has(input.sessionKey)
       || this.pendingTurnReplacements.has(input.sessionKey)
     ) {
       throw new DialogGatewayError(
@@ -955,7 +988,12 @@ export class InProcessGateway implements Gateway {
         { activeRunId, expectedTurnId: input.expectedTurnId },
       );
     }
-    this.replacementReservations.add(input.sessionKey);
+    if (!this.options.finalizeLastTurnReplacement) {
+      throw new Error(
+        "finalize_last_turn_replacement is required when replace_last_turn is configured.",
+      );
+    }
+    this.transcriptWriteReservations.add(input.sessionKey);
     let result: WebReplaceLastTurnResult | undefined;
     try {
       // Reserve before awaiting the abort so a new turn cannot start between
@@ -975,12 +1013,13 @@ export class InProcessGateway implements Gateway {
         replacementTurnId: input.replacementTurnId,
         projectKey: input.projectKey,
       });
+      this.scheduleReplacementTimeout(input.sessionKey);
       // The cached AgentSession and transcript writer still reflect the old tail.
       // Evict them so the replacement submit resumes from the rewritten JSONL.
       await this.router.close(input.sessionKey);
       return result;
     } catch (error) {
-      this.pendingTurnReplacements.delete(input.sessionKey);
+      this.clearPendingTurnReplacement(input.sessionKey);
       if (result && this.options.finalizeLastTurnReplacement) {
         await this.options.finalizeLastTurnReplacement({
           sessionKey: input.sessionKey,
@@ -991,7 +1030,7 @@ export class InProcessGateway implements Gateway {
       }
       throw error;
     } finally {
-      this.replacementReservations.delete(input.sessionKey);
+      this.transcriptWriteReservations.delete(input.sessionKey);
     }
   }
 
@@ -1000,6 +1039,9 @@ export class InProcessGateway implements Gateway {
     if (!pending || pending.replacementTurnId !== runId || !this.options.finalizeLastTurnReplacement) {
       return;
     }
+    if (pending.finalizing) return;
+    pending.finalizing = true;
+    if (pending.timeout) clearTimeout(pending.timeout);
     try {
       await this.options.finalizeLastTurnReplacement({
         sessionKey,
@@ -1012,7 +1054,52 @@ export class InProcessGateway implements Gateway {
       // cleanup, but it must not block later turns in the live session.
       console.warn("[pilotdeck] failed to remove accepted replacement backup:", error);
     } finally {
-      this.pendingTurnReplacements.delete(sessionKey);
+      this.clearPendingTurnReplacement(sessionKey);
+    }
+  }
+
+  private scheduleReplacementTimeout(sessionKey: string): void {
+    const pending = this.pendingTurnReplacements.get(sessionKey);
+    if (!pending || pending.finalizing) return;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.timeout = setTimeout(() => {
+      void this.rollbackExpiredTurnReplacement(sessionKey, pending.transactionId);
+    }, this.replacementTransactionTimeoutMs);
+    pending.timeout.unref?.();
+  }
+
+  private clearPendingTurnReplacement(sessionKey: string): void {
+    const pending = this.pendingTurnReplacements.get(sessionKey);
+    if (pending?.timeout) clearTimeout(pending.timeout);
+    this.pendingTurnReplacements.delete(sessionKey);
+  }
+
+  private async rollbackExpiredTurnReplacement(
+    sessionKey: string,
+    transactionId: string,
+  ): Promise<void> {
+    const pending = this.pendingTurnReplacements.get(sessionKey);
+    if (!pending || pending.transactionId !== transactionId || pending.finalizing) return;
+    if (this.router.hasActiveTurn(sessionKey)) {
+      this.scheduleReplacementTimeout(sessionKey);
+      return;
+    }
+    if (!this.options.finalizeLastTurnReplacement) return;
+
+    pending.finalizing = true;
+    try {
+      await this.router.close(sessionKey);
+      await this.options.finalizeLastTurnReplacement({
+        sessionKey,
+        projectKey: pending.projectKey,
+        transactionId: pending.transactionId,
+        action: "rollback",
+      });
+      this.clearPendingTurnReplacement(sessionKey);
+    } catch (error) {
+      pending.finalizing = false;
+      console.warn("[pilotdeck] failed to roll back expired replacement transaction:", error);
+      this.scheduleReplacementTimeout(sessionKey);
     }
   }
 
@@ -1031,18 +1118,32 @@ export class InProcessGateway implements Gateway {
         "The replacement transaction is no longer pending.",
       );
     }
-    if (input.action === "rollback") {
-      if (this.router.hasActiveTurn(input.sessionKey)) {
-        throw new DialogGatewayError(
-          "replace_transaction_active",
-          "The replacement cannot be rolled back while its turn is active.",
-        );
-      }
-      await this.router.close(input.sessionKey);
+    if (pending.finalizing) {
+      throw new DialogGatewayError(
+        "replace_transaction_pending",
+        "The replacement transaction is already being finalized.",
+      );
     }
-    const result = await this.options.finalizeLastTurnReplacement(input);
-    this.pendingTurnReplacements.delete(input.sessionKey);
-    return result;
+    pending.finalizing = true;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    try {
+      if (input.action === "rollback") {
+        if (this.router.hasActiveTurn(input.sessionKey)) {
+          throw new DialogGatewayError(
+            "replace_transaction_active",
+            "The replacement cannot be rolled back while its turn is active.",
+          );
+        }
+        await this.router.close(input.sessionKey);
+      }
+      const result = await this.options.finalizeLastTurnReplacement(input);
+      this.clearPendingTurnReplacement(input.sessionKey);
+      return result;
+    } catch (error) {
+      pending.finalizing = false;
+      this.scheduleReplacementTimeout(input.sessionKey);
+      throw error;
+    }
   }
 
   async listProjects(): Promise<WebListProjectsResult> {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -11,6 +11,7 @@ import { SessionRouter } from "../../src/gateway/SessionRouter.js";
 import type { AgentSession, AgentSubmitOptions } from "../../src/agent/index.js";
 import {
   finalizeLastWebSessionTurnReplacement,
+  recoverPendingLastTurnReplacements,
   ReplaceLastTurnError,
   replaceLastWebSessionTurn,
 } from "../../src/web/server/replaceLastTurn.js";
@@ -146,6 +147,161 @@ test("gateway commits the replacement transaction before emitting input_accepted
   assert.deepEqual(calls, ["commit"]);
 });
 
+test("gateway rolls back an abandoned replacement after its acceptance timeout", async () => {
+  let resolveRollback!: () => void;
+  const rolledBack = new Promise<void>((resolve) => { resolveRollback = resolve; });
+  const router = {
+    activeTurnRunId: () => undefined,
+    hasActiveTurn: () => false,
+    close: async () => undefined,
+  } as unknown as SessionRouter;
+  const gateway = new InProcessGateway(router, {
+    replacementTransactionTimeoutMs: 5,
+    replaceLastTurn: async (input) => ({
+      sessionKey: input.sessionKey,
+      replacedTurnId: input.expectedTurnId,
+      removedEntryCount: 2,
+      transactionId: "33333333-3333-4333-8333-333333333333",
+    }),
+    finalizeLastTurnReplacement: async (input) => {
+      if (input.action === "rollback") resolveRollback();
+      return input;
+    },
+  });
+
+  await gateway.replaceLastTurn({
+    sessionKey: "web:s_timeout",
+    expectedTurnId: "turn-old",
+    replacementTurnId: "turn-replacement",
+  });
+  await Promise.race([
+    rolledBack,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("replacement timeout did not roll back")), 1_000);
+    }),
+  ]);
+});
+
+test("gateway blocks model metadata writes while a replacement is pending", async () => {
+  let modelWrites = 0;
+  const router = {
+    activeTurnRunId: () => undefined,
+    hasActiveTurn: () => false,
+    close: async () => undefined,
+  } as unknown as SessionRouter;
+  const gateway = new InProcessGateway(router, {
+    replaceLastTurn: async (input) => ({
+      sessionKey: input.sessionKey,
+      replacedTurnId: input.expectedTurnId,
+      removedEntryCount: 2,
+      transactionId: "44444444-4444-4444-8444-444444444444",
+    }),
+    finalizeLastTurnReplacement: async (input) => input,
+    sessionModelSet: async (input) => {
+      modelWrites += 1;
+      return {
+        sessionKey: input.sessionKey,
+        projectKey: input.projectKey,
+        saved: input.selection,
+        effective: { provider: "openai", model: "gpt-test", source: "session" },
+      };
+    },
+    sessionModelClear: async () => { modelWrites += 1; },
+  });
+
+  const replacement = await gateway.replaceLastTurn({
+    sessionKey: "web:s_model_lock",
+    projectKey: "/tmp/project",
+    expectedTurnId: "turn-old",
+    replacementTurnId: "turn-replacement",
+  });
+  const isBusy = (error: unknown) => (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === "SESSION_BUSY"
+  );
+  await assert.rejects(
+    gateway.sessionModelSet({
+      sessionKey: "web:s_model_lock",
+      projectKey: "/tmp/project",
+      selection: { mode: "model", provider: "openai", model: "gpt-test" },
+    }),
+    isBusy,
+  );
+  await assert.rejects(
+    gateway.sessionModelClear({ sessionKey: "web:s_model_lock", projectKey: "/tmp/project" }),
+    isBusy,
+  );
+  assert.equal(modelWrites, 0);
+
+  await gateway.finalizeLastTurnReplacement({
+    sessionKey: "web:s_model_lock",
+    projectKey: "/tmp/project",
+    transactionId: replacement.transactionId,
+    action: "rollback",
+  });
+});
+
+test("gateway cannot start replacement while a model metadata write holds the transcript lock", async () => {
+  let releaseModelWrite!: () => void;
+  let markModelWriteStarted!: () => void;
+  const modelWriteStarted = new Promise<void>((resolve) => { markModelWriteStarted = resolve; });
+  const modelWriteRelease = new Promise<void>((resolve) => { releaseModelWrite = resolve; });
+  let replacements = 0;
+  const router = {
+    activeTurnRunId: () => undefined,
+    hasActiveTurn: () => false,
+    close: async () => undefined,
+  } as unknown as SessionRouter;
+  const gateway = new InProcessGateway(router, {
+    replaceLastTurn: async (input) => {
+      replacements += 1;
+      return {
+        sessionKey: input.sessionKey,
+        replacedTurnId: input.expectedTurnId,
+        removedEntryCount: 2,
+        transactionId: "55555555-5555-4555-8555-555555555555",
+      };
+    },
+    finalizeLastTurnReplacement: async (input) => input,
+    sessionModelSet: async (input) => {
+      markModelWriteStarted();
+      await modelWriteRelease;
+      return {
+        sessionKey: input.sessionKey,
+        projectKey: input.projectKey,
+        saved: input.selection,
+        effective: { provider: "openai", model: "gpt-test", source: "session" },
+      };
+    },
+  });
+
+  const modelWrite = gateway.sessionModelSet({
+    sessionKey: "web:s_model_first",
+    projectKey: "/tmp/project",
+    selection: { mode: "model", provider: "openai", model: "gpt-test" },
+  });
+  await modelWriteStarted;
+  await assert.rejects(
+    gateway.replaceLastTurn({
+      sessionKey: "web:s_model_first",
+      projectKey: "/tmp/project",
+      expectedTurnId: "turn-old",
+      replacementTurnId: "turn-replacement",
+    }),
+    (error: unknown) => (
+      typeof error === "object"
+      && error !== null
+      && "code" in error
+      && error.code === "replace_turn_pending"
+    ),
+  );
+  assert.equal(replacements, 0);
+  releaseModelWrite();
+  await modelWrite;
+});
+
 test("replaceLastWebSessionTurn removes only the latest turn and leaves workspace files untouched", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-replace-turn-project-"));
   const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-replace-turn-home-"));
@@ -185,6 +341,9 @@ test("replaceLastWebSessionTurn removes only the latest turn and leaves workspac
     assert.equal(result.replacedTurnId, "turn-2");
     assert.equal(result.removedEntryCount, 2);
     assert.deepEqual(new Set(transcript.entries.map((entry) => entry.turnId)), new Set(["turn-1"]));
+    if (process.platform !== "win32") {
+      assert.equal((await stat(storage.transcriptPath)).mode & 0o777, 0o600);
+    }
     assert.equal(await readFile(workspaceFile, "utf8"), "keep current workspace state");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
@@ -198,6 +357,10 @@ test("replaceLastWebSessionTurn preserves session metadata written after the edi
   try {
     const sessionKey = "web:s_replace_metadata";
     const storage = createAgentProjectSessionStorage({ projectRoot, pilotHome, sessionId: sessionKey });
+    await storage.transcript.recordSessionMetadata(sessionKey, "early-title", {
+      aiTitle: "Obsolete generated title from before input",
+      updatedAt: "2026-08-25T09:59:00.000Z",
+    });
     await storage.transcript.recordAcceptedInput(sessionKey, "turn-1", [{
       role: "user",
       content: [{ type: "text", text: "mistyped request" }],
@@ -208,6 +371,7 @@ test("replaceLastWebSessionTurn preserves session metadata written after the edi
     });
     await storage.transcript.recordSessionMetadata(sessionKey, "model-selection", {
       title: "Keep this title",
+      aiTitle: "Obsolete generated title",
       firstPrompt: "mistyped request",
       lastPrompt: "mistyped request",
       modelSelection: { mode: "model", provider: "openai", model: "gpt-test" },
@@ -225,9 +389,10 @@ test("replaceLastWebSessionTurn preserves session metadata written after the edi
     );
 
     const transcript = await readTranscript(storage.transcriptPath);
-    const metadataEntry = transcript.entries.find((entry) => entry.type === "session_metadata");
+    const metadataEntry = transcript.entries.filter((entry) => entry.type === "session_metadata").at(-1);
     assert.ok(metadataEntry && metadataEntry.type === "session_metadata");
     assert.equal(metadataEntry.metadata.title, "Keep this title");
+    assert.equal(metadataEntry.metadata.aiTitle, undefined);
     assert.deepEqual(metadataEntry.metadata.modelSelection, {
       mode: "model",
       provider: "openai",
@@ -278,6 +443,97 @@ test("failed replacement submission can restore the original transcript exactly"
     );
 
     assert.equal(await readFile(storage.transcriptPath, "utf8"), original);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery restores a prepared replacement that was never accepted", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-replace-recovery-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-replace-recovery-home-"));
+  try {
+    const sessionKey = "web:s_replace_recovery";
+    const storage = createAgentProjectSessionStorage({ projectRoot, pilotHome, sessionId: sessionKey });
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-1", [{
+      role: "user",
+      content: [{ type: "text", text: "original request" }],
+    }]);
+    await storage.transcript.recordDurableMessage(sessionKey, "turn-1", {
+      role: "assistant",
+      content: [{ type: "text", text: "original answer" }],
+    });
+    const original = await readFile(storage.transcriptPath, "utf8");
+
+    await replaceLastWebSessionTurn(
+      {
+        sessionKey,
+        projectKey: projectRoot,
+        expectedTurnId: "turn-1",
+        replacementTurnId: "turn-2",
+      },
+      { projectRoot, pilotHome },
+    );
+
+    const recovery = recoverPendingLastTurnReplacements(pilotHome);
+    assert.equal(recovery.rolledBack, 1);
+    assert.equal(recovery.committed, 0);
+    assert.deepEqual(recovery.failures, []);
+    assert.equal(await readFile(storage.transcriptPath, "utf8"), original);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery recognizes a durable legacy replacement without its journal", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-replace-commit-recovery-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-replace-commit-recovery-home-"));
+  try {
+    const sessionKey = "web:s_replace_commit_recovery";
+    const storage = createAgentProjectSessionStorage({ projectRoot, pilotHome, sessionId: sessionKey });
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-1", [{
+      role: "user",
+      content: [{ type: "text", text: "original request" }],
+    }]);
+
+    await replaceLastWebSessionTurn(
+      {
+        sessionKey,
+        projectKey: projectRoot,
+        expectedTurnId: "turn-1",
+        replacementTurnId: "turn-2",
+      },
+      { projectRoot, pilotHome },
+    );
+    const prepared = await readTranscript(storage.transcriptPath);
+    const latest = prepared.entries.at(-1);
+    storage.transcript.restoreState(
+      prepared.entries.reduce((highest, entry) => Math.max(highest, entry.sequence), 0),
+      latest?.entryId ?? null,
+    );
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-2", [{
+      role: "user",
+      content: [{ type: "text", text: "corrected request" }],
+    }]);
+    const legacyJournal = (await readdir(storage.chatDir))
+      .find((name) => name.endsWith(".replace.json"));
+    assert.ok(legacyJournal);
+    await rm(join(storage.chatDir, legacyJournal));
+
+    const recovery = recoverPendingLastTurnReplacements(pilotHome);
+    assert.equal(recovery.committed, 1);
+    assert.equal(recovery.rolledBack, 0);
+    assert.deepEqual(recovery.failures, []);
+    const recovered = await readTranscript(storage.transcriptPath);
+    assert.equal(
+      recovered.entries.some((entry) => entry.type === "accepted_input" && entry.turnId === "turn-2"),
+      true,
+    );
+    assert.equal(
+      recovered.entries.some((entry) => entry.type === "accepted_input" && entry.turnId === "turn-1"),
+      false,
+    );
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(pilotHome, { recursive: true, force: true });
