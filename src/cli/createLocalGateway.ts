@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync } from "node:fs";
 import { dirname, resolve, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
@@ -173,6 +174,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
   const baseEnv = options.env ?? process.env;
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
   const pilotHome = options.pilotHome ?? resolvePilotHome(baseEnv);
+  const replacementTransactionOwner = { instanceId: randomUUID(), pid: process.pid };
   const replacementRecovery = recoverPendingLastTurnReplacements(pilotHome);
   if (replacementRecovery.committed > 0 || replacementRecovery.rolledBack > 0) {
     // eslint-disable-next-line no-console
@@ -445,6 +447,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
         pilotHome,
         now,
+        transactionOwner: replacementTransactionOwner,
       }),
     finalizeLastTurnReplacement: (input) =>
       finalizeLastWebSessionTurnReplacement(input, {

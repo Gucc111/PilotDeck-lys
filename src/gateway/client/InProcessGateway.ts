@@ -221,7 +221,7 @@ type PendingTurnReplacement = {
   replacementTurnId: string;
   projectKey?: string;
   timeout?: ReturnType<typeof setTimeout>;
-  finalizing?: boolean;
+  phase: "prepared" | "submitting" | "finalizing";
 };
 
 export class InProcessGateway implements Gateway {
@@ -355,20 +355,23 @@ export class InProcessGateway implements Gateway {
     }
     input = plannedInput;
 
-    // Per-turn config refresh (defensive). The fs watcher path already
-    // catches most edits, but this guarantees a fresh apiKey/url is in
-    // effect for the very next turn even when watcher events are
-    // dropped or coalesced.
-    if (this.options.refreshConfigBeforeTurn) {
-      try {
-        await this.options.refreshConfigBeforeTurn();
-      } catch {
-        // Intentional: keep streaming on the previous snapshot rather
-        // than failing a turn over a transient yaml read error.
-      }
-    }
     const runId = input.runId ?? this.uuid();
+    const replacementClaim = this.claimPendingTurnReplacement(input.sessionKey, runId);
+    if (replacementClaim === "conflict") {
+      const message = "This session is waiting for its edited replacement turn to be accepted.";
+      yield {
+        type: "error",
+        runId,
+        code: "replace_turn_pending",
+        message,
+        recoverable: true,
+        userHint: "Wait for the edited message transaction to finish, then try again.",
+      };
+      return;
+    }
+
     if (this.transcriptWriteReservations.has(input.sessionKey)) {
+      this.releasePendingTurnReplacementClaim(input.sessionKey, runId);
       yield {
         type: "error",
         runId,
@@ -379,20 +382,8 @@ export class InProcessGateway implements Gateway {
       };
       return;
     }
-    const pendingReplacement = this.pendingTurnReplacements.get(input.sessionKey);
-    if (pendingReplacement && pendingReplacement.replacementTurnId !== runId) {
-      const message = "This session is waiting for its edited replacement turn to be accepted.";
-      yield {
-        type: "error",
-        runId,
-        code: "replace_turn_pending",
-        message,
-        recoverable: true,
-        userHint: "Wait for the edited message to be accepted, then try again.",
-      };
-      return;
-    }
     if (!this.router.beginTurn(input.sessionKey, runId)) {
+      this.releasePendingTurnReplacementClaim(input.sessionKey, runId);
       const message = `Session ${input.sessionKey} already has an active turn.`;
       const userHint = "Wait for the current turn to finish or stop it before sending another message.";
       yield {
@@ -460,6 +451,18 @@ export class InProcessGateway implements Gateway {
     // Background pump: agent events → queue.
     const pump = (async () => {
       try {
+        // Refresh only after beginTurn has reserved the session. Replacement
+        // submissions claim their transaction before this await, so an
+        // expiration callback cannot roll the transcript back underneath a
+        // submission that is already starting.
+        if (this.options.refreshConfigBeforeTurn) {
+          try {
+            await this.options.refreshConfigBeforeTurn();
+          } catch {
+            // Keep streaming on the previous snapshot rather than failing a
+            // turn over a transient yaml read error.
+          }
+        }
         const session = await this.router.getOrCreate({
           sessionKey: input.sessionKey,
           projectKey: input.projectKey,
@@ -711,6 +714,7 @@ export class InProcessGateway implements Gateway {
         this.turnCompletions.delete(input.sessionKey);
       }
       resolveTurnDone();
+      this.releasePendingTurnReplacementClaim(input.sessionKey, runId);
       this.options.afterTurnCompleted?.({
         sessionKey: input.sessionKey,
         projectKey: input.projectKey,
@@ -1012,6 +1016,7 @@ export class InProcessGateway implements Gateway {
         transactionId: result.transactionId,
         replacementTurnId: input.replacementTurnId,
         projectKey: input.projectKey,
+        phase: "prepared",
       });
       this.scheduleReplacementTimeout(input.sessionKey);
       // The cached AgentSession and transcript writer still reflect the old tail.
@@ -1036,11 +1041,15 @@ export class InProcessGateway implements Gateway {
 
   private async commitAcceptedTurnReplacement(sessionKey: string, runId: string): Promise<void> {
     const pending = this.pendingTurnReplacements.get(sessionKey);
-    if (!pending || pending.replacementTurnId !== runId || !this.options.finalizeLastTurnReplacement) {
+    if (
+      !pending
+      || pending.replacementTurnId !== runId
+      || pending.phase !== "submitting"
+      || !this.options.finalizeLastTurnReplacement
+    ) {
       return;
     }
-    if (pending.finalizing) return;
-    pending.finalizing = true;
+    pending.phase = "finalizing";
     if (pending.timeout) clearTimeout(pending.timeout);
     try {
       await this.options.finalizeLastTurnReplacement({
@@ -1058,9 +1067,33 @@ export class InProcessGateway implements Gateway {
     }
   }
 
+  private claimPendingTurnReplacement(
+    sessionKey: string,
+    runId: string,
+  ): "none" | "claimed" | "conflict" {
+    const pending = this.pendingTurnReplacements.get(sessionKey);
+    if (!pending) return "none";
+    if (pending.replacementTurnId !== runId || pending.phase !== "prepared") {
+      return "conflict";
+    }
+    pending.phase = "submitting";
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+      pending.timeout = undefined;
+    }
+    return "claimed";
+  }
+
+  private releasePendingTurnReplacementClaim(sessionKey: string, runId: string): void {
+    const pending = this.pendingTurnReplacements.get(sessionKey);
+    if (!pending || pending.replacementTurnId !== runId || pending.phase !== "submitting") return;
+    pending.phase = "prepared";
+    this.scheduleReplacementTimeout(sessionKey);
+  }
+
   private scheduleReplacementTimeout(sessionKey: string): void {
     const pending = this.pendingTurnReplacements.get(sessionKey);
-    if (!pending || pending.finalizing) return;
+    if (!pending || pending.phase !== "prepared") return;
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.timeout = setTimeout(() => {
       void this.rollbackExpiredTurnReplacement(sessionKey, pending.transactionId);
@@ -1079,14 +1112,14 @@ export class InProcessGateway implements Gateway {
     transactionId: string,
   ): Promise<void> {
     const pending = this.pendingTurnReplacements.get(sessionKey);
-    if (!pending || pending.transactionId !== transactionId || pending.finalizing) return;
+    if (!pending || pending.transactionId !== transactionId || pending.phase !== "prepared") return;
     if (this.router.hasActiveTurn(sessionKey)) {
       this.scheduleReplacementTimeout(sessionKey);
       return;
     }
     if (!this.options.finalizeLastTurnReplacement) return;
 
-    pending.finalizing = true;
+    pending.phase = "finalizing";
     try {
       await this.router.close(sessionKey);
       await this.options.finalizeLastTurnReplacement({
@@ -1097,7 +1130,7 @@ export class InProcessGateway implements Gateway {
       });
       this.clearPendingTurnReplacement(sessionKey);
     } catch (error) {
-      pending.finalizing = false;
+      pending.phase = "prepared";
       console.warn("[pilotdeck] failed to roll back expired replacement transaction:", error);
       this.scheduleReplacementTimeout(sessionKey);
     }
@@ -1118,13 +1151,13 @@ export class InProcessGateway implements Gateway {
         "The replacement transaction is no longer pending.",
       );
     }
-    if (pending.finalizing) {
+    if (pending.phase !== "prepared") {
       throw new DialogGatewayError(
         "replace_transaction_pending",
         "The replacement transaction is already being finalized.",
       );
     }
-    pending.finalizing = true;
+    pending.phase = "finalizing";
     if (pending.timeout) clearTimeout(pending.timeout);
     try {
       if (input.action === "rollback") {
@@ -1140,7 +1173,7 @@ export class InProcessGateway implements Gateway {
       this.clearPendingTurnReplacement(input.sessionKey);
       return result;
     } catch (error) {
-      pending.finalizing = false;
+      pending.phase = "prepared";
       this.scheduleReplacementTimeout(input.sessionKey);
       throw error;
     }

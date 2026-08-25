@@ -32,21 +32,35 @@ export type ReplaceLastWebSessionTurnOptions = {
   projectRoot: string;
   pilotHome: string;
   now?: () => Date;
+  /** Identifies the live Gateway process that owns a prepared transaction. */
+  transactionOwner?: ReplacementTransactionOwner;
+};
+
+export type ReplacementTransactionOwner = {
+  instanceId: string;
+  pid: number;
 };
 
 type ReplacementJournal = {
-  version: 1;
+  version: 1 | 2;
   transactionId: string;
   sessionKey: string;
   replacementTurnId: string;
   preparedAt: string;
+  owner?: ReplacementTransactionOwner;
 };
 
 export type RecoverLastTurnReplacementsResult = {
   committed: number;
   rolledBack: number;
   cleaned: number;
+  skipped: number;
   failures: Array<{ transcriptPath: string; message: string }>;
+};
+
+export type RecoverLastTurnReplacementsOptions = {
+  /** @internal Injectable process probe for deterministic recovery tests. */
+  isProcessAlive?: (pid: number) => boolean;
 };
 
 export class ReplaceLastTurnError extends Error {
@@ -161,13 +175,26 @@ function readReplacementJournalSync(
   try {
     const parsed = JSON.parse(readFileSync(journalPath, "utf8")) as Partial<ReplacementJournal>;
     if (
-      parsed.version !== 1
+      (parsed.version !== 1 && parsed.version !== 2)
       || parsed.transactionId !== transactionId
       || typeof parsed.sessionKey !== "string"
       || !parsed.sessionKey.trim()
       || typeof parsed.replacementTurnId !== "string"
       || !parsed.replacementTurnId.trim()
       || typeof parsed.preparedAt !== "string"
+    ) {
+      return undefined;
+    }
+    if (
+      parsed.version === 2
+      && (
+        typeof parsed.owner !== "object"
+        || parsed.owner === null
+        || typeof parsed.owner.instanceId !== "string"
+        || !parsed.owner.instanceId.trim()
+        || !Number.isSafeInteger(parsed.owner.pid)
+        || parsed.owner.pid <= 0
+      )
     ) {
       return undefined;
     }
@@ -209,6 +236,52 @@ type ReplacementArtifact = {
   journalPath: string;
 };
 
+type ReplacementArtifactState = {
+  artifact: ReplacementArtifact;
+  journal?: ReplacementJournal;
+  order: number;
+  hasBackup: boolean;
+};
+
+function artifactMtimeMs(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+function replacementArtifactState(artifact: ReplacementArtifact): ReplacementArtifactState {
+  const journal = readReplacementJournalSync(artifact.journalPath, artifact.transactionId);
+  const preparedAt = journal ? Date.parse(journal.preparedAt) : Number.NaN;
+  const backupMtime = artifactMtimeMs(artifact.backupPath);
+  const journalMtime = artifactMtimeMs(artifact.journalPath);
+  return {
+    artifact,
+    journal,
+    order: Math.max(
+      Number.isFinite(preparedAt) ? preparedAt : 0,
+      backupMtime ?? 0,
+      journalMtime ?? 0,
+    ),
+    hasBackup: backupMtime !== undefined,
+  };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (
+      typeof error === "object"
+      && error !== null
+      && "code" in error
+      && error.code === "EPERM"
+    );
+  }
+}
+
 /**
  * Recover replacement transactions left behind by a process crash.
  *
@@ -219,13 +292,16 @@ type ReplacementArtifact = {
  */
 export function recoverPendingLastTurnReplacements(
   pilotHome: string,
+  options: RecoverLastTurnReplacementsOptions = {},
 ): RecoverLastTurnReplacementsResult {
   const result: RecoverLastTurnReplacementsResult = {
     committed: 0,
     rolledBack: 0,
     cleaned: 0,
+    skipped: 0,
     failures: [],
   };
+  const processIsAlive = options.isProcessAlive ?? isProcessAlive;
   const groups = new Map<string, { transcriptPath: string; artifacts: ReplacementArtifact[] }>();
   const projectsDir = resolve(pilotHome, "projects");
   let projectDirNames: string[];
@@ -268,22 +344,38 @@ export function recoverPendingLastTurnReplacements(
 
   for (const group of groups.values()) {
     try {
-      const currentAcceptedTurnIds = readAcceptedTurnIdsSync(group.transcriptPath);
-      const committed = group.artifacts.some((artifact) => {
-        const journal = readReplacementJournalSync(artifact.journalPath, artifact.transactionId);
-        if (journal) return currentAcceptedTurnIds.has(journal.replacementTurnId);
+      // Only the newest transaction can describe the current transcript tail.
+      // Older artifacts may be leftovers from a committed replacement whose
+      // cleanup failed, so they must never decide the fate of a newer edit.
+      const states = group.artifacts
+        .map(replacementArtifactState)
+        .sort((left, right) => right.order - left.order);
+      const latest = states[0];
+      if (!latest) continue;
 
+      // Another local Gateway can share PILOT_HOME (for example server + TUI).
+      // A live owner's transaction is still in flight and is not crash debris.
+      const owner = latest.journal?.owner;
+      if (owner && processIsAlive(owner.pid)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const currentAcceptedTurnIds = readAcceptedTurnIdsSync(group.transcriptPath);
+      let committed: boolean;
+      if (latest.journal) {
+        committed = currentAcceptedTurnIds.has(latest.journal.replacementTurnId);
+      } else {
         // Backups created by the first transactional release did not have a
         // journal. If the current transcript contains a turn absent from the
-        // backup, input acceptance already advanced the session and restoring
-        // the legacy backup would undo a committed edit.
+        // newest backup, input acceptance advanced that legacy transaction.
         try {
-          const originalTurnIds = acceptedTurnIds(readFileSync(artifact.backupPath, "utf8"));
-          return [...currentAcceptedTurnIds].some((turnId) => !originalTurnIds.has(turnId));
+          const originalTurnIds = acceptedTurnIds(readFileSync(latest.artifact.backupPath, "utf8"));
+          committed = [...currentAcceptedTurnIds].some((turnId) => !originalTurnIds.has(turnId));
         } catch {
-          return false;
+          committed = false;
         }
-      });
+      }
       if (committed) {
         for (const artifact of group.artifacts) {
           rmSync(artifact.backupPath, { force: true });
@@ -294,28 +386,16 @@ export function recoverPendingLastTurnReplacements(
         continue;
       }
 
-      const restorable = group.artifacts
-        .map((artifact) => {
-          try {
-            return { artifact, mtimeMs: statSync(artifact.backupPath).mtimeMs };
-          } catch {
-            return undefined;
-          }
-        })
-        .filter((candidate): candidate is { artifact: ReplacementArtifact; mtimeMs: number } => Boolean(candidate))
-        .sort((left, right) => right.mtimeMs - left.mtimeMs)[0];
-      if (!restorable) {
-        for (const artifact of group.artifacts) {
-          rmSync(artifact.journalPath, { force: true });
-        }
-        result.cleaned += group.artifacts.length;
-        continue;
+      if (!latest.hasBackup) {
+        throw new Error(
+          `Newest replacement transaction ${latest.artifact.transactionId} has no backup to restore.`,
+        );
       }
 
-      const originalBody = readFileSync(restorable.artifact.backupPath, "utf8");
+      const originalBody = readFileSync(latest.artifact.backupPath, "utf8");
       const temporaryPath = resolve(
         dirname(group.transcriptPath),
-        `.${restorable.artifact.safeId}.${randomUUID()}.recovery.tmp`,
+        `.${latest.artifact.safeId}.${randomUUID()}.recovery.tmp`,
       );
       try {
         writeFileSync(temporaryPath, originalBody, { encoding: "utf8", mode: 0o600 });
@@ -407,19 +487,23 @@ export async function replaceLastWebSessionTurn(
   if (!backupPath || !journalPath) throw new Error("Replacement transaction paths were not created.");
   const temporaryPath = resolve(dirname(transcriptPath), `.${safeId}.${randomUUID()}.replace.tmp`);
   try {
-    await writeFile(backupPath, originalBody, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const journal: ReplacementJournal = {
-      version: 1,
+      version: options.transactionOwner ? 2 : 1,
       transactionId,
       sessionKey: input.sessionKey,
       replacementTurnId: input.replacementTurnId,
       preparedAt: (options.now?.() ?? new Date()).toISOString(),
+      ...(options.transactionOwner ? { owner: options.transactionOwner } : {}),
     };
+    // Publish owner metadata before the backup or transcript becomes visible.
+    // A second Gateway scanning the shared PILOT_HOME will therefore skip this
+    // transaction throughout its entire preparation window.
     await writeFile(journalPath, `${JSON.stringify(journal)}\n`, {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
     });
+    await writeFile(backupPath, originalBody, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await writeFile(temporaryPath, body, { encoding: "utf8", mode: 0o600 });
     await rename(temporaryPath, transcriptPath);
   } catch (error) {

@@ -147,6 +147,77 @@ test("gateway commits the replacement transaction before emitting input_accepted
   assert.deepEqual(calls, ["commit"]);
 });
 
+test("gateway claims a replacement before an asynchronous turn-start refresh", async () => {
+  const calls: string[] = [];
+  const fakeSession = {
+    async *submit(_input: unknown, options: AgentSubmitOptions = {}) {
+      const turnId = options.turnId ?? "turn-replacement";
+      yield { type: "turn_started", sessionId: "web:s_claim", turnId } as const;
+      yield {
+        type: "input_accepted",
+        sessionId: "web:s_claim",
+        turnId,
+        messages: [{ role: "user", content: [{ type: "text", text: "corrected" }] }],
+      } as const;
+      yield {
+        type: "turn_completed",
+        sessionId: "web:s_claim",
+        turnId,
+        result: {
+          type: "success",
+          sessionId: "web:s_claim",
+          turnId,
+          stopReason: "completed",
+          usage: {},
+          permissionDenials: [],
+          turns: 1,
+          startedAt: "2026-08-25T10:00:00.000Z",
+          completedAt: "2026-08-25T10:00:01.000Z",
+        },
+      } as const;
+    },
+    abort() {},
+  } as unknown as AgentSession;
+  const router = new SessionRouter({
+    idleSweepIntervalMs: 0,
+    createSession: () => fakeSession,
+  });
+  const gateway = new InProcessGateway(router, {
+    replacementTransactionTimeoutMs: 5,
+    refreshConfigBeforeTurn: async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    },
+    replaceLastTurn: async (input) => ({
+      sessionKey: input.sessionKey,
+      replacedTurnId: input.expectedTurnId,
+      removedEntryCount: 2,
+      transactionId: "66666666-6666-4666-8666-666666666666",
+    }),
+    finalizeLastTurnReplacement: async (input) => {
+      calls.push(input.action);
+      return input;
+    },
+  });
+
+  await gateway.replaceLastTurn({
+    sessionKey: "web:s_claim",
+    expectedTurnId: "turn-old",
+    replacementTurnId: "turn-replacement",
+  });
+  const events = [];
+  for await (const event of gateway.submitTurn({
+    sessionKey: "web:s_claim",
+    channelKey: "web",
+    message: "corrected",
+    runId: "turn-replacement",
+  })) {
+    events.push(event.type);
+  }
+
+  assert.ok(events.includes("input_accepted"));
+  assert.deepEqual(calls, ["commit"]);
+});
+
 test("gateway rolls back an abandoned replacement after its acceptance timeout", async () => {
   let resolveRollback!: () => void;
   const rolledBack = new Promise<void>((resolve) => { resolveRollback = resolve; });
@@ -534,6 +605,121 @@ test("startup recovery recognizes a durable legacy replacement without its journ
       recovered.entries.some((entry) => entry.type === "accepted_input" && entry.turnId === "turn-1"),
       false,
     );
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery decides from the newest replacement transaction only", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-replace-newest-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-replace-newest-home-"));
+  try {
+    const sessionKey = "web:s_replace_newest";
+    const storage = createAgentProjectSessionStorage({ projectRoot, pilotHome, sessionId: sessionKey });
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-1", [{
+      role: "user",
+      content: [{ type: "text", text: "first request" }],
+    }]);
+
+    await replaceLastWebSessionTurn(
+      {
+        sessionKey,
+        projectKey: projectRoot,
+        expectedTurnId: "turn-1",
+        replacementTurnId: "turn-2",
+      },
+      {
+        projectRoot,
+        pilotHome,
+        now: () => new Date("2026-08-25T10:00:00.000Z"),
+      },
+    );
+    let prepared = await readTranscript(storage.transcriptPath);
+    storage.transcript.restoreState(
+      prepared.entries.reduce((highest, entry) => Math.max(highest, entry.sequence), 0),
+      prepared.entries.at(-1)?.entryId ?? null,
+    );
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-2", [{
+      role: "user",
+      content: [{ type: "text", text: "committed corrected request" }],
+    }]);
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-3", [{
+      role: "user",
+      content: [{ type: "text", text: "newest original request" }],
+    }]);
+
+    // Leave transaction 1's artifacts behind as if commit cleanup failed,
+    // then prepare a second edit that has not yet been accepted.
+    await replaceLastWebSessionTurn(
+      {
+        sessionKey,
+        projectKey: projectRoot,
+        expectedTurnId: "turn-3",
+        replacementTurnId: "turn-4",
+      },
+      {
+        projectRoot,
+        pilotHome,
+        now: () => new Date("2026-08-25T10:01:00.000Z"),
+      },
+    );
+
+    const recovery = recoverPendingLastTurnReplacements(pilotHome);
+    assert.equal(recovery.rolledBack, 1);
+    assert.equal(recovery.committed, 0);
+    assert.deepEqual(recovery.failures, []);
+    prepared = await readTranscript(storage.transcriptPath);
+    const accepted = prepared.entries
+      .filter((entry) => entry.type === "accepted_input")
+      .map((entry) => entry.turnId);
+    assert.deepEqual(accepted, ["turn-2", "turn-3"]);
+    assert.equal(accepted.includes("turn-4"), false);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery skips a replacement owned by a live Gateway process", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-replace-owner-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-replace-owner-home-"));
+  try {
+    const sessionKey = "web:s_replace_owner";
+    const storage = createAgentProjectSessionStorage({ projectRoot, pilotHome, sessionId: sessionKey });
+    await storage.transcript.recordAcceptedInput(sessionKey, "turn-1", [{
+      role: "user",
+      content: [{ type: "text", text: "original request" }],
+    }]);
+
+    await replaceLastWebSessionTurn(
+      {
+        sessionKey,
+        projectKey: projectRoot,
+        expectedTurnId: "turn-1",
+        replacementTurnId: "turn-2",
+      },
+      {
+        projectRoot,
+        pilotHome,
+        transactionOwner: { instanceId: "gateway-owner", pid: process.pid },
+      },
+    );
+
+    const whileOwned = recoverPendingLastTurnReplacements(pilotHome);
+    assert.equal(whileOwned.skipped, 1);
+    assert.equal(whileOwned.rolledBack, 0);
+    let transcript = await readTranscript(storage.transcriptPath);
+    assert.equal(transcript.entries.some((entry) => entry.turnId === "turn-1"), false);
+
+    const afterOwnerExit = recoverPendingLastTurnReplacements(pilotHome, {
+      isProcessAlive: () => false,
+    });
+    assert.equal(afterOwnerExit.skipped, 0);
+    assert.equal(afterOwnerExit.rolledBack, 1);
+    assert.deepEqual(afterOwnerExit.failures, []);
+    transcript = await readTranscript(storage.transcriptPath);
+    assert.equal(transcript.entries.some((entry) => entry.turnId === "turn-1"), true);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(pilotHome, { recursive: true, force: true });
