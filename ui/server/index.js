@@ -56,12 +56,15 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 import JSZip from 'jszip';
 import { readPermissionSettings } from './services/permissionSettings.js';
+import { regenerateLastMessageTransaction } from './services/regenerateLastMessage.js';
 import { getDefaultPtyShell } from './utils/defaultShell.js';
 import { getOpenUrlSpawnCommand } from './utils/processSpawn.js';
 
 import { getProjects, getProjectCronJobsOverview, getSessions, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import {
     runChatViaGateway,
+    replaceLastTurnViaGateway,
+    finalizeLastTurnReplacementViaGateway,
     abortViaGateway,
     decidePermissionViaGateway,
     grantSessionPermissionViaGateway,
@@ -2506,6 +2509,28 @@ function handleChatConnection(ws, request) {
                 }
                 const providerHint = data.options?.providerHint || data.type.replace('-command', '');
                 await runChatViaGateway(data.command, data.options, streamWriter, providerHint);
+            } else if (data.type === 'regenerate-last-message') {
+                const sessionId = normalizeSessionId(data.sessionId || data.options?.sessionId);
+                const requestId = typeof data.requestId === 'string' ? data.requestId : null;
+                const expectedTurnId = typeof data.expectedTurnId === 'string'
+                    ? data.expectedTurnId.trim()
+                    : '';
+                const provider = data.options?.providerHint || 'pilotdeck';
+                if (sessionId) {
+                    sessionWatchRegistry.watch(sessionId, ws);
+                }
+                await regenerateLastMessageTransaction({
+                    data,
+                    sessionId,
+                    requestId,
+                    expectedTurnId,
+                    provider,
+                    writer,
+                    streamWriter,
+                    replaceLastTurn: replaceLastTurnViaGateway,
+                    finalizeLastTurnReplacement: finalizeLastTurnReplacementViaGateway,
+                    runChat: runChatViaGateway,
+                });
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
                 const provider = data.provider || 'pilotdeck';
