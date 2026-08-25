@@ -1438,14 +1438,21 @@ export function useSessionStore() {
     replacement: NormalizedMessage,
   ) => {
     const slot = getSlot(sessionId);
+    const belongsToReplacedTurn = (message: NormalizedMessage) => (
+      getMessageTurnId(message) === replacedTurnId
+      || message.parentRunId === replacedTurnId
+    );
     const truncateAtTurn = (messages: NormalizedMessage[]) => {
-      const index = messages.findIndex((message) => getMessageTurnId(message) === replacedTurnId);
-      return index >= 0
-        ? messages.slice(0, index)
-        : messages.filter((message) => (
-            getMessageTurnId(message) !== replacedTurnId
-            && message.parentRunId !== replacedTurnId
-          ));
+      // Status rows can be inserted before earlier turns because their sequence
+      // numbers are turn-local. Only the discarded user message is a safe tail
+      // boundary; remove any misplaced rows from that turn in the retained prefix.
+      const index = messages.findIndex((message) => (
+        message.kind === 'text'
+        && message.role === 'user'
+        && getMessageTurnId(message) === replacedTurnId
+      ));
+      const prefix = index >= 0 ? messages.slice(0, index) : messages;
+      return prefix.filter((message) => !belongsToReplacedTurn(message));
     };
 
     const previousServerMessageCount = slot.serverMessages.length;
@@ -1454,10 +1461,7 @@ export function useSessionStore() {
       ...truncateAtTurn(slot.realtimeMessages),
       captureOptimisticUserServerTail(replacement, slot.serverMessages, false),
     ];
-    slot.activityMessages = slot.activityMessages.filter((message) => (
-      getMessageTurnId(message) !== replacedTurnId
-      && message.parentRunId !== replacedTurnId
-    ));
+    slot.activityMessages = slot.activityMessages.filter((message) => !belongsToReplacedTurn(message));
     const removedServerMessageCount = previousServerMessageCount - slot.serverMessages.length;
     slot.total = Math.max(
       slot.serverMessages.length + 1,
