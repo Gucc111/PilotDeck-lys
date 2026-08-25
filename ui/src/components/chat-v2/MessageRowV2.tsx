@@ -593,7 +593,7 @@ function MessageRowV2({
     forkDisabled || isSessionRunning || message.isStreaming || !message.entryId,
   );
   const assistantBody = (hasAssistantProse || showStreamingCursor || assistantArtifacts.length > 0) ? (
-    <div className="min-w-0 text-[14px] leading-relaxed text-neutral-900 dark:text-neutral-100">
+    <div className="group/assistant-msg min-w-0 text-[14px] leading-relaxed text-neutral-900 dark:text-neutral-100">
       {showStreamingCursor ? (
         <span className="inline-block h-4 w-2 animate-pulse bg-neutral-400 dark:bg-neutral-500" />
       ) : (
@@ -608,7 +608,11 @@ function MessageRowV2({
         />
       ) : null}
       {shouldRenderAssistantActions ? (
-        <div className="mt-1.5 flex justify-end gap-1">
+        <div
+          data-testid="assistant-message-actions"
+          className="pointer-events-none mt-1.5 flex h-6 items-center justify-start gap-1 opacity-0 transition-opacity duration-150 group-hover/assistant-msg:pointer-events-auto group-hover/assistant-msg:opacity-100 group-focus-within/assistant-msg:pointer-events-auto group-focus-within/assistant-msg:opacity-100"
+        >
+          {showAssistantCopyButton ? <CopyMarkdownButton content={formattedContent} t={t} /> : null}
           {canRenderAssistantForkButton ? (
             <ForkMessageButton
               carriedMessageCount={forkCarriedMessageCount}
@@ -620,7 +624,6 @@ function MessageRowV2({
               variant="action-row"
             />
           ) : null}
-          {showAssistantCopyButton ? <CopyMarkdownButton content={formattedContent} t={t} /> : null}
         </div>
       ) : null}
     </div>

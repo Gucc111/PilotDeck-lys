@@ -130,3 +130,40 @@ describe('MessageRowV2 user actions', () => {
     await waitFor(() => expect(onRegenerate).toHaveBeenCalledWith(message, 'First line\nSecond line'));
   });
 });
+
+describe('MessageRowV2 assistant actions', () => {
+  it('keeps copy and branch hidden at the bottom left until the response is hovered or focused', () => {
+    const message: ChatMessage = {
+      id: 'assistant-1',
+      entryId: 'assistant-entry-1',
+      turnId: 'turn-1',
+      type: 'assistant',
+      content: 'Generated response',
+      timestamp: '2026-08-25T12:00:01.000Z',
+    };
+
+    render(
+      <MessageRowV2
+        message={message}
+        prevMessage={null}
+        provider="pilotdeck"
+        selectedProject={null}
+        createDiff={() => []}
+        onFork={vi.fn()}
+      />,
+    );
+
+    const actionRow = screen.getByTestId('assistant-message-actions');
+    expect(actionRow.className).toContain('justify-start');
+    expect(actionRow.className).toContain('pointer-events-none');
+    expect(actionRow.className).toContain('opacity-0');
+    expect(actionRow.className).toContain('group-hover/assistant-msg:pointer-events-auto');
+    expect(actionRow.className).toContain('group-hover/assistant-msg:opacity-100');
+    expect(actionRow.className).toContain('group-focus-within/assistant-msg:opacity-100');
+    expect(Array.from(actionRow.querySelectorAll('button')).map((button) => button.getAttribute('aria-label')))
+      .toEqual([
+        'Copy message',
+        'Fork from here · carries 0 messages',
+      ]);
+  });
+});
