@@ -46,6 +46,7 @@ type WebGatewayEventMetadata = {
 
 export type WebGatewayEvent = WebGatewayEventMetadata & (
   | { type: "turn_started"; runId: string }
+  | { type: "input_accepted"; runId: string }
   | { type: "model_selection_changed"; provider: string; model: string; source: "turn" | "session" | "router" | "default"; reasoning?: number; temperature?: number; speed?: number }
   | { type: "assistant_text_delta"; text: string }
   | { type: "assistant_thinking_delta"; text: string }
@@ -146,6 +147,7 @@ export type WebGatewayMethod =
   | "read_subagent_messages"
   | "fork_session"
   | "replace_last_turn"
+  | "finalize_last_turn_replacement"
   | "rename_session"
   | "delete_session"
   | "list_projects"
@@ -342,12 +344,29 @@ export type WebReplaceLastTurnInput = {
   projectKey?: string;
   /** Guards against replacing a turn that is no longer the transcript tail. */
   expectedTurnId: string;
+  /** The new turn that is allowed to consume this replacement transaction. */
+  replacementTurnId: string;
 };
 
 export type WebReplaceLastTurnResult = {
   sessionKey: string;
   replacedTurnId: string;
   removedEntryCount: number;
+  /** Opaque token used to commit or roll back the transcript rewrite. */
+  transactionId: string;
+};
+
+export type WebFinalizeLastTurnReplacementInput = {
+  sessionKey: string;
+  projectKey?: string;
+  transactionId: string;
+  action: "commit" | "rollback";
+};
+
+export type WebFinalizeLastTurnReplacementResult = {
+  sessionKey: string;
+  transactionId: string;
+  action: "commit" | "rollback";
 };
 
 export type WebActiveTurnSnapshotInput = {

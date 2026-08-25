@@ -782,6 +782,9 @@ function createFallbackGateway(): Gateway {
     replaceLastTurn: async () => {
       throw new Error("Message editing is unavailable while using the fallback gateway.");
     },
+    finalizeLastTurnReplacement: async () => {
+      throw new Error("Message editing is unavailable while using the fallback gateway.");
+    },
     describeServer: async () => ({ mode: "in_process" }),
     cronCreate: async () => {
       throw new Error("Cron runtime is not configured.");

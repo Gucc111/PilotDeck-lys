@@ -480,6 +480,8 @@ function resolvePermissionMode(options) {
 export function gatewayEventToFrames(event, sessionId, provider) {
     const base = { sessionId, provider, ...(event.runId ? { runId: event.runId } : {}) };
     switch (event.type) {
+        case 'input_accepted':
+            return [];
         case 'turn_started':
             return [
                 createNormalizedMessage({
@@ -1107,12 +1109,14 @@ function sendBridgeStatusEvent(writer, statusEvent, sessionKey, provider) {
  * @param {object} options Legacy options blob from the WS frame.
  * @param {{send: (msg: object) => void}} writer Existing writer.
  * @param {string} provider Provider hint (kept for legacy frame branding).
+ * @param {{onInputAccepted?: (input: {sessionKey: string, runId: string}) => void | Promise<void>}} hooks
  */
 export async function runChatViaGateway(
     command,
     options = {},
     writer,
     provider = 'pilotdeck',
+    hooks = {},
 ) {
     const projectKey = options.projectPath || options.cwd || GENERAL_HOME;
     const channelKey = 'web';
@@ -1154,6 +1158,9 @@ export async function runChatViaGateway(
     console.log(`[pilotdeck-bridge] submitTurn runMode=${runMode} mode=${resolvedMode} (options.permissionMode=${options?.permissionMode}, options.mode=${options?.mode})`);
 
     let gw = null;
+    let inputAccepted = false;
+    let sawTurnCompleted = false;
+    let sawGatewayError = false;
     try {
         gw = await ensureGateway();
 
@@ -1208,9 +1215,15 @@ export async function runChatViaGateway(
             ...(Array.isArray(options?.syntheticMessages) ? { syntheticMessages: options.syntheticMessages } : {}),
         });
 
-        let sawTurnCompleted = false;
-        let sawGatewayError = false;
         for await (const event of stream) {
+            if (event && event.type === 'input_accepted') {
+                inputAccepted = true;
+                try {
+                    await hooks.onInputAccepted?.({ sessionKey, runId });
+                } catch (error) {
+                    console.error('[pilotdeck-bridge] input accepted callback failed:', error);
+                }
+            }
             if (isVisibleFailureAgentStatus(event)) {
                 state.hasVisibleFailureStatus = true;
             }
@@ -1337,6 +1350,7 @@ export async function runChatViaGateway(
     } finally {
         clearActiveRunIfCurrent(state, runId);
     }
+    return { sessionKey, runId, inputAccepted, sawTurnCompleted, sawGatewayError };
 }
 
 export function resolveTurnRunId(value) {
@@ -1397,12 +1411,41 @@ export async function replaceLastTurnViaGateway(sessionId, expectedTurnId, optio
         sessionKey,
         projectKey,
         expectedTurnId,
+        replacementTurnId: options.runId,
     });
     const state = sessionState.get(sessionKey);
     if (state) {
         state.active = false;
         state.runId = undefined;
         state.hasVisibleFailureStatus = false;
+    }
+    return result;
+}
+
+export async function finalizeLastTurnReplacementViaGateway(
+    sessionId,
+    transactionId,
+    action,
+    options = {},
+) {
+    const gw = await ensureGateway();
+    const sessionKey = isPilotDeckSessionKey(sessionId) ? sessionId : null;
+    if (!sessionKey) throw new Error('A normal PilotDeck session is required to finalize a message edit.');
+
+    const projectKey = options.projectPath || options.cwd || GENERAL_HOME;
+    const result = await gw.finalizeLastTurnReplacement({
+        sessionKey,
+        projectKey,
+        transactionId,
+        action,
+    });
+    if (action === 'rollback') {
+        const state = sessionState.get(sessionKey);
+        if (state) {
+            state.active = false;
+            state.runId = undefined;
+            state.hasVisibleFailureStatus = false;
+        }
     }
     return result;
 }

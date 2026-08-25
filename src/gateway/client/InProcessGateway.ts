@@ -49,6 +49,8 @@ import type {
   WebForkSessionResult,
   WebReplaceLastTurnInput,
   WebReplaceLastTurnResult,
+  WebFinalizeLastTurnReplacementInput,
+  WebFinalizeLastTurnReplacementResult,
   ProjectFilesListInput,
   ProjectFilesListResult,
   CommandsListInput,
@@ -123,6 +125,9 @@ export type InProcessGatewayOptions = {
   readSubagentMessages?: (input: WebReadSubagentMessagesInput) => Promise<WebReadSubagentMessagesResult>;
   forkSession?: (input: WebForkSessionInput) => Promise<WebForkSessionResult>;
   replaceLastTurn?: (input: WebReplaceLastTurnInput) => Promise<WebReplaceLastTurnResult>;
+  finalizeLastTurnReplacement?: (
+    input: WebFinalizeLastTurnReplacementInput,
+  ) => Promise<WebFinalizeLastTurnReplacementResult>;
   recordAgentStatusMessage?: (input: GatewayRecordAgentStatusMessageInput) => Promise<{ recorded: boolean }>;
   /**
    * Web Phase 3 — pluggable project enumerator + describer.
@@ -208,6 +213,12 @@ type ActiveTurnReplay = {
   truncated: boolean;
 };
 
+type PendingTurnReplacement = {
+  transactionId: string;
+  replacementTurnId: string;
+  projectKey?: string;
+};
+
 export class InProcessGateway implements Gateway {
   private readonly now: () => Date;
   private readonly uuid: () => string;
@@ -219,6 +230,8 @@ export class InProcessGateway implements Gateway {
    */
   private readonly emitSinks = new Map<string, (event: GatewayEvent) => void>();
   private readonly activeTurnReplays = new Map<string, ActiveTurnReplay>();
+  private readonly replacementReservations = new Set<string>();
+  private readonly pendingTurnReplacements = new Map<string, PendingTurnReplacement>();
   /** B1 — pending askUser() promises keyed by sessionKey + requestId. */
   private readonly elicitationBus = new GatewayElicitationBus();
   /**
@@ -345,6 +358,30 @@ export class InProcessGateway implements Gateway {
       }
     }
     const runId = input.runId ?? this.uuid();
+    if (this.replacementReservations.has(input.sessionKey)) {
+      yield {
+        type: "error",
+        runId,
+        code: "replace_turn_pending",
+        message: "This session is currently preparing an edited replacement turn.",
+        recoverable: true,
+        userHint: "Wait for the message edit to finish, then try again.",
+      };
+      return;
+    }
+    const pendingReplacement = this.pendingTurnReplacements.get(input.sessionKey);
+    if (pendingReplacement && pendingReplacement.replacementTurnId !== runId) {
+      const message = "This session is waiting for its edited replacement turn to be accepted.";
+      yield {
+        type: "error",
+        runId,
+        code: "replace_turn_pending",
+        message,
+        recoverable: true,
+        userHint: "Wait for the edited message to be accepted, then try again.",
+      };
+      return;
+    }
     if (!this.router.beginTurn(input.sessionKey, runId)) {
       const message = `Session ${input.sessionKey} already has an active turn.`;
       const userHint = "Wait for the current turn to finish or stop it before sending another message.";
@@ -558,6 +595,9 @@ export class InProcessGateway implements Gateway {
             executionKind: telemetryContext.executionKind,
             phase: telemetryContext.phase,
           });
+          if (event.type === "input_accepted") {
+            await this.commitAcceptedTurnReplacement(input.sessionKey, runId);
+          }
           if (event.type === "model_event" && event.event.type === "request_started"
             && lastEmittedModel !== `${event.event.provider}\0${event.event.model}`) {
             const selectionEvent: GatewayEvent = {
@@ -894,13 +934,114 @@ export class InProcessGateway implements Gateway {
         "replace_last_turn is not configured. Wire `replaceLastTurn` via createLocalGateway.",
       );
     }
-    // The transcript cannot be rewritten while its writer is still appending.
-    // abortTurn resolves only after the active turn has fully unwound.
-    await this.abortTurn({ sessionKey: input.sessionKey, reason: "message_replaced" });
-    const result = await this.options.replaceLastTurn(input);
-    // The cached AgentSession and transcript writer still reflect the old tail.
-    // Evict them so the replacement submit resumes from the rewritten JSONL.
-    await this.router.close(input.sessionKey);
+    if (typeof input.replacementTurnId !== "string" || !input.replacementTurnId.trim()) {
+      throw new DialogGatewayError("replace_invalid_input", "replacementTurnId is required.");
+    }
+    if (
+      this.replacementReservations.has(input.sessionKey)
+      || this.pendingTurnReplacements.has(input.sessionKey)
+    ) {
+      throw new DialogGatewayError(
+        "replace_turn_pending",
+        "A replacement transaction is already pending for this session.",
+      );
+    }
+
+    const activeRunId = this.router.activeTurnRunId(input.sessionKey);
+    if (activeRunId && activeRunId !== input.expectedTurnId) {
+      throw new DialogGatewayError(
+        "replace_turn_conflict",
+        "The selected message is no longer the active turn.",
+        { activeRunId, expectedTurnId: input.expectedTurnId },
+      );
+    }
+    this.replacementReservations.add(input.sessionKey);
+    let result: WebReplaceLastTurnResult | undefined;
+    try {
+      // Reserve before awaiting the abort so a new turn cannot start between
+      // the expected writer unwinding and the transcript rewrite beginning.
+      // Only abort the expected turn; a stale edit must never stop a newer run.
+      if (activeRunId) {
+        await this.abortTurn({
+          sessionKey: input.sessionKey,
+          runId: activeRunId,
+          reason: "message_replaced",
+        });
+      }
+
+      result = await this.options.replaceLastTurn(input);
+      this.pendingTurnReplacements.set(input.sessionKey, {
+        transactionId: result.transactionId,
+        replacementTurnId: input.replacementTurnId,
+        projectKey: input.projectKey,
+      });
+      // The cached AgentSession and transcript writer still reflect the old tail.
+      // Evict them so the replacement submit resumes from the rewritten JSONL.
+      await this.router.close(input.sessionKey);
+      return result;
+    } catch (error) {
+      this.pendingTurnReplacements.delete(input.sessionKey);
+      if (result && this.options.finalizeLastTurnReplacement) {
+        await this.options.finalizeLastTurnReplacement({
+          sessionKey: input.sessionKey,
+          projectKey: input.projectKey,
+          transactionId: result.transactionId,
+          action: "rollback",
+        }).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      this.replacementReservations.delete(input.sessionKey);
+    }
+  }
+
+  private async commitAcceptedTurnReplacement(sessionKey: string, runId: string): Promise<void> {
+    const pending = this.pendingTurnReplacements.get(sessionKey);
+    if (!pending || pending.replacementTurnId !== runId || !this.options.finalizeLastTurnReplacement) {
+      return;
+    }
+    try {
+      await this.options.finalizeLastTurnReplacement({
+        sessionKey,
+        projectKey: pending.projectKey,
+        transactionId: pending.transactionId,
+        action: "commit",
+      });
+    } catch (error) {
+      // accepted_input is already durable. A stale backup is safe to leave for
+      // cleanup, but it must not block later turns in the live session.
+      console.warn("[pilotdeck] failed to remove accepted replacement backup:", error);
+    } finally {
+      this.pendingTurnReplacements.delete(sessionKey);
+    }
+  }
+
+  async finalizeLastTurnReplacement(
+    input: WebFinalizeLastTurnReplacementInput,
+  ): Promise<WebFinalizeLastTurnReplacementResult> {
+    if (!this.options.finalizeLastTurnReplacement) {
+      throw new Error(
+        "finalize_last_turn_replacement is not configured. Wire `finalizeLastTurnReplacement` via createLocalGateway.",
+      );
+    }
+    const pending = this.pendingTurnReplacements.get(input.sessionKey);
+    if (!pending || pending.transactionId !== input.transactionId) {
+      throw new DialogGatewayError(
+        "replace_transaction_conflict",
+        "The replacement transaction is no longer pending.",
+      );
+    }
+    if (input.action === "rollback") {
+      if (this.router.hasActiveTurn(input.sessionKey)) {
+        throw new DialogGatewayError(
+          "replace_transaction_active",
+          "The replacement cannot be rolled back while its turn is active.",
+        );
+      }
+      await this.router.close(input.sessionKey);
+    }
+    const result = await this.options.finalizeLastTurnReplacement(input);
+    this.pendingTurnReplacements.delete(input.sessionKey);
     return result;
   }
 
@@ -1531,6 +1672,8 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
   switch (event.type) {
     case "turn_started":
       return [{ type: "turn_started", runId }];
+    case "input_accepted":
+      return [{ type: "input_accepted", runId }];
     case "model_request_started":
       return [{ type: "model_request_started", model: event.model, provider: event.provider }];
     case "model_event":

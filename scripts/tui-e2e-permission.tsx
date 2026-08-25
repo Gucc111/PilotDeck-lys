@@ -33,6 +33,10 @@ class MockGateway implements Gateway {
     throw new Error("replaceLastTurn is not used by this TUI test.");
   }
 
+  async finalizeLastTurnReplacement(): Promise<never> {
+    throw new Error("finalizeLastTurnReplacement is not used by this TUI test.");
+  }
+
   async *submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent> {
     this.aborted = false;
     yield { type: "turn_started", runId: "run-1" };

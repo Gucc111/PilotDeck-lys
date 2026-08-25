@@ -36,6 +36,8 @@ import type {
   WebForkSessionResult,
   WebReplaceLastTurnInput,
   WebReplaceLastTurnResult,
+  WebFinalizeLastTurnReplacementInput,
+  WebFinalizeLastTurnReplacementResult,
 } from "../protocol/types.js";
 import type {
   SkillAddressInput,
@@ -189,6 +191,15 @@ export class RemoteGateway implements Gateway {
 
   async replaceLastTurn(input: WebReplaceLastTurnInput): Promise<WebReplaceLastTurnResult> {
     return (await this.client.request("replace_last_turn", input)) as WebReplaceLastTurnResult;
+  }
+
+  async finalizeLastTurnReplacement(
+    input: WebFinalizeLastTurnReplacementInput,
+  ): Promise<WebFinalizeLastTurnReplacementResult> {
+    return (await this.client.request(
+      "finalize_last_turn_replacement",
+      input,
+    )) as WebFinalizeLastTurnReplacementResult;
   }
 
   async listProjects(): Promise<WebListProjectsResult> {
