@@ -317,7 +317,7 @@ function loadQueueState(state) {
         if (Array.isArray(parsed.items)) {
             state.inputQueue = parsed.items
                 .filter((item) => item && typeof item.id === 'string' && typeof item.command === 'string')
-                .map((item) => ({ ...item, status: 'queued' }));
+                .map(restoreQueuedInputFromStorage);
         }
         if (state.inputQueue.length > 0) {
             state.queuePaused = true;
@@ -331,6 +331,13 @@ function loadQueueState(state) {
     }
 }
 
+export function restoreQueuedInputFromStorage(item) {
+    return {
+        ...item,
+        status: item?.status === 'delivery_uncertain' ? 'delivery_uncertain' : 'queued',
+    };
+}
+
 export function serializeQueuedInputForStorage(item) {
     const options = item?.options && typeof item.options === 'object' ? item.options : {};
     const images = Array.isArray(options.images)
@@ -341,14 +348,74 @@ export function serializeQueuedInputForStorage(item) {
             return metadata;
         })
         : options.images;
+    const inFlight = item?.status === 'dispatching' || item?.status === 'steering';
+    const alreadyUncertain = item?.status === 'delivery_uncertain';
+    const deliveryKind = item?.status === 'steering' || (alreadyUncertain && item?.deliveryKind === 'steer')
+        ? 'steer'
+        : 'dispatch';
+    const deliveryRunId = item?.status === 'steering'
+        ? item.steerTargetRunId
+        : (alreadyUncertain ? item?.deliveryRunId : (item?.runId || item?.id));
+    const {
+        steerTargetRunId: _steerTargetRunId,
+        deliveryKind: _deliveryKind,
+        deliveryRunId: _deliveryRunId,
+        ...persistedItem
+    } = item || {};
     return {
-        ...item,
-        status: 'queued',
+        ...persistedItem,
+        status: inFlight || alreadyUncertain ? 'delivery_uncertain' : 'queued',
+        ...(inFlight || alreadyUncertain ? { deliveryKind, deliveryRunId } : {}),
         options: {
             ...options,
             ...(Array.isArray(images) ? { images } : {}),
         },
     };
+}
+
+export function reconcileRecoveredQueueItems(items, evidence = {}) {
+    const activeRunId = typeof evidence.activeRunId === 'string' ? evidence.activeRunId : undefined;
+    const recordedRunIds = new Set(
+        (evidence.messages || [])
+            .map((message) => message?.turnId)
+            .filter((turnId) => typeof turnId === 'string' && turnId.length > 0),
+    );
+    const recordedQueueItemIds = new Set(
+        (evidence.messages || [])
+            .map((message) => message?.queueItemId || message?.payload?.queueItemId)
+            .filter((itemId) => typeof itemId === 'string' && itemId.length > 0),
+    );
+    const appliedSteerItemIds = new Set(
+        (evidence.activeEvents || [])
+            .filter((event) => event?.type === 'steer_applied')
+            .map((event) => event.itemId)
+            .filter((itemId) => typeof itemId === 'string' && itemId.length > 0),
+    );
+
+    return (items || []).flatMap((item) => {
+        if (item?.status !== 'delivery_uncertain') return [item];
+        const deliveryKind = item.deliveryKind === 'steer' ? 'steer' : 'dispatch';
+        const deliveryRunId = typeof item.deliveryRunId === 'string'
+            ? item.deliveryRunId
+            : (item.runId || item.id);
+        const observed = deliveryKind === 'steer'
+            ? recordedQueueItemIds.has(item.id) || appliedSteerItemIds.has(item.id)
+            : recordedRunIds.has(deliveryRunId) || activeRunId === deliveryRunId;
+        if (observed) return [];
+
+        // A steer aimed at the still-active turn may have been accepted into
+        // its mailbox but not yet reached a model boundary. Keep it uncertain
+        // until a later snapshot/transcript proves whether it was applied.
+        if (deliveryKind === 'steer' && activeRunId === deliveryRunId) return [item];
+        if (evidence.complete !== true) return [item];
+
+        const {
+            deliveryKind: _kind,
+            deliveryRunId: _runId,
+            ...queuedItem
+        } = item;
+        return [{ ...queuedItem, status: 'queued' }];
+    });
 }
 
 export function hydrateQueuedInputOptions(options = {}) {
@@ -1534,9 +1601,18 @@ export async function runChatViaGateway(
     } finally {
         clearActiveRunIfCurrent(state, runId);
     }
+    let releasedSteeringItem = false;
     for (const item of state.inputQueue) {
-        if (item.status === 'steering') item.status = 'queued';
+        if (
+            item.status === 'steering'
+            && (!item.steerTargetRunId || item.steerTargetRunId === runId)
+        ) {
+            item.status = 'queued';
+            delete item.steerTargetRunId;
+            releasedSteeringItem = true;
+        }
     }
+    if (releasedSteeringItem) mutateInputQueue(state, writer);
     if (state.inputQueue.length > 0) {
         const disposition = queuedInputDispositionAfterTurn(turnFinishReason, state.queuePaused);
         if (disposition === 'dispatch') {
@@ -1576,6 +1652,12 @@ async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
     if (state.active || state.queuePaused || state.queueDispatching) return false;
     const item = state.inputQueue[0];
     if (!item) return false;
+    if (item.status === 'delivery_uncertain') {
+        state.queuePaused = true;
+        state.queuePauseReason = 'restart_recovery';
+        mutateInputQueue(state, writer);
+        return false;
+    }
     state.queueDispatching = true;
     item.status = 'dispatching';
     mutateInputQueue(state, writer);
@@ -1618,7 +1700,66 @@ async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
     }
 }
 
-export function getInputQueueStateViaGateway(sessionId, options = {}) {
+async function reconcileRecoveredQueueStateViaGateway(state, gateway, activeSnapshot) {
+    if (!state?.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
+        return inputQueueSnapshot(state);
+    }
+    if (state.queueRecoveryPromise) return state.queueRecoveryPromise;
+
+    const pending = (async () => {
+        let gw = gateway;
+        let snapshot = activeSnapshot;
+        let messages = [];
+        let historyComplete = false;
+        try {
+            gw = gw || await ensureGateway();
+            snapshot = snapshot || await gw.getActiveTurnSnapshot({
+                sessionKey: state.sessionKey,
+                includeEvents: true,
+            });
+            try {
+                const history = await gw.readSessionMessages({
+                    sessionKey: state.sessionKey,
+                    projectKey: state.projectKey,
+                });
+                messages = Array.isArray(history?.messages) ? history.messages : [];
+                historyComplete = history?.nextCursor === undefined || history?.nextCursor === null;
+            } catch (error) {
+                console.warn('[pilotdeck-bridge] failed to read history while reconciling queued inputs:', error?.message || error);
+            }
+
+            const previousItems = state.inputQueue;
+            const nextItems = reconcileRecoveredQueueItems(previousItems, {
+                activeRunId: snapshot?.active ? snapshot.runId : undefined,
+                activeEvents: Array.isArray(snapshot?.events) ? snapshot.events : [],
+                messages,
+                complete: historyComplete,
+            });
+            const activeRunId = snapshot?.active && typeof snapshot.runId === 'string'
+                ? snapshot.runId
+                : undefined;
+            const activeChanged = state.active !== Boolean(activeRunId) || state.runId !== activeRunId;
+            const itemsChanged = nextItems.length !== previousItems.length
+                || nextItems.some((item, index) => (
+                    item !== previousItems[index]
+                    || item.status !== previousItems[index]?.status
+                ));
+            state.active = Boolean(activeRunId);
+            state.runId = activeRunId;
+            state.inputQueue = nextItems;
+            if (itemsChanged || activeChanged) return mutateInputQueue(state);
+        } catch (error) {
+            console.warn('[pilotdeck-bridge] failed to reconcile recovered queued inputs:', error?.message || error);
+        }
+        return inputQueueSnapshot(state);
+    })().finally(() => {
+        if (state.queueRecoveryPromise === pending) state.queueRecoveryPromise = null;
+    });
+    state.queueRecoveryPromise = pending;
+    return pending;
+}
+
+export async function getInputQueueStateViaGateway(sessionId, options = {}) {
     if (!isPilotDeckSessionKey(sessionId)) return null;
     const existing = sessionState.get(sessionId);
     const state = ensureSessionState(
@@ -1626,6 +1767,9 @@ export function getInputQueueStateViaGateway(sessionId, options = {}) {
         resolveInputQueueProjectKey(existing, options),
         'web',
     );
+    if (state.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
+        await reconcileRecoveredQueueStateViaGateway(state);
+    }
     return inputQueueSnapshot(state);
 }
 
@@ -1660,11 +1804,26 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
         options: item.options || {},
         status: 'queued',
     });
-    const snapshot = mutateInputQueue(state, writer);
+    mutateInputQueue(state, writer);
+    if (!state.active && !state.queuePaused) {
+        // The bridge may have restarted while the gateway still owns an
+        // active turn. Refresh the authoritative run before deciding whether
+        // this newly queued input can be dispatched.
+        try {
+            const gw = await ensureGateway();
+            const activeSnapshot = await gw.getActiveTurnSnapshot({
+                sessionKey: state.sessionKey,
+                includeEvents: false,
+            });
+            syncLocalActiveRunFromSnapshot(state, activeSnapshot);
+        } catch (error) {
+            console.warn('[pilotdeck-bridge] failed to verify activity before queued dispatch:', error?.message || error);
+        }
+    }
     if (!state.active && !state.queuePaused) {
         void dispatchNextQueuedInput(state, writer, provider);
     }
-    return { ok: true, state: snapshot };
+    return { ok: true, state: inputQueueSnapshot(state) };
 }
 
 export async function deleteQueuedInputViaGateway(sessionId, itemId, writer) {
@@ -1676,21 +1835,43 @@ export async function deleteQueuedInputViaGateway(sessionId, itemId, writer) {
         return { ok: false, error: 'This message is already being sent.' };
     }
 
-    if (item.status === 'steering' && state.active && state.runId) {
+    if (item.status === 'steering') {
+        const targetRunId = item.steerTargetRunId || state.runId;
+        if (!targetRunId) {
+            state.inputQueue = state.inputQueue.filter((entry) => entry.id !== itemId);
+            return { ok: true, state: mutateInputQueue(state, writer) };
+        }
         try {
             const gw = await ensureGateway();
+            const currentBeforeCancel = state.inputQueue.find((entry) => entry.id === itemId);
+            if (!currentBeforeCancel) return { ok: true, state: inputQueueSnapshot(state) };
+            if (
+                currentBeforeCancel.status !== 'steering'
+                || currentBeforeCancel.steerTargetRunId !== targetRunId
+            ) {
+                if (currentBeforeCancel.status === 'dispatching') {
+                    return { ok: false, error: 'This message is already being sent.' };
+                }
+                state.inputQueue = state.inputQueue.filter((entry) => entry.id !== itemId);
+                return { ok: true, state: mutateInputQueue(state, writer) };
+            }
             const result = await gw.cancelSteer({
                 sessionKey: state.sessionKey,
-                runId: state.runId,
+                runId: targetRunId,
                 itemId,
             });
+            const currentAfterCancel = state.inputQueue.find((entry) => entry.id === itemId);
+            if (!currentAfterCancel) return { ok: true, state: inputQueueSnapshot(state) };
+            if (currentAfterCancel.status === 'dispatching') {
+                return { ok: false, error: 'This message is already being sent.' };
+            }
+            if (
+                currentAfterCancel.status === 'steering'
+                && currentAfterCancel.steerTargetRunId !== targetRunId
+            ) {
+                return { ok: false, error: 'This message is now guiding a newer active turn.' };
+            }
             if (!result?.cancelled && result?.reason === 'too_late') {
-                // `steer_applied` can remove the row while this RPC is in
-                // flight. If that happened, the queue snapshot is already
-                // authoritative and there is nothing left to delete.
-                if (!state.inputQueue.some((entry) => entry.id === itemId)) {
-                    return { ok: true, state: inputQueueSnapshot(state) };
-                }
                 return {
                     ok: false,
                     error: 'This guidance has already been added to the model context and can no longer be retracted.',
@@ -1727,6 +1908,12 @@ export function pauseInputQueueViaGateway(sessionId, writer, reason = 'user_stop
 export async function resumeInputQueueViaGateway(sessionId, writer, provider = 'pilotdeck') {
     const state = sessionState.get(sessionId);
     if (!state) return { ok: false, error: 'Session queue was not found.' };
+    for (const item of state.inputQueue) {
+        if (item.status !== 'delivery_uncertain') continue;
+        item.status = 'queued';
+        delete item.deliveryKind;
+        delete item.deliveryRunId;
+    }
     state.queuePaused = false;
     state.queuePauseReason = undefined;
     const snapshot = mutateInputQueue(state, writer);
@@ -1741,10 +1928,20 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
     if (!state.active || !state.runId) {
         return { ok: false, error: 'The active turn has already ended; the message remains queued.' };
     }
+    const targetRunId = state.runId;
     item.status = 'steering';
+    item.steerTargetRunId = targetRunId;
     mutateInputQueue(state, writer);
     try {
         const gw = await ensureGateway();
+        const currentBeforeSteer = state.inputQueue.find((entry) => entry.id === itemId);
+        if (
+            !currentBeforeSteer
+            || currentBeforeSteer.status !== 'steering'
+            || currentBeforeSteer.steerTargetRunId !== targetRunId
+        ) {
+            return { ok: true, state: inputQueueSnapshot(state) };
+        }
         const hydratedOptions = hydrateQueuedInputOptions(item.options);
         const attachments = [
             ...(uiImagesToAttachments(hydratedOptions.images) || []),
@@ -1752,7 +1949,7 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
         ];
         const result = await gw.steerTurn({
             sessionKey: state.sessionKey,
-            runId: state.runId,
+            runId: targetRunId,
             itemId: item.id,
             message: item.command,
             projectKey: state.projectKey,
@@ -1762,16 +1959,27 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
             if (result?.reason === 'cancelled') {
                 return { ok: true, state: inputQueueSnapshot(state) };
             }
-            item.status = 'queued';
-            mutateInputQueue(state, writer);
+            resetSteeringItemForRun(state, itemId, targetRunId, writer);
             return { ok: false, error: 'The active turn ended before this message could be added.' };
         }
         return { ok: true, state: inputQueueSnapshot(state) };
     } catch (error) {
-        item.status = 'queued';
-        mutateInputQueue(state, writer);
+        resetSteeringItemForRun(state, itemId, targetRunId, writer);
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+}
+
+export function resetSteeringItemForRun(state, itemId, targetRunId, writer) {
+    const current = state?.inputQueue.find((entry) => entry.id === itemId);
+    if (
+        !current
+        || current.status !== 'steering'
+        || current.steerTargetRunId !== targetRunId
+    ) return false;
+    current.status = 'queued';
+    delete current.steerTargetRunId;
+    mutateInputQueue(state, writer);
+    return true;
 }
 
 export function resolveTurnRunId(value) {
@@ -1924,6 +2132,18 @@ export function getFallbackSessionActivity(localState) {
     };
 }
 
+function syncLocalActiveRunFromSnapshot(state, snapshot) {
+    if (!state || !snapshot || typeof snapshot.active !== 'boolean') return false;
+    const activeRunId = snapshot.active && typeof snapshot.runId === 'string'
+        ? snapshot.runId
+        : undefined;
+    const changed = state.active !== Boolean(activeRunId) || state.runId !== activeRunId;
+    state.active = Boolean(activeRunId);
+    state.runId = activeRunId;
+    if (changed) emitInputQueueState(state);
+    return changed;
+}
+
 export async function getSessionActivityViaGateway(sessionId, provider = 'pilotdeck', includeActiveTurnMessages = true) {
     if (!isPilotDeckSessionKey(sessionId)) {
         return { isProcessing: false, activeRunId: null, activeTurnMessages: [] };
@@ -1940,6 +2160,10 @@ export async function getSessionActivityViaGateway(sessionId, provider = 'pilotd
         if (!snapshot || typeof snapshot.active !== 'boolean') {
             return getFallbackSessionActivity(localState);
         }
+        if (localState?.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
+            await reconcileRecoveredQueueStateViaGateway(localState, gw, snapshot);
+        }
+        syncLocalActiveRunFromSnapshot(localState, snapshot);
         return {
             isProcessing: snapshot.active,
             activeRunId: snapshot.active && typeof snapshot.runId === 'string'

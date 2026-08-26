@@ -11,8 +11,11 @@ import {
     isGatewayUnavailableError,
     isTerminalAlwaysOnTurnEvent,
     queuedInputDispositionAfterTurn,
+    reconcileRecoveredQueueItems,
+    resetSteeringItemForRun,
     resolveTurnRunId,
     resolveInputQueueProjectKey,
+    restoreQueuedInputFromStorage,
     serializeQueuedInputForStorage,
     uiFilesToAttachments,
 } from './pilotdeck-bridge.js';
@@ -34,6 +37,7 @@ describe('queued input persistence', () => {
             const stored = serializeQueuedInputForStorage({
                 id: 'queue-1',
                 status: 'steering',
+                steerTargetRunId: 'run-active',
                 options: {
                     images: [{
                         name: 'image.png',
@@ -44,7 +48,12 @@ describe('queued input persistence', () => {
                 },
             });
 
-            expect(stored.status).toBe('queued');
+            expect(stored).toMatchObject({
+                status: 'delivery_uncertain',
+                deliveryKind: 'steer',
+                deliveryRunId: 'run-active',
+            });
+            expect(stored.steerTargetRunId).toBeUndefined();
             expect(stored.options.images[0].data).toBeUndefined();
             expect(hydrateQueuedInputOptions(stored.options).images[0]).toMatchObject({
                 path: imagePath,
@@ -62,6 +71,86 @@ describe('queued input persistence', () => {
         });
 
         expect(stored.options.images[0].data).toBe('data:image/png;base64,abc');
+    });
+
+    it('preserves uncertain delivery state across repeated persistence', () => {
+        const restored = restoreQueuedInputFromStorage(serializeQueuedInputForStorage({
+            id: 'queue-dispatch',
+            runId: 'run-dispatch',
+            command: 'Continue',
+            status: 'dispatching',
+            options: {},
+        }));
+
+        expect(restored).toMatchObject({
+            status: 'delivery_uncertain',
+            deliveryKind: 'dispatch',
+            deliveryRunId: 'run-dispatch',
+        });
+        expect(serializeQueuedInputForStorage(restored)).toMatchObject({
+            status: 'delivery_uncertain',
+            deliveryKind: 'dispatch',
+            deliveryRunId: 'run-dispatch',
+        });
+    });
+
+    it('removes recovered deliveries observed in the active run or transcript', () => {
+        const items = [
+            {
+                id: 'dispatch-active',
+                status: 'delivery_uncertain',
+                deliveryKind: 'dispatch',
+                deliveryRunId: 'run-active',
+            },
+            {
+                id: 'steer-recorded',
+                status: 'delivery_uncertain',
+                deliveryKind: 'steer',
+                deliveryRunId: 'run-old',
+            },
+            { id: 'still-queued', status: 'queued' },
+        ];
+
+        expect(reconcileRecoveredQueueItems(items, {
+            activeRunId: 'run-active',
+            messages: [{ queueItemId: 'steer-recorded' }],
+            complete: true,
+        })).toEqual([{ id: 'still-queued', status: 'queued' }]);
+    });
+
+    it('does not silently retry a steer that may still be waiting in an active mailbox', () => {
+        const uncertain = {
+            id: 'steer-pending',
+            status: 'delivery_uncertain',
+            deliveryKind: 'steer',
+            deliveryRunId: 'run-active',
+        };
+
+        expect(reconcileRecoveredQueueItems([uncertain], {
+            activeRunId: 'run-active',
+            messages: [],
+            complete: true,
+        })).toEqual([uncertain]);
+        expect(reconcileRecoveredQueueItems([uncertain], {
+            activeRunId: 'run-active',
+            activeEvents: [{ type: 'steer_applied', itemId: 'steer-pending' }],
+            messages: [],
+            complete: true,
+        })).toEqual([]);
+    });
+
+    it('only returns an unobserved uncertain delivery to queued after complete evidence', () => {
+        const uncertain = {
+            id: 'dispatch-missing',
+            status: 'delivery_uncertain',
+            deliveryKind: 'dispatch',
+            deliveryRunId: 'run-missing',
+        };
+
+        expect(reconcileRecoveredQueueItems([uncertain], { complete: false })).toEqual([uncertain]);
+        expect(reconcileRecoveredQueueItems([uncertain], { complete: true })).toEqual([
+            { id: 'dispatch-missing', status: 'queued' },
+        ]);
     });
 });
 
@@ -83,6 +172,28 @@ describe('turn run identity', () => {
         expect(resolveTurnRunId(undefined)).toMatch(
             /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
         );
+    });
+});
+
+describe('steer run identity', () => {
+    it('only resets steering state for the run originally targeted', () => {
+        const state = {
+            inputQueue: [{
+                id: 'queue-1',
+                status: 'steering',
+                steerTargetRunId: 'run-original',
+                options: {},
+            }],
+            queueRevision: 0,
+            queuePaused: false,
+            sessionKey: 'web:s_test',
+        };
+
+        expect(resetSteeringItemForRun(state, 'queue-1', 'run-replacement')).toBe(false);
+        expect(state.inputQueue[0].status).toBe('steering');
+        expect(resetSteeringItemForRun(state, 'queue-1', 'run-original')).toBe(true);
+        expect(state.inputQueue[0]).toMatchObject({ status: 'queued' });
+        expect(state.inputQueue[0].steerTargetRunId).toBeUndefined();
     });
 });
 

@@ -61,6 +61,21 @@ describe('QueuedMessagesTray overflow menu', () => {
     expect(menu.parentElement).toBe(document.body);
     expect((screen.getByRole('menuitem', { name: 'Move to front' }) as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it('warns before retrying a delivery whose restart status is uncertain', () => {
+    renderTray({
+      sessionId: 'web:s_test',
+      revision: 1,
+      paused: true,
+      pauseReason: 'restart_recovery',
+      items: [{ ...item('one', 'Maybe sent'), status: 'delivery_uncertain' }],
+    });
+
+    expect(screen.getByText('A message may already have been sent before restart. Retry only if needed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.getByLabelText('Delivery status uncertain')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Adjust direction' }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe('getQueueMenuPosition', () => {

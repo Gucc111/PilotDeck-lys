@@ -1,6 +1,6 @@
 import type { ChatAttachment } from './types';
 
-export type QueuedInputStatus = 'queued' | 'steering' | 'dispatching' | 'failed';
+export type QueuedInputStatus = 'queued' | 'steering' | 'dispatching' | 'delivery_uncertain' | 'failed';
 export type InputQueuePauseReason = 'user_stopped' | 'previous_turn_failed' | 'restart_recovery';
 
 export type QueuedInputSummary = {

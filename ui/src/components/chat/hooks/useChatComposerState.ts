@@ -147,6 +147,33 @@ export function shouldCycleRunModeOnKeyDown(
   return event.key === 'Tab' && event.shiftKey && !showFileDropdown && !showCommandMenu;
 }
 
+export function shouldRoutePreparedInputThroughQueue(
+  queueTargetSessionId: string | null | undefined,
+): queueTargetSessionId is string {
+  return Boolean(queueTargetSessionId);
+}
+
+export function resolvePreparedInputQueueTarget({
+  submitTargetSessionId,
+  currentSessionId,
+  pendingViewSessionId,
+  pendingSessionId,
+  requiresExistingQueueTarget,
+}: {
+  submitTargetSessionId: string | null | undefined;
+  currentSessionId: string | null | undefined;
+  pendingViewSessionId: string | null | undefined;
+  pendingSessionId: string | null | undefined;
+  requiresExistingQueueTarget: boolean;
+}): string | undefined {
+  const candidates = requiresExistingQueueTarget
+    ? [submitTargetSessionId, currentSessionId, pendingViewSessionId, pendingSessionId]
+    : [submitTargetSessionId];
+  return candidates.find(
+    (sessionId): sessionId is string => Boolean(sessionId) && !isTemporarySessionId(sessionId),
+  );
+}
+
 export type AttachmentAddResult = {
   files: File[];
   droppedCount: number;
@@ -810,14 +837,15 @@ export function useChatComposerState({
         (canResumeCurrentSession ? currentSessionId : null);
       const submitSelectedSession = selectedSession;
       const pendingSessionId = typeof window !== 'undefined' ? sessionStorage.getItem('pendingSessionId') : null;
-      const queueTargetSessionId = [
+      const requiresExistingQueueTarget = isLoading || inputQueuePaused;
+      const queueTargetSessionId = resolvePreparedInputQueueTarget({
         submitTargetSessionId,
         currentSessionId,
-        pendingViewSessionRef.current?.sessionId || null,
+        pendingViewSessionId: pendingViewSessionRef.current?.sessionId || null,
         pendingSessionId,
-      ].find((sessionId): sessionId is string => Boolean(sessionId) && !isTemporarySessionId(sessionId));
-      const shouldQueueInput = isLoading || inputQueuePaused;
-      if (shouldQueueInput && !queueTargetSessionId) {
+        requiresExistingQueueTarget,
+      });
+      if (requiresExistingQueueTarget && !queueTargetSessionId) {
         addMessage({
           type: 'error',
           content: 'Please wait for the current session to finish starting, then queue this message again.',
@@ -906,7 +934,11 @@ export function useChatComposerState({
       const resolvedProjectPath = getSelectedProjectPath(selectedProject);
       const preparedAttachments = [...uploadedFiles, ...documentReferenceAttachments] as ChatAttachment[];
 
-      if (shouldQueueInput && queueTargetSessionId) {
+      // Existing sessions always enter through the server-owned queue. The
+      // server atomically decides whether to dispatch immediately or retain
+      // the item, so a turn starting during attachment upload cannot turn a
+      // stale "idle" decision into a lost `session_busy` submission.
+      if (shouldRoutePreparedInputThroughQueue(queueTargetSessionId)) {
         const result = await enqueuePreparedInput?.({
           id: runId,
           runId,

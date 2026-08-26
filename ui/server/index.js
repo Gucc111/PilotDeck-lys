@@ -2475,7 +2475,7 @@ function handleChatConnection(ws, request) {
             if (data.type === 'watch-session') {
                 if (requestSessionId) {
                     sessionWatchRegistry.watch(requestSessionId, ws);
-                    const queueState = getInputQueueStateViaGateway(requestSessionId, data.options || {});
+                    const queueState = await getInputQueueStateViaGateway(requestSessionId, data.options || {});
                     if (queueState) writer.send(queueState);
                 }
                 return;
@@ -2524,7 +2524,7 @@ function handleChatConnection(ws, request) {
                 const providerHint = data.options?.providerHint || data.type.replace('-command', '');
                 await runChatViaGateway(data.command, data.options, streamWriter, providerHint);
             } else if (data.type === 'get-input-queue') {
-                const queueState = getInputQueueStateViaGateway(requestSessionId, data.options || {});
+                const queueState = await getInputQueueStateViaGateway(requestSessionId, data.options || {});
                 if (queueState) writer.send(queueState);
             } else if (data.type === 'queue-input') {
                 const result = await enqueueInputViaGateway(

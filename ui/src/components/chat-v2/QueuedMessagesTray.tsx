@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CornerDownRight, Loader2, MoreHorizontal, MoveUp, Pause, Play, Route, Trash2 } from 'lucide-react';
+import { AlertTriangle, CornerDownRight, Loader2, MoreHorizontal, MoveUp, Pause, Play, Route, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../lib/utils.js';
 import type { InputQueueState } from '../chat/types/queuedInput';
@@ -77,6 +77,7 @@ export default function QueuedMessagesTray({
   }, [openMenuId]);
 
   if (state.items.length === 0) return null;
+  const hasDeliveryUncertainItem = state.items.some((item) => item.status === 'delivery_uncertain');
 
   return (
     <section
@@ -89,7 +90,11 @@ export default function QueuedMessagesTray({
           <Pause className="h-3.5 w-3.5 shrink-0 text-neutral-400" strokeWidth={1.8} />
           <span className="min-w-0 flex-1 truncate">
             {state.pauseReason === 'restart_recovery'
-              ? t('inputQueue.pausedAfterRestart', { defaultValue: 'Queued messages were restored and are paused' })
+              ? hasDeliveryUncertainItem
+                ? t('inputQueue.pausedAfterUncertainDelivery', {
+                  defaultValue: 'A message may already have been sent before restart. Retry only if needed',
+                })
+                : t('inputQueue.pausedAfterRestart', { defaultValue: 'Queued messages were restored and are paused' })
               : state.pauseReason === 'previous_turn_failed'
                 ? t('inputQueue.pausedAfterFailure', { defaultValue: 'The previous response failed, so the queue is paused' })
                 : t('inputQueue.pausedAfterStop', { defaultValue: 'You stopped the current response, so the queue is paused' })}
@@ -100,7 +105,9 @@ export default function QueuedMessagesTray({
             className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
           >
             <Play className="h-3.5 w-3.5" fill="currentColor" />
-            {t('inputQueue.resume', { defaultValue: 'Continue' })}
+            {hasDeliveryUncertainItem
+              ? t('inputQueue.retryUncertain', { defaultValue: 'Retry' })
+              : t('inputQueue.resume', { defaultValue: 'Continue' })}
           </button>
         </div>
       ) : null}
@@ -108,6 +115,7 @@ export default function QueuedMessagesTray({
       <div data-testid="queue-scroll-region" className="max-h-[156px] overflow-y-auto">
         {state.items.map((item, index) => {
           const busy = item.status === 'steering' || item.status === 'dispatching';
+          const deliveryUncertain = item.status === 'delivery_uncertain';
           return (
             <div
               key={item.id}
@@ -115,6 +123,11 @@ export default function QueuedMessagesTray({
             >
               {busy ? (
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-neutral-400" />
+              ) : deliveryUncertain ? (
+                <AlertTriangle
+                  className="h-4 w-4 shrink-0 text-amber-500"
+                  aria-label={t('inputQueue.deliveryUncertain', { defaultValue: 'Delivery status uncertain' }) as string}
+                />
               ) : (
                 <CornerDownRight className="h-4 w-4 shrink-0 text-neutral-400" />
               )}
@@ -127,10 +140,10 @@ export default function QueuedMessagesTray({
               <button
                 type="button"
                 onClick={() => onSteer(item.id)}
-                disabled={!isLoading || state.paused || busy}
+                disabled={!isLoading || state.paused || busy || deliveryUncertain}
                 className={cn(
                   'inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] transition',
-                  isLoading && !state.paused && !busy
+                  isLoading && !state.paused && !busy && !deliveryUncertain
                     ? 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100'
                     : 'cursor-not-allowed text-neutral-300 dark:text-neutral-700',
                 )}
@@ -173,7 +186,7 @@ export default function QueuedMessagesTray({
                       }
                       setOpenMenuId(item.id);
                     }}
-                    disabled={busy}
+                    disabled={busy || deliveryUncertain}
                     className="rounded-md p-1.5 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-35 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
                     aria-label={t('inputQueue.more', { defaultValue: 'More queue actions' }) as string}
                     aria-haspopup="menu"
