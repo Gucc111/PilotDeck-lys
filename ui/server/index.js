@@ -2670,7 +2670,12 @@ function handleChatConnection(ws, request) {
                     sessionWatchRegistry.watch(sessionId, ws);
                 }
                 const includeActiveTurnMessages = data.includeActiveTurnMessages !== false;
-                const activity = await getSessionActivityViaGateway(sessionId, data.provider || 'pilotdeck', includeActiveTurnMessages);
+                const activity = await getSessionActivityViaGateway(
+                    sessionId,
+                    data.provider || 'pilotdeck',
+                    includeActiveTurnMessages,
+                    streamWriter,
+                );
                 writer.send({
                     type: 'session-status',
                     sessionId,

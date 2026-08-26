@@ -1,9 +1,10 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+    beginActivitySnapshotRead,
     createAlwaysOnTurnEventForwarder,
     gatewayEventToFrames,
     getFallbackSessionActivity,
@@ -13,12 +14,23 @@ import {
     queuedInputDispositionAfterTurn,
     reconcileRecoveredQueueItems,
     resetSteeringItemForRun,
+    scheduleQueuedDispatchAfterActivityCheck,
+    setLocalActiveRun,
     resolveTurnRunId,
     resolveInputQueueProjectKey,
     restoreQueuedInputFromStorage,
     serializeQueuedInputForStorage,
+    syncLocalActiveRunFromSnapshot,
     uiFilesToAttachments,
 } from './pilotdeck-bridge.js';
+
+function deferred() {
+    let resolve;
+    const promise = new Promise((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
 
 describe('queued input persistence', () => {
     it('lets an explicit project path repair a session first watched without project context', () => {
@@ -172,6 +184,131 @@ describe('turn run identity', () => {
         expect(resolveTurnRunId(undefined)).toMatch(
             /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
         );
+    });
+});
+
+describe('activity snapshot ordering', () => {
+    it('does not let a snapshot overwrite a run that started while the request was pending', () => {
+        const state = {
+            active: false,
+            runId: undefined,
+            activityRevision: 0,
+            activitySnapshotSequence: 0,
+        };
+        const guard = beginActivitySnapshotRead(state);
+
+        setLocalActiveRun(state, 'run-new');
+        const result = syncLocalActiveRunFromSnapshot(
+            state,
+            { active: true, runId: 'run-old' },
+            guard,
+            { emit: false },
+        );
+
+        expect(result).toMatchObject({ applied: false, reason: 'local_state_changed' });
+        expect(state).toMatchObject({ active: true, runId: 'run-new' });
+    });
+
+    it('ignores an older snapshot even when a newer identical snapshot made no state change', () => {
+        const state = {
+            active: false,
+            runId: undefined,
+            activityRevision: 0,
+            activitySnapshotSequence: 0,
+        };
+        const olderGuard = beginActivitySnapshotRead(state);
+        const newerGuard = beginActivitySnapshotRead(state);
+
+        expect(syncLocalActiveRunFromSnapshot(
+            state,
+            { active: false },
+            newerGuard,
+            { emit: false },
+        )).toMatchObject({ applied: true, changed: false });
+        expect(syncLocalActiveRunFromSnapshot(
+            state,
+            { active: true, runId: 'run-stale' },
+            olderGuard,
+            { emit: false },
+        )).toMatchObject({ applied: false, reason: 'stale_request' });
+        expect(state).toMatchObject({ active: false, runId: undefined });
+    });
+
+    it('does not clear a local run before the gateway has acknowledged it', () => {
+        const state = {
+            active: true,
+            runId: 'run-pending',
+            pendingGatewayRunId: 'run-pending',
+            activityRevision: 1,
+            activitySnapshotSequence: 0,
+        };
+        const guard = beginActivitySnapshotRead(state);
+
+        expect(syncLocalActiveRunFromSnapshot(
+            state,
+            { active: false },
+            guard,
+            { emit: false },
+        )).toMatchObject({ applied: false, reason: 'pending_local_run' });
+        expect(state).toMatchObject({
+            active: true,
+            runId: 'run-pending',
+            pendingGatewayRunId: 'run-pending',
+        });
+    });
+
+    it('accepts a snapshot that confirms the pending local run', () => {
+        const state = {
+            active: true,
+            runId: 'run-pending',
+            pendingGatewayRunId: 'run-pending',
+            activityRevision: 1,
+            activitySnapshotSequence: 0,
+        };
+        const guard = beginActivitySnapshotRead(state);
+
+        expect(syncLocalActiveRunFromSnapshot(
+            state,
+            { active: true, runId: 'run-pending' },
+            guard,
+            { emit: false },
+        )).toMatchObject({ applied: true, changed: false });
+        expect(state.pendingGatewayRunId).toBeUndefined();
+    });
+
+    it('runs the gateway activity check in the background', async () => {
+        const snapshot = deferred();
+        const dispatch = vi.fn();
+        const state = {
+            sessionKey: 'web:s_test',
+            active: false,
+            runId: undefined,
+            queuePaused: false,
+            queueDispatchCheckPromise: null,
+            activityRevision: 0,
+            activitySnapshotSequence: 0,
+        };
+
+        const returned = scheduleQueuedDispatchAfterActivityCheck(
+            state,
+            { send: vi.fn() },
+            'pilotdeck',
+            {
+                getGateway: async () => ({
+                    getActiveTurnSnapshot: () => snapshot.promise,
+                }),
+                dispatch,
+            },
+        );
+
+        expect(returned).toBeUndefined();
+        expect(state.queueDispatchCheckPromise).toBeInstanceOf(Promise);
+        expect(dispatch).not.toHaveBeenCalled();
+
+        snapshot.resolve({ active: true, runId: 'run-existing' });
+        await state.queueDispatchCheckPromise;
+        expect(state).toMatchObject({ active: true, runId: 'run-existing' });
+        expect(dispatch).not.toHaveBeenCalled();
     });
 });
 

@@ -537,6 +537,10 @@ function ensureSessionState(sessionKey, projectKey, channelKey) {
             queueRevision: 0,
             queueLoaded: false,
             queueDispatching: false,
+            queueDispatchCheckPromise: null,
+            activityRevision: 0,
+            activitySnapshotSequence: 0,
+            pendingGatewayRunId: undefined,
         };
         sessionState.set(sessionKey, state);
     } else {
@@ -552,8 +556,84 @@ function ensureSessionState(sessionKey, projectKey, channelKey) {
 
 function clearActiveRunIfCurrent(state, runId) {
     if (!state || state.runId !== runId) return;
-    state.active = false;
-    state.runId = undefined;
+    setLocalActiveRun(state, undefined);
+}
+
+export function setLocalActiveRun(state, activeRunId) {
+    if (!state) return false;
+    const normalizedRunId = typeof activeRunId === 'string' && activeRunId
+        ? activeRunId
+        : undefined;
+    const nextActive = Boolean(normalizedRunId);
+    const activeChanged = state.active !== nextActive || state.runId !== normalizedRunId;
+    const pendingChanged = !nextActive && Boolean(state.pendingGatewayRunId);
+    if (!activeChanged && !pendingChanged) return false;
+    state.active = nextActive;
+    state.runId = normalizedRunId;
+    if (pendingChanged) state.pendingGatewayRunId = undefined;
+    state.activityRevision = (Number.isSafeInteger(state.activityRevision) ? state.activityRevision : 0) + 1;
+    return activeChanged;
+}
+
+function setPendingGatewayRun(state, runId) {
+    if (!state) return false;
+    const normalizedRunId = typeof runId === 'string' && runId ? runId : undefined;
+    if (state.pendingGatewayRunId === normalizedRunId) return false;
+    state.pendingGatewayRunId = normalizedRunId;
+    state.activityRevision = (Number.isSafeInteger(state.activityRevision) ? state.activityRevision : 0) + 1;
+    return true;
+}
+
+export function beginActivitySnapshotRead(state) {
+    const sequence = (Number.isSafeInteger(state?.activitySnapshotSequence)
+        ? state.activitySnapshotSequence
+        : 0) + 1;
+    state.activitySnapshotSequence = sequence;
+    return {
+        sequence,
+        activityRevision: Number.isSafeInteger(state.activityRevision) ? state.activityRevision : 0,
+    };
+}
+
+export function syncLocalActiveRunFromSnapshot(state, snapshot, guard, { emit = true } = {}) {
+    if (!state || !snapshot || typeof snapshot.active !== 'boolean') {
+        return { applied: false, changed: false, reason: 'invalid_snapshot' };
+    }
+    if (guard) {
+        if (state.activitySnapshotSequence !== guard.sequence) {
+            return { applied: false, changed: false, reason: 'stale_request' };
+        }
+        const currentRevision = Number.isSafeInteger(state.activityRevision) ? state.activityRevision : 0;
+        if (currentRevision !== guard.activityRevision) {
+            return { applied: false, changed: false, reason: 'local_state_changed' };
+        }
+    }
+    if (
+        state.pendingGatewayRunId
+        && (!snapshot.active || snapshot.runId !== state.pendingGatewayRunId)
+    ) {
+        return { applied: false, changed: false, reason: 'pending_local_run' };
+    }
+    if (state.pendingGatewayRunId && snapshot.runId === state.pendingGatewayRunId) {
+        setPendingGatewayRun(state, undefined);
+    }
+    const activeRunId = snapshot.active && typeof snapshot.runId === 'string'
+        ? snapshot.runId
+        : undefined;
+    const changed = setLocalActiveRun(state, activeRunId);
+    if (changed && emit) emitInputQueueState(state);
+    return { applied: true, changed };
+}
+
+function isActivitySnapshotGuardCurrent(state, snapshot, guard) {
+    if (!state || !snapshot || !guard) return false;
+    const currentRevision = Number.isSafeInteger(state.activityRevision) ? state.activityRevision : 0;
+    if (
+        state.activitySnapshotSequence !== guard.sequence
+        || currentRevision !== guard.activityRevision
+    ) return false;
+    return !state.pendingGatewayRunId
+        || (snapshot.active && snapshot.runId === state.pendingGatewayRunId);
 }
 
 export function getSessionTokenBudget(sessionKey) {
@@ -1395,8 +1475,8 @@ export async function runChatViaGateway(
 
     const runId = resolveTurnRunId(options?.runId);
     if (!staleRunId) {
-        state.runId = runId;
-        state.active = true;
+        setLocalActiveRun(state, runId);
+        setPendingGatewayRun(state, runId);
         state.hasVisibleFailureStatus = false;
     }
 
@@ -1450,6 +1530,9 @@ export async function runChatViaGateway(
         for await (const event of stream) {
             if (event && event.type === 'input_accepted') {
                 inputAccepted = true;
+                if (state.pendingGatewayRunId === runId) {
+                    setPendingGatewayRun(state, undefined);
+                }
                 try {
                     await hooks.onInputAccepted?.({ sessionKey, runId });
                 } catch (error) {
@@ -1599,6 +1682,9 @@ export async function runChatViaGateway(
         state.hasVisibleFailureStatus = true;
         sendBridgeStatusEvent(writer, statusEvent, sessionKey, provider);
     } finally {
+        if (state.pendingGatewayRunId === runId) {
+            setPendingGatewayRun(state, undefined);
+        }
         clearActiveRunIfCurrent(state, runId);
     }
     let releasedSteeringItem = false;
@@ -1700,25 +1786,18 @@ async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
     }
 }
 
-async function reconcileRecoveredQueueStateViaGateway(state, gateway, activeSnapshot) {
+async function reconcileRecoveredQueueStateViaGateway(state, gateway, activeSnapshot, snapshotGuard) {
     if (!state?.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
         return inputQueueSnapshot(state);
     }
     if (state.queueRecoveryPromise) return state.queueRecoveryPromise;
 
     const pending = (async () => {
-        let gw = gateway;
-        let snapshot = activeSnapshot;
         let messages = [];
         let historyComplete = false;
         try {
-            gw = gw || await ensureGateway();
-            snapshot = snapshot || await gw.getActiveTurnSnapshot({
-                sessionKey: state.sessionKey,
-                includeEvents: true,
-            });
             try {
-                const history = await gw.readSessionMessages({
+                const history = await gateway.readSessionMessages({
                     sessionKey: state.sessionKey,
                     projectKey: state.projectKey,
                 });
@@ -1729,25 +1808,23 @@ async function reconcileRecoveredQueueStateViaGateway(state, gateway, activeSnap
             }
 
             const previousItems = state.inputQueue;
+            const snapshotIsCurrent = isActivitySnapshotGuardCurrent(state, activeSnapshot, snapshotGuard);
             const nextItems = reconcileRecoveredQueueItems(previousItems, {
-                activeRunId: snapshot?.active ? snapshot.runId : undefined,
-                activeEvents: Array.isArray(snapshot?.events) ? snapshot.events : [],
+                activeRunId: activeSnapshot?.active ? activeSnapshot.runId : undefined,
+                activeEvents: Array.isArray(activeSnapshot?.events) ? activeSnapshot.events : [],
                 messages,
-                complete: historyComplete,
+                // Positive evidence from an old snapshot is still safe, but
+                // absence is only conclusive while that snapshot remains the
+                // newest view of an otherwise unchanged local run.
+                complete: historyComplete && snapshotIsCurrent,
             });
-            const activeRunId = snapshot?.active && typeof snapshot.runId === 'string'
-                ? snapshot.runId
-                : undefined;
-            const activeChanged = state.active !== Boolean(activeRunId) || state.runId !== activeRunId;
             const itemsChanged = nextItems.length !== previousItems.length
                 || nextItems.some((item, index) => (
                     item !== previousItems[index]
                     || item.status !== previousItems[index]?.status
                 ));
-            state.active = Boolean(activeRunId);
-            state.runId = activeRunId;
             state.inputQueue = nextItems;
-            if (itemsChanged || activeChanged) return mutateInputQueue(state);
+            if (itemsChanged) return mutateInputQueue(state);
         } catch (error) {
             console.warn('[pilotdeck-bridge] failed to reconcile recovered queued inputs:', error?.message || error);
         }
@@ -1768,13 +1845,67 @@ export async function getInputQueueStateViaGateway(sessionId, options = {}) {
         'web',
     );
     if (state.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
-        await reconcileRecoveredQueueStateViaGateway(state);
+        try {
+            const gw = await ensureGateway();
+            const snapshotGuard = beginActivitySnapshotRead(state);
+            const activeSnapshot = await gw.getActiveTurnSnapshot({
+                sessionKey: state.sessionKey,
+                includeEvents: true,
+            });
+            await reconcileRecoveredQueueStateViaGateway(state, gw, activeSnapshot, snapshotGuard);
+            syncLocalActiveRunFromSnapshot(state, activeSnapshot, snapshotGuard);
+        } catch (error) {
+            console.warn('[pilotdeck-bridge] failed to reconcile recovered queued inputs:', error?.message || error);
+        }
     }
     return inputQueueSnapshot(state);
 }
 
 export function resolveInputQueueProjectKey(existing, options = {}, fallback = GENERAL_HOME) {
     return options.projectPath || options.cwd || existing?.projectKey || fallback;
+}
+
+export function scheduleQueuedDispatchAfterActivityCheck(
+    state,
+    writer,
+    provider,
+    {
+        getGateway = ensureGateway,
+        dispatch = dispatchNextQueuedInput,
+    } = {},
+) {
+    if (!state || state.queueDispatchCheckPromise) return;
+
+    let retryAfterNewerSnapshot = false;
+    const pending = (async () => {
+        try {
+            const gw = await getGateway();
+            const snapshotGuard = beginActivitySnapshotRead(state);
+            const activeSnapshot = await gw.getActiveTurnSnapshot({
+                sessionKey: state.sessionKey,
+                includeEvents: false,
+            });
+            const syncResult = syncLocalActiveRunFromSnapshot(state, activeSnapshot, snapshotGuard);
+            retryAfterNewerSnapshot = !syncResult.applied && syncResult.reason === 'stale_request';
+            if (retryAfterNewerSnapshot) return;
+        } catch (error) {
+            console.warn('[pilotdeck-bridge] failed to verify activity before queued dispatch:', error?.message || error);
+        }
+
+        // If the snapshot was rejected because a local run started or ended,
+        // the local state is newer and authoritative for this decision.
+        if (!state.active && !state.queuePaused) {
+            void dispatch(state, writer, provider);
+        }
+    })().finally(() => {
+        if (state.queueDispatchCheckPromise === pending) {
+            state.queueDispatchCheckPromise = null;
+        }
+        if (retryAfterNewerSnapshot && !state.active && !state.queuePaused) {
+            scheduleQueuedDispatchAfterActivityCheck(state, writer, provider, { getGateway, dispatch });
+        }
+    });
+    state.queueDispatchCheckPromise = pending;
 }
 
 export async function enqueueInputViaGateway(sessionId, item, writer, provider = 'pilotdeck') {
@@ -1806,22 +1937,10 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
     });
     mutateInputQueue(state, writer);
     if (!state.active && !state.queuePaused) {
-        // The bridge may have restarted while the gateway still owns an
-        // active turn. Refresh the authoritative run before deciding whether
-        // this newly queued input can be dispatched.
-        try {
-            const gw = await ensureGateway();
-            const activeSnapshot = await gw.getActiveTurnSnapshot({
-                sessionKey: state.sessionKey,
-                includeEvents: false,
-            });
-            syncLocalActiveRunFromSnapshot(state, activeSnapshot);
-        } catch (error) {
-            console.warn('[pilotdeck-bridge] failed to verify activity before queued dispatch:', error?.message || error);
-        }
-    }
-    if (!state.active && !state.queuePaused) {
-        void dispatchNextQueuedInput(state, writer, provider);
+        // Acknowledge persistence immediately. Gateway startup/snapshot reads
+        // can exceed the UI operation timeout, so verification and dispatch
+        // must continue in the background after the enqueue result is sent.
+        scheduleQueuedDispatchAfterActivityCheck(state, writer, provider);
     }
     return { ok: true, state: inputQueueSnapshot(state) };
 }
@@ -2015,8 +2134,7 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck') {
         const runId = state?.runId;
         await gw.abortTurn({ sessionKey, runId });
         if (state && (!runId || state.runId === runId)) {
-            state.active = false;
-            state.runId = undefined;
+            setLocalActiveRun(state, undefined);
         }
         return true;
     } catch (error) {
@@ -2044,8 +2162,7 @@ export async function replaceLastTurnViaGateway(sessionId, expectedTurnId, optio
     });
     const state = sessionState.get(sessionKey);
     if (state) {
-        state.active = false;
-        state.runId = undefined;
+        setLocalActiveRun(state, undefined);
         state.hasVisibleFailureStatus = false;
     }
     return result;
@@ -2071,8 +2188,7 @@ export async function finalizeLastTurnReplacementViaGateway(
     if (action === 'rollback') {
         const state = sessionState.get(sessionKey);
         if (state) {
-            state.active = false;
-            state.runId = undefined;
+            setLocalActiveRun(state, undefined);
             state.hasVisibleFailureStatus = false;
         }
     }
@@ -2132,19 +2248,12 @@ export function getFallbackSessionActivity(localState) {
     };
 }
 
-function syncLocalActiveRunFromSnapshot(state, snapshot) {
-    if (!state || !snapshot || typeof snapshot.active !== 'boolean') return false;
-    const activeRunId = snapshot.active && typeof snapshot.runId === 'string'
-        ? snapshot.runId
-        : undefined;
-    const changed = state.active !== Boolean(activeRunId) || state.runId !== activeRunId;
-    state.active = Boolean(activeRunId);
-    state.runId = activeRunId;
-    if (changed) emitInputQueueState(state);
-    return changed;
-}
-
-export async function getSessionActivityViaGateway(sessionId, provider = 'pilotdeck', includeActiveTurnMessages = true) {
+export async function getSessionActivityViaGateway(
+    sessionId,
+    provider = 'pilotdeck',
+    includeActiveTurnMessages = true,
+    writer,
+) {
     if (!isPilotDeckSessionKey(sessionId)) {
         return { isProcessing: false, activeRunId: null, activeTurnMessages: [] };
     }
@@ -2156,14 +2265,45 @@ export async function getSessionActivityViaGateway(sessionId, provider = 'pilotd
         if (typeof gw.getActiveTurnSnapshot !== 'function') {
             return getFallbackSessionActivity(localState);
         }
+        const snapshotGuard = localState ? beginActivitySnapshotRead(localState) : undefined;
         const snapshot = await gw.getActiveTurnSnapshot({ sessionKey: sessionId, includeEvents: includeActiveTurnMessages });
         if (!snapshot || typeof snapshot.active !== 'boolean') {
             return getFallbackSessionActivity(localState);
         }
         if (localState?.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
-            await reconcileRecoveredQueueStateViaGateway(localState, gw, snapshot);
+            await reconcileRecoveredQueueStateViaGateway(localState, gw, snapshot, snapshotGuard);
         }
-        syncLocalActiveRunFromSnapshot(localState, snapshot);
+        const syncResult = localState
+            ? syncLocalActiveRunFromSnapshot(localState, snapshot, snapshotGuard)
+            : { applied: true, changed: false };
+        if (!syncResult.applied) {
+            if (syncResult.reason === 'local_state_changed' && localState) {
+                return {
+                    isProcessing: localState.active === true,
+                    activeRunId: localState.active === true && typeof localState.runId === 'string'
+                        ? localState.runId
+                        : null,
+                    activeTurnMessages: [],
+                };
+            }
+            return getFallbackSessionActivity(localState);
+        }
+        if (
+            localState
+            && !localState.active
+            && !localState.queuePaused
+            && localState.inputQueue.length > 0
+            && writer?.send
+        ) {
+            void dispatchNextQueuedInput(localState, writer, provider);
+            if (localState.active && localState.runId) {
+                return {
+                    isProcessing: true,
+                    activeRunId: localState.runId,
+                    activeTurnMessages: [],
+                };
+            }
+        }
         return {
             isProcessing: snapshot.active,
             activeRunId: snapshot.active && typeof snapshot.runId === 'string'
