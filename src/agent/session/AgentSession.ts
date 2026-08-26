@@ -16,7 +16,11 @@ import type { AgentTranscriptWriterState } from "../../session/transcript/Transc
 import type { AgentLoopSeedState } from "../loop/AgentLoop.js";
 import type { SessionMetadataValue } from "../../session/transcript/TranscriptEntry.js";
 import type { CanonicalMessage } from "../../model/index.js";
-import { SteerMailbox, type AgentSteerResult } from "./SteerMailbox.js";
+import {
+  SteerMailbox,
+  type AgentCancelSteerResult,
+  type AgentSteerResult,
+} from "./SteerMailbox.js";
 
 export type AgentSessionOptions = {
   sessionId: string;
@@ -140,6 +144,13 @@ export class AgentSession {
       message: input.message,
       allowedReadFiles: input.allowedReadFiles,
     });
+  }
+
+  cancelSteer(input: { turnId: string; itemId: string }): AgentCancelSteerResult {
+    if (this.state.status !== "running" || !this.state.currentTurnId) {
+      return { cancelled: false, reason: "no_active_turn" };
+    }
+    return this.steerMailbox.cancel(input.turnId, input.itemId);
   }
 
   snapshot(): AgentSessionStateShape {

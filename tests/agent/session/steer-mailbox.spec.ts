@@ -65,3 +65,31 @@ test("finish returns unconsumed guidance so callers can leave it queued", () => 
     reason: "no_active_turn",
   });
 });
+
+test("pending guidance can be cancelled before a model boundary", () => {
+  const mailbox = new SteerMailbox();
+  mailbox.start("turn-1");
+  mailbox.enqueue("turn-1", steer("item-1"));
+
+  assert.deepEqual(mailbox.cancel("turn-1", "item-1"), { cancelled: true });
+  assert.deepEqual(mailbox.cancel("turn-1", "item-1"), { cancelled: true });
+  assert.deepEqual(mailbox.drain("turn-1"), []);
+});
+
+test("cancel tombstones win a race with enqueue, but drained guidance is too late", () => {
+  const mailbox = new SteerMailbox();
+  mailbox.start("turn-1");
+
+  assert.deepEqual(mailbox.cancel("turn-1", "item-before-enqueue"), { cancelled: true });
+  assert.deepEqual(mailbox.enqueue("turn-1", steer("item-before-enqueue")), {
+    accepted: false,
+    reason: "cancelled",
+  });
+
+  mailbox.enqueue("turn-1", steer("item-drained"));
+  assert.deepEqual(mailbox.drain("turn-1").map((entry) => entry.itemId), ["item-drained"]);
+  assert.deepEqual(mailbox.cancel("turn-1", "item-drained"), {
+    cancelled: false,
+    reason: "too_late",
+  });
+});

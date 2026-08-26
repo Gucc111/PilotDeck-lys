@@ -14,6 +14,8 @@ export type {
   GatewayServerInfo,
   GatewaySessionInfo,
   GatewaySubmitTurnInput,
+  GatewayCancelSteerInput,
+  GatewayCancelSteerResult,
   GatewaySteerTurnInput,
   GatewaySteerTurnResult,
   MatchRange,

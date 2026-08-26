@@ -187,6 +187,8 @@ export class GatewayWsConnection {
     switch (frame.method) {
       case "steer_turn":
         return this.options.gateway.steerTurn(frame.params as never);
+      case "cancel_steer":
+        return this.options.gateway.cancelSteer(frame.params as never);
       case "abort_turn":
         return this.options.gateway.abortTurn(frame.params as never).then(() => ({ ok: true }));
       case "list_sessions":

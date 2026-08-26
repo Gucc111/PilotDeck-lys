@@ -29,6 +29,9 @@ class MockGateway implements Gateway {
   async steerTurn(): Promise<{ accepted: boolean; reason?: "no_active_turn" }> {
     return { accepted: false, reason: "no_active_turn" };
   }
+  async cancelSteer(): Promise<{ cancelled: boolean; reason?: "no_active_turn" }> {
+    return { cancelled: false, reason: "no_active_turn" };
+  }
   private pending = new Map<string, PendingPermission>();
   private aborted = false;
 

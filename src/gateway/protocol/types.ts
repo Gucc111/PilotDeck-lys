@@ -140,7 +140,18 @@ export type GatewaySteerTurnInput = {
 
 export type GatewaySteerTurnResult = {
   accepted: boolean;
-  reason?: "no_active_turn" | "turn_mismatch" | "turn_closing";
+  reason?: "no_active_turn" | "turn_mismatch" | "turn_closing" | "cancelled";
+};
+
+export type GatewayCancelSteerInput = {
+  sessionKey: string;
+  runId: string;
+  itemId: string;
+};
+
+export type GatewayCancelSteerResult = {
+  cancelled: boolean;
+  reason?: "no_active_turn" | "turn_mismatch" | "too_late";
 };
 
 export type GatewayRecordAgentStatusMessageInput = {
@@ -552,6 +563,7 @@ export type AlwaysOnRerunPlanResult = {
 export interface Gateway {
   submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent>;
   steerTurn(input: GatewaySteerTurnInput): Promise<GatewaySteerTurnResult>;
+  cancelSteer(input: GatewayCancelSteerInput): Promise<GatewayCancelSteerResult>;
   abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void>;
   listSessions(input: ListSessionsInput): Promise<ListSessionsResult>;
   resumeSession(input: { sessionKey: string }): Promise<{ sessionKey: string }>;

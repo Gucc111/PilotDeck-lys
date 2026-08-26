@@ -29,6 +29,8 @@ import type {
   GatewaySessionPermissionGrantInput,
   GatewayServerInfo,
   GatewaySubmitTurnInput,
+  GatewayCancelSteerInput,
+  GatewayCancelSteerResult,
   GatewaySteerTurnInput,
   GatewaySteerTurnResult,
   ListSessionsInput,
@@ -751,6 +753,16 @@ export class InProcessGateway implements Gateway {
       itemId: input.itemId,
       message,
       allowedReadFiles,
+    });
+  }
+
+  async cancelSteer(input: GatewayCancelSteerInput): Promise<GatewayCancelSteerResult> {
+    const activeRunId = this.router.activeTurnRunId(input.sessionKey);
+    if (!activeRunId) return { cancelled: false, reason: "no_active_turn" };
+    if (activeRunId !== input.runId) return { cancelled: false, reason: "turn_mismatch" };
+    return this.router.cancelSteer(input.sessionKey, {
+      turnId: input.runId,
+      itemId: input.itemId,
     });
   }
 

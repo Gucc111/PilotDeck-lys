@@ -45,6 +45,47 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     });
   });
 
+  it('finalizes assistant streams when applied guidance creates a user boundary in the same run', () => {
+    const sessionStore = createSessionStore();
+    renderHook(() => useChatRealtimeHandlers({
+      provider,
+      selectedProject: { name: 'project', fullPath: '/tmp/project' } as unknown as Project,
+      selectedSession: { id: 'web:s_test' } as unknown as ProjectSession,
+      currentSessionId: 'web:s_test',
+      setCurrentSessionId: noop,
+      setIsLoading: noop,
+      setSessionRuntimeState: noop,
+      activeRunId: 'run-1',
+      setActiveRunId: noop,
+      setCanAbortSession: noop,
+      setIsAborting: noop,
+      setClaudeStatus: noop,
+      setPilotDeckStatus: noop,
+      setTokenBudget: noop,
+      setPendingPermissionRequests: noop,
+      pendingViewSessionRef: { current: null },
+      sessionStore,
+    }));
+
+    act(() => {
+      mocks.listener?.({
+        kind: 'text',
+        role: 'user',
+        content: 'Adjust direction',
+        sessionId: 'web:s_test',
+        runId: 'run-1',
+        isSteer: true,
+      });
+    });
+
+    expect(sessionStore.finalizeStreamingThinking).toHaveBeenCalledWith('web:s_test', 'run-1');
+    expect(sessionStore.finalizeStreaming).toHaveBeenCalledWith('web:s_test', 'run-1');
+    expect(sessionStore.appendRealtime).toHaveBeenCalledWith(
+      'web:s_test',
+      expect.objectContaining({ role: 'user', isSteer: true }),
+    );
+  });
+
   it('cancels running subagents for a terminal agent_aborted frame', () => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();

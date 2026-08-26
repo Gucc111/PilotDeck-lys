@@ -145,6 +145,28 @@ describe('gatewayEventToFrames agent status errors', () => {
         });
     });
 
+    it('normalizes hydrated guidance images to the data URLs expected by the UI', () => {
+        const frames = gatewayEventToFrames({
+            type: 'steer_applied',
+            itemId: 'queue-image',
+            displayText: 'Use this image',
+            message: {
+                role: 'user',
+                content: [{ type: 'text', text: 'Use this image' }],
+            },
+            images: [
+                { name: 'reference.png', data: 'data:image/png;base64,abc' },
+                'data:image/jpeg;base64,def',
+                { name: 'missing-data.png' },
+            ],
+        }, 'web:s_test', 'pilotdeck');
+
+        expect(frames[0].images).toEqual([
+            'data:image/png;base64,abc',
+            'data:image/jpeg;base64,def',
+        ]);
+    });
+
     it('maps tool result detail availability to a mergeable tool_result frame', () => {
         const frames = gatewayEventToFrames({
             type: 'tool_result_detail_available',

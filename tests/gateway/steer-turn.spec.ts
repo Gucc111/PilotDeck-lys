@@ -13,10 +13,15 @@ test("gateway turns guidance into a canonical user message for the active run", 
     message: CanonicalMessage;
     allowedReadFiles?: string[];
   } | undefined;
+  let cancelled: { turnId: string; itemId: string } | undefined;
   const session = {
     steer(input: typeof received) {
       received = input;
       return { accepted: true } as const;
+    },
+    cancelSteer(input: typeof cancelled) {
+      cancelled = input;
+      return { cancelled: true } as const;
     },
     abort() {},
     snapshot() {
@@ -55,4 +60,17 @@ test("gateway turns guidance into a canonical user message for the active run", 
     itemId: "queue-2",
     message: "stale",
   }), { accepted: false, reason: "turn_mismatch" });
+
+  assert.deepEqual(await gateway.cancelSteer({
+    sessionKey: "session-1",
+    runId: "run-1",
+    itemId: "queue-1",
+  }), { cancelled: true });
+  assert.deepEqual(cancelled, { turnId: "run-1", itemId: "queue-1" });
+
+  assert.deepEqual(await gateway.cancelSteer({
+    sessionKey: "session-1",
+    runId: "stale-run",
+    itemId: "queue-1",
+  }), { cancelled: false, reason: "turn_mismatch" });
 });

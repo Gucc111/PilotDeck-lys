@@ -2541,7 +2541,7 @@ function handleChatConnection(ws, request) {
                     ...result,
                 });
             } else if (data.type === 'delete-queued-input') {
-                const result = deleteQueuedInputViaGateway(requestSessionId, data.itemId, streamWriter);
+                const result = await deleteQueuedInputViaGateway(requestSessionId, data.itemId, streamWriter);
                 writer.send({
                     type: 'input-queue-operation-result',
                     operation: 'delete',

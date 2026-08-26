@@ -658,7 +658,11 @@ export function gatewayEventToFrames(event, sessionId, provider) {
                     content: text,
                     queueItemId: event.itemId,
                     isSteer: true,
-                    ...(Array.isArray(event.images) ? { images: event.images } : {}),
+                    ...(Array.isArray(event.images) ? {
+                        images: event.images
+                            .map((image) => typeof image === 'string' ? image : image?.data)
+                            .filter((image) => typeof image === 'string' && image.length > 0),
+                    } : {}),
                     ...(Array.isArray(event.attachments) ? { attachments: event.attachments } : {}),
                 }),
             ];
@@ -1663,12 +1667,42 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
     return { ok: true, state: snapshot };
 }
 
-export function deleteQueuedInputViaGateway(sessionId, itemId, writer) {
+export async function deleteQueuedInputViaGateway(sessionId, itemId, writer) {
     const state = sessionState.get(sessionId);
     if (!state) return { ok: false, error: 'Session queue was not found.' };
-    const before = state.inputQueue.length;
-    state.inputQueue = state.inputQueue.filter((item) => item.id !== itemId || item.status === 'dispatching');
-    if (state.inputQueue.length === before) return { ok: false, error: 'Queued message was not found.' };
+    const item = state.inputQueue.find((entry) => entry.id === itemId);
+    if (!item) return { ok: false, error: 'Queued message was not found.' };
+    if (item.status === 'dispatching') {
+        return { ok: false, error: 'This message is already being sent.' };
+    }
+
+    if (item.status === 'steering' && state.active && state.runId) {
+        try {
+            const gw = await ensureGateway();
+            const result = await gw.cancelSteer({
+                sessionKey: state.sessionKey,
+                runId: state.runId,
+                itemId,
+            });
+            if (!result?.cancelled && result?.reason === 'too_late') {
+                // `steer_applied` can remove the row while this RPC is in
+                // flight. If that happened, the queue snapshot is already
+                // authoritative and there is nothing left to delete.
+                if (!state.inputQueue.some((entry) => entry.id === itemId)) {
+                    return { ok: true, state: inputQueueSnapshot(state) };
+                }
+                return {
+                    ok: false,
+                    error: 'This guidance has already been added to the model context and can no longer be retracted.',
+                    state: inputQueueSnapshot(state),
+                };
+            }
+        } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+    }
+
+    state.inputQueue = state.inputQueue.filter((entry) => entry.id !== itemId);
     return { ok: true, state: mutateInputQueue(state, writer) };
 }
 
@@ -1725,6 +1759,9 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
             ...(attachments.length > 0 ? { attachments } : {}),
         });
         if (!result?.accepted) {
+            if (result?.reason === 'cancelled') {
+                return { ok: true, state: inputQueueSnapshot(state) };
+            }
             item.status = 'queued';
             mutateInputQueue(state, writer);
             return { ok: false, error: 'The active turn ended before this message could be added.' };
