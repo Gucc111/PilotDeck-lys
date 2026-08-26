@@ -254,6 +254,8 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  const attachedImagesRef = useRef(attachedImages);
+  const documentReferencesRef = useRef(documentReferences);
   const activeDraftStorageKeyRef = useRef(draftStorageKey);
   const pendingSessionGrantResolversRef = useRef(new Map<string, (result: PermissionGrantResult) => void>());
 
@@ -969,16 +971,23 @@ export function useChatComposerState({
           }, queueTargetSessionId);
           return;
         }
-        setInput('');
-        inputValueRef.current = '';
-        resetCommandMenuState();
-        setAttachedImages([]);
-        setDocumentReferences([]);
-        setUploadingImages(new Map());
-        setImageErrors(new Map());
-        setIsTextareaExpanded(false);
-        if (textareaRef.current) textareaRef.current.style.height = 'auto';
-        if (activeDraftStorageKeyRef.current) safeLocalStorage.removeItem(activeDraftStorageKeyRef.current);
+        const inputUnchanged = inputValueRef.current === currentInput;
+        const imagesUnchanged = attachedImagesRef.current === submitAttachedImages;
+        const referencesUnchanged = documentReferencesRef.current === submitDocumentReferences;
+        if (inputUnchanged) {
+          setInput('');
+          inputValueRef.current = '';
+          resetCommandMenuState();
+          setIsTextareaExpanded(false);
+          if (textareaRef.current) textareaRef.current.style.height = 'auto';
+          if (activeDraftStorageKeyRef.current) safeLocalStorage.removeItem(activeDraftStorageKeyRef.current);
+        }
+        if (imagesUnchanged) setAttachedImages([]);
+        if (referencesUnchanged) setDocumentReferences([]);
+        if (imagesUnchanged && referencesUnchanged) {
+          setUploadingImages(new Map());
+          setImageErrors(new Map());
+        }
         return;
       }
 
@@ -1090,7 +1099,9 @@ export function useChatComposerState({
 
   useEffect(() => {
     inputValueRef.current = input;
-  }, [input]);
+    attachedImagesRef.current = attachedImages;
+    documentReferencesRef.current = documentReferences;
+  }, [attachedImages, documentReferences, input]);
 
   useEffect(() => {
     const key = activeDraftStorageKeyRef.current;

@@ -55,7 +55,6 @@ export class AgentSession {
     this.state.status = "running";
     this.state.currentTurnId = turnId;
     this.state.abortController = new AbortController();
-    this.steerMailbox.start(turnId);
     yield { type: "session_started", sessionId: this.state.sessionId };
     await this.options.lifecycle?.dispatch({
       event: "SessionStart",
@@ -97,8 +96,10 @@ export class AgentSession {
       syntheticMessages: submitOptions.syntheticMessages,
       modelOverride: submitOptions.modelOverride,
       abortSignal: this.state.abortController.signal,
+      openSteerMailbox: () => this.steerMailbox.start(turnId),
       drainSteerMessages: () => this.steerMailbox.drain(turnId),
       drainOrCloseSteerMailbox: () => this.steerMailbox.drainOrClose(turnId),
+      closeSteerMailbox: () => this.steerMailbox.close(turnId),
     });
 
     this.state.messages = runResult.messages;

@@ -9,7 +9,7 @@ export function getComposerPrimaryAction({
   isInputQueuePaused: boolean;
   hasDraftContent: boolean;
 }): ComposerPrimaryAction {
-  if (isLoading) return 'stop';
+  if (isLoading && !hasDraftContent) return 'stop';
   if (isInputQueuePaused && !hasDraftContent) return 'resume';
   return 'send';
 }

@@ -10,6 +10,7 @@ type QueueOperationResult = {
 type PendingOperation = {
   resolve: (result: QueueOperationResult) => void;
   timeoutId: number;
+  sessionId: string;
 };
 
 const EMPTY_QUEUE: InputQueueState = {
@@ -54,6 +55,7 @@ export function useSessionInputQueue({
       if (message?.type !== 'input-queue-operation-result' || typeof message.requestId !== 'string') return;
       const pending = pendingRef.current.get(message.requestId);
       if (!pending) return;
+      if (message.sessionId !== pending.sessionId) return;
       pendingRef.current.delete(message.requestId);
       window.clearTimeout(pending.timeoutId);
       if (message.state && message.state.sessionId === sessionId) {
@@ -78,12 +80,13 @@ export function useSessionInputQueue({
   }, [projectPath, sendMessage, sessionId, ws?.readyState]);
 
   useEffect(() => () => {
-    for (const pending of pendingRef.current.values()) {
+    for (const [requestId, pending] of pendingRef.current) {
+      if (pending.sessionId !== sessionId) continue;
       window.clearTimeout(pending.timeoutId);
       pending.resolve({ ok: false, error: 'Queue operation was cancelled.' });
+      pendingRef.current.delete(requestId);
     }
-    pendingRef.current.clear();
-  }, []);
+  }, [sessionId]);
 
   const request = useCallback((message: Record<string, unknown>): Promise<QueueOperationResult> => {
     if (!sessionId) return Promise.resolve({ ok: false, error: 'No active session.' });
@@ -96,8 +99,17 @@ export function useSessionInputQueue({
         pendingRef.current.delete(requestId);
         resolve({ ok: false, error: 'Queue operation timed out.' });
       }, 10_000);
-      pendingRef.current.set(requestId, { resolve, timeoutId });
-      sendMessage({ ...message, requestId, sessionId, provider: 'pilotdeck' });
+      pendingRef.current.set(requestId, { resolve, timeoutId, sessionId });
+      try {
+        sendMessage({ ...message, requestId, sessionId, provider: 'pilotdeck' });
+      } catch (error) {
+        window.clearTimeout(timeoutId);
+        pendingRef.current.delete(requestId);
+        resolve({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to send the queue operation.',
+        });
+      }
     });
   }, [sendMessage, sessionId, ws]);
 

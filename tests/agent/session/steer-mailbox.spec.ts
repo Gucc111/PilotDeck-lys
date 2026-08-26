@@ -66,6 +66,19 @@ test("finish returns unconsumed guidance so callers can leave it queued", () => 
   });
 });
 
+test("close returns pending guidance while rejecting late submissions as turn_closing", () => {
+  const mailbox = new SteerMailbox();
+  mailbox.start("turn-1");
+  mailbox.enqueue("turn-1", steer("item-1"));
+
+  assert.deepEqual(mailbox.close("turn-1").map((entry) => entry.itemId), ["item-1"]);
+  assert.deepEqual(mailbox.enqueue("turn-1", steer("item-2")), {
+    accepted: false,
+    reason: "turn_closing",
+  });
+  assert.deepEqual(mailbox.finish("turn-1"), []);
+});
+
 test("pending guidance can be cancelled before a model boundary", () => {
   const mailbox = new SteerMailbox();
   mailbox.start("turn-1");

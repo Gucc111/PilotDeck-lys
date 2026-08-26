@@ -1853,6 +1853,8 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
       return [{ type: "input_accepted", runId }];
     case "steer_applied":
       return [{ type: "steer_applied", itemId: event.itemId, message: event.message }];
+    case "steer_unapplied":
+      return [{ type: "steer_unapplied", itemId: event.itemId, reason: event.reason }];
     case "model_request_started":
       return [{ type: "model_request_started", model: event.model, provider: event.provider }];
     case "model_event":

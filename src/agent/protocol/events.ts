@@ -19,6 +19,7 @@ export type AgentEvent =
   | { type: "instructions_loaded"; sessionId: string; turnId: string; hasSystemPrompt: boolean }
   | { type: "assistant_message"; sessionId: string; turnId: string; message: CanonicalMessage }
   | { type: "steer_applied"; sessionId: string; turnId: string; itemId: string; message: CanonicalMessage }
+  | { type: "steer_unapplied"; sessionId: string; turnId: string; itemId: string; reason: "turn_ended" }
   | { type: "tool_calls_detected"; sessionId: string; turnId: string; calls: CanonicalToolCall[] }
   | { type: "pre_tool_execute"; sessionId: string; turnId: string; toolCallId: string; toolName: string }
   | { type: "post_tool_execute"; sessionId: string; turnId: string; toolCallId: string; toolName: string; success: boolean }

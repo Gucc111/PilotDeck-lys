@@ -173,6 +173,7 @@ export type GatewayEvent = GatewayTurnScopedEventMetadata & (
   | { type: "turn_started"; runId: string }
   | { type: "input_accepted"; runId: string }
   | { type: "steer_applied"; itemId: string; message: CanonicalMessage }
+  | { type: "steer_unapplied"; itemId: string; reason: "turn_ended" }
   | { type: "model_request_started"; model?: string; provider?: string }
   | {
       type: "model_selection_changed";

@@ -147,6 +147,8 @@ export type AgentLoopInput = {
   drainSteerMessages?: () => AgentSteerMessage[];
   /** Atomically drain pending guidance or close the inbox before terminal completion. */
   drainOrCloseSteerMailbox?: () => { messages: AgentSteerMessage[]; closed: boolean };
+  /** Acknowledge guidance only after its canonical user message is durable. */
+  onSteerApplied?: (itemId: string) => void;
 };
 
 export type AgentLoopRunResult = {
@@ -219,23 +221,23 @@ export class AgentLoop {
       if (!shouldSurfaceAbortStatus(input.abortSignal?.reason)) return undefined;
       return createTurnAbortedStatus({ reason: stringifyAbortReason(input.abortSignal?.reason) });
     };
-    const applySteerMessages = async (pending: AgentSteerMessage[]): Promise<AgentEvent[]> => {
-      const events: AgentEvent[] = [];
+    const allowedReadFiles = this.allowedReadFiles;
+    const applySteerMessages = async function* (pending: AgentSteerMessage[]): AsyncGenerator<AgentEvent, void, unknown> {
       for (const steer of pending) {
         for (const filePath of steer.allowedReadFiles ?? []) {
-          this.allowedReadFiles.add(filePath);
+          allowedReadFiles.add(filePath);
         }
         messages.push(steer.message);
         await input.onDurableMessage?.(steer.message);
-        events.push({
+        input.onSteerApplied?.(steer.itemId);
+        yield {
           type: "steer_applied",
           sessionId: input.sessionId,
           turnId: input.turnId,
           itemId: steer.itemId,
           message: steer.message,
-        });
+        };
       }
-      return events;
     };
     const captureTurn = async (errored: boolean): Promise<void> => {
       const hook = this.dependencies.context?.captureTurn;
@@ -434,7 +436,7 @@ export class AgentLoop {
       }
 
       const pendingSteers = input.drainSteerMessages?.() ?? [];
-      for (const event of await applySteerMessages(pendingSteers)) {
+      for await (const event of applySteerMessages(pendingSteers)) {
         yield event;
       }
 
@@ -1650,9 +1652,16 @@ export class AgentLoop {
           };
         }
 
-        const terminalSteers = input.drainOrCloseSteerMailbox?.();
+        // A steer starts another model iteration, so it must obey the same
+        // turn budget as tool-driven continuation. Leave guidance in the
+        // mailbox when the budget is exhausted; TurnRunner will report it as
+        // unapplied and the host can keep it queued for a later turn.
+        const canContinueForSteer = !input.maxTurns || turnCount < input.maxTurns;
+        const terminalSteers = canContinueForSteer
+          ? input.drainOrCloseSteerMailbox?.()
+          : undefined;
         if (terminalSteers && terminalSteers.messages.length > 0) {
-          for (const event of await applySteerMessages(terminalSteers.messages)) {
+          for await (const event of applySteerMessages(terminalSteers.messages)) {
             yield event;
           }
           turnCount += 1;

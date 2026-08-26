@@ -89,6 +89,17 @@ export class SteerMailbox {
     return { messages: [], closed: true };
   }
 
+  /**
+   * Close a terminal turn and return guidance that never reached a model
+   * boundary. The turn identity remains until `finish` so late submissions are
+   * rejected as `turn_closing` instead of appearing to target no turn at all.
+   */
+  close(turnId: string): AgentSteerMessage[] {
+    if (this.turnId !== turnId) return [];
+    this.open = false;
+    return this.pending.splice(0);
+  }
+
   finish(turnId: string): AgentSteerMessage[] {
     if (this.turnId !== turnId) return [];
     this.open = false;

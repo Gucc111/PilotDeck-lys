@@ -377,8 +377,15 @@ export function reconcileRecoveredQueueItems(items, evidence = {}) {
     const activeRunId = typeof evidence.activeRunId === 'string' ? evidence.activeRunId : undefined;
     const recordedRunIds = new Set(
         (evidence.messages || [])
+            .filter((message) => message?.role === 'user' || message?.role === 'assistant')
             .map((message) => message?.turnId)
             .filter((turnId) => typeof turnId === 'string' && turnId.length > 0),
+    );
+    const acceptedActiveRunIds = new Set(
+        (evidence.activeEvents || [])
+            .filter((event) => event?.type === 'input_accepted')
+            .map((event) => event?.runId)
+            .filter((runId) => typeof runId === 'string' && runId.length > 0),
     );
     const recordedQueueItemIds = new Set(
         (evidence.messages || [])
@@ -391,6 +398,12 @@ export function reconcileRecoveredQueueItems(items, evidence = {}) {
             .map((event) => event.itemId)
             .filter((itemId) => typeof itemId === 'string' && itemId.length > 0),
     );
+    const unappliedSteerItemIds = new Set(
+        (evidence.activeEvents || [])
+            .filter((event) => event?.type === 'steer_unapplied')
+            .map((event) => event.itemId)
+            .filter((itemId) => typeof itemId === 'string' && itemId.length > 0),
+    );
 
     return (items || []).flatMap((item) => {
         if (item?.status !== 'delivery_uncertain') return [item];
@@ -400,13 +413,23 @@ export function reconcileRecoveredQueueItems(items, evidence = {}) {
             : (item.runId || item.id);
         const observed = deliveryKind === 'steer'
             ? recordedQueueItemIds.has(item.id) || appliedSteerItemIds.has(item.id)
-            : recordedRunIds.has(deliveryRunId) || activeRunId === deliveryRunId;
+            : recordedRunIds.has(deliveryRunId) || acceptedActiveRunIds.has(deliveryRunId);
         if (observed) return [];
+        if (deliveryKind === 'steer' && unappliedSteerItemIds.has(item.id)) {
+            const {
+                deliveryKind: _kind,
+                deliveryRunId: _runId,
+                ...queuedItem
+            } = item;
+            return [{ ...queuedItem, status: 'queued' }];
+        }
 
-        // A steer aimed at the still-active turn may have been accepted into
-        // its mailbox but not yet reached a model boundary. Keep it uncertain
-        // until a later snapshot/transcript proves whether it was applied.
-        if (deliveryKind === 'steer' && activeRunId === deliveryRunId) return [item];
+        // Reserving an active run happens before the gateway finishes input
+        // preflight and transcript acceptance. Likewise, a steer can wait in
+        // the active mailbox before a model boundary. Keep either delivery
+        // uncertain until an explicit event or durable message proves it was
+        // accepted/applied.
+        if (activeRunId === deliveryRunId) return [item];
         if (evidence.complete !== true) return [item];
 
         const {
@@ -788,6 +811,8 @@ export function gatewayEventToFrames(event, sessionId, provider) {
     const base = { sessionId, provider, ...(event.runId ? { runId: event.runId } : {}) };
     switch (event.type) {
         case 'input_accepted':
+            return [];
+        case 'steer_unapplied':
             return [];
         case 'steer_applied': {
             const text = typeof event.displayText === 'string'
@@ -1598,6 +1623,9 @@ export async function runChatViaGateway(
                     mutateInputQueue(state);
                 }
             }
+            if (event?.type === 'steer_unapplied') {
+                resetSteeringItemForRun(state, event.itemId, runId, writer);
+            }
             if (compactTokenBudget) {
                 state.tokenBudget = compactTokenBudget;
             }
@@ -2054,10 +2082,21 @@ export function resumeInputQueueState(
     return { ok: true, state: snapshot };
 }
 
+export function getQueuedInputSteerError(state, item) {
+    if (state?.queuePaused) return 'The queue is paused; resume it before adjusting direction.';
+    if (item?.status === 'queued') return null;
+    if (item?.status === 'dispatching') return 'This message is already being sent.';
+    if (item?.status === 'steering') return 'This message is already being added to the active turn.';
+    if (item?.status === 'delivery_uncertain') return 'This message has an uncertain delivery state after restart.';
+    return 'This message is no longer waiting in the queue.';
+}
+
 export async function steerQueuedInputViaGateway(sessionId, itemId, writer, provider = 'pilotdeck') {
     const state = sessionState.get(sessionId);
     const item = state?.inputQueue.find((entry) => entry.id === itemId);
     if (!state || !item) return { ok: false, error: 'Queued message was not found.' };
+    const stateError = getQueuedInputSteerError(state, item);
+    if (stateError) return { ok: false, error: stateError, state: inputQueueSnapshot(state) };
     if (!state.active || !state.runId) {
         return { ok: false, error: 'The active turn has already ended; the message remains queued.' };
     }

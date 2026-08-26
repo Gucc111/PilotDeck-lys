@@ -8,6 +8,7 @@ import {
     createAlwaysOnTurnEventForwarder,
     gatewayEventToFrames,
     getFallbackSessionActivity,
+    getQueuedInputSteerError,
     hydrateQueuedInputOptions,
     isGatewayUnavailableError,
     isTerminalAlwaysOnTurnEvent,
@@ -107,7 +108,7 @@ describe('queued input persistence', () => {
         });
     });
 
-    it('removes recovered deliveries observed in the active run or transcript', () => {
+    it('removes recovered deliveries only after input acceptance or durable transcript evidence', () => {
         const items = [
             {
                 id: 'dispatch-active',
@@ -126,9 +127,32 @@ describe('queued input persistence', () => {
 
         expect(reconcileRecoveredQueueItems(items, {
             activeRunId: 'run-active',
+            activeEvents: [{ type: 'input_accepted', runId: 'run-active' }],
             messages: [{ queueItemId: 'steer-recorded' }],
             complete: true,
         })).toEqual([{ id: 'still-queued', status: 'queued' }]);
+    });
+
+    it('does not treat an active reservation or status-only history as accepted input', () => {
+        const uncertain = {
+            id: 'dispatch-preflight',
+            status: 'delivery_uncertain',
+            deliveryKind: 'dispatch',
+            deliveryRunId: 'run-preflight',
+        };
+
+        expect(reconcileRecoveredQueueItems([uncertain], {
+            activeRunId: 'run-preflight',
+            messages: [],
+            complete: false,
+        })).toEqual([uncertain]);
+        expect(reconcileRecoveredQueueItems([uncertain], {
+            messages: [{ role: 'error', kind: 'error', turnId: 'run-preflight' }],
+            complete: true,
+        })).toEqual([{
+            id: 'dispatch-preflight',
+            status: 'queued',
+        }]);
     });
 
     it('does not silently retry a steer that may still be waiting in an active mailbox', () => {
@@ -150,6 +174,26 @@ describe('queued input persistence', () => {
             messages: [],
             complete: true,
         })).toEqual([]);
+    });
+
+    it('requeues recovered guidance after the active turn reports it was not applied', () => {
+        expect(reconcileRecoveredQueueItems([{
+            id: 'steer-unapplied',
+            status: 'delivery_uncertain',
+            deliveryKind: 'steer',
+            deliveryRunId: 'run-active',
+        }], {
+            activeRunId: 'run-active',
+            activeEvents: [{
+                type: 'steer_unapplied',
+                itemId: 'steer-unapplied',
+                runId: 'run-active',
+            }],
+            complete: false,
+        })).toEqual([{
+            id: 'steer-unapplied',
+            status: 'queued',
+        }]);
     });
 
     it('only returns an unobserved uncertain delivery to queued after complete evidence', () => {
@@ -348,6 +392,21 @@ describe('activity snapshot ordering', () => {
 });
 
 describe('steer run identity', () => {
+    it('rejects stale steer requests after dispatch starts or the queue pauses', () => {
+        expect(getQueuedInputSteerError(
+            { queuePaused: false },
+            { status: 'dispatching' },
+        )).toBe('This message is already being sent.');
+        expect(getQueuedInputSteerError(
+            { queuePaused: true },
+            { status: 'queued' },
+        )).toBe('The queue is paused; resume it before adjusting direction.');
+        expect(getQueuedInputSteerError(
+            { queuePaused: false },
+            { status: 'queued' },
+        )).toBeNull();
+    });
+
     it('only resets steering state for the run originally targeted', () => {
         const state = {
             inputQueue: [{
@@ -408,6 +467,14 @@ describe('session activity fallback', () => {
 });
 
 describe('gatewayEventToFrames agent status errors', () => {
+    it('keeps unapplied guidance as queue state instead of rendering a user message', () => {
+        expect(gatewayEventToFrames({
+            type: 'steer_unapplied',
+            itemId: 'queue-1',
+            reason: 'turn_ended',
+        }, 'web:s_test', 'pilotdeck')).toEqual([]);
+    });
+
     it('renders applied guidance as a user message with its queue identity', () => {
         const frames = gatewayEventToFrames({
             type: 'steer_applied',

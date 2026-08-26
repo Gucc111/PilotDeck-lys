@@ -376,7 +376,9 @@ export default function ComposerV2({
     ? (t('input.sending', { defaultValue: 'Sending...' }) as string)
     : isInputQueuePaused && !hasDraftContent
       ? (t('inputQueue.resume', { defaultValue: 'Continue' }) as string)
-      : (t('input.send', { defaultValue: 'Send' }) as string);
+      : isLoading
+        ? (t('input.queueSend', { defaultValue: 'Queue message' }) as string)
+        : (t('input.send', { defaultValue: 'Send' }) as string);
   const contextStatus = getContextStatus(tokenBudget);
   const effectiveThinkingMode = getEffectiveThinkingMode(thinkingMode, thinkingModeAvailability);
   const selectedThinkingMode = thinkingModes.find((option) => option.id === effectiveThinkingMode) || thinkingModes[0];

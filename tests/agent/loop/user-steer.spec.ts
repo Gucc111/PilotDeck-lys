@@ -105,3 +105,74 @@ test("guidance at the terminal boundary becomes a user message and starts anothe
   assert.ok(eventTypes.includes("turn_continued"));
   assert.ok(durable.some((message) => message.metadata?.queueItemId === "queue-1"));
 });
+
+test("terminal guidance does not bypass the configured max turn budget", async () => {
+  let requestCount = 0;
+  const respond = async function* (): AsyncIterable<CanonicalModelEvent> {
+    requestCount += 1;
+    yield { type: "message_start", role: "assistant" };
+    yield { type: "text_delta", text: "answer" };
+    yield { type: "message_end", finishReason: "stop" };
+  };
+  const router: AgentRouterRuntime = {
+    invalidateSticky: () => ({ orchestrating: false }),
+    decide: async ({ request }) => ({
+      provider: request.provider,
+      model: request.model,
+      scenarioType: "default",
+      isSubagent: false,
+      orchestrating: false,
+      resolvedFrom: "explicit",
+      mutations: {},
+    }),
+    execute: (_decision, _request) => respond(),
+    stream: (_request) => respond(),
+    materializeRequest: (decision, request) => ({
+      ...request,
+      provider: decision.provider,
+      model: decision.model,
+    }),
+    observeUsage: () => undefined,
+  };
+  const loop = new AgentLoop({
+    provider: "openai",
+    model: "test-model",
+    cwd: "/workspace/project",
+    permissionMode: "default",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "default",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router,
+    tools: {
+      registry: new ToolRegistry(),
+      scheduler: { executeAll: async () => [] },
+    },
+  });
+  let terminalDrainCount = 0;
+
+  for await (const _event of loop.run({
+    sessionId: "session-1",
+    turnId: "turn-1",
+    messages: [{ role: "user", content: [{ type: "text", text: "Build a game" }] }],
+    maxTurns: 1,
+    drainOrCloseSteerMailbox: () => {
+      terminalDrainCount += 1;
+      return {
+        closed: false,
+        messages: [{
+          itemId: "queue-1",
+          message: { role: "user", content: [{ type: "text", text: "Revise it" }] },
+        }],
+      };
+    },
+  })) {
+    // Exhaust the turn.
+  }
+
+  assert.equal(requestCount, 1);
+  assert.equal(terminalDrainCount, 0);
+});
