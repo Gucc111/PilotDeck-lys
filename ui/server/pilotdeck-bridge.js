@@ -2027,6 +2027,15 @@ export function pauseInputQueueViaGateway(sessionId, writer, reason = 'user_stop
 export async function resumeInputQueueViaGateway(sessionId, writer, provider = 'pilotdeck') {
     const state = sessionState.get(sessionId);
     if (!state) return { ok: false, error: 'Session queue was not found.' };
+    return resumeInputQueueState(state, writer, provider);
+}
+
+export function resumeInputQueueState(
+    state,
+    writer,
+    provider = 'pilotdeck',
+    { scheduleDispatch = scheduleQueuedDispatchAfterActivityCheck } = {},
+) {
     for (const item of state.inputQueue) {
         if (item.status !== 'delivery_uncertain') continue;
         item.status = 'queued';
@@ -2036,7 +2045,12 @@ export async function resumeInputQueueViaGateway(sessionId, writer, provider = '
     state.queuePaused = false;
     state.queuePauseReason = undefined;
     const snapshot = mutateInputQueue(state, writer);
-    if (!state.active) void dispatchNextQueuedInput(state, writer, provider);
+    if (!state.active) {
+        // The bridge may have restarted while the gateway still owns an
+        // active turn. Resume must verify the authoritative activity state
+        // before dispatching just like a newly enqueued message does.
+        scheduleDispatch(state, writer, provider);
+    }
     return { ok: true, state: snapshot };
 }
 

@@ -14,6 +14,7 @@ import {
     queuedInputDispositionAfterTurn,
     reconcileRecoveredQueueItems,
     resetSteeringItemForRun,
+    resumeInputQueueState,
     scheduleQueuedDispatchAfterActivityCheck,
     setLocalActiveRun,
     resolveTurnRunId,
@@ -309,6 +310,40 @@ describe('activity snapshot ordering', () => {
         await state.queueDispatchCheckPromise;
         expect(state).toMatchObject({ active: true, runId: 'run-existing' });
         expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it('routes queue resume through the protected activity check before dispatching', () => {
+        const scheduleDispatch = vi.fn();
+        const writer = { send: vi.fn() };
+        const state = {
+            sessionKey: 'web:s_resume',
+            projectKey: '',
+            inputQueue: [{
+                id: 'queued-one',
+                command: 'Continue with this',
+                displayText: 'Continue with this',
+                createdAt: Date.now(),
+                status: 'queued',
+                options: {},
+            }],
+            active: false,
+            runId: undefined,
+            queuePaused: true,
+            queuePauseReason: 'user_stopped',
+            queueRevision: 0,
+        };
+
+        const result = resumeInputQueueState(
+            state,
+            writer,
+            'pilotdeck',
+            { scheduleDispatch },
+        );
+
+        expect(result).toMatchObject({ ok: true });
+        expect(state.queuePaused).toBe(false);
+        expect(scheduleDispatch).toHaveBeenCalledOnce();
+        expect(scheduleDispatch).toHaveBeenCalledWith(state, writer, 'pilotdeck');
     });
 });
 
