@@ -689,7 +689,12 @@ function LeaderWorkspacesPanel({
                       modelOptions={modelOptions}
                       saving={isSaving}
                       disabled={savingProject !== null}
-                      onToggleEnabled={(value) => setOverrideEnabled((prev) => ({ ...prev, [project.value]: value }))}
+                      onToggleEnabled={(value) => {
+                        setOverrideEnabled((prev) => ({ ...prev, [project.value]: value }));
+                        if (!value && hasOverride) {
+                          void deleteOverride(project.value);
+                        }
+                      }}
                       onUpdateDraft={(field, value) => {
                         setOverrideDrafts((prev) => ({
                           ...prev,
