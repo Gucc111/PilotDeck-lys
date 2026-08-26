@@ -2549,15 +2549,14 @@ class ProjectRuntimeRegistry {
     const teammateBinding = this.teammateBindings.get(sessionKey);
     const leaderConfig = runtime.leaderConfig;
 
-    // Model resolution: teammate > leader > agent defaults
+    // Model resolution: teammate > agent defaults
+    // Leader model override is stored separately in `leaderModelOverride`
+    // and only applied per-turn when `runMode === "team"`.
     const teammateModel = teammateBinding?.definition.model
       ? parseTeammateModelRef(teammateBinding.definition.model)
       : undefined;
-    const leaderModel = !teammateBinding && leaderConfig?.model
-      ? parseTeammateModelRef(leaderConfig.model)
-      : undefined;
-    const provider = teammateModel?.provider ?? leaderModel?.provider ?? agent.model.provider;
-    const model = teammateModel?.model ?? leaderModel?.model ?? agent.model.model;
+    const provider = teammateModel?.provider ?? agent.model.provider;
+    const model = teammateModel?.model ?? agent.model.model;
     const override = this._sessionOverrides?.get(sessionKey);
     const permissionMode = override?.permissionMode ?? this.options.permissionMode;
     const cwd = override?.cwd ?? runtime.projectRoot;
@@ -2577,9 +2576,8 @@ class ProjectRuntimeRegistry {
     let maxContextTokens: number | undefined;
     let maxOutputTokens: number | undefined;
 
-    // Token limits: teammate > leader > agent > model catalog
+    // Token limits: teammate > agent > model catalog
     const configuredMaxContextTokens = teammateBinding?.definition.maxContextTokens
-      ?? (!teammateBinding ? leaderConfig?.maxContextTokens : undefined)
       ?? agent.maxContextTokens;
     try {
       const caps = runtime.model.getCapabilities(provider, model);
@@ -2589,7 +2587,6 @@ class ProjectRuntimeRegistry {
     }
     maxOutputTokens = readPositiveIntegerEnv(this.options.env.PILOTDECK_MAX_OUTPUT_TOKENS)
       ?? teammateBinding?.definition.maxOutputTokens
-      ?? (!teammateBinding ? leaderConfig?.maxOutputTokens : undefined)
       ?? agent.maxOutputTokens;
     const subagentModel = !teammateBinding ? agent.subagents?.default : undefined;
     let subagentRuntimeModel: CreateAgentSessionOptions["config"]["subagentModel"];
@@ -2637,11 +2634,14 @@ class ProjectRuntimeRegistry {
       maxContextTokens,
       maxOutputTokens,
       thinking: agent.thinking,
-      // Leader-specific config: custom prompt + extra tools
+      // Leader-specific config: custom prompt, extra tools, and model override.
+      // The model override is only applied per-turn when runMode === "team"
+      // (see AgentLoop.applyRunModeOverride).
       ...(!teammateBinding && leaderConfig
         ? {
             leaderPrompt: leaderConfig.prompt,
             leaderExtraTools: leaderConfig.extraTools.length > 0 ? leaderConfig.extraTools : undefined,
+            ...this.buildLeaderModelOverride(runtime, leaderConfig),
           }
         : {}),
       ...(teammateBinding
@@ -2681,6 +2681,39 @@ class ProjectRuntimeRegistry {
           ask: liveRuleSet.ask,
         },
       }),
+    };
+  }
+
+  private buildLeaderModelOverride(
+    runtime: ProjectRuntime,
+    leaderConfig: import("../extension/leader/types.js").ResolvedLeaderConfig,
+  ): { leaderModelOverride?: CreateAgentSessionOptions["config"]["leaderModelOverride"] } {
+    if (!leaderConfig.model) return {};
+    const parsed = parseTeammateModelRef(leaderConfig.model);
+    if (!parsed) return {};
+    let leaderMultimodal: import("../model/index.js").MultimodalConstraints | undefined;
+    try {
+      leaderMultimodal = runtime.model.getMultimodal(parsed.provider, parsed.model);
+    } catch {
+      // Leader model not found in catalog — leave multimodal undefined.
+    }
+    let leaderMaxContextTokens: number | undefined = leaderConfig.maxContextTokens;
+    let leaderMaxOutputTokens: number | undefined = leaderConfig.maxOutputTokens;
+    try {
+      const caps = runtime.model.getCapabilities(parsed.provider, parsed.model);
+      leaderMaxContextTokens ??= caps.maxContextTokens;
+      leaderMaxOutputTokens ??= caps.maxOutputTokens;
+    } catch {
+      // Capability lookup failed — keep explicit overrides only.
+    }
+    return {
+      leaderModelOverride: {
+        provider: parsed.provider,
+        model: parsed.model,
+        ...(leaderMultimodal ? { modelMultimodal: leaderMultimodal } : {}),
+        ...(leaderMaxContextTokens !== undefined ? { maxContextTokens: leaderMaxContextTokens } : {}),
+        ...(leaderMaxOutputTokens !== undefined ? { maxOutputTokens: leaderMaxOutputTokens } : {}),
+      },
     };
   }
 }

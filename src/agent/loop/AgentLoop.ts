@@ -140,6 +140,13 @@ export class AgentLoop {
     attemptMaxOutputTokens?: number;
     hardMaxOutputTokens?: number;
   }>();
+  private baseModelConfig?: {
+    provider: string;
+    model: string;
+    maxContextTokens?: number;
+    maxOutputTokens?: number;
+    modelMultimodal?: import("../../model/index.js").MultimodalConstraints;
+  };
 
   constructor(
     private readonly config: AgentRuntimeConfig,
@@ -454,13 +461,20 @@ export class AgentLoop {
         request,
         sessionId: input.sessionId,
         isMainAgent: !this.config.isSubagent,
-        metadata: stickyInfo
-          ? {
-            previousTier,
-            previousProvider: stickyInfo.previousProvider,
-            previousModel: stickyInfo.previousModel,
-          }
-          : previousTier ? { previousTier } : undefined,
+        metadata: {
+          ...(stickyInfo
+            ? {
+              previousTier,
+              previousProvider: stickyInfo.previousProvider,
+              previousModel: stickyInfo.previousModel,
+            }
+            : previousTier ? { previousTier } : {}
+          ),
+          ...(this.config.runMode === "team" && this.config.leaderModelOverride
+            ? { explicitProvider: this.config.leaderModelOverride.provider, explicitModel: this.config.leaderModelOverride.model }
+            : {}
+          ),
+        },
       });
       const routedLimits = this.getModelTokenLimits(decision.provider, decision.model);
       const routedMaxOutputTokens = routedLimits?.maxOutputTokens;
@@ -2444,6 +2458,31 @@ export class AgentLoop {
       this.config.runMode = runMode;
     } else {
       this.config.runMode ??= "agent";
+    }
+
+    if (!this.baseModelConfig) {
+      this.baseModelConfig = {
+        provider: this.config.provider,
+        model: this.config.model,
+        maxContextTokens: this.config.maxContextTokens,
+        maxOutputTokens: this.config.maxOutputTokens,
+        modelMultimodal: this.config.modelMultimodal,
+      };
+    }
+
+    if (this.config.runMode === "team" && this.config.leaderModelOverride) {
+      const override = this.config.leaderModelOverride;
+      this.config.provider = override.provider;
+      this.config.model = override.model;
+      this.config.maxContextTokens = override.maxContextTokens;
+      this.config.maxOutputTokens = override.maxOutputTokens;
+      this.config.modelMultimodal = override.modelMultimodal;
+    } else {
+      this.config.provider = this.baseModelConfig.provider;
+      this.config.model = this.baseModelConfig.model;
+      this.config.maxContextTokens = this.baseModelConfig.maxContextTokens;
+      this.config.maxOutputTokens = this.baseModelConfig.maxOutputTokens;
+      this.config.modelMultimodal = this.baseModelConfig.modelMultimodal;
     }
   }
 

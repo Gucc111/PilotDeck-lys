@@ -67,4 +67,15 @@ export type AgentRuntimeConfig = {
   leaderPrompt?: string;
   /** Extra tools appended to the 3 core Team Leader tools. */
   leaderExtraTools?: string[];
+  /**
+   * Leader model override — only applied when `runMode === "team"`.
+   * Stored separately so non-team modes always use `agent.model`.
+   */
+  leaderModelOverride?: {
+    provider: string;
+    model: string;
+    modelMultimodal?: MultimodalConstraints;
+    maxContextTokens?: number;
+    maxOutputTokens?: number;
+  };
 };
