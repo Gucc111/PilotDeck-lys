@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { CornerDownRight, Loader2, MoreHorizontal, MoveUp, Pause, Play, Route, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../lib/utils.js';
 import type { InputQueueState } from '../chat/types/queuedInput';
+import { getQueueMenuPosition } from './queueMenuPosition';
 
 type QueuedMessagesTrayProps = {
   state: InputQueueState;
@@ -23,6 +25,57 @@ export default function QueuedMessagesTray({
 }: QueuedMessagesTrayProps) {
   const { t } = useTranslation('chat');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const menuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!openMenuId) return undefined;
+
+    const updatePosition = () => {
+      const button = menuButtonRefs.current.get(openMenuId);
+      if (!button) {
+        setOpenMenuId(null);
+        return;
+      }
+      setMenuPosition(getQueueMenuPosition({
+        anchor: button.getBoundingClientRect(),
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      }));
+    };
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (
+        menuRef.current?.contains(target)
+        || menuButtonRefs.current.get(openMenuId)?.contains(target)
+      ) return;
+      setOpenMenuId(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setOpenMenuId(null);
+      menuButtonRefs.current.get(openMenuId)?.focus();
+    };
+
+    updatePosition();
+    const focusFrame = window.requestAnimationFrame(() => {
+      menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    });
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [openMenuId]);
+
   if (state.items.length === 0) return null;
 
   return (
@@ -52,7 +105,7 @@ export default function QueuedMessagesTray({
         </div>
       ) : null}
 
-      <div className="max-h-[156px] overflow-y-auto">
+      <div data-testid="queue-scroll-region" className="max-h-[156px] overflow-y-auto">
         {state.items.map((item, index) => {
           const busy = item.status === 'steering' || item.status === 'dispatching';
           return (
@@ -97,52 +150,69 @@ export default function QueuedMessagesTray({
               >
                 <Trash2 className="h-4 w-4" />
               </button>
-              <div
-                className="relative"
-                onBlur={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                    setOpenMenuId(null);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    setOpenMenuId(null);
-                    event.stopPropagation();
-                  }
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setOpenMenuId((current) => current === item.id ? null : item.id)}
-                  disabled={busy}
-                  className="rounded-md p-1.5 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-35 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-                  aria-label={t('inputQueue.more', { defaultValue: 'More queue actions' }) as string}
-                  aria-haspopup="menu"
-                  aria-expanded={openMenuId === item.id}
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </button>
-                {openMenuId === item.id ? (
-                  <div role="menu" className={cn(
-                    'absolute right-0 z-20 min-w-36 rounded-lg border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900',
-                    index === 0 ? 'top-8' : 'bottom-8',
-                  )}>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      disabled={index === 0}
-                      onClick={() => {
+              {index > 0 ? (
+                <div>
+                  <button
+                    ref={(node) => {
+                      if (node) menuButtonRefs.current.set(item.id, node);
+                      else menuButtonRefs.current.delete(item.id);
+                    }}
+                    type="button"
+                    onClick={() => {
+                      if (openMenuId === item.id) {
                         setOpenMenuId(null);
-                        onMoveToFront(item.id);
+                        return;
+                      }
+                      const button = menuButtonRefs.current.get(item.id);
+                      if (button) {
+                        setMenuPosition(getQueueMenuPosition({
+                          anchor: button.getBoundingClientRect(),
+                          viewportWidth: window.innerWidth,
+                          viewportHeight: window.innerHeight,
+                        }));
+                      }
+                      setOpenMenuId(item.id);
+                    }}
+                    disabled={busy}
+                    className="rounded-md p-1.5 text-neutral-400 transition hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-35 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                    aria-label={t('inputQueue.more', { defaultValue: 'More queue actions' }) as string}
+                    aria-haspopup="menu"
+                    aria-expanded={openMenuId === item.id}
+                  >
+                    <MoreHorizontal className="h-4 w-4" />
+                  </button>
+                  {openMenuId === item.id && typeof document !== 'undefined' ? createPortal(
+                    <div
+                      ref={menuRef}
+                      role="menu"
+                      aria-label={t('inputQueue.more', { defaultValue: 'More queue actions' }) as string}
+                      className="fixed z-[120] min-w-36 rounded-lg border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                      style={menuPosition}
+                      onBlur={(event) => {
+                        const nextTarget = event.relatedTarget as Node | null;
+                        if (
+                          !event.currentTarget.contains(nextTarget)
+                          && !menuButtonRefs.current.get(item.id)?.contains(nextTarget)
+                        ) setOpenMenuId(null);
                       }}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-neutral-800"
                     >
-                      <MoveUp className="h-3.5 w-3.5" />
-                      {t('inputQueue.moveToFront', { defaultValue: 'Move to front' })}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          onMoveToFront(item.id);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-neutral-700 outline-none hover:bg-neutral-100 focus-visible:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800 dark:focus-visible:bg-neutral-800"
+                      >
+                        <MoveUp className="h-3.5 w-3.5" />
+                        {t('inputQueue.moveToFront', { defaultValue: 'Move to front' })}
+                      </button>
+                    </div>,
+                    document.body,
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           );
         })}
