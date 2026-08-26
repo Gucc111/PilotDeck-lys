@@ -224,11 +224,11 @@ export class AgentLoop {
     const allowedReadFiles = this.allowedReadFiles;
     const applySteerMessages = async function* (pending: AgentSteerMessage[]): AsyncGenerator<AgentEvent, void, unknown> {
       for (const steer of pending) {
+        await input.onDurableMessage?.(steer.message);
         for (const filePath of steer.allowedReadFiles ?? []) {
           allowedReadFiles.add(filePath);
         }
         messages.push(steer.message);
-        await input.onDurableMessage?.(steer.message);
         input.onSteerApplied?.(steer.itemId);
         yield {
           type: "steer_applied",

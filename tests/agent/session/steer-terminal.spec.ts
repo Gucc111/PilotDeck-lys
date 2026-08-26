@@ -170,4 +170,10 @@ test("a partially persisted guidance batch applies only durable messages and ret
   assert.ok(remainingTypes.includes("turn_failed"));
   assert.ok(remainingTypes.indexOf("steer_unapplied") > remainingTypes.indexOf("turn_failed"));
   assert.ok(remainingTypes.indexOf("steer_unapplied") < remainingTypes.indexOf("turn_completed"));
+  assert.deepEqual(
+    session.snapshot().messages
+      .map((message) => message.metadata?.queueItemId)
+      .filter((itemId): itemId is string => typeof itemId === "string"),
+    ["queue-1"],
+  );
 });

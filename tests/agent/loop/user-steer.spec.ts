@@ -176,3 +176,73 @@ test("terminal guidance does not bypass the configured max turn budget", async (
   assert.equal(requestCount, 1);
   assert.equal(terminalDrainCount, 0);
 });
+
+test("failed steer persistence does not apply its message or file permissions", async () => {
+  const loop = new AgentLoop({
+    provider: "openai",
+    model: "test-model",
+    cwd: "/workspace/project",
+    permissionMode: "default",
+    permissionContext: createDefaultPermissionContext({
+      cwd: "/workspace/project",
+      mode: "default",
+      canPrompt: false,
+      bypassAvailable: true,
+    }),
+  }, {
+    router: {
+      invalidateSticky: () => ({ orchestrating: false }),
+    } as unknown as AgentRouterRuntime,
+    tools: {
+      registry: new ToolRegistry(),
+      scheduler: { executeAll: async () => [] },
+    },
+  });
+  const applied: string[] = [];
+  const events: string[] = [];
+  let drained = false;
+
+  await assert.rejects(async () => {
+    for await (const event of loop.run({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      messages: [{ role: "user", content: [{ type: "text", text: "Build a game" }] }],
+      drainSteerMessages: () => {
+        if (drained) return [];
+        drained = true;
+        return [
+          {
+            itemId: "queue-1",
+            message: {
+              role: "user",
+              content: [{ type: "text", text: "Use the first file" }],
+              metadata: { queueItemId: "queue-1" },
+            },
+            allowedReadFiles: ["/workspace/project/first.txt"],
+          },
+          {
+            itemId: "queue-2",
+            message: {
+              role: "user",
+              content: [{ type: "text", text: "Use the second file" }],
+              metadata: { queueItemId: "queue-2" },
+            },
+            allowedReadFiles: ["/workspace/project/second.txt"],
+          },
+        ];
+      },
+      onDurableMessage: (message) => {
+        if (message.metadata?.queueItemId === "queue-2") {
+          throw new Error("transcript unavailable");
+        }
+      },
+      onSteerApplied: (itemId) => applied.push(itemId),
+    })) {
+      events.push(event.type);
+    }
+  }, /transcript unavailable/);
+
+  assert.deepEqual(applied, ["queue-1"]);
+  assert.deepEqual(events.filter((type) => type === "steer_applied"), ["steer_applied"]);
+  assert.deepEqual(loop.snapshotFileState().allowedReadFiles, ["/workspace/project/first.txt"]);
+});

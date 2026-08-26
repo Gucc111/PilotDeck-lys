@@ -244,7 +244,11 @@ export class TurnRunner {
                 return { ...drained, messages: trackDrainedSteers(drained.messages) };
               }
             : undefined,
-          onSteerApplied: (itemId) => unacknowledgedSteers.delete(itemId),
+          onSteerApplied: (itemId) => {
+            const applied = unacknowledgedSteers.get(itemId);
+            if (applied) messages.push(applied.message);
+            unacknowledgedSteers.delete(itemId);
+          },
           onDurableMessage: (msg) => this.transcript.recordDurableMessage(options.sessionId, options.turnId, msg),
           onAgentStatusMessage: async (status) => {
             if (isVisibleFailureStatus(status)) {
