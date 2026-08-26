@@ -1,14 +1,78 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
     createAlwaysOnTurnEventForwarder,
     gatewayEventToFrames,
     getFallbackSessionActivity,
+    hydrateQueuedInputOptions,
     isGatewayUnavailableError,
     isTerminalAlwaysOnTurnEvent,
+    queuedInputDispositionAfterTurn,
     resolveTurnRunId,
+    resolveInputQueueProjectKey,
+    serializeQueuedInputForStorage,
     uiFilesToAttachments,
 } from './pilotdeck-bridge.js';
+
+describe('queued input persistence', () => {
+    it('lets an explicit project path repair a session first watched without project context', () => {
+        expect(resolveInputQueueProjectKey(
+            { projectKey: '/tmp/pilot-home' },
+            { projectPath: '/workspace/project' },
+            '/tmp/pilot-home',
+        )).toBe('/workspace/project');
+    });
+
+    it('stores uploaded images by path and restores their data URL on dispatch', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'pilotdeck-queue-image-'));
+        const imagePath = join(root, 'image.png');
+        try {
+            await writeFile(imagePath, Buffer.from('queued-image'));
+            const stored = serializeQueuedInputForStorage({
+                id: 'queue-1',
+                status: 'steering',
+                options: {
+                    images: [{
+                        name: 'image.png',
+                        path: imagePath,
+                        mimeType: 'image/png',
+                        data: 'data:image/png;base64,stale',
+                    }],
+                },
+            });
+
+            expect(stored.status).toBe('queued');
+            expect(stored.options.images[0].data).toBeUndefined();
+            expect(hydrateQueuedInputOptions(stored.options).images[0]).toMatchObject({
+                path: imagePath,
+                data: `data:image/png;base64,${Buffer.from('queued-image').toString('base64')}`,
+            });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps pathless region captures inline because they cannot be reloaded from disk', () => {
+        const stored = serializeQueuedInputForStorage({
+            id: 'queue-1',
+            options: { images: [{ name: 'region.png', data: 'data:image/png;base64,abc' }] },
+        });
+
+        expect(stored.options.images[0].data).toBe('data:image/png;base64,abc');
+    });
+});
+
+describe('queued input turn boundaries', () => {
+    it('dispatches after natural completion but pauses after Stop or failure', () => {
+        expect(queuedInputDispositionAfterTurn('completed', false)).toBe('dispatch');
+        expect(queuedInputDispositionAfterTurn('completed', true)).toBe('keep');
+        expect(queuedInputDispositionAfterTurn('aborted_streaming', true)).toBe('pause');
+        expect(queuedInputDispositionAfterTurn('tool_error', false)).toBe('pause');
+    });
+});
 
 describe('turn run identity', () => {
     it('reuses a non-empty client run id', () => {
@@ -61,6 +125,26 @@ describe('session activity fallback', () => {
 });
 
 describe('gatewayEventToFrames agent status errors', () => {
+    it('renders applied guidance as a user message with its queue identity', () => {
+        const frames = gatewayEventToFrames({
+            type: 'steer_applied',
+            itemId: 'queue-1',
+            message: {
+                role: 'user',
+                content: [{ type: 'text', text: 'Use HTML instead' }],
+            },
+        }, 'web:s_test', 'pilotdeck');
+
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toMatchObject({
+            kind: 'text',
+            role: 'user',
+            content: 'Use HTML instead',
+            queueItemId: 'queue-1',
+            isSteer: true,
+        });
+    });
+
     it('maps tool result detail availability to a mergeable tool_result frame', () => {
         const frames = gatewayEventToFrames({
             type: 'tool_result_detail_available',

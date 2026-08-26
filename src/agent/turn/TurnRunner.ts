@@ -15,6 +15,7 @@ import type { SessionMetadataValue } from "../../session/transcript/TranscriptEn
 import type { SessionTitleGenerator } from "../../session/title/SessionTitleGenerator.js";
 import { createVisibleErrorStatusDetail } from "../../status/agentStatus.js";
 import { FileArtifactCollector, type FileArtifact } from "../../session/artifacts/index.js";
+import type { AgentSteerMessage } from "../session/SteerMailbox.js";
 
 export type TurnRunnerOptions = {
   sessionId: string;
@@ -35,6 +36,8 @@ export type TurnRunnerOptions = {
   /** Synthetic messages appended after user input; stored with metadata.synthetic flag. */
   syntheticMessages?: CanonicalMessage[];
   modelOverride?: AgentModelOverride;
+  drainSteerMessages?: () => AgentSteerMessage[];
+  drainOrCloseSteerMailbox?: () => { messages: AgentSteerMessage[]; closed: boolean };
 };
 
 export type TurnRunnerResult = {
@@ -210,6 +213,8 @@ export class TurnRunner {
           permissionRules: options.permissionRules,
           modelOverride: options.modelOverride,
           abortSignal: options.abortSignal,
+          drainSteerMessages: options.drainSteerMessages,
+          drainOrCloseSteerMailbox: options.drainOrCloseSteerMailbox,
           onDurableMessage: (msg) => this.transcript.recordDurableMessage(options.sessionId, options.turnId, msg),
           onAgentStatusMessage: async (status) => {
             if (isVisibleFailureStatus(status)) {

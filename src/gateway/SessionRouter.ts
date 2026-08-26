@@ -1,4 +1,6 @@
 import type { AgentSession } from "../agent/index.js";
+import type { CanonicalMessage } from "../model/index.js";
+import type { AgentSteerResult } from "../agent/session/SteerMailbox.js";
 import type { GatewaySessionInfo, ListSessionsInput, ListSessionsResult } from "./protocol/types.js";
 
 export type GatewaySessionContext = {
@@ -122,6 +124,16 @@ export class SessionRouter {
     if (record) {
       record.lastUsedAt = this.nowMs();
     }
+  }
+
+  steer(
+    sessionKey: string,
+    input: { turnId: string; itemId: string; message: CanonicalMessage; allowedReadFiles?: string[] },
+  ): AgentSteerResult {
+    const record = this.sessions.get(sessionKey);
+    if (!record) return { accepted: false, reason: "no_active_turn" };
+    record.lastUsedAt = this.nowMs();
+    return record.session.steer(input);
   }
 
   async close(sessionKey: string): Promise<void> {

@@ -119,7 +119,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setSessionRuntimeState).toHaveBeenCalledWith('inactive');
   });
 
-  it('keeps subagents running and synchronizes status for a non-terminal force-start error', () => {
+  it('keeps subagents running and synchronizes status for a non-terminal session-busy error', () => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
     const setIsLoading = vi.fn();
@@ -150,8 +150,8 @@ describe('useChatRealtimeHandlers terminal errors', () => {
       mocks.listener?.({
         kind: 'error',
         sessionId: 'cron:task-1',
-        code: 'force_start_abort_failed',
-        content: 'The current turn may still be running.',
+        code: 'session_busy',
+        content: 'This session already has an active turn.',
         terminal: false,
       });
     });

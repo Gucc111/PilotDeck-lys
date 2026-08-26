@@ -47,7 +47,12 @@ import { randomUUID } from 'node:crypto';
 import { installGlobalProxy } from '../../src/cli/proxy.js';
 await installGlobalProxy();
 
-import { resolvePilotHome, createProjectId, sanitizeSessionIdForPath } from './utils/pilotPaths.js';
+import {
+    resolvePilotHome,
+    createProjectId,
+    resolveProjectStorageId,
+    sanitizeSessionIdForPath,
+} from './utils/pilotPaths.js';
 // Read the gateway client straight from TypeScript source via tsx — the UI
 // server is launched with `node --import tsx`, so no prior `npm run build`
 // is required. (A prior tsx 4.x JSDoc dynamic-import parse bug was fixed by
@@ -284,6 +289,151 @@ export function getPilotDeckRepoRoot() {
  * the transcript and the agent state machine.
  */
 const sessionState = new Map();
+let sessionInputNotificationSink = null;
+
+export function registerSessionInputNotificationForwarding(forward) {
+    sessionInputNotificationSink = typeof forward === 'function' ? forward : null;
+}
+
+function queueSidecarPath(state) {
+    if (!state?.projectKey || !state?.sessionKey) return null;
+    const projectId = resolveProjectStorageId(state.projectKey, GENERAL_HOME);
+    return path.join(
+        GENERAL_HOME,
+        'projects',
+        projectId,
+        'pending-inputs',
+        `${sanitizeSessionIdForPath(state.sessionKey)}.json`,
+    );
+}
+
+function loadQueueState(state) {
+    if (state.queueLoaded) return;
+    state.queueLoaded = true;
+    const filePath = queueSidecarPath(state);
+    if (!filePath) return;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (Array.isArray(parsed.items)) {
+            state.inputQueue = parsed.items
+                .filter((item) => item && typeof item.id === 'string' && typeof item.command === 'string')
+                .map((item) => ({ ...item, status: 'queued' }));
+        }
+        if (state.inputQueue.length > 0) {
+            state.queuePaused = true;
+            state.queuePauseReason = 'restart_recovery';
+        }
+        state.queueRevision = Number.isFinite(parsed.revision) ? parsed.revision : state.queueRevision;
+    } catch (error) {
+        if (error?.code !== 'ENOENT') {
+            console.warn('[pilotdeck-bridge] failed to restore queued inputs:', error?.message || error);
+        }
+    }
+}
+
+export function serializeQueuedInputForStorage(item) {
+    const options = item?.options && typeof item.options === 'object' ? item.options : {};
+    const images = Array.isArray(options.images)
+        ? options.images.map((image) => {
+            if (!image || typeof image !== 'object') return image;
+            if (typeof image.path !== 'string' || !image.path) return image;
+            const { data: _data, ...metadata } = image;
+            return metadata;
+        })
+        : options.images;
+    return {
+        ...item,
+        status: 'queued',
+        options: {
+            ...options,
+            ...(Array.isArray(images) ? { images } : {}),
+        },
+    };
+}
+
+export function hydrateQueuedInputOptions(options = {}) {
+    if (!Array.isArray(options.images)) return options;
+    return {
+        ...options,
+        images: options.images.map((image) => {
+            if (!image || typeof image !== 'object' || typeof image.data === 'string') return image;
+            if (typeof image.path !== 'string' || !image.path) return image;
+            try {
+                const mimeType = String(image.mimeType || 'image/png');
+                const data = fs.readFileSync(image.path).toString('base64');
+                return { ...image, data: `data:${mimeType};base64,${data}` };
+            } catch (error) {
+                console.warn('[pilotdeck-bridge] failed to restore queued image:', image.path, error?.message || error);
+                return image;
+            }
+        }),
+    };
+}
+
+function persistQueueState(state) {
+    const filePath = queueSidecarPath(state);
+    if (!filePath) return;
+    try {
+        if (state.inputQueue.length === 0) {
+            fs.rmSync(filePath, { force: true });
+            return;
+        }
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+        fs.writeFileSync(tempPath, JSON.stringify({
+            version: 1,
+            revision: state.queueRevision,
+            paused: state.queuePaused,
+            pauseReason: state.queuePauseReason,
+            items: state.inputQueue.map(serializeQueuedInputForStorage),
+        }, null, 2), { mode: 0o600 });
+        fs.renameSync(tempPath, filePath);
+    } catch (error) {
+        console.warn('[pilotdeck-bridge] failed to persist queued inputs:', error?.message || error);
+    }
+}
+
+function publicQueueItem(item) {
+    return {
+        id: item.id,
+        displayText: item.displayText,
+        createdAt: item.createdAt,
+        status: item.status,
+        attachmentCount: [
+            ...(Array.isArray(item.options?.images) ? item.options.images : []),
+            ...(Array.isArray(item.options?.attachments) ? item.options.attachments : []),
+        ].length,
+    };
+}
+
+function inputQueueSnapshot(state) {
+    return {
+        type: 'input-queue-state',
+        sessionId: state.sessionKey,
+        revision: state.queueRevision,
+        paused: state.queuePaused && state.inputQueue.length > 0,
+        ...(state.queuePauseReason ? { pauseReason: state.queuePauseReason } : {}),
+        ...(state.active && state.runId ? { activeRunId: state.runId } : {}),
+        items: state.inputQueue.map(publicQueueItem),
+    };
+}
+
+function emitInputQueueState(state, writer) {
+    const snapshot = inputQueueSnapshot(state);
+    if (writer?.send) writer.send(snapshot);
+    else sessionInputNotificationSink?.(state.sessionKey, snapshot);
+    return snapshot;
+}
+
+function mutateInputQueue(state, writer) {
+    state.queueRevision += 1;
+    if (state.inputQueue.length === 0) {
+        state.queuePaused = false;
+        state.queuePauseReason = undefined;
+    }
+    persistQueueState(state);
+    return emitInputQueueState(state, writer);
+}
 
 function isPilotDeckSessionKey(value) {
     if (typeof value !== 'string' || !value.trim()) return false;
@@ -314,12 +464,22 @@ function ensureSessionState(sessionKey, projectKey, channelKey) {
             active: false,
             tokenBudget: null,
             hasVisibleFailureStatus: false,
+            inputQueue: [],
+            queuePaused: false,
+            queuePauseReason: undefined,
+            queueRevision: 0,
+            queueLoaded: false,
+            queueDispatching: false,
         };
         sessionState.set(sessionKey, state);
     } else {
-        state.projectKey = projectKey;
+        if (projectKey && state.projectKey !== projectKey && state.inputQueue.length === 0) {
+            state.queueLoaded = false;
+            state.projectKey = projectKey;
+        }
         state.channelKey = channelKey;
     }
+    loadQueueState(state);
     return state;
 }
 
@@ -482,6 +642,27 @@ export function gatewayEventToFrames(event, sessionId, provider) {
     switch (event.type) {
         case 'input_accepted':
             return [];
+        case 'steer_applied': {
+            const text = typeof event.displayText === 'string'
+                ? event.displayText
+                : (event.message?.content || [])
+                    .filter((block) => block?.type === 'text')
+                    .map((block) => block.text)
+                    .join('\n')
+                    .trim();
+            return [
+                createNormalizedMessage({
+                    ...base,
+                    kind: 'text',
+                    role: 'user',
+                    content: text,
+                    queueItemId: event.itemId,
+                    isSteer: true,
+                    ...(Array.isArray(event.images) ? { images: event.images } : {}),
+                    ...(Array.isArray(event.attachments) ? { attachments: event.attachments } : {}),
+                }),
+            ];
+        }
         case 'turn_started':
             return [
                 createNormalizedMessage({
@@ -1161,42 +1342,22 @@ export async function runChatViaGateway(
     let inputAccepted = false;
     let sawTurnCompleted = false;
     let sawGatewayError = false;
+    let turnFinishReason = null;
     try {
         gw = await ensureGateway();
 
         if (staleRunId) {
-            const abortReason = options?.forceStart === true
-                ? 'user:force_start_next_turn'
-                : 'system:stale_turn';
-            const abortAction = options?.forceStart === true ? 'force-start aborting' : 'aborting stale';
-            console.log(
-                `[pilotdeck-bridge] ${abortAction} turn ${staleRunId} for ${sessionKey} before submit`,
-            );
-            try {
-                await gw.abortTurn({ sessionKey, runId: staleRunId, reason: abortReason });
-            } catch (err) {
-                if (options?.forceStart === true) {
-                    const message = 'Could not stop the current turn before sending the queued message. Please wait for the current turn to finish or try stopping it again.';
-                    console.warn('[pilotdeck-bridge] force-start abort failed:', err?.message || err);
-                    writer.send(
-                        createNormalizedMessage({
-                            provider,
-                            sessionId: sessionKey,
-                            kind: 'error',
-                            code: 'force_start_abort_failed',
-                            terminal: false,
-                            content: message,
-                            userHint: message,
-                        }),
-                    );
-                    return;
-                }
-                console.warn('[pilotdeck-bridge] stale abort failed (continuing):', err?.message || err);
-            }
-
-            state.runId = runId;
-            state.active = true;
-            state.hasVisibleFailureStatus = false;
+            const message = 'This session already has an active turn. Queue the message or stop the current response first.';
+            writer.send(createNormalizedMessage({
+                provider,
+                sessionId: sessionKey,
+                kind: 'error',
+                code: 'session_busy',
+                terminal: false,
+                content: message,
+                userHint: message,
+            }));
+            return { sessionKey, runId, inputAccepted, sawTurnCompleted, sawGatewayError: true };
         }
 
         const stream = gw.submitTurn({
@@ -1260,7 +1421,7 @@ export async function runChatViaGateway(
             const compactTokenBudget = event && event.type === 'agent_status' && event.event === 'compact_completed'
                 ? tokenBudgetFromCompact(state.tokenBudget, event.detail)
                 : null;
-            const eventForFrames = compactTokenBudget
+            let eventForFrames = compactTokenBudget
                 ? {
                     ...event,
                     detail: {
@@ -1269,6 +1430,20 @@ export async function runChatViaGateway(
                     },
                 }
                 : event;
+            if (event?.type === 'steer_applied') {
+                const queuedItem = state.inputQueue.find((item) => item.id === event.itemId);
+                if (queuedItem) {
+                    const hydratedOptions = hydrateQueuedInputOptions(queuedItem.options);
+                    eventForFrames = {
+                        ...eventForFrames,
+                        displayText: queuedItem.displayText,
+                        images: hydratedOptions.images,
+                        attachments: hydratedOptions.attachments,
+                    };
+                    state.inputQueue = state.inputQueue.filter((item) => item.id !== event.itemId);
+                    mutateInputQueue(state);
+                }
+            }
             if (compactTokenBudget) {
                 state.tokenBudget = compactTokenBudget;
             }
@@ -1278,6 +1453,7 @@ export async function runChatViaGateway(
             // wait for the async generator to fully close.
             if (event && event.type === 'turn_completed') {
                 sawTurnCompleted = true;
+                turnFinishReason = event.finishReason || null;
                 clearActiveRunIfCurrent(state, runId);
             }
             const suppressDuplicateError = eventForFrames?.type === 'error' && state.hasVisibleFailureStatus;
@@ -1288,7 +1464,10 @@ export async function runChatViaGateway(
             }
         }
 
-        if (!sawTurnCompleted && !sawGatewayError) {
+        if (!sawTurnCompleted && sawGatewayError) {
+            turnFinishReason = 'gateway_error';
+        } else if (!sawTurnCompleted) {
+            turnFinishReason = 'gateway_stream_ended';
             const message = 'Gateway stream ended before turn_completed; no final assistant response was received.';
             const userHint = 'The model stream ended before PilotDeck received a final turn result. Please retry this message; if it repeats, check the gateway/model provider logs.';
             const statusEvent = createBridgeFailureStatusEvent({
@@ -1309,6 +1488,7 @@ export async function runChatViaGateway(
             sendBridgeStatusEvent(writer, statusEvent, sessionKey, provider);
         }
     } catch (error) {
+        turnFinishReason = 'gateway_bridge_error';
         const rawMessage = error instanceof Error ? error.message : String(error);
         const gatewayUnavailable = !gw || isGatewayUnavailableError(error);
         if (gatewayUnavailable && gw) {
@@ -1350,7 +1530,211 @@ export async function runChatViaGateway(
     } finally {
         clearActiveRunIfCurrent(state, runId);
     }
+    for (const item of state.inputQueue) {
+        if (item.status === 'steering') item.status = 'queued';
+    }
+    if (state.inputQueue.length > 0) {
+        const disposition = queuedInputDispositionAfterTurn(turnFinishReason, state.queuePaused);
+        if (disposition === 'dispatch') {
+            await dispatchNextQueuedInput(state, writer, provider);
+        } else if (disposition === 'pause') {
+            state.queuePaused = true;
+            state.queuePauseReason = turnFinishReason.startsWith('aborted')
+                ? 'user_stopped'
+                : 'previous_turn_failed';
+            mutateInputQueue(state, writer);
+        }
+    }
     return { sessionKey, runId, inputAccepted, sawTurnCompleted, sawGatewayError };
+}
+
+export function queuedInputDispositionAfterTurn(finishReason, queuePaused) {
+    if (finishReason === 'completed') return queuePaused ? 'keep' : 'dispatch';
+    if (finishReason) return 'pause';
+    return 'keep';
+}
+
+function queuedUserFrame(item, sessionKey, runId, provider) {
+    return createNormalizedMessage({
+        provider,
+        sessionId: sessionKey,
+        runId,
+        kind: 'text',
+        role: 'user',
+        content: item.displayText,
+        queueItemId: item.id,
+        images: (item.options?.images || []).map((image) => image?.data).filter(Boolean),
+        attachments: item.options?.attachments || [],
+    });
+}
+
+async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
+    if (state.active || state.queuePaused || state.queueDispatching) return false;
+    const item = state.inputQueue[0];
+    if (!item) return false;
+    state.queueDispatching = true;
+    item.status = 'dispatching';
+    mutateInputQueue(state, writer);
+    const runId = resolveTurnRunId(item.runId || item.id);
+    const hydratedItem = { ...item, options: hydrateQueuedInputOptions(item.options) };
+    let accepted = false;
+    try {
+        const result = await runChatViaGateway(
+            hydratedItem.command,
+            {
+                ...(hydratedItem.options || {}),
+                sessionId: state.sessionKey,
+                sessionKey: state.sessionKey,
+                runId,
+            },
+            writer,
+            provider,
+            {
+                onInputAccepted: async () => {
+                    accepted = true;
+                    state.inputQueue = state.inputQueue.filter((entry) => entry.id !== item.id);
+                    mutateInputQueue(state, writer);
+                    writer.send(queuedUserFrame(hydratedItem, state.sessionKey, runId, provider));
+                },
+            },
+        );
+        if (!accepted && !result?.inputAccepted) {
+            const current = state.inputQueue.find((entry) => entry.id === item.id);
+            if (current) current.status = 'failed';
+            state.queuePaused = true;
+            state.queuePauseReason = 'previous_turn_failed';
+            mutateInputQueue(state, writer);
+        }
+        return accepted || result?.inputAccepted === true;
+    } finally {
+        state.queueDispatching = false;
+        if (!state.active && !state.queuePaused && state.inputQueue.length > 0) {
+            void dispatchNextQueuedInput(state, writer, provider);
+        }
+    }
+}
+
+export function getInputQueueStateViaGateway(sessionId, options = {}) {
+    if (!isPilotDeckSessionKey(sessionId)) return null;
+    const existing = sessionState.get(sessionId);
+    const state = ensureSessionState(
+        sessionId,
+        resolveInputQueueProjectKey(existing, options),
+        'web',
+    );
+    return inputQueueSnapshot(state);
+}
+
+export function resolveInputQueueProjectKey(existing, options = {}, fallback = GENERAL_HOME) {
+    return options.projectPath || options.cwd || existing?.projectKey || fallback;
+}
+
+export async function enqueueInputViaGateway(sessionId, item, writer, provider = 'pilotdeck') {
+    if (!isPilotDeckSessionKey(sessionId)) {
+        return { ok: false, error: 'A concrete PilotDeck session is required.' };
+    }
+    const state = ensureSessionState(
+        sessionId,
+        item?.options?.projectPath || item?.options?.cwd || GENERAL_HOME,
+        'web',
+    );
+    if (!item || typeof item.id !== 'string' || typeof item.command !== 'string') {
+        return { ok: false, error: 'Invalid queued input.' };
+    }
+    if (state.inputQueue.some((entry) => entry.id === item.id)) {
+        return { ok: true, state: inputQueueSnapshot(state) };
+    }
+    if (state.inputQueue.length >= 20) {
+        return { ok: false, error: 'The message queue is full.' };
+    }
+    state.inputQueue.push({
+        id: item.id,
+        runId: item.runId,
+        command: item.command,
+        displayText: String(item.displayText || item.command).trim(),
+        createdAt: item.createdAt || new Date().toISOString(),
+        options: item.options || {},
+        status: 'queued',
+    });
+    const snapshot = mutateInputQueue(state, writer);
+    if (!state.active && !state.queuePaused) {
+        void dispatchNextQueuedInput(state, writer, provider);
+    }
+    return { ok: true, state: snapshot };
+}
+
+export function deleteQueuedInputViaGateway(sessionId, itemId, writer) {
+    const state = sessionState.get(sessionId);
+    if (!state) return { ok: false, error: 'Session queue was not found.' };
+    const before = state.inputQueue.length;
+    state.inputQueue = state.inputQueue.filter((item) => item.id !== itemId || item.status === 'dispatching');
+    if (state.inputQueue.length === before) return { ok: false, error: 'Queued message was not found.' };
+    return { ok: true, state: mutateInputQueue(state, writer) };
+}
+
+export function moveQueuedInputToFrontViaGateway(sessionId, itemId, writer) {
+    const state = sessionState.get(sessionId);
+    if (!state) return { ok: false, error: 'Session queue was not found.' };
+    const index = state.inputQueue.findIndex((item) => item.id === itemId && item.status !== 'dispatching');
+    if (index < 0) return { ok: false, error: 'Queued message was not found.' };
+    const [item] = state.inputQueue.splice(index, 1);
+    state.inputQueue.unshift(item);
+    return { ok: true, state: mutateInputQueue(state, writer) };
+}
+
+export function pauseInputQueueViaGateway(sessionId, writer, reason = 'user_stopped') {
+    const state = sessionState.get(sessionId);
+    if (!state || state.inputQueue.length === 0) return null;
+    state.queuePaused = true;
+    state.queuePauseReason = reason;
+    return mutateInputQueue(state, writer);
+}
+
+export async function resumeInputQueueViaGateway(sessionId, writer, provider = 'pilotdeck') {
+    const state = sessionState.get(sessionId);
+    if (!state) return { ok: false, error: 'Session queue was not found.' };
+    state.queuePaused = false;
+    state.queuePauseReason = undefined;
+    const snapshot = mutateInputQueue(state, writer);
+    if (!state.active) void dispatchNextQueuedInput(state, writer, provider);
+    return { ok: true, state: snapshot };
+}
+
+export async function steerQueuedInputViaGateway(sessionId, itemId, writer, provider = 'pilotdeck') {
+    const state = sessionState.get(sessionId);
+    const item = state?.inputQueue.find((entry) => entry.id === itemId);
+    if (!state || !item) return { ok: false, error: 'Queued message was not found.' };
+    if (!state.active || !state.runId) {
+        return { ok: false, error: 'The active turn has already ended; the message remains queued.' };
+    }
+    item.status = 'steering';
+    mutateInputQueue(state, writer);
+    try {
+        const gw = await ensureGateway();
+        const hydratedOptions = hydrateQueuedInputOptions(item.options);
+        const attachments = [
+            ...(uiImagesToAttachments(hydratedOptions.images) || []),
+            ...(uiFilesToAttachments(hydratedOptions.attachments) || []),
+        ];
+        const result = await gw.steerTurn({
+            sessionKey: state.sessionKey,
+            runId: state.runId,
+            itemId: item.id,
+            message: item.command,
+            projectKey: state.projectKey,
+            ...(attachments.length > 0 ? { attachments } : {}),
+        });
+        if (!result?.accepted) {
+            item.status = 'queued';
+            mutateInputQueue(state, writer);
+            return { ok: false, error: 'The active turn ended before this message could be added.' };
+        }
+        return { ok: true, state: inputQueueSnapshot(state) };
+    } catch (error) {
+        item.status = 'queued';
+        mutateInputQueue(state, writer);
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
 }
 
 export function resolveTurnRunId(value) {

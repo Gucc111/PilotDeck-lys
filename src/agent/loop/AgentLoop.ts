@@ -56,6 +56,7 @@ import type {
 import { actualInputTokensFromUsage } from "../../context/index.js";
 import type { PermissionMode, PermissionRule, PermissionRuleSet } from "../../permission/index.js";
 import type { AgentControlBoundaryTranscriptEntry } from "../../session/transcript/TranscriptEntry.js";
+import type { AgentSteerMessage } from "../session/SteerMailbox.js";
 import { collectToolCalls } from "./collectToolCalls.js";
 import { createMissingToolResult, ensureToolResultPairing } from "./ensureToolResultPairing.js";
 import { LargeFileRepair, type LargeFileRepairDecision } from "./LargeFileRepair.js";
@@ -142,6 +143,10 @@ export type AgentLoopInput = {
     boundary: AgentControlBoundaryTranscriptEntry["boundary"];
     messages: CanonicalMessage[];
   }) => void | Promise<void>;
+  /** Drain user guidance that should join this active turn before the next model request. */
+  drainSteerMessages?: () => AgentSteerMessage[];
+  /** Atomically drain pending guidance or close the inbox before terminal completion. */
+  drainOrCloseSteerMailbox?: () => { messages: AgentSteerMessage[]; closed: boolean };
 };
 
 export type AgentLoopRunResult = {
@@ -213,6 +218,24 @@ export class AgentLoop {
     const createAbortStatus = (): AgentStatusMessage | undefined => {
       if (!shouldSurfaceAbortStatus(input.abortSignal?.reason)) return undefined;
       return createTurnAbortedStatus({ reason: stringifyAbortReason(input.abortSignal?.reason) });
+    };
+    const applySteerMessages = async (pending: AgentSteerMessage[]): Promise<AgentEvent[]> => {
+      const events: AgentEvent[] = [];
+      for (const steer of pending) {
+        for (const filePath of steer.allowedReadFiles ?? []) {
+          this.allowedReadFiles.add(filePath);
+        }
+        messages.push(steer.message);
+        await input.onDurableMessage?.(steer.message);
+        events.push({
+          type: "steer_applied",
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          itemId: steer.itemId,
+          message: steer.message,
+        });
+      }
+      return events;
     };
     const captureTurn = async (errored: boolean): Promise<void> => {
       const hook = this.dependencies.context?.captureTurn;
@@ -408,6 +431,11 @@ export class AgentLoop {
         await captureTurn(result.type === "error");
         yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
         return { result, messages };
+      }
+
+      const pendingSteers = input.drainSteerMessages?.() ?? [];
+      for (const event of await applySteerMessages(pendingSteers)) {
+        yield event;
       }
 
       let pendingContextBudget: TokenBudgetSnapshot | undefined;
@@ -1620,6 +1648,21 @@ export class AgentLoop {
               detectedFormat: assembled.textToolCallFormat ?? detectFormatByText(assistantText)?.id,
             },
           };
+        }
+
+        const terminalSteers = input.drainOrCloseSteerMailbox?.();
+        if (terminalSteers && terminalSteers.messages.length > 0) {
+          for (const event of await applySteerMessages(terminalSteers.messages)) {
+            yield event;
+          }
+          turnCount += 1;
+          yield {
+            type: "turn_continued",
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            reason: "user_steer",
+          };
+          continue;
         }
 
         const stopHooks = await this.dispatchLifecycle(input, "Stop", {

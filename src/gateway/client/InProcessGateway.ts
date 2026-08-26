@@ -29,6 +29,8 @@ import type {
   GatewaySessionPermissionGrantInput,
   GatewayServerInfo,
   GatewaySubmitTurnInput,
+  GatewaySteerTurnInput,
+  GatewaySteerTurnResult,
   ListSessionsInput,
   ListSessionsResult,
   NewSessionInput,
@@ -721,6 +723,35 @@ export class InProcessGateway implements Gateway {
         runId,
       });
     }
+  }
+
+  async steerTurn(input: GatewaySteerTurnInput): Promise<GatewaySteerTurnResult> {
+    const activeRunId = this.router.activeTurnRunId(input.sessionKey);
+    if (!activeRunId) return { accepted: false, reason: "no_active_turn" };
+    if (activeRunId !== input.runId) return { accepted: false, reason: "turn_mismatch" };
+
+    const attachments = input.attachments ?? [];
+    const allowedReadFiles = await collectRegisteredAttachmentReadFiles(attachments);
+    const agentInput = await buildAgentInputWithAttachments(
+      input.message,
+      attachments,
+      allowedReadFiles,
+      input.projectKey,
+      this.options.funasrInstallCommand ?? getPilotDeckInstallCommand(),
+    );
+    const message: CanonicalMessage = {
+      role: "user",
+      content: agentInput.type === "text"
+        ? [{ type: "text", text: agentInput.text }]
+        : agentInput.content,
+      metadata: { purpose: "mid_turn_steer", queueItemId: input.itemId },
+    };
+    return this.router.steer(input.sessionKey, {
+      turnId: input.runId,
+      itemId: input.itemId,
+      message,
+      allowedReadFiles,
+    });
   }
 
   async abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void> {
@@ -1808,6 +1839,8 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
       return [{ type: "turn_started", runId }];
     case "input_accepted":
       return [{ type: "input_accepted", runId }];
+    case "steer_applied":
+      return [{ type: "steer_applied", itemId: event.itemId, message: event.message }];
     case "model_request_started":
       return [{ type: "model_request_started", model: event.model, provider: event.provider }];
     case "model_event":
