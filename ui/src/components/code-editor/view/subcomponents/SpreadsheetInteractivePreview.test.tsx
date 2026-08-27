@@ -2,13 +2,14 @@
 import { StrictMode } from 'react';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { IWorkbookData } from '@univerjs/core';
+import { LocaleType, type IWorkbookData } from '@univerjs/core';
 import SpreadsheetInteractivePreview from './SpreadsheetInteractivePreview';
 
 const univerState = vi.hoisted(() => ({
   created: 0,
   disposed: 0,
 }));
+const translate = vi.hoisted(() => (key: string) => key);
 
 vi.mock('@univerjs/core', async () => {
   const React = await import('react');
@@ -120,7 +121,7 @@ vi.mock('@univerjs/ui/facade', () => ({}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: translate,
     i18n: { resolvedLanguage: 'en' },
   }),
 }));
@@ -144,7 +145,7 @@ const workbook = (name: string): IWorkbookData => ({
   id: `workbook-${name}`,
   name,
   appVersion: '0.25.1',
-  locale: 'enUS',
+  locale: LocaleType.EN_US,
   styles: {},
   sheetOrder: ['sheet-0'],
   sheets: {
@@ -169,6 +170,13 @@ const renderPreview = (data: IWorkbookData) => (
   </StrictMode>
 );
 
+const flushLifecycleTimers = async () => {
+  await act(async () => {
+    await vi.runAllTimersAsync();
+  });
+  expect(vi.getTimerCount()).toBe(0);
+};
+
 describe('SpreadsheetInteractivePreview lifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -178,7 +186,7 @@ describe('SpreadsheetInteractivePreview lifecycle', () => {
 
   afterEach(() => {
     cleanup();
-    vi.runOnlyPendingTimers();
+    vi.runAllTimers();
     vi.useRealTimers();
   });
 
@@ -186,20 +194,14 @@ describe('SpreadsheetInteractivePreview lifecycle', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const view = render(renderPreview(workbook('first')));
 
-    await act(async () => {
-      vi.runOnlyPendingTimers();
-      await Promise.resolve();
-    });
+    await flushLifecycleTimers();
 
     expect(screen.getByTestId('mock-univer-canvas')).not.toBeNull();
     expect(univerState.created).toBe(1);
     expect(univerState.disposed).toBe(0);
 
     view.rerender(renderPreview(workbook('second')));
-    await act(async () => {
-      vi.runOnlyPendingTimers();
-      await Promise.resolve();
-    });
+    await flushLifecycleTimers();
 
     expect(screen.getByTestId('mock-univer-canvas')).not.toBeNull();
     expect(univerState.created).toBe(2);
@@ -209,10 +211,7 @@ describe('SpreadsheetInteractivePreview lifecycle', () => {
     );
 
     view.unmount();
-    await act(async () => {
-      vi.runOnlyPendingTimers();
-      await Promise.resolve();
-    });
+    await flushLifecycleTimers();
     expect(univerState.disposed).toBe(2);
     consoleError.mockRestore();
   });
