@@ -11,6 +11,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
+  ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
@@ -320,6 +321,7 @@ export default function SidebarV2({
   const [contextMenu, setContextMenu] = useState<SidebarContextMenu | null>(null);
   const [collapsedSessionProjects, setCollapsedSessionProjects] = useState<Set<string>>(new Set());
   const [draftSessionProjectName, setDraftSessionProjectName] = useState<string | null>(null);
+  const [expandedTeamLeaders, setExpandedTeamLeaders] = useState<Set<string>>(new Set());
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
   // Segmented toggle between the Projects list and the General workspace.
@@ -754,6 +756,22 @@ export default function SidebarV2({
         ? sessionTitleById.get(session.parentSessionId)
         : undefined;
 
+      const hasTeammateChildren = !isForkChild && node.children.length > 0 &&
+        node.children.some((child) => child.flat.session.sessionKind === 'teammate');
+      const isTeamExpanded = expandedTeamLeaders.has(sessionId);
+      const toggleTeamExpanded = (event: MouseEvent) => {
+        event.stopPropagation();
+        setExpandedTeamLeaders((prev) => {
+          const next = new Set(prev);
+          if (next.has(sessionId)) {
+            next.delete(sessionId);
+          } else {
+            next.add(sessionId);
+          }
+          return next;
+        });
+      };
+
       return (
         <div key={sessionId} className={depth > 0 ? 'ml-4 border-l border-neutral-200 pl-2 dark:border-neutral-800' : undefined}>
           <div
@@ -830,10 +848,27 @@ export default function SidebarV2({
                           : formatRelative(lastActivity, t)}
                   </div>
                 </div>
+                {hasTeammateChildren ? (
+                  <span
+                    role="button"
+                    onClick={toggleTeamExpanded}
+                    className="flex h-[18px] shrink-0 items-center justify-center pt-[3px] text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300"
+                    title={isTeamExpanded
+                      ? t('sidebar:sessions.collapseTeammates', { defaultValue: 'Collapse teammates' })
+                      : t('sidebar:sessions.expandTeammates', { defaultValue: 'Expand teammates' })}
+                  >
+                    {isTeamExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} />
+                    )}
+                    <span className="ml-0.5 text-[10px]">{node.children.length}</span>
+                  </span>
+                ) : null}
               </button>
             )}
           </div>
-          {node.children.length > 0 ? (
+          {node.children.length > 0 && (!hasTeammateChildren || isTeamExpanded) ? (
             <div className="mt-0.5 space-y-0.5">
               {node.children.map((child) => renderSessionTreeNode(child, depth + 1, true))}
             </div>
