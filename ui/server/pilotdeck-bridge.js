@@ -1435,11 +1435,31 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck') {
             state.active = false;
             state.runId = undefined;
         }
-        return true;
     } catch (error) {
         console.warn('[pilotdeck-bridge] abortTurn failed:', error);
         return false;
     }
+
+    // Abort all running teammates for this leader session.
+    if (state?.projectKey) {
+        try {
+            const teamInfo = await gw.teamState({
+                projectKey: state.projectKey,
+                leaderSessionId: sessionKey,
+            });
+            const running = teamInfo.teammates.filter(
+                (t) => t.status === 'running' && t.sessionId,
+            );
+            await Promise.allSettled(
+                running.map((t) =>
+                    gw.abortTurn({ sessionKey: t.sessionId, reason: 'User stopped the session.' }),
+                ),
+            );
+        } catch {
+            // Team not configured — no teammates to abort.
+        }
+    }
+    return true;
 }
 
 export async function decidePermissionViaGateway(requestId, decision, options = {}) {
@@ -1483,6 +1503,23 @@ export async function grantSessionPermissionViaGateway(sessionId, entry) {
 export function isSessionActiveViaGateway(sessionId) {
     if (!isPilotDeckSessionKey(sessionId)) return false;
     return Boolean(sessionState.get(sessionId)?.active);
+}
+
+export async function isSessionOrTeamActiveViaGateway(sessionId) {
+    if (!isPilotDeckSessionKey(sessionId)) return false;
+    const state = sessionState.get(sessionId);
+    if (state?.active) return true;
+    if (!state?.projectKey) return false;
+    try {
+        const gw = await ensureGateway();
+        const teamInfo = await gw.teamState({
+            projectKey: state.projectKey,
+            leaderSessionId: sessionId,
+        });
+        return teamInfo.teammates.some((t) => t.status === 'running');
+    } catch {
+        return false;
+    }
 }
 
 export async function getActiveTurnSnapshotFramesViaGateway(sessionId, provider = 'pilotdeck') {

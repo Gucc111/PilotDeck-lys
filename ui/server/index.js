@@ -63,6 +63,7 @@ import {
     decidePermissionViaGateway,
     grantSessionPermissionViaGateway,
     isSessionActiveViaGateway,
+    isSessionOrTeamActiveViaGateway,
     getActiveTurnSnapshotFramesViaGateway,
     getActiveSessionIdsViaGateway,
     elicitationRespondViaGateway,
@@ -2337,7 +2338,7 @@ function handleChatConnection(ws, request) {
                 if (normalizeSessionId(sessionId)) {
                     sessionWatchRegistry.watch(sessionId, ws);
                 }
-                const isProcessing = isSessionActiveViaGateway(sessionId);
+                const isProcessing = await isSessionOrTeamActiveViaGateway(sessionId);
                 const includeActiveTurnMessages = data.includeActiveTurnMessages !== false;
                 const activeTurnMessages = (isProcessing && includeActiveTurnMessages)
                     ? await getActiveTurnSnapshotFramesViaGateway(sessionId, data.provider || 'pilotdeck')
