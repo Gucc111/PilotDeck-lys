@@ -652,7 +652,7 @@ function ChatInterfaceV2({
         onFork={sessionIsReadOnly ? undefined : handleFork}
         forkDisabled={isForkPending}
       />
-      {runMode === 'team' && (currentSessionId || selectedSession?.id) && selectedProject && (
+      {(runMode === 'team' || isTeammate) && (currentSessionId || selectedSession?.id) && selectedProject && (
         <TeamStatusPanel
           sessionId={
             (selectedSession && isTeammateSession(selectedSession)
