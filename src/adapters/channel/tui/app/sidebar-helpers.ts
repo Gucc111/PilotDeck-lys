@@ -136,8 +136,8 @@ export function sessionDisplayTitle(session: GatewaySessionInfo, maxLen: number)
   let raw = session.customTitle || session.aiTitle || session.firstPrompt || session.summary || session.sessionId;
   const sessionId = session.sessionKey ?? session.sessionId;
   const parsed = parseTeammateSessionId(sessionId);
-  if (parsed && !raw.startsWith(`[Team: ${parsed.teammateId}]`)) {
-    raw = `[Team: ${parsed.teammateId}] ${raw}`;
+  if (parsed && !raw.startsWith(`[${parsed.teammateId}]`)) {
+    raw = `[${parsed.teammateId}] ${raw}`;
   }
   if (raw.length <= maxLen) return raw;
   return raw.slice(0, maxLen - 1) + "…";

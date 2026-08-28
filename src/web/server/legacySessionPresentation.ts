@@ -49,7 +49,7 @@ export function mapLegacySessionPresentation(
   if (isCronSession && !baseLabel.startsWith(CRON_TITLE_PREFIX)) {
     label = `${CRON_TITLE_PREFIX}${baseLabel}`;
   } else if (parsedTeammate) {
-    const prefix = `[Team: ${parsedTeammate.teammateId}] `;
+    const prefix = `[${parsedTeammate.teammateId}] `;
     label = baseLabel.startsWith(prefix) ? baseLabel : `${prefix}${baseLabel}`;
   } else {
     label = baseLabel;
