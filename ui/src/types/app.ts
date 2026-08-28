@@ -227,7 +227,7 @@ export function isTeammateSession(
 export function isReadOnlySession(
   session: ProjectSession | null | undefined,
 ): boolean {
-  return session?.isReadOnly === true || isBackgroundTaskSession(session);
+  return session?.isReadOnly === true || isBackgroundTaskSession(session) || isTeammateSession(session);
 }
 
 export function getSessionRequestParams(
