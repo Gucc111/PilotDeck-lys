@@ -314,11 +314,85 @@
   },
   "team": {
     "title": "Team",
+    "backToTeam": "Back to Team",
     "leaderCard": {
       "title": "Team Leader",
       "description": "Configure the Leader's model, tools, and system prompt for Team mode.",
       "configured": "Configured",
       "notConfigured": "Not configured"
+    },
+    "teammatesCard": {
+      "title": "Teammates",
+      "description": "Manage global Teammate definitions."
+    },
+    "assignment": {
+      "title": "Workspace Team Set",
+      "description": "Select which Team Set is active for this workspace.",
+      "none": "No Team Set assigned",
+      "editTeamSet": "Edit Team Set",
+      "loadError": "Failed to load workspace assignment.",
+      "saveError": "Failed to save workspace assignment.",
+      "conflictError": "Assignment changed elsewhere. Reloaded."
+    },
+    "teamSets": {
+      "title": "Team Sets",
+      "description": "Reusable team configurations.",
+      "new": "New Team Set",
+      "empty": "No Team Sets created yet."
+    },
+    "globalDefs": {
+      "title": "Global Definitions"
+    }
+  },
+  "teamSet": {
+    "titleNew": "New Team Set",
+    "backToTeam": "Back to Team",
+    "confirmDelete": "Delete this Team Set? Workspaces using it will be unassigned.",
+    "sections": {
+      "metadata": "Team Set",
+      "leader": "Leader Configuration",
+      "teammates": "Teammates"
+    },
+    "fields": {
+      "id": "ID",
+      "name": "Display Name",
+      "namePlaceholder": "My Team Set",
+      "description": "Description",
+      "descriptionPlaceholder": "What this team set is for...",
+      "modelDefault": "Use default",
+      "leaderMode": "Leader Mode",
+      "leaderPrompt": "Leader Prompt Override",
+      "leaderModel": "Leader Model Override",
+      "modelOverride": "Model Override",
+      "promptOverride": "Prompt Override",
+      "promptOverridePlaceholder": "Override the teammate's global prompt...",
+      "contextPolicy": "Context Policy"
+    },
+    "leaderModes": {
+      "inherit": "Inherit global",
+      "override": "Override (merge over global)",
+      "standalone": "Standalone (ignore global)"
+    },
+    "contextPolicies": {
+      "persistent": "Persistent",
+      "fresh": "Fresh per delegation"
+    },
+    "noTeammates": "No global teammates defined yet.",
+    "actions": {
+      "save": "Save",
+      "saving": "Saving...",
+      "cancel": "Cancel",
+      "delete": "Delete"
+    },
+    "messages": {
+      "saved": "Team Set saved."
+    },
+    "errors": {
+      "loadFailed": "Failed to load Team Set.",
+      "saveFailed": "Failed to save Team Set.",
+      "deleteFailed": "Failed to delete Team Set.",
+      "idRequired": "Team Set ID is required.",
+      "revisionConflict": "Team Set changed elsewhere. Reloaded."
     }
   },
   "leader": {

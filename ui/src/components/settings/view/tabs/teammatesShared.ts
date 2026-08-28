@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import type { ToolCallSelector } from '../../../../../../src/permission/protocol/types';
 import { cn } from '../../../../lib/utils';
 import type {
   SettingsProject,
@@ -7,8 +6,6 @@ import type {
   TeammateDefinition,
   TeammateDiagnostic,
   TeammateRecord,
-  TeammateWorkspaceBinding,
-  TeammateWorkspaceBindings,
 } from '../../types/types';
 
 export type EditorMode =
@@ -203,65 +200,6 @@ export function normalizeCatalog(value: Record<string, unknown>): TeammateCatalo
     mcpServers: normalizeStringArray(value.mcpServers),
     diagnostics: normalizeDiagnostics(value.diagnostics),
   };
-}
-
-export function normalizeWorkspaceBindings(
-  value: Record<string, unknown>,
-): TeammateWorkspaceBindings {
-  const bindings: Record<string, TeammateWorkspaceBinding> = {};
-  if (isRecord(value.bindings)) {
-    for (const [id, candidate] of Object.entries(value.bindings)) {
-      if (!isRecord(candidate) || typeof candidate.enabled !== 'boolean') continue;
-      const profile = candidate.toolProfile;
-      if (!isRecord(profile)) continue;
-      if (profile.mode === 'inherit') {
-        bindings[id] = {
-          enabled: candidate.enabled,
-          toolProfile: { mode: 'inherit' },
-          contextPolicy: normalizeContextPolicy(candidate.contextPolicy),
-        };
-        continue;
-      }
-      if (profile.mode !== 'custom' || !isRecord(profile.constraints)) continue;
-      bindings[id] = {
-        enabled: candidate.enabled,
-        contextPolicy: normalizeContextPolicy(candidate.contextPolicy),
-        toolProfile: {
-          mode: 'custom',
-          tools: normalizeStringArray(profile.tools),
-          constraints: {
-            allow: normalizeSelectors(profile.constraints.allow),
-            deny: normalizeSelectors(profile.constraints.deny),
-          },
-        },
-      };
-    }
-  }
-  return {
-    canonicalProjectKey:
-      typeof value.canonicalProjectKey === 'string' ? value.canonicalProjectKey : '',
-    bindings,
-    revision: typeof value.revision === 'string' ? value.revision : '',
-    filePath: typeof value.filePath === 'string' ? value.filePath : '',
-  };
-}
-
-function normalizeContextPolicy(value: unknown): TeammateWorkspaceBinding['contextPolicy'] {
-  return value === 'fresh_per_delegation' ? 'fresh_per_delegation' : 'persistent';
-}
-
-function normalizeSelectors(value: unknown): ToolCallSelector[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((candidate) => {
-    if (
-      !isRecord(candidate)
-      || candidate.version !== 2
-      || typeof candidate.toolName !== 'string'
-    ) {
-      return [];
-    }
-    return [candidate as ToolCallSelector];
-  });
 }
 
 export function normalizeStringArray(value: unknown): string[] {

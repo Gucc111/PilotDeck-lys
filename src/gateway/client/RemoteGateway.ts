@@ -51,18 +51,27 @@ import type {
   TeammateCatalog,
   TeammateCatalogInput,
   TeammateDeleteResult,
-  TeammateEnablementGetInput,
-  TeammateEnablementResult,
-  TeammateEnablementSetInput,
   TeammateGatewayCreateInput,
   TeammateGatewayWriteInput,
   TeammateListResult,
   TeammateReadResult,
-  TeammateWorkspaceBindingSetInput,
-  TeammateWorkspaceBindingsGetInput,
-  TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
+import type {
+  TeamSetCreateInput,
+  TeamSetCreateResult,
+  TeamSetDeleteInput,
+  TeamSetDeleteResult,
+  TeamSetListResult,
+  TeamSetReadInput,
+  TeamSetReadResult,
+  TeamSetWorkspaceAssignmentGetInput,
+  TeamSetWorkspaceAssignmentGetResult,
+  TeamSetWorkspaceAssignmentSetInput,
+  TeamSetWorkspaceAssignmentSetResult,
+  TeamSetWriteInput,
+  TeamSetWriteResult,
+} from "../../extension/team-sets/types.js";
 import type {
   CronCreateInput,
   CronCreateResult,
@@ -79,10 +88,6 @@ import type {
   LeaderGatewayReadInput,
   LeaderGatewayWriteInput,
   LeaderReadResult,
-  LeaderWorkspaceOverrideGetInput,
-  LeaderWorkspaceOverrideSetInput,
-  LeaderWorkspaceOverrideDeleteInput,
-  LeaderWorkspaceOverrideResult,
 } from "../../extension/leader/types.js";
 import { GatewayWsClient, type GatewayWsNotificationHandler } from "./GatewayWsClient.js";
 import { parseReloadConfigResult } from "../protocol/reloadConfigResult.js";
@@ -250,32 +255,6 @@ export class RemoteGateway implements Gateway {
     return (await this.client.request("teammate_catalog", input)) as TeammateCatalog;
   }
 
-  async teammateEnablementGet(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult> {
-    return (await this.client.request("teammate_enablement_get", input)) as TeammateEnablementResult;
-  }
-
-  async teammateEnablementSet(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult> {
-    return (await this.client.request("teammate_enablement_set", input)) as TeammateEnablementResult;
-  }
-
-  async teammateWorkspaceBindingsGet(
-    input: TeammateWorkspaceBindingsGetInput,
-  ): Promise<TeammateWorkspaceBindingsResult> {
-    return (await this.client.request(
-      "teammate_workspace_bindings_get",
-      input,
-    )) as TeammateWorkspaceBindingsResult;
-  }
-
-  async teammateWorkspaceBindingSet(
-    input: TeammateWorkspaceBindingSetInput,
-  ): Promise<TeammateWorkspaceBindingsResult> {
-    return (await this.client.request(
-      "teammate_workspace_binding_set",
-      input,
-    )) as TeammateWorkspaceBindingsResult;
-  }
-
   async leaderRead(input: LeaderGatewayReadInput): Promise<LeaderReadResult | null> {
     return (await this.client.request("leader_read", input)) as LeaderReadResult | null;
   }
@@ -284,16 +263,32 @@ export class RemoteGateway implements Gateway {
     return (await this.client.request("leader_write", input)) as LeaderReadResult;
   }
 
-  async leaderWorkspaceOverrideGet(input: LeaderWorkspaceOverrideGetInput): Promise<LeaderWorkspaceOverrideResult> {
-    return (await this.client.request("leader_workspace_override_get", input)) as LeaderWorkspaceOverrideResult;
+  async teamSetList(): Promise<TeamSetListResult> {
+    return (await this.client.request("team_set_list", {})) as TeamSetListResult;
   }
 
-  async leaderWorkspaceOverrideSet(input: LeaderWorkspaceOverrideSetInput): Promise<LeaderWorkspaceOverrideResult> {
-    return (await this.client.request("leader_workspace_override_set", input)) as LeaderWorkspaceOverrideResult;
+  async teamSetRead(input: TeamSetReadInput): Promise<TeamSetReadResult> {
+    return (await this.client.request("team_set_read", input)) as TeamSetReadResult;
   }
 
-  async leaderWorkspaceOverrideDelete(input: LeaderWorkspaceOverrideDeleteInput): Promise<LeaderWorkspaceOverrideResult> {
-    return (await this.client.request("leader_workspace_override_delete", input)) as LeaderWorkspaceOverrideResult;
+  async teamSetCreate(input: TeamSetCreateInput): Promise<TeamSetCreateResult> {
+    return (await this.client.request("team_set_create", input)) as TeamSetCreateResult;
+  }
+
+  async teamSetWrite(input: TeamSetWriteInput): Promise<TeamSetWriteResult> {
+    return (await this.client.request("team_set_write", input)) as TeamSetWriteResult;
+  }
+
+  async teamSetDelete(input: TeamSetDeleteInput): Promise<TeamSetDeleteResult> {
+    return (await this.client.request("team_set_delete", input)) as TeamSetDeleteResult;
+  }
+
+  async teamSetWorkspaceAssignmentGet(input: TeamSetWorkspaceAssignmentGetInput): Promise<TeamSetWorkspaceAssignmentGetResult> {
+    return (await this.client.request("team_set_workspace_assignment_get", input)) as TeamSetWorkspaceAssignmentGetResult;
+  }
+
+  async teamSetWorkspaceAssignmentSet(input: TeamSetWorkspaceAssignmentSetInput): Promise<TeamSetWorkspaceAssignmentSetResult> {
+    return (await this.client.request("team_set_workspace_assignment_set", input)) as TeamSetWorkspaceAssignmentSetResult;
   }
 
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {

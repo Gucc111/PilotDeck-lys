@@ -5,8 +5,4 @@ export {
   parseLeaderDocument,
   serializeLeaderDocument,
 } from "./LeaderManager.js";
-export {
-  LeaderWorkspaceOverrideStore,
-  LeaderOverrideStoreError,
-} from "./LeaderWorkspaceOverrideStore.js";
 export * from "./types.js";

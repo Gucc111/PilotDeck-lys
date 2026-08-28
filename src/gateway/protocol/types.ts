@@ -54,27 +54,32 @@ import type {
   TeammateCatalog,
   TeammateCatalogInput,
   TeammateDeleteResult,
-  TeammateEnablementGetInput,
-  TeammateEnablementResult,
-  TeammateEnablementSetInput,
   TeammateGatewayCreateInput,
   TeammateGatewayWriteInput,
   TeammateListResult,
   TeammateReadResult,
-  TeammateWorkspaceBindingSetInput,
-  TeammateWorkspaceBindingsGetInput,
-  TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
 import type {
   LeaderGatewayReadInput,
   LeaderGatewayWriteInput,
   LeaderReadResult,
-  LeaderWorkspaceOverrideGetInput,
-  LeaderWorkspaceOverrideSetInput,
-  LeaderWorkspaceOverrideDeleteInput,
-  LeaderWorkspaceOverrideResult,
 } from "../../extension/leader/types.js";
+import type {
+  TeamSetCreateInput,
+  TeamSetCreateResult,
+  TeamSetDeleteInput,
+  TeamSetDeleteResult,
+  TeamSetListResult,
+  TeamSetReadInput,
+  TeamSetReadResult,
+  TeamSetWorkspaceAssignmentGetInput,
+  TeamSetWorkspaceAssignmentGetResult,
+  TeamSetWorkspaceAssignmentSetInput,
+  TeamSetWorkspaceAssignmentSetResult,
+  TeamSetWriteInput,
+  TeamSetWriteResult,
+} from "../../extension/team-sets/types.js";
 
 export type GatewayChannelKey =
   | "cli" | "tui" | "feishu" | "weixin" | "qq" | "web" | "test"
@@ -549,18 +554,14 @@ export interface Gateway {
   teammateWrite?(input: TeammateGatewayWriteInput): Promise<TeammateReadResult>;
   teammateDelete?(input: TeammateAddressInput): Promise<TeammateDeleteResult>;
   teammateCatalog?(input: TeammateCatalogInput): Promise<TeammateCatalog>;
-  teammateEnablementGet?(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult>;
-  teammateEnablementSet?(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult>;
-  teammateWorkspaceBindingsGet?(
-    input: TeammateWorkspaceBindingsGetInput,
-  ): Promise<TeammateWorkspaceBindingsResult>;
-  teammateWorkspaceBindingSet?(
-    input: TeammateWorkspaceBindingSetInput,
-  ): Promise<TeammateWorkspaceBindingsResult>;
   teamState?(input: TeamStateInput): Promise<TeamStateResult>;
   leaderRead?(input: LeaderGatewayReadInput): Promise<LeaderReadResult | null>;
   leaderWrite?(input: LeaderGatewayWriteInput): Promise<LeaderReadResult>;
-  leaderWorkspaceOverrideGet?(input: LeaderWorkspaceOverrideGetInput): Promise<LeaderWorkspaceOverrideResult>;
-  leaderWorkspaceOverrideSet?(input: LeaderWorkspaceOverrideSetInput): Promise<LeaderWorkspaceOverrideResult>;
-  leaderWorkspaceOverrideDelete?(input: LeaderWorkspaceOverrideDeleteInput): Promise<LeaderWorkspaceOverrideResult>;
+  teamSetList?(): Promise<TeamSetListResult>;
+  teamSetRead?(input: TeamSetReadInput): Promise<TeamSetReadResult>;
+  teamSetCreate?(input: TeamSetCreateInput): Promise<TeamSetCreateResult>;
+  teamSetWrite?(input: TeamSetWriteInput): Promise<TeamSetWriteResult>;
+  teamSetDelete?(input: TeamSetDeleteInput): Promise<TeamSetDeleteResult>;
+  teamSetWorkspaceAssignmentGet?(input: TeamSetWorkspaceAssignmentGetInput): Promise<TeamSetWorkspaceAssignmentGetResult>;
+  teamSetWorkspaceAssignmentSet?(input: TeamSetWorkspaceAssignmentSetInput): Promise<TeamSetWorkspaceAssignmentSetResult>;
 }

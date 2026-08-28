@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { parse as parseYaml } from 'yaml';
 import { authenticatedFetch } from '../../../../utils/api';
@@ -9,7 +9,6 @@ import type {
   TeammateCatalog,
   TeammateDiagnostic,
   TeammateRecord,
-  TeammateWorkspaceBinding,
 } from '../../types/types';
 import {
   type DraftField,
@@ -25,7 +24,6 @@ import {
   normalizeCatalog,
   normalizeDiagnostics,
   normalizeTeammates,
-  normalizeWorkspaceBindings,
   readJson,
   validateDraft,
 } from './teammatesShared';
@@ -49,18 +47,8 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
   const [serverDiagnostics, setServerDiagnostics] = useState<TeammateDiagnostic[]>([]);
 
-  const [workspaceBindingsMap, setWorkspaceBindingsMap] = useState<
-    Record<string, Record<string, TeammateWorkspaceBinding>>
-  >({});
   const [catalogMap, setCatalogMap] = useState<Record<string, TeammateCatalog | null>>({});
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
-  const [workspaceLoadingSet, setWorkspaceLoadingSet] = useState<Set<string>>(new Set());
-  const [workspaceRevisionMap, setWorkspaceRevisionMap] = useState<Record<string, string>>({});
-  const [canonicalProjectKeyMap, setCanonicalProjectKeyMap] = useState<Record<string, string>>({});
-  const [bindingSavingId, setBindingSavingId] = useState<string | null>(null);
-  const [bindingError, setBindingError] = useState<string | null>(null);
-
-  const workspaceRequestIds = useRef<Record<string, number>>({});
 
   const firstProjectPath = projectOptions[0]?.value ?? '';
 
@@ -94,80 +82,26 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
     }
   }, [t]);
 
-  const loadWorkspaceContext = useCallback(async (projectPath: string) => {
+  const loadCatalog = useCallback(async (projectPath: string) => {
     if (!projectPath) return;
-    const requestId = (workspaceRequestIds.current[projectPath] ?? 0) + 1;
-    workspaceRequestIds.current[projectPath] = requestId;
-    const isCurrentRequest = () =>
-      workspaceRequestIds.current[projectPath] === requestId;
-
-    setWorkspaceLoadingSet((prev) => new Set(prev).add(projectPath));
     try {
-      const [catalogResult, bindingsResult] = await Promise.allSettled([
-        authenticatedFetch(
-          `/api/teammates/catalog?projectPath=${encodeURIComponent(projectPath)}`,
-          { suppressServerErrorToast: true },
-        ),
-        authenticatedFetch(
-          `/api/teammates/bindings?projectPath=${encodeURIComponent(projectPath)}`,
-          { suppressServerErrorToast: true },
-        ),
-      ]);
-      if (!isCurrentRequest()) return;
-
-      if (catalogResult.status === 'fulfilled') {
-        const data = await readJson(catalogResult.value);
-        if (!isCurrentRequest()) return;
-        if (catalogResult.value.ok) {
-          const normalized = normalizeCatalog(data);
-          setCatalogMap((prev) => ({ ...prev, [projectPath]: normalized }));
-          setCatalogUnavailable(false);
-        } else {
-          setCatalogMap((prev) => ({ ...prev, [projectPath]: null }));
-          setCatalogUnavailable(true);
-        }
+      const response = await authenticatedFetch(
+        `/api/teammates/catalog?projectPath=${encodeURIComponent(projectPath)}`,
+        { suppressServerErrorToast: true },
+      );
+      const data = await readJson(response);
+      if (response.ok) {
+        setCatalogMap((prev) => ({ ...prev, [projectPath]: normalizeCatalog(data) }));
+        setCatalogUnavailable(false);
       } else {
         setCatalogMap((prev) => ({ ...prev, [projectPath]: null }));
         setCatalogUnavailable(true);
       }
-
-      if (bindingsResult.status === 'fulfilled') {
-        const data = await readJson(bindingsResult.value);
-        if (!isCurrentRequest()) return;
-        if (!bindingsResult.value.ok) {
-          throw new Error(apiError(data, t('teammates.errors.bindingsLoad')));
-        }
-        const normalized = normalizeWorkspaceBindings(data);
-        setWorkspaceBindingsMap((prev) => ({
-          ...prev,
-          [projectPath]: normalized.bindings,
-        }));
-        setWorkspaceRevisionMap((prev) => ({
-          ...prev,
-          [projectPath]: normalized.revision,
-        }));
-        setCanonicalProjectKeyMap((prev) => ({
-          ...prev,
-          [projectPath]: normalized.canonicalProjectKey,
-        }));
-      } else {
-        throw bindingsResult.reason;
-      }
-    } catch (caught) {
-      if (!isCurrentRequest()) return;
-      setBindingError(
-        caught instanceof Error ? caught.message : t('teammates.errors.bindingsLoad'),
-      );
-    } finally {
-      if (isCurrentRequest()) {
-        setWorkspaceLoadingSet((prev) => {
-          const next = new Set(prev);
-          next.delete(projectPath);
-          return next;
-        });
-      }
+    } catch {
+      setCatalogMap((prev) => ({ ...prev, [projectPath]: null }));
+      setCatalogUnavailable(true);
     }
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     onViewChange?.(view.kind === 'list');
@@ -179,21 +113,9 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
 
   useEffect(() => {
     for (const project of projectOptions) {
-      void loadWorkspaceContext(project.value);
+      void loadCatalog(project.value);
     }
-  }, [loadWorkspaceContext, projectOptions]);
-
-  const enabledCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const bindings of Object.values(workspaceBindingsMap)) {
-      for (const [id, binding] of Object.entries(bindings)) {
-        if (binding.enabled) {
-          counts[id] = (counts[id] ?? 0) + 1;
-        }
-      }
-    }
-    return counts;
-  }, [workspaceBindingsMap]);
+  }, [loadCatalog, projectOptions]);
 
   const navigateToDetail = (teammate: TeammateRecord) => {
     setView({ kind: 'detail', teammateId: teammate.id });
@@ -253,9 +175,6 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
         throw new Error(apiError(data, t('teammates.errors.save')));
       }
       await loadTeammates();
-      for (const project of projectOptions) {
-        void loadWorkspaceContext(project.value);
-      }
       navigateToList();
       setMessage(t('teammates.status.saved'));
     } catch (caught) {
@@ -283,68 +202,11 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
         navigateToList();
       }
       await loadTeammates();
-      for (const project of projectOptions) {
-        void loadWorkspaceContext(project.value);
-      }
       setMessage(t('teammates.status.deleted'));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t('teammates.errors.delete'));
     } finally {
       setDeletingId(null);
-    }
-  };
-
-  const saveWorkspaceBinding = async (
-    projectPath: string,
-    teammateId: string,
-    binding: TeammateWorkspaceBinding,
-  ) => {
-    const expectedRevision = workspaceRevisionMap[projectPath];
-    if (!projectPath || bindingSavingId || !expectedRevision) return;
-    const savingKey = `${projectPath}:${teammateId}`;
-    setBindingSavingId(savingKey);
-    setBindingError(null);
-    try {
-      const response = await authenticatedFetch(
-        `/api/teammates/bindings/${encodeURIComponent(teammateId)}`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            projectPath,
-            binding,
-            expectedRevision,
-          }),
-        },
-      );
-      const data = await readJson(response);
-      if (!response.ok) {
-        if (response.status === 409 && data.code === 'revision_conflict') {
-          await loadWorkspaceContext(projectPath);
-          setBindingError(t('teammates.errors.revisionConflict'));
-          return;
-        }
-        throw new Error(apiError(data, t('teammates.errors.bindingsSave')));
-      }
-      const normalized = normalizeWorkspaceBindings(data);
-      setWorkspaceBindingsMap((prev) => ({
-        ...prev,
-        [projectPath]: normalized.bindings,
-      }));
-      setWorkspaceRevisionMap((prev) => ({
-        ...prev,
-        [projectPath]: normalized.revision,
-      }));
-      setCanonicalProjectKeyMap((prev) => ({
-        ...prev,
-        [projectPath]: normalized.canonicalProjectKey,
-      }));
-    } catch (caught) {
-      setBindingError(
-        caught instanceof Error ? caught.message : t('teammates.errors.bindingsSave'),
-      );
-      await loadWorkspaceContext(projectPath).catch(() => {});
-    } finally {
-      setBindingSavingId(null);
     }
   };
 
@@ -363,16 +225,10 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
         error={error}
         message={message}
         deletingId={deletingId}
-        enabledCounts={enabledCounts}
         onSelect={navigateToDetail}
         onNew={navigateToNew}
         onDelete={(teammate) => void remove(teammate)}
-        onRefresh={() => {
-          void loadTeammates();
-          for (const project of projectOptions) {
-            void loadWorkspaceContext(project.value);
-          }
-        }}
+        onRefresh={() => void loadTeammates()}
       />
     );
   }
@@ -388,20 +244,10 @@ export default function TeammatesTab({ projects = [], onViewChange }: { projects
       hasWorkspace={projectOptions.length > 0}
       saving={saving}
       isNew={view.kind === 'new'}
-      projects={projectOptions}
       modelOptions={modelOptions}
-      workspaceBindingsMap={workspaceBindingsMap}
-      catalogMap={catalogMap}
-      workspaceLoadingSet={workspaceLoadingSet}
-      bindingSavingId={bindingSavingId}
-      canonicalProjectKeyMap={canonicalProjectKeyMap}
-      bindingError={bindingError}
       onUpdateDraft={updateDraft}
       onSave={() => void save()}
       onBack={navigateToList}
-      onSaveBinding={(projectPath, teammateId, binding) =>
-        void saveWorkspaceBinding(projectPath, teammateId, binding)
-      }
     />
   );
 }

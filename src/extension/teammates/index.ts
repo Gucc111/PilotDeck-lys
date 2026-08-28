@@ -4,12 +4,6 @@ export {
   TeammateValidationError,
 } from "./TeammateManager.js";
 export {
-  TeammateEnablementStore,
-  TeammateEnablementStoreError,
-  canonicalizeTeammateWorkspace,
-  normalizeTeammateWorkspaceKey,
-} from "./TeammateEnablementStore.js";
-export {
   GlobalTeammateMutationLock,
   getGlobalTeammateMutationLockPath,
   type GlobalTeammateMutationLockOptions,

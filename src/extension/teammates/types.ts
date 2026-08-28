@@ -1,11 +1,8 @@
 import type { ToolCallSelector } from "../../permission/index.js";
 
 export const TEAMMATE_SCHEMA_VERSION = 1 as const;
-export const TEAMMATE_ENABLEMENT_SCHEMA_VERSION = 2 as const;
 
 export type TeammateSchemaVersion = typeof TEAMMATE_SCHEMA_VERSION;
-export type TeammateEnablementSchemaVersion =
-  typeof TEAMMATE_ENABLEMENT_SCHEMA_VERSION;
 
 export interface TeammateDocumentInput {
   schemaVersion?: TeammateSchemaVersion;
@@ -68,23 +65,6 @@ export type TeammateWorkspaceBinding = {
   toolProfile: TeammateToolProfile;
   contextPolicy?: TeammateContextPolicy;
 };
-
-export interface TeammateEnablementDocument {
-  schemaVersion: TeammateEnablementSchemaVersion;
-  /** Canonical, absolute workspace paths mapped to teammate bindings. */
-  workspaces: Record<string, Record<string, TeammateWorkspaceBinding>>;
-}
-
-export type TeammateEnablementStoreErrorCode =
-  | "invalid_input"
-  | "invalid_json"
-  | "invalid_schema"
-  | "revision_conflict"
-  | "unsafe_path";
-
-export interface TeammateEnablementStoreOptions {
-  pilotHome: string;
-}
 
 export type TeammateDiagnosticSeverity = "error" | "warning";
 
@@ -192,36 +172,3 @@ export type TeammateCatalogInput = {
   projectKey: string;
 };
 
-export type TeammateEnablementGetInput = {
-  projectKey: string;
-};
-
-export type TeammateEnablementSetInput = {
-  projectKey: string;
-  enabledTeammateIds: string[];
-};
-
-export type TeammateEnablementResult = {
-  canonicalProjectKey: string;
-  enabledTeammateIds: string[];
-  /** Absolute global enablement document path, used by hosts for reloads. */
-  filePath: string;
-};
-
-export type TeammateWorkspaceBindingsGetInput = {
-  projectKey: string;
-};
-
-export type TeammateWorkspaceBindingsResult = {
-  canonicalProjectKey: string;
-  bindings: Record<string, TeammateWorkspaceBinding>;
-  revision: string;
-  filePath: string;
-};
-
-export type TeammateWorkspaceBindingSetInput = {
-  projectKey: string;
-  teammateId: string;
-  binding: TeammateWorkspaceBinding;
-  expectedRevision: string;
-};

@@ -4,14 +4,13 @@ import { PILOTDECK_GATEWAY_PROTOCOL_VERSION } from "../protocol/version.js";
 import { TextWebSocketConnection } from "./websocket.js";
 import { SkillManagerError, SkillValidationError } from "../../extension/skills/index.js";
 import {
-  TeammateEnablementStoreError,
   TeammateManagerError,
   TeammateValidationError,
 } from "../../extension/teammates/index.js";
 import {
   LeaderManagerError,
-  LeaderOverrideStoreError,
 } from "../../extension/leader/index.js";
+import { TeamSetStoreError } from "../../extension/team-sets/index.js";
 
 export type GatewayWsConnectionOptions = {
   gateway: Gateway;
@@ -166,9 +165,8 @@ export class GatewayWsConnection {
       if (
         error instanceof SkillManagerError ||
         error instanceof TeammateManagerError ||
-        error instanceof TeammateEnablementStoreError ||
         error instanceof LeaderManagerError ||
-        error instanceof LeaderOverrideStoreError
+        error instanceof TeamSetStoreError
       ) {
         this.ws.sendText(
           JSON.stringify({
@@ -298,26 +296,26 @@ export class GatewayWsConnection {
         return requireTeammateMethod(this.options.gateway.teammateDelete, this.options.gateway)(frame.params as never);
       case "teammate_catalog":
         return requireTeammateMethod(this.options.gateway.teammateCatalog, this.options.gateway)(frame.params as never);
-      case "teammate_enablement_get":
-        return requireTeammateMethod(this.options.gateway.teammateEnablementGet, this.options.gateway)(frame.params as never);
-      case "teammate_enablement_set":
-        return requireTeammateMethod(this.options.gateway.teammateEnablementSet, this.options.gateway)(frame.params as never);
-      case "teammate_workspace_bindings_get":
-        return requireTeammateMethod(this.options.gateway.teammateWorkspaceBindingsGet, this.options.gateway)(frame.params as never);
-      case "teammate_workspace_binding_set":
-        return requireTeammateMethod(this.options.gateway.teammateWorkspaceBindingSet, this.options.gateway)(frame.params as never);
       case "team_state":
         return requireTeammateMethod(this.options.gateway.teamState, this.options.gateway)(frame.params as never);
       case "leader_read":
         return requireLeaderMethod(this.options.gateway.leaderRead, this.options.gateway)(frame.params as never);
       case "leader_write":
         return requireLeaderMethod(this.options.gateway.leaderWrite, this.options.gateway)(frame.params as never);
-      case "leader_workspace_override_get":
-        return requireLeaderMethod(this.options.gateway.leaderWorkspaceOverrideGet, this.options.gateway)(frame.params as never);
-      case "leader_workspace_override_set":
-        return requireLeaderMethod(this.options.gateway.leaderWorkspaceOverrideSet, this.options.gateway)(frame.params as never);
-      case "leader_workspace_override_delete":
-        return requireLeaderMethod(this.options.gateway.leaderWorkspaceOverrideDelete, this.options.gateway)(frame.params as never);
+      case "team_set_list":
+        return requireTeamSetMethod(this.options.gateway.teamSetList, this.options.gateway)();
+      case "team_set_read":
+        return requireTeamSetMethod(this.options.gateway.teamSetRead, this.options.gateway)(frame.params as never);
+      case "team_set_create":
+        return requireTeamSetMethod(this.options.gateway.teamSetCreate, this.options.gateway)(frame.params as never);
+      case "team_set_write":
+        return requireTeamSetMethod(this.options.gateway.teamSetWrite, this.options.gateway)(frame.params as never);
+      case "team_set_delete":
+        return requireTeamSetMethod(this.options.gateway.teamSetDelete, this.options.gateway)(frame.params as never);
+      case "team_set_workspace_assignment_get":
+        return requireTeamSetMethod(this.options.gateway.teamSetWorkspaceAssignmentGet, this.options.gateway)(frame.params as never);
+      case "team_set_workspace_assignment_set":
+        return requireTeamSetMethod(this.options.gateway.teamSetWorkspaceAssignmentSet, this.options.gateway)(frame.params as never);
       case "always_on_apply":
         if (this.options.gateway.alwaysOnApply) {
           return this.options.gateway.alwaysOnApply(frame.params as never);
@@ -376,6 +374,19 @@ function requireLeaderMethod<TArg, TRet>(
     throw new LeaderManagerError(
       "not_configured",
       "Leader management is not enabled on this gateway.",
+    );
+  }
+  return method.bind(gateway);
+}
+
+function requireTeamSetMethod<TArgs extends unknown[], TRet>(
+  method: ((...args: TArgs) => Promise<TRet>) | undefined,
+  gateway: Gateway,
+): (...args: TArgs) => Promise<TRet> {
+  if (!method) {
+    throw new TeamSetStoreError(
+      "not_found",
+      "Team Set management is not enabled on this gateway.",
     );
   }
   return method.bind(gateway);

@@ -96,8 +96,6 @@ import type { EdgeClawMemoryProvider } from "../context/index.js";
 import { loadBuiltinPlugins } from "../extension/plugins/builtin/loadBuiltinPlugins.js";
 import { SkillManager, migrateLegacyBundledSkillCopies } from "../extension/skills/index.js";
 import {
-  canonicalizeTeammateWorkspace,
-  TeammateEnablementStoreError,
   TeammateManager,
   TeammateManagerError,
   type TeammateDiagnostic,
@@ -107,11 +105,11 @@ import {
 import { ExtensionWatchManager, type ExtensionWatchEvent } from "./ExtensionWatchManager.js";
 import {
   LeaderManager,
-  LeaderWorkspaceOverrideStore,
   type ResolvedLeaderConfig,
   type LeaderDefinition,
-  type LeaderWorkspaceOverride,
 } from "../extension/leader/index.js";
+import { TeamSetStore, TeamSetStoreError } from "../extension/team-sets/index.js";
+import type { TeamSetTeammateConfig, TeamSetLeaderConfig, TeamSetDefinition } from "../extension/team-sets/types.js";
 import { createTelemetryCollector, type TelemetryClient } from "../telemetry/index.js";
 import { TeammateSessionRuntime } from "../agent/team/TeammateSessionRuntime.js";
 import { TeamControlCoordinator } from "../agent/team/TeamControlCoordinator.js";
@@ -364,24 +362,6 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     teammateManager: registry.getTeammateManager(),
     teammatesList: () => registry.listAllTeammates(),
     teammateCatalog: (projectKey) => registry.getTeammateCatalog(projectKey),
-    teammateEnablementGet: ({ projectKey }) =>
-      registry.getTeammateEnablement(projectKey),
-    teammateEnablementSet: ({ projectKey, enabledTeammateIds }) =>
-      registry.setTeammateEnablement(projectKey, enabledTeammateIds),
-    teammateWorkspaceBindingsGet: ({ projectKey }) =>
-      registry.getTeammateWorkspaceBindings(projectKey),
-    teammateWorkspaceBindingSet: ({
-      projectKey,
-      teammateId,
-      binding,
-      expectedRevision,
-    }) =>
-      registry.setTeammateWorkspaceBinding(
-        projectKey,
-        teammateId,
-        binding,
-        expectedRevision,
-      ),
     teamState: async ({ projectKey, leaderSessionId }) => {
       registry.reconcileTeamMessages(projectKey, leaderSessionId);
       const storage = createAgentProjectSessionStorage({
@@ -418,12 +398,16 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     },
     leaderRead: async () => registry.readLeader(),
     leaderWrite: async ({ document }) => registry.writeLeader(document),
-    leaderWorkspaceOverrideGet: async ({ projectKey }) =>
-      registry.getLeaderWorkspaceOverride(projectKey),
-    leaderWorkspaceOverrideSet: async ({ projectKey, override, expectedRevision }) =>
-      registry.setLeaderWorkspaceOverride(projectKey, override, expectedRevision),
-    leaderWorkspaceOverrideDelete: async ({ projectKey, expectedRevision }) =>
-      registry.deleteLeaderWorkspaceOverride(projectKey, expectedRevision),
+    teamSetList: async () => ({ teamSets: await registry.listTeamSets() }),
+    teamSetRead: async ({ id }) => registry.readTeamSet(id),
+    teamSetCreate: async ({ teamSet }) => registry.createTeamSet(teamSet),
+    teamSetWrite: async ({ id, teamSet, expectedRevision }) =>
+      registry.writeTeamSet(id, teamSet, expectedRevision),
+    teamSetDelete: async ({ id }) => registry.deleteTeamSet(id),
+    teamSetWorkspaceAssignmentGet: async ({ projectKey }) =>
+      registry.getWorkspaceAssignment(projectKey),
+    teamSetWorkspaceAssignmentSet: async ({ projectKey, teamSetId, expectedRevision }) =>
+      registry.setWorkspaceAssignment(projectKey, teamSetId, expectedRevision),
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
     readSessionMessages: (input) => {
       const resolvedProjectRoot = input.projectKey ? input.projectKey : fallbackProjectRoot;
@@ -680,7 +664,7 @@ class ProjectRuntimeRegistry {
   });
 
   private readonly leaderManager: LeaderManager;
-  private readonly leaderOverrideStore: LeaderWorkspaceOverrideStore;
+  private readonly teamSetStore: TeamSetStore;
 
   constructor(private readonly options: ProjectRuntimeRegistryOptions) {
     this._extraTools = options.extraTools ? [...options.extraTools] : [];
@@ -691,7 +675,7 @@ class ProjectRuntimeRegistry {
     this.leaderManager = new LeaderManager({
       pilotHome: options.pilotHome,
     });
-    this.leaderOverrideStore = new LeaderWorkspaceOverrideStore({
+    this.teamSetStore = new TeamSetStore({
       pilotHome: options.pilotHome,
     });
   }
@@ -1733,38 +1717,65 @@ class ProjectRuntimeRegistry {
       // Leader definition file is absent or invalid — fall back to defaults.
     }
 
-    let wsOverride: LeaderWorkspaceOverride | undefined;
+    let tsLeader: TeamSetLeaderConfig | undefined;
     try {
-      const snapshot = await this.leaderOverrideStore.getOverride(runtime.projectRoot);
-      wsOverride = snapshot.override;
+      const assignment = await this.teamSetStore.getAssignment(runtime.projectRoot);
+      if (assignment.teamSetId) {
+        const { teamSet } = await this.teamSetStore.read(assignment.teamSetId);
+        tsLeader = teamSet.leader;
+      }
     } catch {
-      // No workspace override or read failed — use global definition only.
+      // No assignment or team set read failed.
     }
 
-    if (!globalDef && !wsOverride) {
+    if (tsLeader?.mode === "standalone") {
+      const resolved: ResolvedLeaderConfig = {
+        model: tsLeader.model,
+        maxContextTokens: tsLeader.maxContextTokens,
+        maxOutputTokens: tsLeader.maxOutputTokens,
+        extraTools: tsLeader.tools,
+        plugins: tsLeader.plugins,
+        skills: tsLeader.skills,
+        mcpServers: tsLeader.mcpServers,
+        prompt: tsLeader.prompt || undefined,
+      };
+      runtime.leaderConfig = resolved;
+      return resolved;
+    }
+
+    if (tsLeader?.mode === "override") {
+      const extraTools = tsLeader.toolProfile?.mode === "custom"
+        ? tsLeader.toolProfile.tools
+        : globalDef?.tools ?? [];
+      const resolved: ResolvedLeaderConfig = {
+        model: tsLeader.model ?? globalDef?.model,
+        maxContextTokens: tsLeader.maxContextTokens ?? globalDef?.maxContextTokens,
+        maxOutputTokens: tsLeader.maxOutputTokens ?? globalDef?.maxOutputTokens,
+        extraTools,
+        plugins: tsLeader.plugins ?? globalDef?.plugins ?? [],
+        skills: tsLeader.skills ?? globalDef?.skills ?? [],
+        mcpServers: tsLeader.mcpServers ?? globalDef?.mcpServers ?? [],
+        prompt: tsLeader.prompt ?? (globalDef?.prompt || undefined),
+      };
+      runtime.leaderConfig = resolved;
+      return resolved;
+    }
+
+    if (!globalDef) {
       runtime.leaderConfig = undefined;
       return undefined;
     }
 
-    const globalTools = globalDef?.tools ?? [];
-    let extraTools: string[];
-    if (wsOverride?.toolProfile?.mode === "custom") {
-      extraTools = wsOverride.toolProfile.tools;
-    } else {
-      extraTools = globalTools;
-    }
-
     const resolved: ResolvedLeaderConfig = {
-      model: wsOverride?.model ?? globalDef?.model,
-      maxContextTokens: wsOverride?.maxContextTokens ?? globalDef?.maxContextTokens,
-      maxOutputTokens: wsOverride?.maxOutputTokens ?? globalDef?.maxOutputTokens,
-      extraTools,
-      plugins: wsOverride?.plugins ?? globalDef?.plugins ?? [],
-      skills: wsOverride?.skills ?? globalDef?.skills ?? [],
-      mcpServers: wsOverride?.mcpServers ?? globalDef?.mcpServers ?? [],
-      prompt: wsOverride?.prompt ?? (globalDef?.prompt || undefined),
+      model: globalDef.model,
+      maxContextTokens: globalDef.maxContextTokens,
+      maxOutputTokens: globalDef.maxOutputTokens,
+      extraTools: globalDef.tools ?? [],
+      plugins: globalDef.plugins ?? [],
+      skills: globalDef.skills ?? [],
+      mcpServers: globalDef.mcpServers ?? [],
+      prompt: globalDef.prompt || undefined,
     };
-
     runtime.leaderConfig = resolved;
     return resolved;
   }
@@ -2273,125 +2284,58 @@ class ProjectRuntimeRegistry {
     return result;
   }
 
-  async getLeaderWorkspaceOverride(projectKey: string): Promise<import("../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
-    const snapshot = await this.leaderOverrideStore.getOverride(projectKey);
-    return {
-      canonicalProjectKey: snapshot.canonicalWorkspace,
-      override: snapshot.override,
-      revision: snapshot.revision,
-      filePath: this.leaderOverrideStore.filePath,
-    };
-  }
-
-  async setLeaderWorkspaceOverride(
-    projectKey: string,
-    override: LeaderWorkspaceOverride,
-    expectedRevision: string,
-  ): Promise<import("../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
-    const snapshot = await this.leaderOverrideStore.setOverride(
-      projectKey,
-      override,
-      expectedRevision,
-    );
-    this.invalidate();
-    this.sessionRouter?.markAllDirty("leader_config_changed");
-    return {
-      canonicalProjectKey: snapshot.canonicalWorkspace,
-      override: snapshot.override,
-      revision: snapshot.revision,
-      filePath: this.leaderOverrideStore.filePath,
-    };
-  }
-
-  async deleteLeaderWorkspaceOverride(
-    projectKey: string,
-    expectedRevision: string,
-  ): Promise<import("../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
-    const snapshot = await this.leaderOverrideStore.deleteOverride(
-      projectKey,
-      expectedRevision,
-    );
-    this.invalidate();
-    this.sessionRouter?.markAllDirty("leader_config_changed");
-    return {
-      canonicalProjectKey: snapshot.canonicalWorkspace,
-      override: snapshot.override,
-      revision: snapshot.revision,
-      filePath: this.leaderOverrideStore.filePath,
-    };
-  }
-
   async listAllTeammates() {
     return this.teammateManager.list();
   }
 
-  async getTeammateEnablement(projectKey: string) {
-    const canonicalProjectKey = await canonicalizeTeammateWorkspace(projectKey);
-    return {
-      canonicalProjectKey,
-      enabledTeammateIds: await this.teammateManager.getEnablement(canonicalProjectKey),
-      filePath: this.teammateManager.enablementStore.filePath,
-    };
+  async listTeamSets() {
+    return this.teamSetStore.list();
   }
 
-  async setTeammateEnablement(projectKey: string, enabledTeammateIds: string[]) {
-    if (!Array.isArray(enabledTeammateIds)) {
-      throw new TeammateManagerError(
-        "invalid_input",
-        "enabledTeammateIds must be a complete array of teammate IDs.",
-      );
-    }
-    const canonicalProjectKey = await canonicalizeTeammateWorkspace(projectKey);
-    const storedIds = await this.teammateManager.setEnablement(
-      canonicalProjectKey,
-      enabledTeammateIds,
-    );
-    await this.abortTeammateSessionsForWorkspace(canonicalProjectKey);
-    // A worktree key and its canonical project can both own active sessions.
-    // Conservatively refresh every cached runtime/session after enablement changes.
-    this.invalidate();
-    this.sessionRouter?.markAllDirty("teammate_enablement_changed");
-    return {
-      canonicalProjectKey,
-      enabledTeammateIds: storedIds,
-      filePath: this.teammateManager.enablementStore.filePath,
-    };
+  async readTeamSet(id: string) {
+    return this.teamSetStore.read(id);
   }
 
-  async getTeammateWorkspaceBindings(projectKey: string) {
-    const snapshot = await this.teammateManager.getWorkspaceBindings(projectKey);
-    return {
-      canonicalProjectKey: snapshot.canonicalWorkspace,
-      bindings: snapshot.bindings,
-      revision: snapshot.revision,
-      filePath: this.teammateManager.enablementStore.filePath,
-    };
+  async createTeamSet(teamSet: Omit<TeamSetDefinition, "schemaVersion">) {
+    return this.teamSetStore.create(teamSet);
   }
 
-  async setTeammateWorkspaceBinding(
-    projectKey: string,
-    teammateId: string,
-    binding: import("../extension/teammates/types.js").TeammateWorkspaceBinding,
+  async writeTeamSet(
+    id: string,
+    teamSet: Omit<TeamSetDefinition, "schemaVersion">,
     expectedRevision: string,
   ) {
-    const snapshot = await this.teammateManager.setWorkspaceBinding(
+    const result = await this.teamSetStore.write(id, teamSet, expectedRevision);
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("team_set_changed");
+    return result;
+  }
+
+  async deleteTeamSet(id: string) {
+    const result = await this.teamSetStore.delete(id);
+    this.invalidate();
+    this.sessionRouter?.markAllDirty("team_set_changed");
+    return result;
+  }
+
+  async getWorkspaceAssignment(projectKey: string) {
+    return this.teamSetStore.getAssignment(projectKey);
+  }
+
+  async setWorkspaceAssignment(
+    projectKey: string,
+    teamSetId: string | null,
+    expectedRevision: string,
+  ) {
+    const result = await this.teamSetStore.setAssignment(
       projectKey,
-      teammateId,
-      binding,
+      teamSetId,
       expectedRevision,
     );
-    await this.abortTeammateSessionsForWorkspace(
-      snapshot.canonicalWorkspace,
-      teammateId,
-    );
+    await this.abortTeammateSessionsForWorkspace(result.canonicalProjectKey);
     this.invalidate();
-    this.sessionRouter?.markAllDirty("teammate_enablement_changed");
-    return {
-      canonicalProjectKey: snapshot.canonicalWorkspace,
-      bindings: snapshot.bindings,
-      revision: snapshot.revision,
-      filePath: this.teammateManager.enablementStore.filePath,
-    };
+    this.sessionRouter?.markAllDirty("team_set_changed");
+    return result;
   }
 
   private async abortTeammateSessionsForWorkspace(
@@ -2426,31 +2370,40 @@ class ProjectRuntimeRegistry {
     runtime: ProjectRuntime,
   ): Promise<{ teammates: TeammateRecord[]; diagnostics: TeammateDiagnostic[] }> {
     const listed = await this.teammateManager.list();
-    let bindings: Record<string, TeammateWorkspaceBinding> = {};
+    const diagnostics: TeammateDiagnostic[] = [];
+    let teamSet: TeamSetDefinition | null = null;
     let canonicalWorkspace = "";
     let workspaceBindingRevision = "";
-    const enablementDiagnostics: TeammateDiagnostic[] = [];
+
     try {
-      const snapshot = await this.teammateManager.getWorkspaceBindings(runtime.projectRoot);
-      bindings = snapshot.bindings;
-      canonicalWorkspace = snapshot.canonicalWorkspace;
-      workspaceBindingRevision = snapshot.revision;
+      const assignment = await this.teamSetStore.getAssignment(runtime.projectRoot);
+      canonicalWorkspace = assignment.canonicalProjectKey;
+      if (assignment.teamSetId) {
+        const result = await this.teamSetStore.read(assignment.teamSetId);
+        teamSet = result.teamSet;
+        workspaceBindingRevision = result.revision;
+      }
     } catch (error) {
-      const detail = error instanceof TeammateEnablementStoreError
+      const detail = error instanceof TeamSetStoreError
         ? error.message
-        : `Unable to read teammate workspace enablement: ${
+        : `Unable to read Team Set assignment: ${
           error instanceof Error ? error.message : String(error)
         }`;
-      enablementDiagnostics.push({
+      diagnostics.push({
         code: "TEAMMATE_ENABLEMENT_INVALID",
         severity: "error",
         message: `${detail} No teammates are enabled for this workspace.`,
       });
     }
 
-    const enabledIds = Object.entries(bindings)
-      .filter(([, binding]) => binding.enabled)
-      .map(([id]) => id);
+    if (!teamSet) {
+      runtime.teammates = [];
+      runtime.teammateDiagnostics = diagnostics;
+      return { teammates: [], diagnostics };
+    }
+
+    const teammateConfigs = teamSet.teammates;
+    const enabledIds = Object.keys(teammateConfigs);
     const enabledSet = new Set(enabledIds);
     const definitionDiagnostics = listed.diagnostics.filter(
       (diagnostic) => Boolean(diagnostic.id && enabledSet.has(diagnostic.id)),
@@ -2464,12 +2417,12 @@ class ProjectRuntimeRegistry {
     const staleDiagnostics: TeammateDiagnostic[] = enabledIds
       .filter((id) => !declaredIds.has(id))
       .map((id) => ({
-        code: "TEAMMATE_NOT_FOUND",
-        severity: "error",
+        code: "TEAMMATE_NOT_FOUND" as const,
+        severity: "error" as const,
         id,
         message:
-          `Enabled teammate "${id}" was not found in the global definitions. ` +
-          "Update teammate enablement in Settings.",
+          `Team Set teammate "${id}" was not found in the global definitions. ` +
+          "Update the Team Set in Settings.",
       }));
     const invalidDefinitionIds = new Set(
       definitionDiagnostics
@@ -2480,16 +2433,22 @@ class ProjectRuntimeRegistry {
       .filter(
         (teammate) => enabledSet.has(teammate.id) && !invalidDefinitionIds.has(teammate.id),
       )
-      .map((teammate) => applyWorkspaceToolProfile(teammate, bindings[teammate.id]!));
+      .map((teammate) => {
+        const config = teammateConfigs[teammate.id]!;
+        const binding = teamSetConfigToBinding(config);
+        return applyWorkspaceToolProfile(
+          applyTeamSetOverrides(teammate, config),
+          binding,
+        );
+      });
     const contributions = runtime.pluginRuntime.snapshotContributions();
     const runtimeDiagnostics = enabledDefinitions.flatMap((teammate) =>
       validateTeammateRuntimeReferences(teammate, runtime, contributions));
-    const diagnostics: TeammateDiagnostic[] = [
+    diagnostics.push(
       ...definitionDiagnostics,
-      ...enablementDiagnostics,
       ...staleDiagnostics,
       ...runtimeDiagnostics,
-    ];
+    );
     const invalidRuntimeIds = new Set(
       runtimeDiagnostics
         .filter((entry) => entry.severity === "error" && entry.id)
@@ -2498,13 +2457,15 @@ class ProjectRuntimeRegistry {
     const validEnabledDefinitions = enabledDefinitions.filter(
       (definition) => !invalidRuntimeIds.has(definition.id),
     );
-    runtime.teammates = validEnabledDefinitions.map((teammate) =>
-      toRuntimeTeammateDefinition(teammate, {
-        binding: bindings[teammate.id]!,
+    runtime.teammates = validEnabledDefinitions.map((teammate) => {
+      const config = teammateConfigs[teammate.id]!;
+      return toRuntimeTeammateDefinition(teammate, {
+        binding: teamSetConfigToBinding(config),
         canonicalWorkspace,
         workspaceBindingRevision,
         activeProjectRoot: runtime.projectRoot,
-      }));
+      });
+    });
     runtime.teammateDiagnostics = diagnostics;
     return {
       teammates: validEnabledDefinitions,
@@ -2782,6 +2743,31 @@ function mergeSessionDependencies(
     ...(extension.planFileManager ? { planFileManager: extension.planFileManager } : {}),
     ...(extension.planTodoManager ? { planTodoManager: extension.planTodoManager } : {}),
     ...(extension.team ? { team: extension.team } : {}),
+  };
+}
+
+function teamSetConfigToBinding(config: TeamSetTeammateConfig): TeammateWorkspaceBinding {
+  return {
+    enabled: true,
+    toolProfile: config.toolProfile,
+    contextPolicy: config.contextPolicy ?? "persistent",
+  };
+}
+
+function applyTeamSetOverrides(
+  teammate: TeammateRecord,
+  config: TeamSetTeammateConfig,
+): TeammateRecord {
+  return {
+    ...teammate,
+    ...(config.modelOverride !== undefined ? { model: config.modelOverride } : {}),
+    ...(config.promptOverride !== undefined ? { prompt: config.promptOverride } : {}),
+    ...(config.maxContextTokensOverride !== undefined
+      ? { maxContextTokens: config.maxContextTokensOverride }
+      : {}),
+    ...(config.maxOutputTokensOverride !== undefined
+      ? { maxOutputTokens: config.maxOutputTokensOverride }
+      : {}),
   };
 }
 

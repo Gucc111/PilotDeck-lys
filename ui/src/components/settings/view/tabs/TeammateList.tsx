@@ -12,7 +12,6 @@ export default function TeammateList({
   error,
   message,
   deletingId,
-  enabledCounts,
   onSelect,
   onNew,
   onDelete,
@@ -24,7 +23,6 @@ export default function TeammateList({
   error: string | null;
   message: string | null;
   deletingId: string | null;
-  enabledCounts: Record<string, number>;
   onSelect: (teammate: TeammateRecord) => void;
   onNew: () => void;
   onDelete: (teammate: TeammateRecord) => void;
@@ -78,9 +76,7 @@ export default function TeammateList({
         </div>
       ) : (
         <div className="space-y-2">
-          {teammates.map((teammate) => {
-            const wsCount = enabledCounts[teammate.id] ?? 0;
-            return (
+          {teammates.map((teammate) => (
               <button
                 key={`${teammate.id}:${teammate.relativePath || ''}`}
                 type="button"
@@ -95,11 +91,6 @@ export default function TeammateList({
                     <span className="text-[11px] text-muted-foreground">
                       {t('teammates.list.toolCount', { count: teammate.tools.length })}
                     </span>
-                    {wsCount > 0 && (
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-950 dark:text-green-200">
-                        {t('teammates.list.workspaceCount', { count: wsCount })}
-                      </span>
-                    )}
                   </div>
                   <code className="mt-0.5 block truncate text-[11px] text-muted-foreground">
                     {teammate.id}
@@ -133,8 +124,7 @@ export default function TeammateList({
                   <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                 </div>
               </button>
-            );
-          })}
+          ))}
         </div>
       )}
     </div>

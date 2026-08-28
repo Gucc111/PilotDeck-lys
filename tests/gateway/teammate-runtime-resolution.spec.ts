@@ -8,13 +8,9 @@ import {
   createLocalGateway,
   isGlobalTeammatePath,
 } from "../../src/cli/createLocalGateway.js";
-import {
-  TeammateEnablementStore,
-  canonicalizeTeammateWorkspace,
-} from "../../src/extension/teammates/index.js";
+import { TeamSetStore } from "../../src/extension/team-sets/index.js";
 import { RemoteGateway } from "../../src/gateway/client/RemoteGateway.js";
 import { PILOTDECK_GATEWAY_PROTOCOL_VERSION } from "../../src/gateway/protocol/version.js";
-import { getPilotTeammateEnablementFilePath } from "../../src/pilot/index.js";
 
 const CONFIG = `schemaVersion: 1
 agent:
@@ -61,6 +57,43 @@ ${extra.trim()}
 
 Handle the assigned task.
 `;
+}
+
+async function enableTeammates(
+  pilotHome: string,
+  projectRoot: string,
+  teammateIds: string[],
+  teamSetId = "test-team",
+  overrides?: Record<string, Record<string, unknown>>,
+): Promise<void> {
+  const store = new TeamSetStore({ pilotHome });
+  const teammates: Record<string, { toolProfile: { mode: "inherit" } }> = {};
+  for (const id of teammateIds) {
+    const config: Record<string, unknown> = { toolProfile: { mode: "inherit" } };
+    if (overrides?.[id]) {
+      Object.assign(config, overrides[id]);
+    }
+    teammates[id] = config as never;
+  }
+  try {
+    await store.create({
+      id: teamSetId,
+      name: teamSetId,
+      leader: { mode: "inherit" },
+      teammates,
+    });
+  } catch {
+    // already exists, update it
+    const current = await store.read(teamSetId);
+    await store.write(teamSetId, {
+      id: teamSetId,
+      name: teamSetId,
+      leader: { mode: "inherit" },
+      teammates,
+    }, current.revision);
+  }
+  const assignment = await store.getAssignment(projectRoot);
+  await store.setAssignment(projectRoot, teamSetId, assignment.revision);
 }
 
 test("local gateway treats blank agent maxOutputTokens as no explicit output reserve", async () => {
@@ -233,7 +266,7 @@ maxOutputTokens: 8192`),
         "utf8",
       ),
     ]);
-    await new TeammateEnablementStore({ pilotHome }).set(projectRoot, ["worker"]);
+    await enableTeammates(pilotHome, projectRoot, ["worker"]);
 
     const resolveConfig = async (env: Record<string, string | undefined> = {}) => {
       const local = createLocalGateway({
@@ -277,7 +310,7 @@ maxOutputTokens: 8192`),
   }
 });
 
-test("runtime resolves only globally defined teammates enabled and valid for the workspace", async () => {
+test("runtime resolves only globally defined teammates enabled via team set for the workspace", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-runtime-"));
   const pilotHome = join(root, "pilot-home");
   const projectA = join(root, "project-a");
@@ -316,9 +349,8 @@ mcpServers: [missing_mcp]`,
       ),
       writeFile(join(pilotHome, "teammates", "broken.md"), "not frontmatter\n", "utf8"),
     ]);
-    const enablement = new TeammateEnablementStore({ pilotHome });
-    await enablement.set(projectA, ["enabled-broken", "enabled-invalid", "stale", "valid"]);
-    await enablement.set(projectB, ["disabled-invalid"]);
+    await enableTeammates(pilotHome, projectA, ["enabled-broken", "enabled-invalid", "stale", "valid"], "team-a");
+    await enableTeammates(pilotHome, projectB, ["disabled-invalid"], "team-b");
 
     const local = createLocalGateway({
       projectRoot: projectA,
@@ -412,56 +444,40 @@ mcpServers: [missing_mcp]`,
       ["disabled-invalid", "enabled-invalid", "valid"],
     );
     assert.equal((await local.gateway.teammateRead?.({ id: "valid" }))?.teammate.id, "valid");
-    assert.ok(local.gateway.teammateEnablementGet);
-    const canonicalProjectA = await canonicalizeTeammateWorkspace(projectA);
-    assert.deepEqual(await local.gateway.teammateEnablementGet({ projectKey: projectA }), {
-      canonicalProjectKey: canonicalProjectA,
-      enabledTeammateIds: ["enabled-broken", "enabled-invalid", "stale", "valid"],
-      filePath: getPilotTeammateEnablementFilePath(pilotHome),
-    });
-    assert.ok(local.gateway.teammateEnablementSet);
-    assert.deepEqual(
-      await local.gateway.teammateEnablementSet({
-        projectKey: projectA,
-        enabledTeammateIds: ["valid", "valid"],
-      }),
-      {
-        canonicalProjectKey: canonicalProjectA,
-        enabledTeammateIds: ["valid"],
-        filePath: getPilotTeammateEnablementFilePath(pilotHome),
-      },
-    );
-    assert.ok(local.gateway.teammateWorkspaceBindingsGet);
-    const bindings = await local.gateway.teammateWorkspaceBindingsGet({
-      projectKey: projectA,
-    });
-    assert.deepEqual(bindings.bindings, {
-      valid: { enabled: true, toolProfile: { mode: "inherit" }, contextPolicy: "persistent" },
-    });
-    assert.match(bindings.revision, /^[a-f0-9]{64}$/);
-    assert.ok(local.gateway.teammateWorkspaceBindingSet);
-    const updatedBindings = await local.gateway.teammateWorkspaceBindingSet({
-      projectKey: projectA,
-      teammateId: "valid",
-      binding: {
-        enabled: true,
-        toolProfile: {
-          mode: "custom",
-          tools: ["read_file"],
-          constraints: { allow: [], deny: [] },
+
+    // Verify Team Set gateway operations
+    assert.ok(local.gateway.teamSetList);
+    const teamSets = await local.gateway.teamSetList();
+    assert.ok(teamSets.teamSets.length >= 1);
+
+    assert.ok(local.gateway.teamSetWorkspaceAssignmentGet);
+    const assignmentA = await local.gateway.teamSetWorkspaceAssignmentGet({ projectKey: projectA });
+    assert.equal(assignmentA.teamSetId, "team-a");
+    assert.match(assignmentA.revision, /^[a-f0-9]{64}$/);
+
+    // Update team set to only include "valid"
+    assert.ok(local.gateway.teamSetRead);
+    const currentTeamSet = await local.gateway.teamSetRead({ id: "team-a" });
+    assert.ok(local.gateway.teamSetWrite);
+    await local.gateway.teamSetWrite({
+      id: "team-a",
+      teamSet: {
+        id: "team-a",
+        name: "team-a",
+        leader: { mode: "inherit" },
+        teammates: {
+          valid: {
+            toolProfile: {
+              mode: "custom",
+              tools: ["read_file"],
+              constraints: { allow: [], deny: [] },
+            },
+          },
         },
       },
-      expectedRevision: bindings.revision,
+      expectedRevision: currentTeamSet.revision,
     });
-    assert.deepEqual(updatedBindings.bindings.valid, {
-      enabled: true,
-      contextPolicy: "persistent",
-      toolProfile: {
-        mode: "custom",
-        tools: ["read_file"],
-        constraints: { allow: [], deny: [] },
-      },
-    });
+
     await local.registry.listEnabledTeammates(projectA);
     const rebuiltRuntimeDefinition = local.registry.resolve(projectA).teammates[0]!;
     assert.deepEqual(rebuiltRuntimeDefinition.tools, ["read_file"]);
@@ -469,29 +485,23 @@ mcpServers: [missing_mcp]`,
       rebuiltRuntimeDefinition.workspaceBindingFingerprint,
       initialRuntimeDefinition.workspaceBindingFingerprint,
     );
-    assert.equal(
-      rebuiltRuntimeDefinition.workspaceBindingRevision,
-      updatedBindings.revision,
-    );
+
+    // Verify revision conflict
     await assert.rejects(
-      local.gateway.teammateWorkspaceBindingSet({
-        projectKey: projectA,
-        teammateId: "valid",
-        binding: { enabled: false, toolProfile: { mode: "inherit" } },
-        expectedRevision: bindings.revision,
+      local.gateway.teamSetWrite({
+        id: "team-a",
+        teamSet: {
+          id: "team-a",
+          name: "team-a",
+          leader: { mode: "inherit" },
+          teammates: { valid: { toolProfile: { mode: "inherit" } } },
+        },
+        expectedRevision: currentTeamSet.revision,
       }),
       (error: unknown) =>
         (error as { code?: string }).code === "revision_conflict",
     );
-    await assert.rejects(
-      local.gateway.teammateEnablementSet({
-        projectKey: projectA,
-        enabledTeammateIds: ["missing"],
-      }),
-      (error: unknown) =>
-        (error as { code?: string }).code === "invalid_input" &&
-        /missing/.test((error as Error).message),
-    );
+
     assert.ok(local.gateway.teamState);
     assert.deepEqual(
       (await local.gateway.teamState({
@@ -500,20 +510,13 @@ mcpServers: [missing_mcp]`,
       })).teammates.map((entry) => entry.id),
       ["valid"],
     );
-
-    await writeFile(getPilotTeammateEnablementFilePath(pilotHome), "{broken", "utf8");
-    const damaged = await local.registry.listEnabledTeammates(projectA);
-    assert.deepEqual(damaged.teammates, []);
-    assert.ok(
-      damaged.diagnostics.some((entry) => entry.code === "TEAMMATE_ENABLEMENT_INVALID"),
-    );
   } finally {
     dispose?.();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("workspace bindings resolve distinct effective tools and isolate invalid profiles", async () => {
+test("team set tool profiles resolve distinct effective tools and isolate invalid profiles", async () => {
   const root = await mkdtemp(join(tmpdir(), "pilotdeck-teammate-profiles-"));
   const pilotHome = join(root, "pilot-home");
   const projects = ["a", "b", "c", "d"].map((name) => join(root, `project-${name}`));
@@ -531,42 +534,84 @@ test("workspace bindings resolve distinct effective tools and isolate invalid pr
         "utf8",
       ),
     ]);
-    const enablement = new TeammateEnablementStore({ pilotHome });
-    for (const project of projects) {
-      await enablement.set(project, ["worker"]);
-    }
-    const setProfile = async (
-      project: string,
-      tools: string[],
-      constraints: {
-        allow: Array<Record<string, unknown>>;
-        deny: Array<Record<string, unknown>>;
-      } = { allow: [], deny: [] },
-    ) => {
-      const current = await enablement.getBindings(project);
-      await enablement.setBinding(project, "worker", {
-        enabled: true,
-        toolProfile: {
-          mode: "custom",
-          tools,
-          constraints: constraints as never,
+
+    const store = new TeamSetStore({ pilotHome });
+
+    // Project A: custom profile with read_file + constraint
+    await store.create({
+      id: "team-a",
+      name: "Team A",
+      leader: { mode: "inherit" },
+      teammates: {
+        worker: {
+          toolProfile: {
+            mode: "custom",
+            tools: ["read_file"],
+            constraints: {
+              allow: [{
+                version: 2,
+                toolName: "read_file",
+                conditions: [{
+                  subject: "read_file.file_path",
+                  operator: "pathWithin",
+                  value: "$WORKSPACE",
+                }],
+              }],
+              deny: [],
+            },
+          },
         },
-      }, current.revision);
-    };
-    await setProfile(projects[0]!, ["read_file"], {
-      allow: [{
-        version: 2,
-        toolName: "read_file",
-        conditions: [{
-          subject: "read_file.file_path",
-          operator: "pathWithin",
-          value: "$WORKSPACE",
-        }],
-      }],
-      deny: [],
+      },
     });
-    await setProfile(projects[1]!, ["bash"]);
-    await setProfile(projects[2]!, ["missing_custom_tool"]);
+
+    // Project B: custom profile with bash
+    await store.create({
+      id: "team-b",
+      name: "Team B",
+      leader: { mode: "inherit" },
+      teammates: {
+        worker: {
+          toolProfile: {
+            mode: "custom",
+            tools: ["bash"],
+            constraints: { allow: [], deny: [] },
+          },
+        },
+      },
+    });
+
+    // Project C: custom profile with missing tool
+    await store.create({
+      id: "team-c",
+      name: "Team C",
+      leader: { mode: "inherit" },
+      teammates: {
+        worker: {
+          toolProfile: {
+            mode: "custom",
+            tools: ["missing_custom_tool"],
+            constraints: { allow: [], deny: [] },
+          },
+        },
+      },
+    });
+
+    // Project D: inherit profile (falls back to definition's tools, which has missing_default_tool)
+    await store.create({
+      id: "team-d",
+      name: "Team D",
+      leader: { mode: "inherit" },
+      teammates: {
+        worker: { toolProfile: { mode: "inherit" } },
+      },
+    });
+
+    // Assign each project to its team set
+    for (let i = 0; i < projects.length; i++) {
+      const teamSetId = `team-${["a", "b", "c", "d"][i]}`;
+      const assignment = await store.getAssignment(projects[i]!);
+      await store.setAssignment(projects[i]!, teamSetId, assignment.revision);
+    }
 
     const local = createLocalGateway({
       projectRoot: projects[0],
@@ -581,10 +626,6 @@ test("workspace bindings resolve distinct effective tools and isolate invalid pr
     assert.deepEqual(runtimeA.tools, ["read_file"]);
     assert.equal(runtimeA.constraints.allow.length, 1);
     assert.equal(runtimeA.activeProjectRoot, projects[0]);
-    assert.equal(
-      runtimeA.canonicalWorkspace,
-      await canonicalizeTeammateWorkspace(projects[0]!),
-    );
     assert.match(runtimeA.workspaceBindingRevision, /^[a-f0-9]{64}$/);
     assert.match(runtimeA.workspaceBindingFingerprint, /^[a-f0-9]{64}$/);
     assert.equal(
@@ -655,7 +696,7 @@ test("teammate catalog includes perSession MCP server IDs", async () => {
         "utf8",
       ),
     ]);
-    await new TeammateEnablementStore({ pilotHome }).set(projectRoot, ["browser-worker"]);
+    await enableTeammates(pilotHome, projectRoot, ["browser-worker"]);
 
     const local = createLocalGateway({
       projectRoot,
@@ -690,7 +731,7 @@ test("global teammate reload paths are classified independently of project scope
   );
 });
 
-test("remote gateway forwards global teammate CRUD and workspace enablement RPCs", async () => {
+test("remote gateway forwards global teammate CRUD and team set RPCs", async () => {
   assert.equal(PILOTDECK_GATEWAY_PROTOCOL_VERSION, "2.0");
   const calls: Array<{ method: string; params: unknown }> = [];
   const remote = new RemoteGateway({
@@ -712,17 +753,32 @@ test("remote gateway forwards global teammate CRUD and workspace enablement RPCs
   });
   await remote.teammateDelete({ id: "reviewer" });
   await remote.teammateCatalog({ projectKey: "/workspace" });
-  await remote.teammateEnablementGet({ projectKey: "/workspace" });
-  await remote.teammateEnablementSet({
-    projectKey: "/workspace",
-    enabledTeammateIds: ["reviewer"],
+  await remote.teamSetList();
+  await remote.teamSetRead({ id: "my-team" });
+  await remote.teamSetCreate({
+    teamSet: {
+      id: "my-team",
+      name: "My Team",
+      leader: { mode: "inherit" },
+      teammates: {},
+    },
   });
-  await remote.teammateWorkspaceBindingsGet({ projectKey: "/workspace" });
-  await remote.teammateWorkspaceBindingSet({
+  await remote.teamSetWrite({
+    id: "my-team",
+    teamSet: {
+      id: "my-team",
+      name: "My Team",
+      leader: { mode: "inherit" },
+      teammates: {},
+    },
+    expectedRevision: "abc123",
+  });
+  await remote.teamSetDelete({ id: "my-team" });
+  await remote.teamSetWorkspaceAssignmentGet({ projectKey: "/workspace" });
+  await remote.teamSetWorkspaceAssignmentSet({
     projectKey: "/workspace",
-    teammateId: "reviewer",
-    binding: { enabled: true, toolProfile: { mode: "inherit" } },
-    expectedRevision: "revision",
+    teamSetId: "my-team",
+    expectedRevision: "abc123",
   });
 
   assert.deepEqual(calls, [
@@ -744,25 +800,40 @@ test("remote gateway forwards global teammate CRUD and workspace enablement RPCs
     },
     { method: "teammate_delete", params: { id: "reviewer" } },
     { method: "teammate_catalog", params: { projectKey: "/workspace" } },
-    { method: "teammate_enablement_get", params: { projectKey: "/workspace" } },
+    { method: "team_set_list", params: {} },
+    { method: "team_set_read", params: { id: "my-team" } },
     {
-      method: "teammate_enablement_set",
+      method: "team_set_create",
       params: {
-        projectKey: "/workspace",
-        enabledTeammateIds: ["reviewer"],
+        teamSet: {
+          id: "my-team",
+          name: "My Team",
+          leader: { mode: "inherit" },
+          teammates: {},
+        },
       },
     },
     {
-      method: "teammate_workspace_bindings_get",
-      params: { projectKey: "/workspace" },
+      method: "team_set_write",
+      params: {
+        id: "my-team",
+        teamSet: {
+          id: "my-team",
+          name: "My Team",
+          leader: { mode: "inherit" },
+          teammates: {},
+        },
+        expectedRevision: "abc123",
+      },
     },
+    { method: "team_set_delete", params: { id: "my-team" } },
+    { method: "team_set_workspace_assignment_get", params: { projectKey: "/workspace" } },
     {
-      method: "teammate_workspace_binding_set",
+      method: "team_set_workspace_assignment_set",
       params: {
         projectKey: "/workspace",
-        teammateId: "reviewer",
-        binding: { enabled: true, toolProfile: { mode: "inherit" } },
-        expectedRevision: "revision",
+        teamSetId: "my-team",
+        expectedRevision: "abc123",
       },
     },
   ]);

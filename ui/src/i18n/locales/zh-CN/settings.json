@@ -314,11 +314,85 @@
   },
   "team": {
     "title": "Team 模式",
+    "backToTeam": "返回 Team",
     "leaderCard": {
       "title": "Team Leader",
       "description": "配置 Team 模式下 Leader 的模型、工具和系统提示词。",
       "configured": "已配置",
       "notConfigured": "未配置"
+    },
+    "teammatesCard": {
+      "title": "Teammates",
+      "description": "管理全局 Teammate 定义。"
+    },
+    "assignment": {
+      "title": "工作区 Team Set",
+      "description": "选择当前工作区使用哪个 Team Set。",
+      "none": "未分配 Team Set",
+      "editTeamSet": "编辑 Team Set",
+      "loadError": "加载工作区分配失败。",
+      "saveError": "保存工作区分配失败。",
+      "conflictError": "分配已在其他地方更改，已重新加载。"
+    },
+    "teamSets": {
+      "title": "Team Sets",
+      "description": "可复用的团队配置。",
+      "new": "新建 Team Set",
+      "empty": "尚未创建任何 Team Set。"
+    },
+    "globalDefs": {
+      "title": "全局定义"
+    }
+  },
+  "teamSet": {
+    "titleNew": "新建 Team Set",
+    "backToTeam": "返回 Team",
+    "confirmDelete": "确定要删除此 Team Set？使用它的工作区将取消分配。",
+    "sections": {
+      "metadata": "Team Set",
+      "leader": "Leader 配置",
+      "teammates": "Teammates"
+    },
+    "fields": {
+      "id": "ID",
+      "name": "显示名称",
+      "namePlaceholder": "我的 Team Set",
+      "description": "描述",
+      "descriptionPlaceholder": "这个 Team Set 的用途...",
+      "modelDefault": "使用默认",
+      "leaderMode": "Leader 模式",
+      "leaderPrompt": "Leader 提示词覆写",
+      "leaderModel": "Leader 模型覆写",
+      "modelOverride": "模型覆写",
+      "promptOverride": "提示词覆写",
+      "promptOverridePlaceholder": "覆写 Teammate 的全局提示词...",
+      "contextPolicy": "上下文策略"
+    },
+    "leaderModes": {
+      "inherit": "继承全局",
+      "override": "覆写（合并到全局之上）",
+      "standalone": "独立（忽略全局）"
+    },
+    "contextPolicies": {
+      "persistent": "持久化",
+      "fresh": "每次委派刷新"
+    },
+    "noTeammates": "尚未定义全局 Teammate。",
+    "actions": {
+      "save": "保存",
+      "saving": "保存中...",
+      "cancel": "取消",
+      "delete": "删除"
+    },
+    "messages": {
+      "saved": "Team Set 已保存。"
+    },
+    "errors": {
+      "loadFailed": "加载 Team Set 失败。",
+      "saveFailed": "保存 Team Set 失败。",
+      "deleteFailed": "删除 Team Set 失败。",
+      "idRequired": "Team Set ID 不能为空。",
+      "revisionConflict": "Team Set 已在其他地方更改，已重新加载。"
     }
   },
   "leader": {

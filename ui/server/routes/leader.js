@@ -3,15 +3,6 @@ import { getPilotDeckGateway } from '../pilotdeck-bridge.js';
 
 const router = express.Router();
 
-function requireProjectPath(value) {
-  if (typeof value !== 'string' || !value.trim()) {
-    const error = new Error('projectPath is required.');
-    error.statusCode = 400;
-    throw error;
-  }
-  return value.trim();
-}
-
 function sendError(res, error) {
   const code = error?.code || error?.details?.code;
   const status = error?.statusCode
@@ -53,54 +44,6 @@ router.put('/', async (req, res) => {
     const gateway = await getPilotDeckGateway();
     const result = await gateway.leaderWrite({ document });
     res.json(result);
-  } catch (error) {
-    sendError(res, error);
-  }
-});
-
-router.get('/override', async (req, res) => {
-  try {
-    const projectKey = requireProjectPath(req.query.projectPath);
-    const gateway = await getPilotDeckGateway();
-    res.json(await gateway.leaderWorkspaceOverrideGet({ projectKey }));
-  } catch (error) {
-    sendError(res, error);
-  }
-});
-
-router.put('/override', async (req, res) => {
-  try {
-    const projectKey = requireProjectPath(req.body?.projectPath);
-    const expectedRevision = req.body?.expectedRevision;
-    if (typeof expectedRevision !== 'string' || !expectedRevision.trim()) {
-      return res.status(400).json({ error: 'expectedRevision is required.' });
-    }
-    if (!req.body?.override || typeof req.body.override !== 'object' || Array.isArray(req.body.override)) {
-      return res.status(400).json({ error: 'override must be an object.' });
-    }
-    const gateway = await getPilotDeckGateway();
-    res.json(await gateway.leaderWorkspaceOverrideSet({
-      projectKey,
-      override: req.body.override,
-      expectedRevision,
-    }));
-  } catch (error) {
-    sendError(res, error);
-  }
-});
-
-router.delete('/override', async (req, res) => {
-  try {
-    const projectKey = requireProjectPath(req.query.projectPath || req.body?.projectPath);
-    const expectedRevision = req.query.expectedRevision || req.body?.expectedRevision;
-    if (typeof expectedRevision !== 'string' || !expectedRevision.trim()) {
-      return res.status(400).json({ error: 'expectedRevision is required.' });
-    }
-    const gateway = await getPilotDeckGateway();
-    res.json(await gateway.leaderWorkspaceOverrideDelete({
-      projectKey,
-      expectedRevision,
-    }));
   } catch (error) {
     sendError(res, error);
   }

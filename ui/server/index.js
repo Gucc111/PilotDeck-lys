@@ -85,6 +85,7 @@ import commandsRoutes from './routes/commands.js';
 import skillsRoutes from './routes/skills.js';
 import teammatesRoutes from './routes/teammates.js';
 import leaderRoutes from './routes/leader.js';
+import teamSetRoutes from './routes/team-sets.js';
 import settingsRoutes from './routes/settings.js';
 import configRoutes from './routes/config.js';
 import gatewayRoutes from './routes/gateway.js';
@@ -499,6 +500,7 @@ app.use('/api/commands', authenticateToken, commandsRoutes);
 app.use('/api/skills', authenticateToken, skillsRoutes);
 app.use('/api/teammates', authenticateToken, teammatesRoutes);
 app.use('/api/leader', authenticateToken, leaderRoutes);
+app.use('/api/team-sets', authenticateToken, teamSetRoutes);
 
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);

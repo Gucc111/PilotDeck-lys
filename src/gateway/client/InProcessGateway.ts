@@ -74,18 +74,27 @@ import type {
   TeammateCatalog,
   TeammateCatalogInput,
   TeammateDeleteResult,
-  TeammateEnablementGetInput,
-  TeammateEnablementResult,
-  TeammateEnablementSetInput,
   TeammateGatewayCreateInput,
   TeammateGatewayWriteInput,
   TeammateListResult,
   TeammateReadResult,
-  TeammateWorkspaceBindingSetInput,
-  TeammateWorkspaceBindingsGetInput,
-  TeammateWorkspaceBindingsResult,
   TeammatesListInput,
 } from "../../extension/teammates/types.js";
+import type {
+  TeamSetCreateInput,
+  TeamSetCreateResult,
+  TeamSetDeleteInput,
+  TeamSetDeleteResult,
+  TeamSetListResult,
+  TeamSetReadInput,
+  TeamSetReadResult,
+  TeamSetWorkspaceAssignmentGetInput,
+  TeamSetWorkspaceAssignmentGetResult,
+  TeamSetWorkspaceAssignmentSetInput,
+  TeamSetWorkspaceAssignmentSetResult,
+  TeamSetWriteInput,
+  TeamSetWriteResult,
+} from "../../extension/team-sets/types.js";
 import { AttachmentResolver, type AttachmentRequest } from "../../context/attachments/AttachmentResolver.js";
 import type {
   SkillAddressInput,
@@ -170,20 +179,16 @@ export type InProcessGatewayOptions = {
   teammateManager?: TeammateManager;
   teammatesList?: () => Promise<TeammateListResult>;
   teammateCatalog?: (projectKey: string) => Promise<TeammateCatalog>;
-  teammateEnablementGet?: (input: TeammateEnablementGetInput) => Promise<TeammateEnablementResult>;
-  teammateEnablementSet?: (input: TeammateEnablementSetInput) => Promise<TeammateEnablementResult>;
-  teammateWorkspaceBindingsGet?: (
-    input: TeammateWorkspaceBindingsGetInput,
-  ) => Promise<TeammateWorkspaceBindingsResult>;
-  teammateWorkspaceBindingSet?: (
-    input: TeammateWorkspaceBindingSetInput,
-  ) => Promise<TeammateWorkspaceBindingsResult>;
   teamState?: (input: TeamStateInput) => Promise<TeamStateResult>;
   leaderRead?: (input: import("../../extension/leader/types.js").LeaderGatewayReadInput) => Promise<import("../../extension/leader/types.js").LeaderReadResult | null>;
   leaderWrite?: (input: import("../../extension/leader/types.js").LeaderGatewayWriteInput) => Promise<import("../../extension/leader/types.js").LeaderReadResult>;
-  leaderWorkspaceOverrideGet?: (input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideGetInput) => Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult>;
-  leaderWorkspaceOverrideSet?: (input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideSetInput) => Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult>;
-  leaderWorkspaceOverrideDelete?: (input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideDeleteInput) => Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult>;
+  teamSetList?: () => Promise<TeamSetListResult>;
+  teamSetRead?: (input: TeamSetReadInput) => Promise<TeamSetReadResult>;
+  teamSetCreate?: (input: TeamSetCreateInput) => Promise<TeamSetCreateResult>;
+  teamSetWrite?: (input: TeamSetWriteInput) => Promise<TeamSetWriteResult>;
+  teamSetDelete?: (input: TeamSetDeleteInput) => Promise<TeamSetDeleteResult>;
+  teamSetWorkspaceAssignmentGet?: (input: TeamSetWorkspaceAssignmentGetInput) => Promise<TeamSetWorkspaceAssignmentGetResult>;
+  teamSetWorkspaceAssignmentSet?: (input: TeamSetWorkspaceAssignmentSetInput) => Promise<TeamSetWorkspaceAssignmentSetResult>;
   dispatchHookForSession?: (sessionKey: string, event: string, payload: Record<string, unknown>) => void;
   /** Directory to persist large tool outputs for TUI/Web viewing. */
   toolResultsDir?: string;
@@ -920,50 +925,6 @@ export class InProcessGateway implements Gateway {
     return this.options.teammateCatalog(input.projectKey);
   }
 
-  async teammateEnablementGet(input: TeammateEnablementGetInput): Promise<TeammateEnablementResult> {
-    if (!this.options.teammateEnablementGet) {
-      throw new TeammateManagerError(
-        "not_configured",
-        "Teammate enablement is not configured on this gateway.",
-      );
-    }
-    return this.options.teammateEnablementGet(input);
-  }
-
-  async teammateEnablementSet(input: TeammateEnablementSetInput): Promise<TeammateEnablementResult> {
-    if (!this.options.teammateEnablementSet) {
-      throw new TeammateManagerError(
-        "not_configured",
-        "Teammate enablement is not configured on this gateway.",
-      );
-    }
-    return this.options.teammateEnablementSet(input);
-  }
-
-  async teammateWorkspaceBindingsGet(
-    input: TeammateWorkspaceBindingsGetInput,
-  ): Promise<TeammateWorkspaceBindingsResult> {
-    if (!this.options.teammateWorkspaceBindingsGet) {
-      throw new TeammateManagerError(
-        "not_configured",
-        "Teammate workspace bindings are not configured on this gateway.",
-      );
-    }
-    return this.options.teammateWorkspaceBindingsGet(input);
-  }
-
-  async teammateWorkspaceBindingSet(
-    input: TeammateWorkspaceBindingSetInput,
-  ): Promise<TeammateWorkspaceBindingsResult> {
-    if (!this.options.teammateWorkspaceBindingSet) {
-      throw new TeammateManagerError(
-        "not_configured",
-        "Teammate workspace bindings are not configured on this gateway.",
-      );
-    }
-    return this.options.teammateWorkspaceBindingSet(input);
-  }
-
   async teamState(input: TeamStateInput): Promise<TeamStateResult> {
     if (!this.options.teamState) {
       throw new TeammateManagerError("not_configured", "Team state is not configured on this gateway.");
@@ -997,31 +958,53 @@ export class InProcessGateway implements Gateway {
     return this.options.leaderWrite(input);
   }
 
-  async leaderWorkspaceOverrideGet(
-    input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideGetInput,
-  ): Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
-    if (!this.options.leaderWorkspaceOverrideGet) {
-      throw new Error("Leader workspace overrides are not configured on this gateway.");
+  async teamSetList(): Promise<TeamSetListResult> {
+    if (!this.options.teamSetList) {
+      return { teamSets: [] };
     }
-    return this.options.leaderWorkspaceOverrideGet(input);
+    return this.options.teamSetList();
   }
 
-  async leaderWorkspaceOverrideSet(
-    input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideSetInput,
-  ): Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
-    if (!this.options.leaderWorkspaceOverrideSet) {
-      throw new Error("Leader workspace overrides are not configured on this gateway.");
+  async teamSetRead(input: TeamSetReadInput): Promise<TeamSetReadResult> {
+    if (!this.options.teamSetRead) {
+      throw new TeammateManagerError("not_configured", "Team Set management is not configured on this gateway.");
     }
-    return this.options.leaderWorkspaceOverrideSet(input);
+    return this.options.teamSetRead(input);
   }
 
-  async leaderWorkspaceOverrideDelete(
-    input: import("../../extension/leader/types.js").LeaderWorkspaceOverrideDeleteInput,
-  ): Promise<import("../../extension/leader/types.js").LeaderWorkspaceOverrideResult> {
-    if (!this.options.leaderWorkspaceOverrideDelete) {
-      throw new Error("Leader workspace overrides are not configured on this gateway.");
+  async teamSetCreate(input: TeamSetCreateInput): Promise<TeamSetCreateResult> {
+    if (!this.options.teamSetCreate) {
+      throw new TeammateManagerError("not_configured", "Team Set management is not configured on this gateway.");
     }
-    return this.options.leaderWorkspaceOverrideDelete(input);
+    return this.options.teamSetCreate(input);
+  }
+
+  async teamSetWrite(input: TeamSetWriteInput): Promise<TeamSetWriteResult> {
+    if (!this.options.teamSetWrite) {
+      throw new TeammateManagerError("not_configured", "Team Set management is not configured on this gateway.");
+    }
+    return this.options.teamSetWrite(input);
+  }
+
+  async teamSetDelete(input: TeamSetDeleteInput): Promise<TeamSetDeleteResult> {
+    if (!this.options.teamSetDelete) {
+      throw new TeammateManagerError("not_configured", "Team Set management is not configured on this gateway.");
+    }
+    return this.options.teamSetDelete(input);
+  }
+
+  async teamSetWorkspaceAssignmentGet(input: TeamSetWorkspaceAssignmentGetInput): Promise<TeamSetWorkspaceAssignmentGetResult> {
+    if (!this.options.teamSetWorkspaceAssignmentGet) {
+      throw new TeammateManagerError("not_configured", "Team Set management is not configured on this gateway.");
+    }
+    return this.options.teamSetWorkspaceAssignmentGet(input);
+  }
+
+  async teamSetWorkspaceAssignmentSet(input: TeamSetWorkspaceAssignmentSetInput): Promise<TeamSetWorkspaceAssignmentSetResult> {
+    if (!this.options.teamSetWorkspaceAssignmentSet) {
+      throw new TeammateManagerError("not_configured", "Team Set management is not configured on this gateway.");
+    }
+    return this.options.teamSetWorkspaceAssignmentSet(input);
   }
 
   async alwaysOnApply(input: AlwaysOnApplyInput): Promise<AlwaysOnApplyResult> {

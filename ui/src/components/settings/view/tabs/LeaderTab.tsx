@@ -2,15 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useTranslation } from 'react-i18next';
 import {
   AlertTriangle,
-  ChevronDown,
   ChevronLeft,
-  ChevronRight,
   Loader2,
   Save,
-  Trash2,
 } from 'lucide-react';
 import { parse as parseYaml } from 'yaml';
-import { Button, MultiSelect, PillBar, Pill, Select } from '../../../../shared/view/ui';
+import { Button, MultiSelect, Select } from '../../../../shared/view/ui';
 import { authenticatedFetch } from '../../../../utils/api';
 import { usePilotDeckConfig } from '../../../../hooks/usePilotDeckConfig';
 import { buildModelRefOptions, type ModelRefOption } from '../../../../shared/buildModelRefOptions';
@@ -25,7 +22,6 @@ import {
   isRecord,
   buildProjectOptions,
   normalizeCatalog,
-  type ProjectOption,
 } from './teammatesShared';
 
 type LeaderDraft = {
@@ -41,10 +37,7 @@ type LeaderDraft = {
 
 type LeaderValidationErrors = Partial<Record<keyof LeaderDraft, string>>;
 
-type DetailTab = 'definition' | 'workspaces';
-
 type ArrayLeaderField = 'tools' | 'plugins' | 'skills' | 'mcpServers';
-const ARRAY_LEADER_FIELDS: ArrayLeaderField[] = ['tools', 'plugins', 'skills', 'mcpServers'];
 
 const LEADER_BUILTIN_TOOLS = [
   'team_progress',
@@ -64,11 +57,6 @@ const EMPTY_DRAFT: LeaderDraft = {
   plugins: '',
   skills: '',
   mcpServers: '',
-};
-
-type OverrideSnapshot = {
-  revision: string;
-  override?: Record<string, unknown>;
 };
 
 type Props = {
@@ -101,11 +89,8 @@ export default function LeaderDetail({ projects, onBack }: Props) {
   const { t } = useTranslation('settings');
   const projectOptions = useMemo(() => buildProjectOptions(projects), [projects]);
 
-  const [tab, setTab] = useState<DetailTab>('definition');
-
   const [globalDraft, setGlobalDraft] = useState<LeaderDraft>(EMPTY_DRAFT);
   const [globalErrors, setGlobalErrors] = useState<LeaderValidationErrors>({});
-  const [globalConfigured, setGlobalConfigured] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -178,11 +163,8 @@ export default function LeaderDetail({ projects, onBack }: Props) {
           mcpServers: Array.isArray(leader.mcpServers) ? leader.mcpServers.join('\n') : '',
         };
         setGlobalDraft(draft);
-        const hasAnyContent = draft.prompt || draft.model || draft.tools || draft.plugins || draft.skills || draft.mcpServers;
-        setGlobalConfigured(Boolean(hasAnyContent));
       } else {
         setGlobalDraft(EMPTY_DRAFT);
-        setGlobalConfigured(false);
       }
     } catch {
       if (seq === requestSeq.current) setError(t('leader.errors.loadFailed'));
@@ -231,7 +213,6 @@ export default function LeaderDetail({ projects, onBack }: Props) {
         setError(apiError(data, t('leader.errors.saveFailed')));
         return;
       }
-      setGlobalConfigured(true);
       setMessage(t('leader.messages.saved'));
     } catch {
       setError(t('leader.errors.saveFailed'));
@@ -253,6 +234,11 @@ export default function LeaderDetail({ projects, onBack }: Props) {
     );
   }
 
+  const modelSelectOptions = [
+    { value: '', label: t('leader.fields.modelDefault') },
+    ...modelOptions,
+  ];
+
   return (
     <div className="space-y-5">
       <button
@@ -272,518 +258,32 @@ export default function LeaderDetail({ projects, onBack }: Props) {
         <Notice tone={error ? 'error' : 'success'}>{error || message}</Notice>
       )}
 
-      <PillBar>
-        <Pill isActive={tab === 'definition'} onClick={() => setTab('definition')}>
-          {t('leader.detail.definitionTab')}
-        </Pill>
-        <Pill isActive={tab === 'workspaces'} onClick={() => setTab('workspaces')}>
-          {t('leader.detail.workspacesTab')}
-        </Pill>
-      </PillBar>
-
-      {tab === 'definition' && (
-        <LeaderDefinitionForm
-          draft={globalDraft}
-          errors={globalErrors}
-          catalog={firstCatalog}
-          catalogUnavailable={catalogUnavailable}
-          hasWorkspace={projectOptions.length > 0}
-          modelOptions={modelOptions}
-          saving={saving}
-          onUpdateDraft={updateGlobalDraft}
-          onSave={() => void saveGlobal()}
-          onCancel={onBack}
-        />
-      )}
-
-      {tab === 'workspaces' && (
-        <LeaderWorkspacesPanel
-          projects={projectOptions}
-          catalogMap={catalogMap}
-          modelOptions={modelOptions}
-        />
-      )}
-    </div>
-  );
-}
-
-function LeaderDefinitionForm({
-  draft,
-  errors,
-  catalog,
-  catalogUnavailable,
-  hasWorkspace,
-  modelOptions,
-  saving,
-  onUpdateDraft,
-  onSave,
-  onCancel,
-}: {
-  draft: LeaderDraft;
-  errors: LeaderValidationErrors;
-  catalog: TeammateCatalog | null;
-  catalogUnavailable: boolean;
-  hasWorkspace: boolean;
-  modelOptions: ModelRefOption[];
-  saving: boolean;
-  onUpdateDraft: (field: keyof LeaderDraft, value: string) => void;
-  onSave: () => void;
-  onCancel: () => void;
-}) {
-  const { t } = useTranslation('settings');
-
-  const modelSelectOptions = [
-    { value: '', label: t('leader.fields.modelDefault') },
-    ...modelOptions,
-  ];
-
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSave();
-      }}
-    >
-      <div className="space-y-4">
-        <div>
-          <h4 className="text-sm font-semibold text-foreground">{t('leader.globalSection')}</h4>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('leader.globalDescription')}</p>
-        </div>
-
-        <Field label={t('leader.fields.prompt')}>
-          <textarea
-            value={draft.prompt}
-            onChange={(e) => onUpdateDraft('prompt', e.target.value)}
-            placeholder={t('leader.fields.promptPlaceholder')}
-            rows={8}
-            className={TEXTAREA_CLASS}
-          />
-        </Field>
-
-        <Field label={t('leader.fields.model')}>
-          <Select
-            value={draft.model}
-            onChange={(v) => onUpdateDraft('model', v)}
-            options={modelSelectOptions}
-          />
-        </Field>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label={t('leader.fields.maxOutputTokens')}
-            error={errors.maxOutputTokens}
-          >
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={draft.maxOutputTokens}
-              onChange={(e) => onUpdateDraft('maxOutputTokens', e.target.value)}
-              placeholder={t('leader.placeholders.maxOutputTokens')}
-              className={fieldClass(INPUT_CLASS, errors.maxOutputTokens)}
-            />
-            <span className="block text-xs leading-5 text-muted-foreground">
-              {t('leader.fields.maxOutputTokensHelp')}
-            </span>
-          </Field>
-          <Field
-            label={t('leader.fields.maxContextTokens')}
-            error={errors.maxContextTokens}
-          >
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={draft.maxContextTokens}
-              onChange={(e) => onUpdateDraft('maxContextTokens', e.target.value)}
-              placeholder={t('leader.placeholders.maxContextTokens')}
-              className={fieldClass(INPUT_CLASS, errors.maxContextTokens)}
-            />
-            <span className="block text-xs leading-5 text-muted-foreground">
-              {t('leader.fields.maxContextTokensHelp')}
-            </span>
-          </Field>
-        </div>
-
-        <Field label={t('leader.fields.tools')}>
-          <BuiltinToolsBadges />
-          <MultiSelect
-            selected={parseArrayField(draft.tools).filter((t) => !BUILTIN_TOOLS_SET.has(t))}
-            options={(catalog?.tools ?? []).filter((t) => !BUILTIN_TOOLS_SET.has(t))}
-            onChange={(values) => onUpdateDraft('tools', values.join('\n'))}
-            placeholder={t('leader.placeholders.tools')}
-          />
-        </Field>
-
-        {(['plugins', 'skills', 'mcpServers'] as const).map((field) => (
-          <Field key={field} label={t(`leader.fields.${field}`)}>
-            <MultiSelect
-              selected={parseArrayField(draft[field])}
-              options={catalog?.[field] ?? []}
-              onChange={(values) => onUpdateDraft(field, values.join('\n'))}
-              placeholder={t(`leader.placeholders.${field}`)}
-            />
-          </Field>
-        ))}
-
-        {!hasWorkspace && (
-          <div className="flex gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
-            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-            <span>{t('leader.workspace.none')}</span>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void saveGlobal();
+        }}
+      >
+        <div className="space-y-4">
+          <div>
+            <h4 className="text-sm font-semibold text-foreground">{t('leader.globalSection')}</h4>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('leader.globalDescription')}</p>
           </div>
-        )}
 
-        {hasWorkspace && catalogUnavailable && (
-          <div className="flex gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
-            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-            <span>{t('leader.errors.catalogFailed')}</span>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-6 flex justify-end gap-2 border-t border-border pt-4">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>
-          {t('leader.actions.cancel')}
-        </Button>
-        <Button type="submit" disabled={saving}>
-          {saving ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Save className="h-4 w-4" />
-          )}
-          {saving ? t('leader.actions.saving') : t('leader.actions.save')}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
-function LeaderWorkspacesPanel({
-  projects,
-  catalogMap,
-  modelOptions,
-}: {
-  projects: ProjectOption[];
-  catalogMap: Record<string, TeammateCatalog | null>;
-  modelOptions: ModelRefOption[];
-}) {
-  const { t } = useTranslation('settings');
-  const [expandedWorkspace, setExpandedWorkspace] = useState<string | null>(null);
-
-  const [overrideSnapshots, setOverrideSnapshots] = useState<Record<string, OverrideSnapshot>>({});
-  const [overrideDrafts, setOverrideDrafts] = useState<Record<string, LeaderDraft>>({});
-  const [overrideEnabled, setOverrideEnabled] = useState<Record<string, boolean>>({});
-  const [overrideErrors, setOverrideErrors] = useState<Record<string, LeaderValidationErrors>>({});
-  const [overrideLoading, setOverrideLoading] = useState<Set<string>>(new Set());
-  const [savingProject, setSavingProject] = useState<string | null>(null);
-  const [wsError, setWsError] = useState<string | null>(null);
-  const [wsMessage, setWsMessage] = useState<string | null>(null);
-
-  const loadOverride = useCallback(async (projectPath: string) => {
-    setOverrideLoading((prev) => new Set(prev).add(projectPath));
-    try {
-      const response = await authenticatedFetch(
-        `/api/leader/override?projectPath=${encodeURIComponent(projectPath)}`,
-      );
-      const data = await readJson(response);
-      if (!response.ok) return;
-      const revision = typeof data.revision === 'string' ? data.revision : '';
-      const override = isRecord(data.override) ? data.override : undefined;
-      setOverrideSnapshots((prev) => ({ ...prev, [projectPath]: { revision, override } }));
-      if (override) {
-        setOverrideEnabled((prev) => ({ ...prev, [projectPath]: true }));
-        setOverrideDrafts((prev) => ({
-          ...prev,
-          [projectPath]: overrideToDraft(override),
-        }));
-      } else {
-        setOverrideEnabled((prev) => ({ ...prev, [projectPath]: false }));
-        setOverrideDrafts((prev) => ({ ...prev, [projectPath]: EMPTY_DRAFT }));
-      }
-    } catch {
-      // silently ignore
-    } finally {
-      setOverrideLoading((prev) => {
-        const next = new Set(prev);
-        next.delete(projectPath);
-        return next;
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    for (const project of projects) {
-      void loadOverride(project.value);
-    }
-  }, [projects, loadOverride]);
-
-  const saveOverride = useCallback(async (projectPath: string) => {
-    const snapshot = overrideSnapshots[projectPath];
-    const draft = overrideDrafts[projectPath];
-    if (!snapshot || !draft) return;
-    const errors = validateLeaderDraft(draft, t);
-    setOverrideErrors((prev) => ({ ...prev, [projectPath]: errors }));
-    if (Object.keys(errors).length > 0) return;
-
-    setSavingProject(projectPath);
-    setWsError(null);
-    setWsMessage(null);
-    try {
-      const model = draft.model.trim();
-      const maxCtx = draft.maxContextTokens.trim();
-      const maxOut = draft.maxOutputTokens.trim();
-      const tools = parseArrayField(draft.tools);
-      const override: Record<string, unknown> = {};
-      if (model) override.model = model;
-      if (maxCtx) override.maxContextTokens = Number(maxCtx);
-      if (maxOut) override.maxOutputTokens = Number(maxOut);
-      if (draft.prompt.trim()) override.prompt = draft.prompt.trim();
-      if (tools.length > 0) override.toolProfile = { mode: 'custom', tools };
-      const plugins = parseArrayField(draft.plugins);
-      if (plugins.length > 0) override.plugins = plugins;
-      const skills = parseArrayField(draft.skills);
-      if (skills.length > 0) override.skills = skills;
-      const mcpServers = parseArrayField(draft.mcpServers);
-      if (mcpServers.length > 0) override.mcpServers = mcpServers;
-
-      const response = await authenticatedFetch('/api/leader/override', {
-        method: 'PUT',
-        body: JSON.stringify({
-          projectPath,
-          override,
-          expectedRevision: snapshot.revision,
-        }),
-      });
-      const data = await readJson(response);
-      if (!response.ok) {
-        if (response.status === 409) {
-          await loadOverride(projectPath);
-          setWsError(t('leader.errors.revisionConflict'));
-        } else {
-          setWsError(apiError(data, t('leader.errors.saveFailed')));
-        }
-        return;
-      }
-      const newRevision = typeof data.revision === 'string' ? data.revision : snapshot.revision;
-      setOverrideSnapshots((prev) => ({ ...prev, [projectPath]: { revision: newRevision, override } }));
-      setWsMessage(t('leader.messages.overrideSaved'));
-    } catch {
-      setWsError(t('leader.errors.saveFailed'));
-    } finally {
-      setSavingProject(null);
-    }
-  }, [overrideSnapshots, overrideDrafts, t, loadOverride]);
-
-  const deleteOverride = useCallback(async (projectPath: string) => {
-    const snapshot = overrideSnapshots[projectPath];
-    if (!snapshot) return;
-    setSavingProject(projectPath);
-    setWsError(null);
-    setWsMessage(null);
-    try {
-      const response = await authenticatedFetch(
-        `/api/leader/override?projectPath=${encodeURIComponent(projectPath)}&expectedRevision=${encodeURIComponent(snapshot.revision)}`,
-        { method: 'DELETE' },
-      );
-      const data = await readJson(response);
-      if (!response.ok) {
-        if (response.status === 409) {
-          await loadOverride(projectPath);
-          setWsError(t('leader.errors.revisionConflict'));
-        } else {
-          setWsError(apiError(data, t('leader.errors.deleteFailed')));
-        }
-        return;
-      }
-      setOverrideEnabled((prev) => ({ ...prev, [projectPath]: false }));
-      setOverrideDrafts((prev) => ({ ...prev, [projectPath]: EMPTY_DRAFT }));
-      const newRevision = typeof data.revision === 'string' ? data.revision : '';
-      setOverrideSnapshots((prev) => ({
-        ...prev,
-        [projectPath]: { revision: newRevision, override: undefined },
-      }));
-      setWsMessage(t('leader.messages.overrideDeleted'));
-    } catch {
-      setWsError(t('leader.errors.deleteFailed'));
-    } finally {
-      setSavingProject(null);
-    }
-  }, [overrideSnapshots, t, loadOverride]);
-
-  if (projects.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-        {t('leader.workspace.none')}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <h4 className="text-sm font-semibold text-foreground">{t('leader.workspace.title')}</h4>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('leader.workspace.description')}</p>
-      </div>
-
-      {(wsError || wsMessage) && (
-        <Notice tone={wsError ? 'error' : 'success'}>{wsError || wsMessage}</Notice>
-      )}
-
-      <div className="space-y-2">
-        {projects.map((project) => {
-          const snapshot = overrideSnapshots[project.value];
-          const hasOverride = Boolean(snapshot?.override);
-          const loading = overrideLoading.has(project.value);
-          const expanded = expandedWorkspace === project.value;
-          const enabled = overrideEnabled[project.value] ?? false;
-          const draft = overrideDrafts[project.value] ?? EMPTY_DRAFT;
-          const errs = overrideErrors[project.value] ?? {};
-          const isSaving = savingProject === project.value;
-          const catalog = catalogMap[project.value] ?? null;
-
-          return (
-            <div
-              key={project.value}
-              className="rounded-lg border border-border bg-background/70"
-            >
-              <button
-                type="button"
-                onClick={() => setExpandedWorkspace(expanded ? null : project.value)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/30"
-              >
-                {expanded
-                  ? <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                  : <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground" />}
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate text-sm font-medium text-foreground">
-                      {project.label}
-                    </span>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      hasOverride
-                        ? 'bg-blue-500/10 text-blue-700 dark:text-blue-300'
-                        : 'bg-muted text-muted-foreground'
-                    }`}>
-                      {hasOverride
-                        ? t('leader.workspace.hasOverride')
-                        : t('leader.workspace.noOverride')}
-                    </span>
-                  </div>
-                </div>
-                {loading && <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-muted-foreground" />}
-              </button>
-
-              {expanded && (
-                <div className="border-t border-border px-4 py-4">
-                  {loading ? (
-                    <div className="flex min-h-24 items-center justify-center text-sm text-muted-foreground">
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    </div>
-                  ) : (
-                    <LeaderWorkspaceOverrideEditor
-                      draft={draft}
-                      errors={errs}
-                      enabled={enabled}
-                      hasExistingOverride={hasOverride}
-                      catalog={catalog}
-                      modelOptions={modelOptions}
-                      saving={isSaving}
-                      disabled={savingProject !== null}
-                      onToggleEnabled={(value) => {
-                        setOverrideEnabled((prev) => ({ ...prev, [project.value]: value }));
-                        if (!value && hasOverride) {
-                          void deleteOverride(project.value);
-                        }
-                      }}
-                      onUpdateDraft={(field, value) => {
-                        setOverrideDrafts((prev) => ({
-                          ...prev,
-                          [project.value]: { ...(prev[project.value] ?? EMPTY_DRAFT), [field]: value },
-                        }));
-                        setOverrideErrors((prev) => {
-                          const next = { ...(prev[project.value] ?? {}) };
-                          delete next[field];
-                          return { ...prev, [project.value]: next };
-                        });
-                      }}
-                      onSave={() => void saveOverride(project.value)}
-                      onDelete={() => void deleteOverride(project.value)}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function LeaderWorkspaceOverrideEditor({
-  draft,
-  errors,
-  enabled,
-  hasExistingOverride,
-  catalog,
-  modelOptions,
-  saving,
-  disabled,
-  onToggleEnabled,
-  onUpdateDraft,
-  onSave,
-  onDelete,
-}: {
-  draft: LeaderDraft;
-  errors: LeaderValidationErrors;
-  enabled: boolean;
-  hasExistingOverride: boolean;
-  catalog: TeammateCatalog | null;
-  modelOptions: ModelRefOption[];
-  saving: boolean;
-  disabled: boolean;
-  onToggleEnabled: (value: boolean) => void;
-  onUpdateDraft: (field: keyof LeaderDraft, value: string) => void;
-  onSave: () => void;
-  onDelete: () => void;
-}) {
-  const { t } = useTranslation('settings');
-
-  const modelSelectOptions = [
-    { value: '', label: t('leader.fields.modelDefault') },
-    ...modelOptions,
-  ];
-
-  return (
-    <div className="space-y-4">
-      <label className="flex items-center gap-2 text-sm text-foreground">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onToggleEnabled(e.target.checked)}
-          disabled={disabled}
-          className="h-4 w-4 rounded border-border accent-primary disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        {t('leader.workspace.enableOverride')}
-        {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-      </label>
-
-      {enabled && (
-        <>
           <Field label={t('leader.fields.prompt')}>
             <textarea
-              value={draft.prompt}
-              onChange={(e) => onUpdateDraft('prompt', e.target.value)}
+              value={globalDraft.prompt}
+              onChange={(e) => updateGlobalDraft('prompt', e.target.value)}
               placeholder={t('leader.fields.promptPlaceholder')}
-              rows={5}
+              rows={8}
               className={TEXTAREA_CLASS}
             />
           </Field>
 
           <Field label={t('leader.fields.model')}>
             <Select
-              value={draft.model}
-              onChange={(v) => onUpdateDraft('model', v)}
+              value={globalDraft.model}
+              onChange={(v) => updateGlobalDraft('model', v)}
               options={modelSelectOptions}
             />
           </Field>
@@ -791,40 +291,46 @@ function LeaderWorkspaceOverrideEditor({
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
               label={t('leader.fields.maxOutputTokens')}
-              error={errors.maxOutputTokens}
+              error={globalErrors.maxOutputTokens}
             >
               <input
                 type="number"
                 min={1}
                 step={1}
-                value={draft.maxOutputTokens}
-                onChange={(e) => onUpdateDraft('maxOutputTokens', e.target.value)}
+                value={globalDraft.maxOutputTokens}
+                onChange={(e) => updateGlobalDraft('maxOutputTokens', e.target.value)}
                 placeholder={t('leader.placeholders.maxOutputTokens')}
-                className={fieldClass(INPUT_CLASS, errors.maxOutputTokens)}
+                className={fieldClass(INPUT_CLASS, globalErrors.maxOutputTokens)}
               />
+              <span className="block text-xs leading-5 text-muted-foreground">
+                {t('leader.fields.maxOutputTokensHelp')}
+              </span>
             </Field>
             <Field
               label={t('leader.fields.maxContextTokens')}
-              error={errors.maxContextTokens}
+              error={globalErrors.maxContextTokens}
             >
               <input
                 type="number"
                 min={1}
                 step={1}
-                value={draft.maxContextTokens}
-                onChange={(e) => onUpdateDraft('maxContextTokens', e.target.value)}
+                value={globalDraft.maxContextTokens}
+                onChange={(e) => updateGlobalDraft('maxContextTokens', e.target.value)}
                 placeholder={t('leader.placeholders.maxContextTokens')}
-                className={fieldClass(INPUT_CLASS, errors.maxContextTokens)}
+                className={fieldClass(INPUT_CLASS, globalErrors.maxContextTokens)}
               />
+              <span className="block text-xs leading-5 text-muted-foreground">
+                {t('leader.fields.maxContextTokensHelp')}
+              </span>
             </Field>
           </div>
 
           <Field label={t('leader.fields.tools')}>
             <BuiltinToolsBadges />
             <MultiSelect
-              selected={parseArrayField(draft.tools).filter((t) => !BUILTIN_TOOLS_SET.has(t))}
-              options={(catalog?.tools ?? []).filter((t) => !BUILTIN_TOOLS_SET.has(t))}
-              onChange={(values) => onUpdateDraft('tools', values.join('\n'))}
+              selected={parseArrayField(globalDraft.tools).filter((t) => !BUILTIN_TOOLS_SET.has(t))}
+              options={(firstCatalog?.tools ?? []).filter((t) => !BUILTIN_TOOLS_SET.has(t))}
+              onChange={(values) => updateGlobalDraft('tools', values.join('\n'))}
               placeholder={t('leader.placeholders.tools')}
             />
           </Field>
@@ -832,56 +338,45 @@ function LeaderWorkspaceOverrideEditor({
           {(['plugins', 'skills', 'mcpServers'] as const).map((field) => (
             <Field key={field} label={t(`leader.fields.${field}`)}>
               <MultiSelect
-                selected={parseArrayField(draft[field])}
-                options={catalog?.[field] ?? []}
-                onChange={(values) => onUpdateDraft(field, values.join('\n'))}
+                selected={parseArrayField(globalDraft[field])}
+                options={firstCatalog?.[field] ?? []}
+                onChange={(values) => updateGlobalDraft(field, values.join('\n'))}
                 placeholder={t(`leader.placeholders.${field}`)}
               />
             </Field>
           ))}
 
-          <div className="flex justify-end gap-2 border-t border-border pt-4">
-            {hasExistingOverride && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={onDelete}
-                disabled={disabled}
-                className="text-destructive hover:text-destructive"
-              >
-                <Trash2 className="h-4 w-4" />
-                {t('leader.actions.deleteOverride')}
-              </Button>
+          {projectOptions.length === 0 && (
+            <div className="flex gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>{t('leader.workspace.none')}</span>
+            </div>
+          )}
+
+          {projectOptions.length > 0 && catalogUnavailable && (
+            <div className="flex gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>{t('leader.errors.catalogFailed')}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2 border-t border-border pt-4">
+          <Button type="button" variant="outline" onClick={onBack} disabled={saving}>
+            {t('leader.actions.cancel')}
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
             )}
-            <Button type="button" size="sm" onClick={onSave} disabled={disabled}>
-              {saving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4" />
-              )}
-              {t('leader.actions.saveOverride')}
-            </Button>
-          </div>
-        </>
-      )}
+            {saving ? t('leader.actions.saving') : t('leader.actions.save')}
+          </Button>
+        </div>
+      </form>
     </div>
   );
-}
-
-function overrideToDraft(override: Record<string, unknown>): LeaderDraft {
-  return {
-    prompt: typeof override.prompt === 'string' ? override.prompt : '',
-    model: typeof override.model === 'string' ? override.model : '',
-    maxContextTokens: typeof override.maxContextTokens === 'number' ? String(override.maxContextTokens) : '',
-    maxOutputTokens: typeof override.maxOutputTokens === 'number' ? String(override.maxOutputTokens) : '',
-    tools: isRecord(override.toolProfile) && override.toolProfile.mode === 'custom' && Array.isArray(override.toolProfile.tools)
-      ? (override.toolProfile.tools as string[]).join('\n')
-      : '',
-    plugins: Array.isArray(override.plugins) ? (override.plugins as string[]).join('\n') : '',
-    skills: Array.isArray(override.skills) ? (override.skills as string[]).join('\n') : '',
-    mcpServers: Array.isArray(override.mcpServers) ? (override.mcpServers as string[]).join('\n') : '',
-  };
 }
 
 function Field({ label, error, children }: { label: string; error?: string; children: ReactNode }) {

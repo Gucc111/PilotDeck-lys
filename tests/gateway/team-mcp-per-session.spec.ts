@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { createLocalGateway } from "../../src/cli/createLocalGateway.js";
-import { TeammateEnablementStore } from "../../src/extension/teammates/index.js";
+import { TeamSetStore } from "../../src/extension/team-sets/index.js";
 import { McpRuntime } from "../../src/mcp/runtime/McpRuntime.js";
 import { buildMcpToolWireName, parseMcpToolWireName } from "../../src/mcp/runtime/wireName.js";
 
@@ -81,10 +81,17 @@ test("catalog lists all 6 perSession MCP servers", async () => {
       );
     }
     await Promise.all(writes);
-    await new TeammateEnablementStore({ pilotHome }).set(
-      projectRoot,
-      SERVER_IDS.map((id) => `${id}-worker`),
-    );
+    const teamSetStore = new TeamSetStore({ pilotHome });
+    await teamSetStore.create({
+      id: "test-team",
+      name: "Test Team",
+      leader: { mode: "inherit" },
+      teammates: Object.fromEntries(
+        SERVER_IDS.map((id) => [`${id}-worker`, { toolProfile: { mode: "inherit" as const } }]),
+      ),
+    });
+    const assignment = await teamSetStore.getAssignment(projectRoot);
+    await teamSetStore.setAssignment(projectRoot, "test-team", assignment.revision);
 
     const local = createLocalGateway({
       projectRoot,
@@ -156,10 +163,17 @@ test("teammate session only starts MCP servers listed in its definition", async 
       );
     }
     await Promise.all(writes);
-    await new TeammateEnablementStore({ pilotHome }).set(
-      projectRoot,
-      SERVER_IDS.map((id) => `${id}-worker`),
-    );
+    const teamSetStore = new TeamSetStore({ pilotHome });
+    await teamSetStore.create({
+      id: "test-team",
+      name: "Test Team",
+      leader: { mode: "inherit" },
+      teammates: Object.fromEntries(
+        SERVER_IDS.map((id) => [`${id}-worker`, { toolProfile: { mode: "inherit" as const } }]),
+      ),
+    });
+    const assignment = await teamSetStore.getAssignment(projectRoot);
+    await teamSetStore.setAssignment(projectRoot, "test-team", assignment.revision);
 
     const local = createLocalGateway({
       projectRoot,
@@ -249,7 +263,15 @@ test("leader with empty mcpServers produces zero effectivePerSpecs", async () =>
         "utf8",
       ),
     ]);
-    await new TeammateEnablementStore({ pilotHome }).set(projectRoot, ["alpha-worker"]);
+    const teamSetStore = new TeamSetStore({ pilotHome });
+    await teamSetStore.create({
+      id: "test-team",
+      name: "Test Team",
+      leader: { mode: "inherit" },
+      teammates: { "alpha-worker": { toolProfile: { mode: "inherit" } } },
+    });
+    const assignment = await teamSetStore.getAssignment(projectRoot);
+    await teamSetStore.setAssignment(projectRoot, "test-team", assignment.revision);
 
     const local = createLocalGateway({
       projectRoot,
@@ -331,10 +353,17 @@ test("dynamic maxInstances is at least 1 + teammates.length for team mode", asyn
       );
     }
     await Promise.all(writes);
-    await new TeammateEnablementStore({ pilotHome }).set(
-      projectRoot,
-      SERVER_IDS.map((id) => `${id}-worker`),
-    );
+    const teamSetStore = new TeamSetStore({ pilotHome });
+    await teamSetStore.create({
+      id: "test-team",
+      name: "Test Team",
+      leader: { mode: "inherit" },
+      teammates: Object.fromEntries(
+        SERVER_IDS.map((id) => [`${id}-worker`, { toolProfile: { mode: "inherit" as const } }]),
+      ),
+    });
+    const assignment = await teamSetStore.getAssignment(projectRoot);
+    await teamSetStore.setAssignment(projectRoot, "test-team", assignment.revision);
 
     const local = createLocalGateway({
       projectRoot,
@@ -403,10 +432,17 @@ test("each of 6 teammates filters to exactly its own MCP server", async () => {
       );
     }
     await Promise.all(writes);
-    await new TeammateEnablementStore({ pilotHome }).set(
-      projectRoot,
-      SERVER_IDS.map((id) => `${id}-worker`),
-    );
+    const teamSetStore = new TeamSetStore({ pilotHome });
+    await teamSetStore.create({
+      id: "test-team",
+      name: "Test Team",
+      leader: { mode: "inherit" },
+      teammates: Object.fromEntries(
+        SERVER_IDS.map((id) => [`${id}-worker`, { toolProfile: { mode: "inherit" as const } }]),
+      ),
+    });
+    const assignment = await teamSetStore.getAssignment(projectRoot);
+    await teamSetStore.setAssignment(projectRoot, "test-team", assignment.revision);
 
     const local = createLocalGateway({
       projectRoot,

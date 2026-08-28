@@ -12,7 +12,10 @@ import {
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { getPilotTeammatesDir } from "../../pilot/paths.js";
-import { TeammateEnablementStore } from "./TeammateEnablementStore.js";
+import {
+  GlobalTeammateMutationLock,
+  getGlobalTeammateMutationLockPath,
+} from "./GlobalTeammateMutationLock.js";
 import { isValidTeammateId } from "./teammateId.js";
 import {
   TEAMMATE_SCHEMA_VERSION,
@@ -27,8 +30,6 @@ import {
   type TeammateReadResult,
   type TeammateRecord,
   type TeammateValidationResult,
-  type TeammateWorkspaceBinding,
-  type TeammateWorkspaceBindingsResult,
   type TeammateWriteInput,
 } from "./types.js";
 
@@ -64,7 +65,7 @@ type ScannedFile = {
 export class TeammateManager {
   readonly pilotHome: string;
   readonly teammatesRoot: string;
-  readonly enablementStore: TeammateEnablementStore;
+  private readonly mutationLock: GlobalTeammateMutationLock;
 
   constructor(options: TeammateManagerOptions) {
     if (!options || typeof options.pilotHome !== "string" || !options.pilotHome.trim()) {
@@ -72,9 +73,9 @@ export class TeammateManager {
     }
     this.pilotHome = resolve(options.pilotHome);
     this.teammatesRoot = getPilotTeammatesDir(this.pilotHome);
-    this.enablementStore = new TeammateEnablementStore({
-      pilotHome: this.pilotHome,
-    });
+    this.mutationLock = new GlobalTeammateMutationLock(
+      getGlobalTeammateMutationLockPath(this.pilotHome),
+    );
   }
 
   async list(): Promise<TeammateListResult> {
@@ -152,7 +153,7 @@ export class TeammateManager {
       input.relativePath ?? `${teammate.id}.md`,
     );
     const filePath = this.resolveDefinitionPath(relativePath);
-    return this.enablementStore.mutationLock.runExclusive(async () => {
+    return this.mutationLock.runExclusive(async () => {
       const listed = await this.list();
       const idAlreadyDeclared =
         listed.teammates.some((listedTeammate) => listedTeammate.id === teammate.id) ||
@@ -184,7 +185,7 @@ export class TeammateManager {
     }
     assertValidId(input.id);
     const content = renderTeammateDocument(input.document);
-    return this.enablementStore.mutationLock.runExclusive(async () => {
+    return this.mutationLock.runExclusive(async () => {
       const existing = await this.findUniqueRecord(input.id);
       if (!existing) {
         throw new TeammateManagerError("not_found", `Teammate "${input.id}" was not found.`);
@@ -216,7 +217,7 @@ export class TeammateManager {
 
   async delete(id: string): Promise<TeammateDeleteResult> {
     assertValidId(id);
-    return this.enablementStore.runMutation(async (mutation) => {
+    return this.mutationLock.runExclusive(async () => {
       const existing = await this.findUniqueRecord(id);
       if (!existing) {
         throw new TeammateManagerError("not_found", `Teammate "${id}" was not found.`);
@@ -227,106 +228,8 @@ export class TeammateManager {
         `.${filePathName(existing.filePath)}.${randomUUID()}.deleted`,
       );
       await fs.rename(existing.filePath, tombstonePath);
-      try {
-        await mutation.prune(id);
-      } catch (error) {
-        try {
-          await fs.rename(tombstonePath, existing.filePath);
-        } catch (restoreError) {
-          throw new TeammateManagerError(
-            "delete_recovery_failed",
-            `Unable to restore teammate "${id}" after delete failed: ${errorMessage(
-              restoreError,
-            )}. Original error: ${errorMessage(error)}.`,
-          );
-        }
-        throw error;
-      }
-      // The definition is already absent from discovery and its enablement
-      // references are committed. Tombstone cleanup is best-effort so a
-      // transient unlink failure cannot resurrect a globally disabled file.
       await fs.unlink(tombstonePath).catch(() => undefined);
       return { ok: true, id, relativePath: existing.relativePath };
-    });
-  }
-
-  async getEnablement(workspace: string): Promise<string[]> {
-    return this.enablementStore.get(workspace);
-  }
-
-  async setEnablement(workspace: string, enabledIds: string[]): Promise<string[]> {
-    if (!Array.isArray(enabledIds)) {
-      throw new TeammateManagerError(
-        "invalid_input",
-        "enabledIds must be a complete array of teammate IDs.",
-      );
-    }
-    return this.enablementStore.runMutation(async (mutation) => {
-      const listed = await this.list();
-      const invalidDefinitionIds = new Set(
-        listed.diagnostics
-          .filter((item) => item.severity === "error" && item.id)
-          .map((item) => item.id as string),
-      );
-      const validIds = new Set(
-        listed.teammates
-          .filter((teammate) => !invalidDefinitionIds.has(teammate.id))
-          .map((teammate) => teammate.id),
-      );
-      const normalizedIds = [...new Set(enabledIds)];
-      const unknownIds = normalizedIds.filter((teammateId) =>
-        !validIds.has(teammateId)).sort();
-      if (unknownIds.length > 0) {
-        throw new TeammateManagerError(
-          "invalid_input",
-          `Unknown or invalid teammate IDs: ${unknownIds.join(", ")}.`,
-        );
-      }
-      return mutation.set(workspace, normalizedIds);
-    });
-  }
-
-  async getWorkspaceBindings(
-    workspace: string,
-  ): Promise<Omit<TeammateWorkspaceBindingsResult, "canonicalProjectKey" | "filePath"> & {
-    canonicalWorkspace: string;
-  }> {
-    return this.enablementStore.getBindings(workspace);
-  }
-
-  async setWorkspaceBinding(
-    workspace: string,
-    teammateId: string,
-    binding: TeammateWorkspaceBinding,
-    expectedRevision: string,
-  ): Promise<Omit<TeammateWorkspaceBindingsResult, "canonicalProjectKey" | "filePath"> & {
-    canonicalWorkspace: string;
-  }> {
-    assertValidId(teammateId);
-    return this.enablementStore.runMutation(async (mutation) => {
-      const listed = await this.list();
-      const invalidDefinitionIds = new Set(
-        listed.diagnostics
-          .filter((item) => item.severity === "error" && item.id)
-          .map((item) => item.id as string),
-      );
-      const valid = listed.teammates.some(
-        (teammate) =>
-          teammate.id === teammateId &&
-          !invalidDefinitionIds.has(teammate.id),
-      );
-      if (!valid) {
-        throw new TeammateManagerError(
-          "invalid_input",
-          `Unknown or invalid teammate ID: ${teammateId}.`,
-        );
-      }
-      return mutation.setBinding(
-        workspace,
-        teammateId,
-        binding,
-        expectedRevision,
-      );
     });
   }
 

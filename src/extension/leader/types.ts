@@ -1,8 +1,6 @@
 export const LEADER_SCHEMA_VERSION = 1 as const;
-export const LEADER_OVERRIDE_SCHEMA_VERSION = 1 as const;
 
 export type LeaderSchemaVersion = typeof LEADER_SCHEMA_VERSION;
-export type LeaderOverrideSchemaVersion = typeof LEADER_OVERRIDE_SCHEMA_VERSION;
 
 /**
  * Input shape accepted by write operations. Every field except `prompt`
@@ -39,29 +37,6 @@ export interface LeaderDefinition {
 export type LeaderToolProfile =
   | { mode: "inherit" }
   | { mode: "custom"; tools: string[] };
-
-/**
- * Per-workspace override for the Leader. All fields are optional;
- * absent fields fall back to the global Leader definition.
- */
-export interface LeaderWorkspaceOverride {
-  model?: string;
-  maxContextTokens?: number;
-  maxOutputTokens?: number;
-  toolProfile?: LeaderToolProfile;
-  prompt?: string;
-  plugins?: string[];
-  skills?: string[];
-  mcpServers?: string[];
-}
-
-/**
- * On-disk schema for `$PILOT_HOME/teammates/leader-workspace-overrides.json`.
- */
-export interface LeaderOverrideDocument {
-  schemaVersion: LeaderOverrideSchemaVersion;
-  workspaces: Record<string, LeaderWorkspaceOverride>;
-}
 
 /**
  * Resolved Leader config after merging global definition + workspace override.
@@ -124,49 +99,10 @@ export interface LeaderManagerOptions {
   pilotHome: string;
 }
 
-export type LeaderOverrideStoreOptions = {
-  pilotHome: string;
-};
-
-export type LeaderOverrideStoreErrorCode =
-  | "invalid_input"
-  | "invalid_json"
-  | "invalid_schema"
-  | "revision_conflict"
-  | "unsafe_path";
-
-export type LeaderWorkspaceOverrideSnapshot = {
-  canonicalWorkspace: string;
-  override: LeaderWorkspaceOverride | undefined;
-  revision: string;
-};
-
 export type LeaderGatewayReadInput = {
   projectKey?: string;
 };
 
 export type LeaderGatewayWriteInput = {
   document: LeaderDocumentInput;
-};
-
-export type LeaderWorkspaceOverrideGetInput = {
-  projectKey: string;
-};
-
-export type LeaderWorkspaceOverrideSetInput = {
-  projectKey: string;
-  override: LeaderWorkspaceOverride;
-  expectedRevision: string;
-};
-
-export type LeaderWorkspaceOverrideDeleteInput = {
-  projectKey: string;
-  expectedRevision: string;
-};
-
-export type LeaderWorkspaceOverrideResult = {
-  canonicalProjectKey: string;
-  override: LeaderWorkspaceOverride | undefined;
-  revision: string;
-  filePath: string;
 };

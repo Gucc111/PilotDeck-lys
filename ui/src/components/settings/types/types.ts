@@ -56,11 +56,6 @@ export type TeammateCatalog = {
   diagnostics: TeammateDiagnostic[];
 };
 
-export type TeammateEnablement = {
-  canonicalProjectKey: string;
-  enabledTeammateIds: string[];
-};
-
 export type TeammateToolProfile =
   | { mode: 'inherit' }
   | {
@@ -72,17 +67,39 @@ export type TeammateToolProfile =
       };
     };
 
-export type TeammateWorkspaceBinding = {
-  enabled: boolean;
-  toolProfile: TeammateToolProfile;
-  contextPolicy: 'persistent' | 'fresh_per_delegation';
+export type TeamSetSummary = {
+  id: string;
+  name: string;
+  description?: string;
+  revision: string;
 };
 
-export type TeammateWorkspaceBindings = {
+export type TeamSetTeammateConfig = {
+  toolProfile: TeammateToolProfile;
+  contextPolicy?: 'persistent' | 'fresh_per_delegation';
+  modelOverride?: string;
+  promptOverride?: string;
+  maxContextTokensOverride?: number;
+  maxOutputTokensOverride?: number;
+};
+
+export type TeamSetLeaderConfig =
+  | { mode: 'inherit' }
+  | { mode: 'override'; model?: string; prompt?: string; maxContextTokens?: number; maxOutputTokens?: number; tools?: string[]; plugins?: string[]; skills?: string[]; mcpServers?: string[] }
+  | { mode: 'standalone'; model?: string; prompt?: string; maxContextTokens?: number; maxOutputTokens?: number; tools?: string[]; plugins?: string[]; skills?: string[]; mcpServers?: string[] };
+
+export type TeamSetDefinition = {
+  id: string;
+  name: string;
+  description?: string;
+  leader: TeamSetLeaderConfig;
+  teammates: Record<string, TeamSetTeammateConfig>;
+};
+
+export type TeamSetWorkspaceAssignment = {
   canonicalProjectKey: string;
-  bindings: Record<string, TeammateWorkspaceBinding>;
+  teamSetId: string | null;
   revision: string;
-  filePath: string;
 };
 
 export type CodeEditorSettingsState = {
