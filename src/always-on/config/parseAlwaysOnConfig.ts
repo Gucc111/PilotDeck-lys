@@ -121,14 +121,15 @@ export function parseAlwaysOnConfig(
   }
 
   for (const key of Object.keys(raw)) {
+    if (key === "enabled") continue;
     const removalReason = REMOVED_TOP_LEVEL_KEYS[key];
     if (removalReason) {
       diagnostics.push({
         code: "ALWAYS_ON_FIELD_REMOVED",
-        severity: "fatal",
+        severity: "warning",
         message: removalReason,
         path: `alwaysOn.${key}`,
-        recoverable: false,
+        recoverable: true,
       });
       continue;
     }
@@ -255,10 +256,10 @@ function parseProjects(
       if (removed) {
         diagnostics.push({
           code: "ALWAYS_ON_FIELD_REMOVED",
-          severity: "fatal",
+          severity: "warning",
           message: removed,
           path: `alwaysOn.projects.${rootKey}.${innerKey}`,
-          recoverable: false,
+          recoverable: true,
         });
       } else if (innerKey !== "enabled") {
         diagnostics.push({
