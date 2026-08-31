@@ -227,10 +227,6 @@ export class AlwaysOnRuntime {
   }
 
   async start(): Promise<void> {
-    if (!this.config.enabled) {
-      this.logger.info("always-on disabled in config; runtime is a no-op.");
-      return;
-    }
     if (!this.scheduler) {
       throw new Error("AlwaysOnRuntime.start called before bindGateway.");
     }

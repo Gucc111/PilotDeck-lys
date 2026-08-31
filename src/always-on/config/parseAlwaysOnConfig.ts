@@ -3,7 +3,6 @@ import { isRecord } from "../../model/config/schema.js";
 import type { PilotConfigDiagnostic } from "../../pilot/config/types.js";
 
 export type AlwaysOnTriggerConfig = {
-  enabled: boolean;
   tickIntervalMinutes: number;
   cooldownMinutes: number;
   dailyBudget: number;
@@ -39,7 +38,6 @@ export type AlwaysOnProjectConfig = {
 export type AlwaysOnPromptLanguage = "en" | "zh-CN";
 
 export type AlwaysOnConfig = {
-  enabled: boolean;
   language?: AlwaysOnPromptLanguage;
   trigger: AlwaysOnTriggerConfig;
   dormancy: AlwaysOnDormancyConfig;
@@ -61,9 +59,7 @@ const DEFAULT_SNAPSHOT_MAX_BYTES = 1024 * 1024 * 1024; // 1 GiB
 
 export function defaultAlwaysOnConfig(): AlwaysOnConfig {
   return {
-    enabled: false,
     trigger: {
-      enabled: false,
       tickIntervalMinutes: 5,
       cooldownMinutes: 60,
       dailyBudget: 4,
@@ -91,7 +87,6 @@ export function defaultAlwaysOnConfig(): AlwaysOnConfig {
 }
 
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
-  "enabled",
   "language",
   "trigger",
   "dormancy",
@@ -151,7 +146,17 @@ export function parseAlwaysOnConfig(
   }
 
   const result = defaultAlwaysOnConfig();
-  result.enabled = booleanField(raw, "enabled", result.enabled);
+
+  if (raw.enabled !== undefined) {
+    diagnostics.push({
+      code: "ALWAYS_ON_FIELD_REMOVED",
+      severity: "warning",
+      message:
+        "alwaysOn.enabled has been removed. Always-On is active when any project in alwaysOn.projects is enabled; this field is ignored.",
+      path: "alwaysOn.enabled",
+      recoverable: true,
+    });
+  }
 
   if (typeof raw.language === "string" && VALID_LANGUAGES.has(raw.language)) {
     result.language = raw.language as AlwaysOnPromptLanguage;
@@ -222,7 +227,15 @@ function parseTrigger(
     });
     return;
   }
-  target.enabled = booleanField(raw, "enabled", target.enabled);
+  if (raw.enabled !== undefined) {
+    diagnostics.push({
+      code: "ALWAYS_ON_FIELD_REMOVED",
+      severity: "warning",
+      message: "alwaysOn.trigger.enabled has been removed and is ignored.",
+      path: "alwaysOn.trigger.enabled",
+      recoverable: true,
+    });
+  }
   target.tickIntervalMinutes = positiveNumber(
     raw.tickIntervalMinutes,
     target.tickIntervalMinutes,

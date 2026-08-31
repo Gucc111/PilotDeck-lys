@@ -26,10 +26,6 @@ export type DiscoveryGateInput = {
 export function evaluateAlwaysOnDiscoveryGates(input: DiscoveryGateInput): GateResult {
   const { config, state, leases, now, projectKey } = input;
 
-  if (!config.enabled || !config.trigger.enabled) {
-    return { ok: false, reason: "disabled" };
-  }
-
   const project = config.projects[projectKey];
   if (!project || !project.enabled) {
     return { ok: false, reason: "project_disabled" };

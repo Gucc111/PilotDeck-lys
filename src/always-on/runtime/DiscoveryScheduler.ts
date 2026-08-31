@@ -66,7 +66,7 @@ export class DiscoveryScheduler {
 
   /** Public for tests; runs a single tick synchronously. */
   async runTickOnce(): Promise<{ outcome: "fired" | "blocked"; reason?: GateBlockReason }> {
-    if (this.stopped) return { outcome: "blocked", reason: "disabled" };
+    if (this.stopped) return { outcome: "blocked", reason: "project_disabled" };
     return this.tick();
   }
 
