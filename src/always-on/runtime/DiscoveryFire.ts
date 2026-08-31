@@ -1028,10 +1028,10 @@ export class DiscoveryFire {
     }
     const inWorktree = workspace.cwd.startsWith(this.deps.paths.worktreesDir);
     const inSnapshot = workspace.cwd.startsWith(this.deps.paths.snapshotsDir);
-    if (!inWorktree && !inSnapshot) {
+    if (!inWorktree && !inSnapshot && !existsSync(workspace.cwd)) {
       throw new AlwaysOnError(
         "workspace_unavailable",
-        `workspace cwd ${workspace.cwd} is outside the configured Always-On workspace bases.`,
+        `workspace cwd ${workspace.cwd} is outside the configured Always-On workspace bases and does not exist on disk.`,
       );
     }
   }
