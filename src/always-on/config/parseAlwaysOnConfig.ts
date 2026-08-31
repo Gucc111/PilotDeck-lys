@@ -11,12 +11,6 @@ export type AlwaysOnTriggerConfig = {
   preferChannel: string;
 };
 
-export type AlwaysOnDormancyConfig = {
-  enabled: boolean;
-  debounceMs: number;
-  ignoreGlobs: string[];
-};
-
 export type AlwaysOnWorkspaceConfig = {
   gitWorktreeBaseDir?: string;
   snapshotBaseDir?: string;
@@ -40,7 +34,6 @@ export type AlwaysOnPromptLanguage = "en" | "zh-CN";
 export type AlwaysOnConfig = {
   language?: AlwaysOnPromptLanguage;
   trigger: AlwaysOnTriggerConfig;
-  dormancy: AlwaysOnDormancyConfig;
   workspace: AlwaysOnWorkspaceConfig;
   execution: AlwaysOnExecutionConfig;
   projects: Record<string, AlwaysOnProjectConfig>;
@@ -67,11 +60,6 @@ export function defaultAlwaysOnConfig(): AlwaysOnConfig {
       recentUserMsgMinutes: 5,
       preferChannel: "web",
     },
-    dormancy: {
-      enabled: true,
-      debounceMs: 2000,
-      ignoreGlobs: [...DEFAULT_IGNORE_GLOBS],
-    },
     workspace: {
       snapshotMaxBytes: DEFAULT_SNAPSHOT_MAX_BYTES,
       gitLfs: false,
@@ -89,7 +77,6 @@ export function defaultAlwaysOnConfig(): AlwaysOnConfig {
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "language",
   "trigger",
-  "dormancy",
   "workspace",
   "execution",
   "projects",
@@ -99,9 +86,11 @@ const VALID_LANGUAGES = new Set<string>(["en", "zh-CN"]);
 
 const REMOVED_TOP_LEVEL_KEYS: Record<string, string> = {
   discovery:
-    "alwaysOn.discovery wrapper has been removed. Lift trigger / dormancy / workspace / execution / projects to alwaysOn.<key>.",
+    "alwaysOn.discovery wrapper has been removed. Lift trigger / workspace / execution / projects to alwaysOn.<key>.",
   plan: "alwaysOn.plan section has been removed. plan-per-fire is fixed at 1 by protocol.",
   cron: "Always-On cron is no longer part of this module.",
+  dormancy:
+    "alwaysOn.dormancy has been removed. Dormancy is always active with built-in defaults and can no longer be configured.",
 };
 
 const REMOVED_WORKSPACE_KEYS: Record<string, string> = {
@@ -196,9 +185,6 @@ export function parseAlwaysOnConfig(
   if (raw.trigger !== undefined) {
     parseTrigger(raw.trigger, result.trigger, diagnostics);
   }
-  if (raw.dormancy !== undefined) {
-    parseDormancy(raw.dormancy, result.dormancy, diagnostics);
-  }
   if (raw.workspace !== undefined) {
     parseWorkspace(raw.workspace, result.workspace, diagnostics);
   }
@@ -276,46 +262,6 @@ function parseTrigger(
       path: "alwaysOn.trigger.preferChannel",
       recoverable: true,
     });
-  }
-}
-
-function parseDormancy(
-  raw: unknown,
-  target: AlwaysOnDormancyConfig,
-  diagnostics: PilotConfigDiagnostic[],
-): void {
-  if (!isRecord(raw)) {
-    diagnostics.push({
-      code: "ALWAYS_ON_DORMANCY_INVALID",
-      severity: "fatal",
-      message: "alwaysOn.dormancy must be an object.",
-      path: "alwaysOn.dormancy",
-      recoverable: false,
-    });
-    return;
-  }
-  target.enabled = booleanField(raw, "enabled", target.enabled);
-  target.debounceMs = nonNegativeInteger(
-    raw.debounceMs,
-    target.debounceMs,
-    "alwaysOn.dormancy.debounceMs",
-    diagnostics,
-  );
-  if (raw.ignoreGlobs !== undefined) {
-    if (Array.isArray(raw.ignoreGlobs)) {
-      const filtered = raw.ignoreGlobs.filter(
-        (entry): entry is string => typeof entry === "string" && entry.length > 0,
-      );
-      target.ignoreGlobs = filtered;
-    } else {
-      diagnostics.push({
-        code: "ALWAYS_ON_DORMANCY_IGNORE_GLOBS_INVALID",
-        severity: "warning",
-        message: "alwaysOn.dormancy.ignoreGlobs must be an array of strings; falling back to default.",
-        path: "alwaysOn.dormancy.ignoreGlobs",
-        recoverable: true,
-      });
-    }
   }
 }
 

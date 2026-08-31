@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import { DEFAULT_IGNORE_GLOBS, type AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { GateBlockReason } from "../protocol/types.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
@@ -149,7 +149,7 @@ export class DiscoveryScheduler {
         runId,
         outcome: result.outcome,
       });
-      if (result.outcome === "no_plan" && this.deps.config.dormancy.enabled) {
+      if (result.outcome === "no_plan") {
         this.ensureDormancyWatcher();
       }
       return { outcome: "fired" };
@@ -170,11 +170,10 @@ export class DiscoveryScheduler {
 
   private ensureDormancyWatcher(): void {
     if (this.watcher) return;
-    if (!this.deps.config.dormancy.enabled) return;
     this.watcher = new SignalWatcher({
       projectRoot: this.deps.projectKey,
-      ignoreGlobs: this.deps.config.dormancy.ignoreGlobs,
-      debounceMs: this.deps.config.dormancy.debounceMs,
+      ignoreGlobs: DEFAULT_IGNORE_GLOBS,
+      debounceMs: 2000,
       baselineAt: this.deps.now(),
       now: this.deps.now,
       onSignal: () => {
@@ -206,7 +205,7 @@ export class DiscoveryScheduler {
 
   private async maybeRestoreDormancy(): Promise<void> {
     const state = await this.deps.stateStore.read(this.deps.now());
-    if (state.dormant && this.deps.config.dormancy.enabled) {
+    if (state.dormant) {
       this.ensureDormancyWatcher();
     }
   }

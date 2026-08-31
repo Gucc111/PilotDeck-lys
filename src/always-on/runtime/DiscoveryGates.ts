@@ -35,7 +35,7 @@ export function evaluateAlwaysOnDiscoveryGates(input: DiscoveryGateInput): GateR
     return { ok: false, reason: "project_missing" };
   }
 
-  if (config.dormancy.enabled && state.dormant) {
+  if (state.dormant) {
     return { ok: false, reason: "dormant_no_signal" };
   }
 

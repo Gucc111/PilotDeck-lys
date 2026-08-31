@@ -27,7 +27,6 @@ export {
   DEFAULT_IGNORE_GLOBS,
   type AlwaysOnConfig,
   type AlwaysOnPromptLanguage,
-  type AlwaysOnDormancyConfig,
   type AlwaysOnExecutionConfig,
   type AlwaysOnProjectConfig,
   type AlwaysOnTriggerConfig,
