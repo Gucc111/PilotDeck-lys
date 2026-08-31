@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { DEFAULT_IGNORE_GLOBS, type AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
+import { DEFAULT_IGNORE_GLOBS, DEFAULT_MAX_PLANS_PER_CYCLE, type AlwaysOnConfig } from "../config/parseAlwaysOnConfig.js";
 import { AlwaysOnError } from "../protocol/errors.js";
 import type { GateBlockReason } from "../protocol/types.js";
 import type { AlwaysOnPaths } from "../storage/AlwaysOnPaths.js";
@@ -120,7 +120,7 @@ export class DiscoveryScheduler {
       if (
         activeCycle &&
         activeCycle.status === "active" &&
-        activeCycle.planIds.length >= this.deps.config.workspace.maxPlansPerCycle
+        activeCycle.planIds.length >= DEFAULT_MAX_PLANS_PER_CYCLE
       ) {
         this.deps.logger.info("always-on gate blocked", { reason: "cycle_full" });
         return { outcome: "blocked", reason: "cycle_full" as GateBlockReason };
