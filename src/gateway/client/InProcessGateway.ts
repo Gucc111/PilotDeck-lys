@@ -634,6 +634,11 @@ export class InProcessGateway implements Gateway {
     await pending;
   }
 
+  async injectMessage(input: { sessionKey: string; text: string }): Promise<{ injected: boolean }> {
+    const injected = this.router.injectMessage(input.sessionKey, input.text);
+    return { injected };
+  }
+
   async listSessions(input: ListSessionsInput): Promise<ListSessionsResult> {
     return this.router.list(input);
   }

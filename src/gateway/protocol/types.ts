@@ -439,6 +439,7 @@ export type AlwaysOnRerunPlanResult = {
 export interface Gateway {
   submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent>;
   abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void>;
+  injectMessage?(input: { sessionKey: string; text: string }): Promise<{ injected: boolean }>;
   listSessions(input: ListSessionsInput): Promise<ListSessionsResult>;
   resumeSession(input: { sessionKey: string }): Promise<{ sessionKey: string }>;
   newSession(input: NewSessionInput): Promise<{ sessionKey: string }>;

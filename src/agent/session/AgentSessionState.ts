@@ -10,6 +10,7 @@ export function createInitialAgentSessionState(sessionId: string): AgentSessionS
     permissionDenials: [],
     status: "idle",
     abortController: new AbortController(),
+    pendingInjections: [],
   };
 }
 
@@ -19,6 +20,7 @@ export function snapshotAgentSessionState(state: AgentSessionStateShape): AgentS
     messages: cloneMessages(state.messages),
     usage: { ...state.usage },
     permissionDenials: state.permissionDenials.map((denial) => ({ ...denial })),
+    pendingInjections: [...(state.pendingInjections ?? [])],
   };
 }
 
@@ -28,6 +30,7 @@ export function cloneSessionStateForRuntimeReload(state: AgentSessionStateShape)
     status: "idle",
     currentTurnId: undefined,
     abortController: new AbortController(),
+    pendingInjections: [],
   };
 }
 

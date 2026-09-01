@@ -115,6 +115,7 @@ export type AgentLoopInput = {
   canPrompt?: boolean;
   permissionRules?: Partial<PermissionRuleSet>;
   abortSignal?: AbortSignal;
+  pendingInjections?: () => CanonicalMessage[];
   onDurableMessage?: (message: CanonicalMessage) => void | Promise<void>;
   onAgentStatusMessage?: (status: AgentStatusMessage) => void | Promise<void>;
 };
@@ -378,6 +379,14 @@ export class AgentLoop {
         await captureTurn(result.type === "error");
         yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
         return { result, messages };
+      }
+
+      const injected = input.pendingInjections?.() ?? [];
+      if (injected.length > 0) {
+        messages.push(...injected);
+        for (const msg of injected) {
+          await input.onDurableMessage?.(msg);
+        }
       }
 
       let pendingContextBudget: TokenBudgetSnapshot | undefined;

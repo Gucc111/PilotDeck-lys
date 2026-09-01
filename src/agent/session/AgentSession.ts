@@ -5,6 +5,7 @@ import type { AgentInput, AgentSubmitOptions } from "../protocol/input.js";
 import type { AgentSessionState as AgentSessionStateShape } from "../protocol/state.js";
 import type { AgentTranscriptReplayResult } from "../../session/transcript/TranscriptReplay.js";
 import type { TurnRunner } from "../turn/TurnRunner.js";
+import type { CanonicalMessage } from "../../model/index.js";
 import {
   appendPermissionDenials,
   cloneSessionStateForRuntimeReload,
@@ -86,6 +87,7 @@ export class AgentSession {
       permissionRules: submitOptions.permissionRules,
       syntheticMessages: submitOptions.syntheticMessages,
       abortSignal: this.state.abortController.signal,
+      pendingInjections: () => this.drainPendingInjections(),
     });
 
     this.state.messages = runResult.messages.filter(
@@ -116,6 +118,24 @@ export class AgentSession {
   abort(reason?: string): void {
     this.state.abortController.abort(reason);
     this.state.status = "aborted";
+  }
+
+  injectMessage(text: string): void {
+    if (this.state.status !== "running") {
+      throw new Error("Cannot inject message: session is not running.");
+    }
+    const injections = this.state.pendingInjections ??= [];
+    injections.push({
+      role: "user",
+      content: [{ type: "text", text }],
+      metadata: { synthetic: true, purpose: "user_injection" },
+    });
+  }
+
+  drainPendingInjections(): CanonicalMessage[] {
+    const queue = this.state.pendingInjections;
+    if (!queue || queue.length === 0) return [];
+    return queue.splice(0);
   }
 
   snapshot(): AgentSessionStateShape {

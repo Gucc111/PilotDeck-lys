@@ -116,6 +116,17 @@ export class SessionRouter {
     }
   }
 
+  injectMessage(sessionKey: string, text: string): boolean {
+    const record = this.sessions.get(sessionKey);
+    if (!record) return false;
+    try {
+      record.session.injectMessage(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async close(sessionKey: string): Promise<void> {
     const record = this.sessions.get(sessionKey);
     if (record && this.sessions.delete(sessionKey)) {

@@ -20,6 +20,7 @@ export type WsHelloOk = {
 export type WsGatewayMethod =
   | "submit_turn"
   | "abort_turn"
+  | "inject_message"
   | "list_sessions"
   | "resume_session"
   | "new_session"

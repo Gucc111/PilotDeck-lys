@@ -56,6 +56,45 @@ router.get('/state', async (req, res) => {
   }
 });
 
+router.post('/:id/inject', async (req, res) => {
+  try {
+    const teammateId = String(req.params.id || '').trim();
+    const projectKey = requireProjectPath(req.body?.projectPath || req.query.projectPath);
+    const leaderSessionId = String(req.body?.sessionId || '').trim();
+    const text = String(req.body?.text || '').trim();
+    if (!leaderSessionId) return res.status(400).json({ error: 'sessionId is required.' });
+    if (!text) return res.status(400).json({ error: 'text is required.' });
+    const gateway = await getPilotDeckGateway();
+    const teamInfo = await gateway.teamState({ projectKey, leaderSessionId });
+    const teammate = teamInfo.teammates.find((t) => t.id === teammateId && t.status === 'running');
+    if (!teammate) return res.status(404).json({ error: 'Teammate is not running.' });
+    const result = await gateway.injectMessage({ sessionKey: teammate.sessionId, text });
+    res.json({ success: result.injected, teammateId });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+router.post('/:id/abort', async (req, res) => {
+  try {
+    const teammateId = String(req.params.id || '').trim();
+    const projectKey = requireProjectPath(req.body?.projectPath || req.query.projectPath);
+    const leaderSessionId = String(req.body?.sessionId || '').trim();
+    if (!leaderSessionId) return res.status(400).json({ error: 'sessionId is required.' });
+    const gateway = await getPilotDeckGateway();
+    const teamInfo = await gateway.teamState({ projectKey, leaderSessionId });
+    const teammate = teamInfo.teammates.find((t) => t.id === teammateId && t.status === 'running');
+    if (!teammate) return res.status(404).json({ error: 'Teammate is not running.', code: 'not_running' });
+    await gateway.abortTurn({
+      sessionKey: teammate.sessionId,
+      reason: 'User manually stopped this teammate.',
+    });
+    res.json({ success: true, teammateId });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
 router.get('/', async (req, res) => {
   try {
     const gateway = await getPilotDeckGateway();

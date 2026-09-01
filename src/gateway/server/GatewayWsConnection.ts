@@ -199,6 +199,11 @@ export class GatewayWsConnection {
     switch (frame.method) {
       case "abort_turn":
         return this.options.gateway.abortTurn(frame.params as never).then(() => ({ ok: true }));
+      case "inject_message":
+        if (this.options.gateway.injectMessage) {
+          return this.options.gateway.injectMessage(frame.params as never);
+        }
+        return Promise.resolve({ injected: false });
       case "list_sessions":
         return this.options.gateway.listSessions(frame.params as never);
       case "resume_session":

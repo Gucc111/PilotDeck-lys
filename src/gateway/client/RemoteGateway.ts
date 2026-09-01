@@ -107,6 +107,10 @@ export class RemoteGateway implements Gateway {
     await this.client.request("abort_turn", input);
   }
 
+  async injectMessage(input: { sessionKey: string; text: string }): Promise<{ injected: boolean }> {
+    return (await this.client.request("inject_message", input)) as { injected: boolean };
+  }
+
   async listSessions(input: ListSessionsInput): Promise<ListSessionsResult> {
     return (await this.client.request("list_sessions", input)) as ListSessionsResult;
   }

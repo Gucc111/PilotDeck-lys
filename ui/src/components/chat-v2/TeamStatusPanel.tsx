@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Network } from 'lucide-react';
+import { type FormEvent, useEffect, useState } from 'react';
+import { Check, ChevronDown, ChevronRight, Network, Square, Send } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 type TeamState = {
@@ -74,6 +74,37 @@ export default function TeamStatusPanel({
     };
   }, [projectPath, sessionId]);
 
+  const [injectionText, setInjectionText] = useState<Record<string, string>>({});
+  const [actionInFlight, setActionInFlight] = useState<Record<string, boolean>>({});
+
+  const handleInject = async (teammateId: string, e: FormEvent) => {
+    e.preventDefault();
+    const text = injectionText[teammateId]?.trim();
+    if (!text) return;
+    setActionInFlight((prev) => ({ ...prev, [teammateId]: true }));
+    try {
+      await fetch(`/api/teammates/${encodeURIComponent(teammateId)}/inject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectPath, sessionId, text }),
+      });
+      setInjectionText((prev) => ({ ...prev, [teammateId]: '' }));
+    } catch { /* next poll will reflect state */ }
+    setActionInFlight((prev) => ({ ...prev, [teammateId]: false }));
+  };
+
+  const handleAbort = async (teammateId: string) => {
+    setActionInFlight((prev) => ({ ...prev, [teammateId]: true }));
+    try {
+      await fetch(`/api/teammates/${encodeURIComponent(teammateId)}/abort`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectPath, sessionId }),
+      });
+    } catch { /* next poll will reflect state */ }
+    setActionInFlight((prev) => ({ ...prev, [teammateId]: false }));
+  };
+
   const active: Teammate[] = state?.teammates.filter((tm) => tm.status === 'running') ?? [];
   const failed: Teammate[] = state?.teammates.filter((tm) => tm.status === 'failed' || tm.status === 'aborted') ?? [];
   const done: Teammate[] = state?.teammates.filter((tm) =>
@@ -129,17 +160,43 @@ export default function TeamStatusPanel({
 
             {/* Active teammates */}
             {active.length > 0 && (
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 {active.map((teammate) => (
-                  <div key={teammate.id} className="flex items-start gap-2 text-[11px]">
-                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
-                    <div className="min-w-0">
+                  <div key={teammate.id} className="text-[11px]">
+                    <div className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 animate-pulse" />
                       <span className="font-medium text-neutral-700 dark:text-neutral-300">{teammate.id}</span>
-                      <span className="ml-2 text-blue-500">{statusLabel(teammate.status, t)}</span>
-                      {teammate.currentTask && (
-                        <p className="mt-0.5 truncate text-neutral-500 pl-0.5">└ {teammate.currentTask}</p>
-                      )}
+                      <span className="text-blue-500">{statusLabel(teammate.status, t)}</span>
+                      <button
+                        type="button"
+                        disabled={actionInFlight[teammate.id]}
+                        onClick={() => handleAbort(teammate.id)}
+                        className="ml-auto flex items-center gap-0.5 rounded px-1.5 py-0.5 text-red-500 hover:bg-red-50 disabled:opacity-50 dark:hover:bg-red-950"
+                        title={t('team.stopTeammate', { defaultValue: 'Stop this teammate' })}
+                      >
+                        <Square className="h-2.5 w-2.5" />
+                        {t('team.stop', { defaultValue: 'Stop' })}
+                      </button>
                     </div>
+                    {teammate.currentTask && (
+                      <p className="mt-0.5 truncate text-neutral-500 pl-5">└ {teammate.currentTask}</p>
+                    )}
+                    <form onSubmit={(e) => handleInject(teammate.id, e)} className="mt-1 flex gap-1 pl-5">
+                      <input
+                        type="text"
+                        value={injectionText[teammate.id] ?? ''}
+                        onChange={(e) => setInjectionText((prev) => ({ ...prev, [teammate.id]: e.target.value }))}
+                        placeholder={t('team.injectPlaceholder', { defaultValue: 'Inject a message...' })}
+                        className="min-w-0 flex-1 rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] dark:border-neutral-700 dark:bg-neutral-800"
+                      />
+                      <button
+                        type="submit"
+                        disabled={actionInFlight[teammate.id] || !injectionText[teammate.id]?.trim()}
+                        className="flex items-center gap-0.5 rounded bg-blue-500 px-1.5 py-0.5 text-[10px] text-white disabled:opacity-50"
+                      >
+                        <Send className="h-2.5 w-2.5" />
+                      </button>
+                    </form>
                   </div>
                 ))}
               </div>

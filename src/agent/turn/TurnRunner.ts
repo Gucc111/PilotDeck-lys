@@ -30,6 +30,7 @@ export type TurnRunnerOptions = {
   canPrompt?: boolean;
   permissionRules?: Partial<PermissionRuleSet>;
   abortSignal?: AbortSignal;
+  pendingInjections?: () => CanonicalMessage[];
   /** Synthetic messages appended after user input; stored with metadata.synthetic flag. */
   syntheticMessages?: CanonicalMessage[];
 };
@@ -172,6 +173,7 @@ export class TurnRunner {
         canPrompt: options.canPrompt,
         permissionRules: options.permissionRules,
         abortSignal: options.abortSignal,
+        pendingInjections: options.pendingInjections,
         onDurableMessage: (msg) => this.transcript.recordDurableMessage(options.sessionId, options.turnId, msg),
         onAgentStatusMessage: async (status) => {
           if (isVisibleFailureStatus(status)) {

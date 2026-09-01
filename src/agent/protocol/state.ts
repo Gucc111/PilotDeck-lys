@@ -21,6 +21,7 @@ export type AgentSessionState = {
   status: "idle" | "running" | "aborted" | "failed";
   currentTurnId?: string;
   abortController: AbortController;
+  pendingInjections?: CanonicalMessage[];
 };
 
 export type AgentLoopState = {
