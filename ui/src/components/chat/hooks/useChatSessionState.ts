@@ -19,6 +19,14 @@ const INITIAL_VISIBLE_MESSAGES = 100;
 const EMPTY_NORMALIZED_MESSAGES: NormalizedMessage[] = [];
 export const BOTTOM_FOLLOW_THRESHOLD_PX = 96;
 
+/**
+ * Fallback that releases the abort latch if the abort ack is lost (e.g. WS
+ * dropped mid-abort). Must be generous enough to cover a legitimate slow
+ * abort (leader turn unwind + aborting every running teammate), but bounded
+ * so the input can never stay locked forever.
+ */
+export const ABORT_ACK_TIMEOUT_MS = 10_000;
+
 type PendingViewSession = {
   sessionId: string | null;
   startedAt: number;
@@ -253,7 +261,12 @@ export function useChatSessionState({
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
   const [canAbortSession, setCanAbortSession] = useState(false);
-  const [isAborting, setIsAborting] = useState(false);
+  const [isAborting, setIsAbortingState] = useState(false);
+  const isAbortingRef = useRef(false);
+  const setIsAborting = useCallback((value: boolean) => {
+    isAbortingRef.current = value;
+    setIsAbortingState(value);
+  }, []);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
@@ -294,6 +307,20 @@ export function useChatSessionState({
       followScrollFrameRef.current = null;
     }
   }, []);
+
+  // Fallback if the abort ack never arrives (e.g. WS dropped mid-abort):
+  // never let the input stay locked forever.
+  useEffect(() => {
+    if (!isAborting) return;
+    const timer = setTimeout(() => {
+      setIsAborting(false);
+      setIsLoading(false);
+      setCanAbortSession(false);
+      setClaudeStatus(null);
+      setPilotDeckStatus(null);
+    }, ABORT_ACK_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [isAborting, setIsAborting]);
 
   /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */
@@ -1139,6 +1166,7 @@ export function useChatSessionState({
     setCanAbortSession,
     isAborting,
     setIsAborting,
+    isAbortingRef,
     isUserScrolledUp,
     setIsUserScrolledUp,
     tokenBudget,

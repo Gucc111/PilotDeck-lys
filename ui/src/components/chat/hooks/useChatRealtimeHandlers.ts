@@ -109,6 +109,21 @@ export function getDuplicateAssistantStreamTextState(
   return { isDuplicate, hasActiveStream, activeStreamRunId };
 }
 
+/**
+ * Decide whether a terminal frame may unlock the composer / clear the abort
+ * latch. The aborted turn's own terminal frames (`error` code=agent_aborted,
+ * or `complete` with finishReason=aborted_streaming) carry `aborted:false/absent`
+ * and arrive BEFORE the server's abort ack (`complete, aborted:true`), while the
+ * gateway session slot may still be held. Only the ack is an authoritative unlock.
+ */
+export function shouldUnlockOnTerminalFrame(
+  msg: { aborted?: boolean } & Record<string, unknown>,
+  isAbortPending: boolean,
+): boolean {
+  if (msg.aborted === true) return true;
+  return !isAbortPending;
+}
+
 type ActiveTurnReplayState = {
   realtimeMessages?: NormalizedMessage[];
   serverMessages?: NormalizedMessage[];
@@ -254,6 +269,7 @@ interface UseChatRealtimeHandlersArgs {
   setIsLoading: (loading: boolean) => void;
   setCanAbortSession: (canAbort: boolean) => void;
   setIsAborting: (aborting: boolean) => void;
+  isAbortingRef: MutableRefObject<boolean>;
   setClaudeStatus: (status: ClaudeWorkStatus | null) => void;
   setPilotDeckStatus: (status: PilotDeckWorkStatus | null) => void;
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
@@ -280,6 +296,7 @@ export function useChatRealtimeHandlers({
   setIsLoading,
   setCanAbortSession,
   setIsAborting,
+  isAbortingRef,
   setClaudeStatus,
   setPilotDeckStatus,
   setTokenBudget,
@@ -432,8 +449,11 @@ export function useChatRealtimeHandlers({
           onSessionInactive?.(statusSessionId);
           onSessionNotProcessing?.(statusSessionId);
           if (isCurrentSession) {
+            // A status poll that reports "not processing" is authoritative:
+            // the abort latch is done regardless of where the ack went.
             setIsLoading(false);
             setCanAbortSession(false);
+            setIsAborting(false);
             setClaudeStatus(null);
             setPilotDeckStatus(null);
           }
@@ -654,7 +674,7 @@ export function useChatRealtimeHandlers({
           sessionStore.finalizeStreaming(sid, msgRunId);
         }
 
-        if (isForActiveView) {
+        if (isForActiveView && shouldUnlockOnTerminalFrame(msg, isAbortingRef.current)) {
           setIsLoading(false);
           setCanAbortSession(false);
           setIsAborting(false);
@@ -717,7 +737,7 @@ export function useChatRealtimeHandlers({
       }
 
       case 'error': {
-        if (isForActiveView) {
+        if (isForActiveView && shouldUnlockOnTerminalFrame(msg, isAbortingRef.current)) {
           setIsLoading(false);
           setCanAbortSession(false);
           setIsAborting(false);
@@ -819,6 +839,7 @@ export function useChatRealtimeHandlers({
     setIsLoading,
     setCanAbortSession,
     setIsAborting,
+    isAbortingRef,
     setClaudeStatus,
     setPilotDeckStatus,
     setTokenBudget,

@@ -1314,6 +1314,11 @@ export function useChatComposerState({
 
     setCanAbortSession(false);
     setIsAborting(true);
+    setClaudeStatus({
+      text: 'Stopping',
+      tokens: 0,
+      can_interrupt: false,
+    });
     setPilotDeckStatus({
       text: 'Stopping',
       tokens: 0,
