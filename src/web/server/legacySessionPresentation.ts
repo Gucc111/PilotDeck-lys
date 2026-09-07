@@ -15,8 +15,8 @@ export type LegacySessionPresentation = {
 const CRON_SESSION_PREFIX = "cron:";
 const CRON_TITLE_PREFIX = "[Cron] ";
 
-const TEAMMATE_SESSION_INFIX = "::teammate::";
-const DELEGATION_INFIX = "::delegation::";
+const TEAMMATE_SESSION_INFIXES = ["::teammate::", "--teammate--"];
+const DELEGATION_INFIXES = ["::delegation::", "--delegation--"];
 
 export type ParsedTeammateSessionId = {
   leaderSessionId: string;
@@ -24,15 +24,16 @@ export type ParsedTeammateSessionId = {
 };
 
 export function parseTeammateSessionId(sessionId: string): ParsedTeammateSessionId | null {
-  const teammateIndex = sessionId.indexOf(TEAMMATE_SESSION_INFIX);
-  if (teammateIndex === -1) return null;
+  const infix = TEAMMATE_SESSION_INFIXES.find((candidate) => sessionId.includes(candidate));
+  if (!infix) return null;
 
+  const teammateIndex = sessionId.indexOf(infix);
   const leaderSessionId = sessionId.slice(0, teammateIndex);
-  let teammateId = sessionId.slice(teammateIndex + TEAMMATE_SESSION_INFIX.length);
+  let teammateId = sessionId.slice(teammateIndex + infix.length);
 
-  const delegationIndex = teammateId.indexOf(DELEGATION_INFIX);
-  if (delegationIndex !== -1) {
-    teammateId = teammateId.slice(0, delegationIndex);
+  const delegationInfix = DELEGATION_INFIXES.find((candidate) => teammateId.includes(candidate));
+  if (delegationInfix) {
+    teammateId = teammateId.slice(0, teammateId.indexOf(delegationInfix));
   }
 
   return { leaderSessionId, teammateId };

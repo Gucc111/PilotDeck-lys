@@ -40,8 +40,11 @@ export type TeammateSessionBinding = {
   workspaceBindingFingerprint: string;
 };
 
+const TEAMMATE_INFIX = process.platform === "win32" ? "--teammate--" : "::teammate::";
+const DELEGATION_INFIX = process.platform === "win32" ? "--delegation--" : "::delegation::";
+
 export function teammateSessionKey(leaderSessionId: string, teammateId: string): string {
-  return `${leaderSessionId}::teammate::${teammateId}`;
+  return `${leaderSessionId}${TEAMMATE_INFIX}${teammateId}`;
 }
 
 export function teammateSessionInstanceKey(
@@ -49,5 +52,5 @@ export function teammateSessionInstanceKey(
   teammateId: string,
   instanceId: string,
 ): string {
-  return `${teammateSessionKey(leaderSessionId, teammateId)}::delegation::${instanceId}`;
+  return `${teammateSessionKey(leaderSessionId, teammateId)}${DELEGATION_INFIX}${instanceId}`;
 }
