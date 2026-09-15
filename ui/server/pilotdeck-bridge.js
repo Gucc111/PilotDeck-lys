@@ -1443,8 +1443,17 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck', projec
     // Resolve projectKey from session state or the caller-provided fallback.
     const projectKey = state?.projectKey || projectPath;
 
-    // Abort all running teammates for this leader session.
     if (projectKey) {
+        // Cancel team schedulers FIRST — before aborting teammates — so that
+        // the lifecycle messages triggered by teammate abort (reportIdle with
+        // status "cancelled") cannot be delivered to the now-free leader slot.
+        try {
+            gw.cancelTeamSchedulers?.({ projectKey, leaderSessionId: sessionKey });
+        } catch {
+            // cancelTeamSchedulers may not exist on remote gateways.
+        }
+
+        // Abort all running teammates for this leader session.
         try {
             const teamInfo = await gw.teamState({
                 projectKey,
@@ -1460,13 +1469,6 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck', projec
             );
         } catch {
             // Team not configured — no teammates to abort.
-        }
-
-        // Cancel team schedulers so pending messages stop retrying.
-        try {
-            gw.cancelTeamSchedulers?.({ projectKey, leaderSessionId: sessionKey });
-        } catch {
-            // cancelTeamSchedulers may not exist on remote gateways.
         }
     }
     return true;
