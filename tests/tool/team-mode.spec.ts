@@ -723,6 +723,38 @@ test("Team Leader control scheduler consumes busy streams and preserves serial o
   assert.equal(sawSyntheticControlMessage, true);
 });
 
+test("TeamLeaderControlTurnScheduler.dispose() stops further submission attempts", async () => {
+  let submitAttempts = 0;
+  let disposedAtAttempt = -1;
+  const scheduler = new TeamLeaderControlTurnScheduler({
+    leaderSessionId: "leader-1",
+    projectRoot: "/workspace",
+    busyBackoffMs: [0],
+    sleep: async () => {},
+    submitTurn: () => {
+      submitAttempts++;
+      // Dispose on the second attempt, right inside the callback — no race.
+      if (submitAttempts === 2) {
+        disposedAtAttempt = submitAttempts;
+        scheduler.dispose();
+      }
+      return (async function* () {
+        yield { type: "agent_status", event: "session_busy" } as const;
+        yield { type: "error", code: "session_busy", message: "busy", recoverable: true } as const;
+      })();
+    },
+  });
+
+  scheduler.enqueue(controlRequest("request-dispose", "permission"));
+
+  // Wait for the second attempt (where dispose fires).
+  await waitFor(async () => disposedAtAttempt === 2);
+
+  // Give the scheduler time to retry if it's broken.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(submitAttempts, 2, "No new submission attempts after dispose()");
+});
+
 test("Team Gateway escalation adapter binds permission metadata and resumes teammate", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-escalation-"));
   const permissionBus = new GatewayPermissionBus();

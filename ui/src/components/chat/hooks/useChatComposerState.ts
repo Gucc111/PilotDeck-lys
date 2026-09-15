@@ -850,6 +850,7 @@ export function useChatComposerState({
           type: 'abort-session',
           sessionId: targetSessionId,
           provider: 'pilotdeck',
+          projectPath: selectedProject?.fullPath || selectedProject?.path,
         });
         setCanAbortSession(false);
         setIsAborting(true);
@@ -1310,6 +1311,7 @@ export function useChatComposerState({
       type: 'abort-session',
       sessionId: targetSessionId,
       provider: 'pilotdeck',
+      projectPath: selectedProject?.fullPath || selectedProject?.path,
     });
 
     setCanAbortSession(false);
@@ -1324,7 +1326,7 @@ export function useChatComposerState({
       tokens: 0,
       can_interrupt: false,
     });
-  }, [canAbortSession, cancelBusySendQueue, currentSessionId, pendingViewSessionRef, selectedSession?.id, sendMessage, setCanAbortSession, setClaudeStatus, setIsAborting, setPilotDeckStatus]);
+  }, [canAbortSession, cancelBusySendQueue, currentSessionId, pendingViewSessionRef, selectedProject, selectedSession?.id, sendMessage, setCanAbortSession, setClaudeStatus, setIsAborting, setPilotDeckStatus]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: PilotDeckPermissionSuggestion) => {

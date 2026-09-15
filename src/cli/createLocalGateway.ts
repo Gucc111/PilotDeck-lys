@@ -362,6 +362,9 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     teammateManager: registry.getTeammateManager(),
     teammatesList: () => registry.listAllTeammates(),
     teammateCatalog: (projectKey) => registry.getTeammateCatalog(projectKey),
+    cancelTeamSchedulers: ({ projectKey, leaderSessionId }) => {
+      registry.cancelTeamSchedulers(projectKey, leaderSessionId);
+    },
     teamState: async ({ projectKey, leaderSessionId }) => {
       registry.reconcileTeamMessages(projectKey, leaderSessionId);
       const storage = createAgentProjectSessionStorage({
@@ -628,6 +631,7 @@ class ProjectRuntimeRegistry {
   private readonly teammateInFlightTurns = new Set<string>();
   private readonly teammateActiveTasks = new Map<string, string>();
   private readonly teamControlCoordinators = new Map<string, TeamControlCoordinator>();
+  private readonly teamControlSchedulers = new Map<string, TeamLeaderControlTurnScheduler>();
   private readonly teamMessageCoordinators = new Map<string, TeamMessageCoordinator>();
   private readonly teamMessageSchedulers = new Map<string, TeamMessageDeliveryScheduler>();
   private notificationBroadcaster?: (name: string, payload?: unknown) => void;
@@ -730,6 +734,29 @@ class ProjectRuntimeRegistry {
     this.getTeamMessageCoordinator(projectRoot, leaderSessionId);
   }
 
+  cancelTeamSchedulers(projectRoot: string, leaderSessionId: string): void {
+    const prefix = `${resolve(projectRoot)}::${leaderSessionId}`;
+
+    // Dispose message delivery schedulers.
+    for (const [key, scheduler] of this.teamMessageSchedulers) {
+      if (key.startsWith(`${prefix}::`)) {
+        scheduler.dispose();
+        this.teamMessageSchedulers.delete(key);
+      }
+    }
+
+    // Dispose the control turn scheduler.
+    const controlScheduler = this.teamControlSchedulers.get(prefix);
+    if (controlScheduler) {
+      controlScheduler.dispose();
+      this.teamControlSchedulers.delete(prefix);
+    }
+
+    // Drop cached coordinators so next access starts fresh.
+    this.teamMessageCoordinators.delete(prefix);
+    this.teamControlCoordinators.delete(prefix);
+  }
+
   private teammateRuntimeKey(
     projectRoot: string,
     leaderSessionId: string,
@@ -808,6 +835,7 @@ class ProjectRuntimeRegistry {
           return current?.status === "pending" || current?.status === "escalated";
         },
       });
+      this.teamControlSchedulers.set(key, scheduler);
       created = new TeamControlCoordinator({
         path: storage.teamControlPath,
         leaderSessionId,

@@ -2282,7 +2282,7 @@ function handleChatConnection(ws, request) {
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
                 const provider = data.provider || 'pilotdeck';
-                const success = await abortViaGateway(data.sessionId, provider);
+                const success = await abortViaGateway(data.sessionId, provider, data.projectPath);
                 writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider }));
             } else if (data.type === 'permission-response') {
                 if (data.requestId) {

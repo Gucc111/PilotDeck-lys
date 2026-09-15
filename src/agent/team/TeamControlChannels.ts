@@ -42,6 +42,7 @@ export class TeamLeaderControlTurnScheduler {
   private readonly schedule: (callback: () => void, milliseconds: number) => void;
   private draining = false;
   private retryScheduled = false;
+  private cancelled = false;
 
   constructor(private readonly options: TeamLeaderControlTurnSchedulerOptions) {
     this.sleep = options.sleep ?? ((milliseconds) =>
@@ -59,16 +60,17 @@ export class TeamLeaderControlTurnScheduler {
   }
 
   private start(): void {
-    if (this.draining) return;
+    if (this.cancelled || this.draining) return;
     this.draining = true;
     void this.drain().finally(() => {
       this.draining = false;
-      if (this.queue.length > 0 && !this.retryScheduled) this.start();
+      if (this.queue.length > 0 && !this.retryScheduled && !this.cancelled) this.start();
     });
   }
 
   private async drain(): Promise<void> {
     while (this.queue.length > 0) {
+      if (this.cancelled) return;
       const request = this.queue[0]!;
       if (!await this.submitWithBusyRetry(request)) {
         this.scheduleRetry();
@@ -106,12 +108,19 @@ export class TeamLeaderControlTurnScheduler {
   }
 
   private scheduleRetry(): void {
-    if (this.retryScheduled) return;
+    if (this.retryScheduled || this.cancelled) return;
     this.retryScheduled = true;
     this.schedule(() => {
       this.retryScheduled = false;
-      this.start();
+      if (!this.cancelled) this.start();
     }, this.options.retryCooldownMs ?? CONTROL_RETRY_COOLDOWN_MS);
+  }
+
+  dispose(): void {
+    this.cancelled = true;
+    this.retryScheduled = false;
+    this.queue.length = 0;
+    this.queuedIds.clear();
   }
 }
 

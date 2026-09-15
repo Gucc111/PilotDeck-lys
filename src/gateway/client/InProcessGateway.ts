@@ -180,6 +180,7 @@ export type InProcessGatewayOptions = {
   teammatesList?: () => Promise<TeammateListResult>;
   teammateCatalog?: (projectKey: string) => Promise<TeammateCatalog>;
   teamState?: (input: TeamStateInput) => Promise<TeamStateResult>;
+  cancelTeamSchedulers?: (input: { projectKey: string; leaderSessionId: string }) => void;
   leaderRead?: (input: import("../../extension/leader/types.js").LeaderGatewayReadInput) => Promise<import("../../extension/leader/types.js").LeaderReadResult | null>;
   leaderWrite?: (input: import("../../extension/leader/types.js").LeaderGatewayWriteInput) => Promise<import("../../extension/leader/types.js").LeaderReadResult>;
   teamSetList?: () => Promise<TeamSetListResult>;
@@ -637,6 +638,10 @@ export class InProcessGateway implements Gateway {
   async injectMessage(input: { sessionKey: string; text: string }): Promise<{ injected: boolean }> {
     const injected = this.router.injectMessage(input.sessionKey, input.text);
     return { injected };
+  }
+
+  cancelTeamSchedulers(input: { projectKey: string; leaderSessionId: string }): void {
+    this.options.cancelTeamSchedulers?.(input);
   }
 
   async listSessions(input: ListSessionsInput): Promise<ListSessionsResult> {

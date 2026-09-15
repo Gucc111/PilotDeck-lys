@@ -76,32 +76,60 @@ export default function TeamStatusPanel({
 
   const [injectionText, setInjectionText] = useState<Record<string, string>>({});
   const [actionInFlight, setActionInFlight] = useState<Record<string, boolean>>({});
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
 
   const handleInject = async (teammateId: string, e: FormEvent) => {
     e.preventDefault();
     const text = injectionText[teammateId]?.trim();
     if (!text) return;
     setActionInFlight((prev) => ({ ...prev, [teammateId]: true }));
+    setActionErrors((prev) => ({ ...prev, [teammateId]: '' }));
     try {
-      await fetch(`/api/teammates/${encodeURIComponent(teammateId)}/inject`, {
+      const response = await fetch(`/api/teammates/${encodeURIComponent(teammateId)}/inject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectPath, sessionId, text }),
       });
-      setInjectionText((prev) => ({ ...prev, [teammateId]: '' }));
-    } catch { /* next poll will reflect state */ }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.success === false) {
+        setActionErrors((prev) => ({
+          ...prev,
+          [teammateId]: body.error || `Injection failed (${response.status})`,
+        }));
+      } else {
+        setInjectionText((prev) => ({ ...prev, [teammateId]: '' }));
+      }
+    } catch {
+      setActionErrors((prev) => ({
+        ...prev,
+        [teammateId]: 'Network error — could not reach the server.',
+      }));
+    }
     setActionInFlight((prev) => ({ ...prev, [teammateId]: false }));
   };
 
   const handleAbort = async (teammateId: string) => {
     setActionInFlight((prev) => ({ ...prev, [teammateId]: true }));
+    setActionErrors((prev) => ({ ...prev, [teammateId]: '' }));
     try {
-      await fetch(`/api/teammates/${encodeURIComponent(teammateId)}/abort`, {
+      const response = await fetch(`/api/teammates/${encodeURIComponent(teammateId)}/abort`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectPath, sessionId }),
       });
-    } catch { /* next poll will reflect state */ }
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setActionErrors((prev) => ({
+          ...prev,
+          [teammateId]: body.error || `Stop failed (${response.status})`,
+        }));
+      }
+    } catch {
+      setActionErrors((prev) => ({
+        ...prev,
+        [teammateId]: 'Network error — could not reach the server.',
+      }));
+    }
     setActionInFlight((prev) => ({ ...prev, [teammateId]: false }));
   };
 
@@ -197,6 +225,9 @@ export default function TeamStatusPanel({
                         <Send className="h-2.5 w-2.5" />
                       </button>
                     </form>
+                    {actionErrors[teammate.id] && (
+                      <p className="mt-0.5 text-[10px] text-red-500 pl-5">{actionErrors[teammate.id]}</p>
+                    )}
                   </div>
                 ))}
               </div>

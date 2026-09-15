@@ -205,6 +205,50 @@ test("TeamMessageDeliveryScheduler dead-letters permanent recipient errors", asy
   assert.match(snapshot.messages[0]?.failureReason ?? "", /Unknown Teammate/);
 });
 
+test("TeamMessageDeliveryScheduler.dispose() stops further delivery attempts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pilotdeck-team-message-dispose-"));
+  let scheduler: TeamMessageDeliveryScheduler | undefined;
+  let deliverAttempts = 0;
+  const coordinator = new TeamMessageCoordinator({
+    path: join(dir, "messages.json"),
+    leaderSessionId: "leader-1",
+    uuid: () => `msg-${++deliverAttempts}`,
+    onPending: (message) => scheduler?.enqueue(message),
+  });
+  const recipient = {
+    role: "leader" as const,
+    id: "leader" as const,
+    sessionId: "leader-1",
+  };
+  scheduler = new TeamMessageDeliveryScheduler({
+    recipient,
+    coordinator,
+    busyBackoffMs: [0],
+    sleep: async () => undefined,
+    deliver: async () => false, // always busy — will retry forever without dispose
+  });
+
+  await coordinator.enqueue({
+    from: {
+      role: "teammate",
+      id: "implementer",
+      sessionId: "leader-1::teammate::implementer",
+    },
+    to: recipient,
+    kind: "explicit",
+    text: "Disposing test message",
+  });
+
+  // Wait for at least one delivery attempt.
+  await waitFor(async () => deliverAttempts >= 1);
+  const attemptsAtDispose = deliverAttempts;
+  scheduler.dispose();
+
+  // Give the scheduler time to retry if it's broken.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(deliverAttempts, attemptsAtDispose, "No new delivery attempts after dispose()");
+});
+
 test("send_team_message delegates plain text without mutating task progress", async () => {
   let sent: Parameters<PilotDeckTeamRuntimeApi["sendMessage"]>[0] | undefined;
   let progressUpdates = 0;
