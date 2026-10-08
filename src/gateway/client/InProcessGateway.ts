@@ -624,6 +624,12 @@ export class InProcessGateway implements Gateway {
 
   async abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void> {
     const reason = input.reason ?? (input.runId ? `aborted:${input.runId}` : "aborted");
+
+    const projectKey = this.router.getSessionProjectKey(input.sessionKey);
+    if (projectKey) {
+      this.options.cancelTeamSchedulers?.({ projectKey, leaderSessionId: input.sessionKey });
+    }
+
     await this.router.abort(input.sessionKey, reason);
     // Wait for the in-flight `submitTurn` (if any) to fully unwind so
     // `inFlightTurns` has been cleared by the time the RPC response is

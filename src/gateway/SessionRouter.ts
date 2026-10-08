@@ -189,6 +189,10 @@ export class SessionRouter {
     return this.sessions.get(sessionKey)?.session.snapshot();
   }
 
+  getSessionProjectKey(sessionKey: string): string | undefined {
+    return this.sessions.get(sessionKey)?.context.projectKey;
+  }
+
   shutdown(): void {
     if (this.isShutdown) return;
     this.isShutdown = true;

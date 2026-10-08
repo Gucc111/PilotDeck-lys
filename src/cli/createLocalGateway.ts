@@ -366,7 +366,6 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       registry.cancelTeamSchedulers(projectKey, leaderSessionId);
     },
     teamState: async ({ projectKey, leaderSessionId }) => {
-      registry.reconcileTeamMessages(projectKey, leaderSessionId);
       const storage = createAgentProjectSessionStorage({
         projectRoot: projectKey,
         pilotHome,
@@ -414,7 +413,6 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
     readSessionMessages: (input) => {
       const resolvedProjectRoot = input.projectKey ? input.projectKey : fallbackProjectRoot;
-      registry.reconcileTeamMessages(resolvedProjectRoot, input.sessionKey);
       return readWebSessionMessages(input, {
         projectRoot: resolvedProjectRoot,
         pilotHome,
