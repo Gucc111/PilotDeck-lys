@@ -20,6 +20,7 @@ import {
   Pencil,
   GitBranch,
   Trash2,
+  Users,
 } from 'lucide-react';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
 import { cn } from '../../lib/utils.js';
@@ -33,6 +34,7 @@ import {
 } from '../../lib/customNames';
 import pilotdeckLogoDark from '../../assets/pilotdeck-wordmark-dark.png';
 import pilotdeckLogoLight from '../../assets/pilotdeck-wordmark-light.png';
+import { useTeamText } from '../team-library/text';
 import { compareProjectsBySidebarOrder } from './appShellSelection';
 
 const asTimestamp = (value: unknown): number => {
@@ -279,9 +281,11 @@ export default function SidebarV2({
   onRequestDeleteSession,
   onSelectTab,
   onShowSettings,
+  onCollapse,
   onLoadMoreSessions,
   loadingMoreProjectIds,
 }: SidebarV2Props) {
+  const teamText = useTeamText();
   const { t } = useTranslation();
   const navigate = useNavigate();
   useCustomNamesVersion();
@@ -1367,6 +1371,10 @@ export default function SidebarV2({
       )}
 
       <div className={cn('settings-actions', isCompact && 'compact')}>
+        <button type="button" className={cn('primary-action settings-entry', activeTab === 'teams' && 'active', isCompact && 'compact-settings tooltip tooltip-right')}
+          aria-label={teamText('title')} title={teamText('title')} aria-pressed={activeTab === 'teams'} onClick={() => { onSelectTab?.('teams'); if (isMobile) onCollapse?.(); }}>
+          <span className="primary-action-icon"><Users size={18} strokeWidth={1.8}/></span><span className="truncate">{teamText('title')}</span>
+        </button>
         <button
           type="button"
           onClick={onShowSettings}

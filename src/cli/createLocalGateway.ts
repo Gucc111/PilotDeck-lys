@@ -1,4 +1,5 @@
 import type { ExplicitModelSelection } from "../gateway/protocol/types.js";
+import { stat } from "node:fs/promises";
 import { isOptionalFeatureEnabled } from "../pilot/config/optionalFeature.js";
 import { resolveWebSearchConfig } from "../pilot/config/webSearchConfig.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -110,6 +111,9 @@ import { UploadStore } from "../gateway/dialog/UploadStore.js";
 import { DialogGatewayError } from "../gateway/dialog/errors.js";
 import { listModelCatalog, normalizeSessionModelSelection, restoreSessionModelSelection, validateExplicitModelSelection, validateModelSelection } from "../gateway/dialog/modelCatalog.js";
 import { createDialogProjectRegistry } from "../gateway/dialog/projectRegistry.js";
+import { TeamService } from "../team/TeamService.js";
+import type { TeamInventory } from "../team/types.js";
+import { TEAM_CONFIGURABLE_TOOLS } from "../team/capabilities.js";
 import type { SessionModelSelection } from "../gateway/protocol/types.js";
 import { listCommands } from "../gateway/dialog/commands.js";
 
@@ -364,6 +368,18 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     listProjects: dialogProjects.listProjectKeys,
     resolveProject: dialogProjects.resolveProjectKey,
   });
+  const teamService = new TeamService({
+    pilotHome,
+    inventory: async projectKey => {
+      if (projectKey) {
+        projectKey = await dialogProjects.resolveProjectKey(projectKey);
+        if (resolve(projectKey) === resolve(pilotHome) || !(await stat(projectKey)).isDirectory()) {
+          throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Choose a registered project to inspect its available capabilities.");
+        }
+      }
+      return registry.teamInventory(projectKey);
+    },
+  });
   const readSavedModel = async (projectKey: string, sessionKey: string): Promise<SessionModelSelection | undefined> => {
     if (!sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
     const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: sessionKey, now });
@@ -391,6 +407,10 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     };
   };
   const gateway = new InProcessGateway(router, {
+    teamCommand: async input => {
+      if (input.action === "inventory") await configStore.reload("team-inventory");
+      return teamService.execute(input);
+    },
     funasrInstallCommand: getPilotDeckInstallCommand(),
     now,
     serverInfo: { mode: "in_process", projectKey: projectRoot },
@@ -493,24 +513,28 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       if (!input.selection || typeof input.selection !== "object") throw new DialogGatewayError("INVALID_MODEL_OVERRIDE", "selection is required.");
       validateModelSelection(projectKey, input.selection, env);
       input = { ...input, selection: normalizeSessionModelSelection(input.selection) };
+      await router.close(input.sessionKey);
       const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: input.sessionKey, now });
+      const last = (await readTranscript(storage.transcriptPath)).entries.at(-1);
+      storage.transcript.restoreState(last?.sequence ?? 0, last?.entryId ?? null);
       await storage.transcript.recordSessionMetadata(input.sessionKey, "model-selection", {
         modelSelection: input.selection,
         updatedAt: now().toISOString(),
       });
-      await router.close(input.sessionKey);
       return modelResult(projectKey, input.sessionKey, input.selection);
     },
     async sessionModelClear(input) {
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey);
       if (!input.sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
       if (router.hasActiveTurn(input.sessionKey)) throw new DialogGatewayError("SESSION_BUSY", "Cannot clear the model during an active turn.");
+      await router.close(input.sessionKey);
       const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: input.sessionKey, now });
+      const last = (await readTranscript(storage.transcriptPath)).entries.at(-1);
+      storage.transcript.restoreState(last?.sequence ?? 0, last?.entryId ?? null);
       await storage.transcript.recordSessionMetadata(input.sessionKey, "model-selection-clear", {
         modelSelection: null,
         updatedAt: now().toISOString(),
       });
-      await router.close(input.sessionKey);
     },
     async resolveTurnModelSelection(input) {
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey ?? fallbackProjectRoot);
@@ -772,6 +796,18 @@ class ProjectRuntimeRegistry {
   private readonly runtimes = new Map<string, ProjectRuntime>();
   private usageCounter?: UsageCounter;
   private gateway?: InProcessGateway;
+  async teamInventory(projectKey?: string): Promise<TeamInventory> {
+    const runtime = this.resolve(projectKey);
+    await runtime.pluginRuntime.refresh();
+    const availability = await filterAvailableTools(runtime.tools, { cwd: runtime.projectRoot, env: this.options.env });
+    const configured = loadMcpServerConfig(runtime.projectRoot, this.options.pilotHome);
+    const servers = parsePluginMcpServers({ ...runtime.pluginRuntime.mcpServers(), ...configured.servers }).servers;
+    return {
+      tools: availability.registry.list().filter(tool => TEAM_CONFIGURABLE_TOOLS.has(tool.name)).map(({ name, description }) => ({ name, description })),
+      skills: runtime.pluginRuntime.getAllSkills().map(({ name, description }) => ({ name, description })),
+      mcpServers: servers.map(spec => ({ name: spec.id })),
+    };
+  }
   /**
    * Per-session live permission rules used when no `sessionOverrides`
    * entry exists. Same array reference is handed to:

@@ -40,6 +40,7 @@ import { mapCronRunOutcome } from '../../src/cron/protocol/types.js';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames } from './database/db.js';
 import { ensureGeneralWorkspaceDirectory } from './utils/generalWorkspace.js';
+import { TeamStore } from '../../src/team/store.js';
 
 // Optional taskmaster detection. Read once per project; lightweight.
 async function detectTaskMaster(projectPath) {
@@ -572,22 +573,53 @@ async function deleteProject(projectName, force = false) {
     const projectId = await resolveProjectIdForPathOrName(projectName, fullPath);
     const projectDir = path.join(pilotHome, 'projects', projectId);
     const gateway = await getPilotDeckGateway();
-    if (!gateway.closeProjectSessions) throw new Error('Gateway does not support project session closure.');
-    const finishDeletion = beginProjectDeletion(fullPath);
-    let deleted = false;
+    // Configuration saves use this same cross-process lock: no profile or Team
+    // can acquire the project between checking references and deletion.
+    return new TeamStore(pilotHome).locked(async () => {
+        await assertNoTeamProjectReferences(gateway, fullPath);
+        if (!gateway.closeProjectSessions) throw new Error('Gateway does not support project session closure.');
+        const finishDeletion = beginProjectDeletion(fullPath);
+        let deleted = false;
+        try {
+            await gateway.closeProjectSessions({ projectKey: fullPath });
+            await fs.rm(projectDir, { recursive: true, force });
+            deleted = true;
+            directoryCache.delete(projectName);
+            return true;
+        } catch (error) {
+            if (error?.code === 'ENOENT') { deleted = true; return false; }
+            throw error;
+        } finally {
+            finishDeletion(deleted);
+            await gateway.closeProjectSessions({ projectKey: fullPath, resume: true });
+        }
+    });
+}
+
+async function optionalTeamQuery(gateway, command) {
+    if (!gateway.teamCommand) return null;
+    // RemoteGateway exposes the method even when connected to an older server.
+    // Negotiate support rather than swallowing a generic "unknown method" error.
+    if (typeof gateway.describeServer === 'function'
+        && !(await gateway.describeServer()).capabilities?.includes('team_command')) return null;
     try {
-        await gateway.closeProjectSessions({ projectKey: fullPath });
-        await fs.rm(projectDir, { recursive: true, force });
-        deleted = true;
-        directoryCache.delete(projectName);
-        return true;
+        return await gateway.teamCommand(command);
     } catch (error) {
-        if (error?.code === 'ENOENT') { deleted = true; return false; }
+        // An older gateway can still delete ordinary projects. Storage,
+        // connection, and malformed-result failures must never become permission.
+        if (error?.code === 'CAPABILITY_UNAVAILABLE') return null;
         throw error;
-    } finally {
-        finishDeletion(deleted);
-        await gateway.closeProjectSessions({ projectKey: fullPath, resume: true });
     }
+}
+
+function teamProtected(message) {
+    return Object.assign(new Error(message), { code: 'TEAM_PROTECTED' });
+}
+
+async function assertNoTeamProjectReferences(gateway, projectKey) {
+    const result = await optionalTeamQuery(gateway, { action: 'project_references', projectKey });
+    if (result && typeof result.referenced !== 'boolean') throw new Error('Invalid Team project reference response.');
+    if (result?.referenced) throw teamProtected('This project is referenced by saved role or Team configurations and cannot be deleted.');
 }
 
 async function resolveProjectIdForPathOrName(projectName, fullPath) {

@@ -18,6 +18,7 @@ export type WsHelloOk = {
 };
 
 export type WsGatewayMethod =
+  | "team_command"
   | "submit_turn"
   | "steer_turn"
   | "cancel_steer"

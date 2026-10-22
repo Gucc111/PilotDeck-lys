@@ -37,6 +37,7 @@ import type { SessionNavigationOptions } from '../main-content/types/types';
 import { getSettingsPathFromTab } from '../settings/navigation';
 import { ConnectionBanner } from '../ui/ConnectionBanner';
 import SidebarV2 from './SidebarV2';
+import TeamLibraryPage from '../team-library/TeamLibraryPage';
 import MainAreaV2 from './MainAreaV2';
 import { useWorkspaceUpload } from '../main-content-v2/useWorkspaceUpload';
 import {
@@ -48,6 +49,7 @@ import {
   SCHEDULED_TASKS_PATH,
   SETTINGS_PATH,
   SKILLS_PATH,
+  TEAMS_PATH,
 } from './appRoutes';
 
 type TypedSettingsProps = {
@@ -81,11 +83,12 @@ export default function AppShellV2() {
   const matchLegacySession = useMatch('/session/:sessionId');
   const matchScheduledTasks = useMatch(SCHEDULED_TASKS_PATH);
   const matchSkills = useMatch(SKILLS_PATH);
+  const matchTeams = useMatch(TEAMS_PATH);
   const matchSettingsIndex = useMatch({ path: SETTINGS_PATH, end: true });
   const matchSettingsSection = useMatch(`${SETTINGS_PATH}/:section`);
   const isSettingsRoute = Boolean(matchSettingsIndex || matchSettingsSection);
   const settingsSection = matchSettingsSection?.params.section;
-  const dedicatedTab = matchSkills
+  const dedicatedTab = matchTeams ? 'teams' as const : matchSkills
     ? 'skills' as const
     : matchScheduledTasks
       ? 'cron' as const
@@ -150,7 +153,7 @@ export default function AppShellV2() {
   });
   // The wildcard route keeps this owner mounted across dedicated pages too.
   const workspaceUpload = useWorkspaceUpload(selectedProject?.name);
-  const workspaceTab = activeTab === 'cron' || activeTab === 'skills' ? 'chat' : activeTab;
+  const workspaceTab = activeTab === 'cron' || activeTab === 'skills' || activeTab === 'teams' ? 'chat' : activeTab;
   const shellActiveTab = dedicatedTab ?? workspaceTab;
   const { processingSessions: remoteProcessingSessions, unreadSessionIds, markRead, acknowledge, selectSession: acknowledgeNavigation } = useSessionIndicators({
     scope: String(user?.id ?? 'local'),
@@ -762,7 +765,12 @@ export default function AppShellV2() {
         <SkillConversationContext.Provider
           value={{ request: skillConversationRequest, consume: consumeSkillConversation }}
         >
-          <MainAreaV2
+          {matchTeams ? <TeamLibraryPage
+            projects={sidebarSharedProps.projects}
+            onCreateProject={handleOpenNewProject}
+            sidebarCollapsed={isMobile || !desktopSidebarOpen}
+            onOpenSidebar={isMobile ? onMenuClick : onOpenDesktopSidebar}
+          /> : <MainAreaV2
             onSkillsProjectChange={handleSkillsProjectChange}
             onUseSkill={handleUseSkill}
             workspaceUpload={workspaceUpload}
@@ -812,17 +820,17 @@ export default function AppShellV2() {
             externalMessageUpdate={externalMessageUpdate}
             misroutedFileFromUrl={misroutedFileFromUrl}
             onMisroutedFileUrlHandled={handleMisroutedFileUrlHandled}
-          />
+          />}
         </SkillConversationContext.Provider>
       </main>
       </div>
 
       {showNewProject
         ? ReactDOM.createPortal(
-            <CreateWorkspaceModal
+            <div className="relative z-[100]"><CreateWorkspaceModal
               onClose={handleCloseNewProject}
               onProjectCreated={handleProjectCreated}
-            />,
+            /></div>,
             document.body,
           )
         : null}

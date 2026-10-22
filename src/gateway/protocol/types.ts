@@ -388,6 +388,7 @@ export type GatewayServerInfo = {
 };
 
 export type GatewayCapability =
+  | "team_command"
   | "project_files_list"
   | "commands_list"
   | "model_catalog_list"
@@ -569,6 +570,8 @@ export type AlwaysOnRerunPlanResult = {
 };
 
 export interface Gateway {
+  /** Reusable Leader, Teammate, and Team configuration. */
+  teamCommand?(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult>;
   manageCheckpoints?(input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest): Promise<unknown>;
   submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent>;
   steerTurn(input: GatewaySteerTurnInput): Promise<GatewaySteerTurnResult>;

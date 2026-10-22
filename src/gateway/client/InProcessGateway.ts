@@ -118,6 +118,7 @@ const DEFAULT_REPLACEMENT_TRANSACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_ABORT_TURN_TIMEOUT_MS = 30_000;
 
 export type InProcessGatewayOptions = {
+  teamCommand?: (input: import("../../team/types.js").TeamCommand) => Promise<import("../../team/types.js").TeamCommandResult>;
   manageCheckpoints?: (input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest) => Promise<unknown>;
   /** Absolute command used by the model to install bundled FunASR assets. */
   funasrInstallCommand?: string;
@@ -236,6 +237,10 @@ type PendingTurnReplacement = {
 };
 
 export class InProcessGateway implements Gateway {
+  async teamCommand(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult> {
+    if (!this.options.teamCommand) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team configuration is unavailable on this Gateway.");
+    return this.options.teamCommand(input);
+  }
   async manageCheckpoints(input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest): Promise<unknown> {
     if (!this.options.manageCheckpoints) throw new Error("File checkpoints are unavailable on this Gateway.");
     return this.options.manageCheckpoints(input);
@@ -894,6 +899,7 @@ export class InProcessGateway implements Gateway {
 
   async describeServer(): Promise<GatewayServerInfo> {
     const capabilities = [
+      ...(this.options.teamCommand ? ["team_command" as const] : []),
       ...(this.options.listProjects ? ["project_files_list" as const] : []),
       ...(this.options.commandsList ? ["commands_list" as const] : []),
       ...(this.options.modelCatalogList ? ["model_catalog_list" as const] : []),

@@ -185,6 +185,8 @@ export class GatewayWsConnection {
 
   private dispatchRequest(frame: WsRequestFrame): Promise<unknown> {
     switch (frame.method) {
+      case "team_command":
+        return this.requireCapability("team_command", "teamCommand", frame.params);
       case "steer_turn":
         return this.options.gateway.steerTurn(frame.params as never);
       case "cancel_steer":
@@ -317,7 +319,7 @@ export class GatewayWsConnection {
 
   private requireCapability(
     capability: string,
-    method: "projectFilesList" | "commandsList" | "modelCatalogList" | "sessionModelGet" | "sessionModelSet" | "sessionModelClear",
+    method: "teamCommand" | "projectFilesList" | "commandsList" | "modelCatalogList" | "sessionModelGet" | "sessionModelSet" | "sessionModelClear",
     params: unknown,
   ): Promise<unknown> {
     const handler = this.options.gateway[method] as ((input: never) => Promise<unknown>) | undefined;

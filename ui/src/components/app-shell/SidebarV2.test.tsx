@@ -10,6 +10,7 @@ vi.mock('react-router-dom', () => ({
 }));
 
 vi.mock('lucide-react', () => ({
+  Users: () => <span />,
   ChevronRight: () => null,
   Loader2: () => <svg data-testid="running-indicator" />,
   Folder: () => null,

@@ -182,6 +182,16 @@ export class GatewayWsClient {
     if (frame.type === "response") {
       const pending = this.pending.get(frame.id);
       if (!pending) {
+        // A stream can fail before its first event. The server returns the same
+        // error envelope used by unary calls; complete the observer instead of
+        // leaving it hung.
+        const stream = this.streams.get(frame.id);
+        if (stream && !frame.ok) {
+          this.streams.delete(frame.id);
+          stream.fail(new GatewayRequestError(frame.error.code, frame.error.message, {
+            validation: frame.error.validation, details: frame.error.details,
+          }));
+        }
         return;
       }
       this.pending.delete(frame.id);

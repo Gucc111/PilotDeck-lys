@@ -85,6 +85,10 @@ import { parseReloadConfigResult } from "../protocol/reloadConfigResult.js";
 export class RemoteGateway implements Gateway {
   constructor(private readonly client: GatewayWsClient) {}
 
+  async teamCommand(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult> {
+    return await this.client.request("team_command", input) as import("../../team/types.js").TeamCommandResult;
+  }
+
   onNotification(handler: GatewayWsNotificationHandler): void {
     this.client.onNotification(handler);
   }

@@ -1,10 +1,12 @@
 export const SCHEDULED_TASKS_PATH = '/cron';
+export const TEAMS_PATH = '/teams';
 export const SKILLS_PATH = '/skills';
 export const SETTINGS_PATH = '/settings';
 export const SETTINGS_SECTION_PATH = '/settings/:section';
 
 export const DEDICATED_TAB_PATHS = {
   cron: SCHEDULED_TASKS_PATH,
+  teams: TEAMS_PATH,
   skills: SKILLS_PATH,
 } as const;
 

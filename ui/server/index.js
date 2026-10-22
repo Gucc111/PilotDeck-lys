@@ -113,6 +113,7 @@ import settingsRoutes from './routes/settings.js';
 import { createUsageRouter } from './routes/usage.js';
 import configRoutes from './routes/config.js';
 import gatewayRoutes from './routes/gateway.js';
+import teamLibraryRoutes, { teamErrorStatus } from './routes/team-library.js';
 import { createCronUpdateHandler } from './routes/cron-jobs.js';
 import {
     OFFICE_PREVIEW_SERVICE_BUILTIN,
@@ -611,6 +612,7 @@ app.use('/api/v1', authenticateToken, onboardingRoutes);
 
 // Gateway IM channel setup routes (protected)
 app.use('/api/gateway', authenticateToken, gatewayRoutes);
+app.use('/api/team-library', authenticateToken, teamLibraryRoutes);
 
 // User API Routes (protected)
 app.use('/api/user', authenticateToken, userRoutes);
@@ -992,7 +994,7 @@ app.delete('/api/projects/:projectName', authenticateToken, async (req, res) => 
         await deleteProject(projectName, force);
         res.json({ success: true });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(teamErrorStatus(error)).json({ error: error.message, code: error.code });
     }
 });
 
