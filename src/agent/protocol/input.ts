@@ -15,6 +15,8 @@ export type AgentInput =
   | { type: "blocks"; content: CanonicalContentBlock[]; isMeta?: boolean };
 
 export type AgentSubmitOptions = {
+  /** Host lifecycle cancellation; kept distinct from the session stop control. */
+  abortSignal?: AbortSignal;
   turnId?: string;
   maxTurns?: number;
   metadata?: Record<string, unknown>;

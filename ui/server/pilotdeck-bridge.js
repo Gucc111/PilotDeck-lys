@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { installGlobalProxy } from '../../src/cli/proxy.js';
 await installGlobalProxy();
@@ -336,6 +336,7 @@ function loadQueueState(state) {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         state.lastAcceptedModelSelection = parsed.lastAcceptedModelSelection;
         state.acceptedInputIds = new Set((Array.isArray(parsed.acceptedInputIds) ? parsed.acceptedInputIds : []).filter(id => typeof id === 'string'));
+        state.acceptedInputHashes = new Map(Object.entries(parsed.acceptedInputHashes || {}));
         if (Array.isArray(parsed.items)) {
             state.inputQueue = parsed.items
                 .filter((item) => item && typeof item.id === 'string' && typeof item.command === 'string')
@@ -503,6 +504,7 @@ function persistQueueState(state, strict = false) {
             version: 2,
             lastAcceptedModelSelection: state.lastAcceptedModelSelection,
             acceptedInputIds: [...(state.acceptedInputIds || [])],
+            acceptedInputHashes: Object.fromEntries(state.acceptedInputHashes || []),
             revision: state.queueRevision,
             paused: state.queuePaused,
             pauseReason: state.queuePauseReason,
@@ -642,6 +644,7 @@ function ensureSessionState(sessionKey, projectKey, channelKey) {
             hasVisibleFailureStatus: false,
             inputQueue: [],
             acceptedInputIds: new Set(),
+            acceptedInputHashes: new Map(),
             queuePaused: false,
             queuePauseReason: undefined,
             queueRevision: 0,
@@ -657,6 +660,7 @@ function ensureSessionState(sessionKey, projectKey, channelKey) {
         if (projectKey && state.projectKey !== projectKey && state.inputQueue.length === 0) {
             state.queueLoaded = false;
             state.acceptedInputIds = new Set();
+            state.acceptedInputHashes = new Map();
             state.lastAcceptedModelSelection = undefined;
             state.projectKey = projectKey;
         }
@@ -1598,7 +1602,8 @@ export async function runChatViaGateway(
     const isGeneralConversation = path.resolve(projectKey) === path.resolve(GENERAL_HOME);
     // Never trust a browser-provided cwd for General. Its transcript identity
     // stays under PILOT_HOME, but every turn executes in the managed workspace.
-    const workspaceCwd = isGeneralConversation
+    const isTeamTurn = Boolean(options.teamSelection || options.teamActivationId);
+    const workspaceCwd = isTeamTurn ? undefined : isGeneralConversation
         ? await ensureGeneralWorkspaceDirectory(process.env)
         : options.workspaceCwd;
     const channelKey = 'web';
@@ -1611,7 +1616,9 @@ export async function runChatViaGateway(
     const staleRunId = state.active ? state.runId : undefined;
     const runId = resolveTurnRunId(options?.runId);
 
-    if (isNewSession) {
+    // New Team drafts reserve their real root ID before sending, so retries
+    // survive loss of this navigation frame without creating another root.
+    if (isNewSession || options.teamSelection) {
         writer.send(
             createNormalizedMessage({
                 provider,
@@ -1674,6 +1681,8 @@ export async function runChatViaGateway(
             ...(Array.isArray(options?.uploadedAttachments) ? { uploadedAttachments: options.uploadedAttachments } : {}),
             ...(options?.modelOverride ? { modelOverride: options.modelOverride } : {}),
             ...(options?.modelSelection ? { modelSelection: options.modelSelection } : {}),
+            ...(options?.teamSelection ? { teamSelection: options.teamSelection } : {}),
+            ...(Object.hasOwn(options || {}, 'teamActivationId') ? { teamActivationId: options.teamActivationId } : {}),
             ...(basePermissionMode ? { basePermissionMode } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(workspaceCwd ? { workspaceCwd } : {}),
@@ -1686,7 +1695,7 @@ export async function runChatViaGateway(
                 writer.send({ type: 'session-input-accepted', sessionId: sessionKey, runId });
                 // Queue acceptance already recorded this choice; execution must
                 // never replace a newer accepted message's model preference.
-                if (!hooks.fromQueue && options.modelSelection && !state.deleted && !state.deleting) {
+                if (!hooks.fromQueue && !options.teamSelection && !options.teamActivationId && options.modelSelection && !state.deleted && !state.deleting) {
                     recordAcceptedModelSelection(projectKey, sessionKey, options.modelSelection, runId);
                 }
                 if (state.pendingGatewayRunId === runId) {
@@ -2083,6 +2092,32 @@ export function scheduleQueuedDispatchAfterActivityCheck(
     state.queueDispatchCheckPromise = pending;
 }
 
+function queuedInputHash(item) {
+    const normalize = value => Array.isArray(value) ? value.map(normalize)
+        : value && typeof value === 'object'
+            ? Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, normalize(value[key])]))
+            : value;
+    return createHash('sha256').update(JSON.stringify(normalize({
+        command: item.command, runId: item.runId || item.id,
+        options: serializeQueuedInputForStorage(item).options,
+    }))).digest('hex');
+}
+
+/** Used by mode changes: queued inputs belong to their original execution selection. */
+export function hasPendingSessionInputs(sessionKey) {
+    const state = sessionState.get(sessionKey);
+    return Boolean(state?.inputQueue.length || state?.queueDispatching || state?.pendingGatewayRunId);
+}
+
+export function pauseSessionInputs(sessionKey) {
+    const state = sessionState.get(sessionKey);
+    if (state?.inputQueue.length) {
+        state.queuePaused = true;
+        state.queuePauseReason = 'user_stopped';
+        mutateInputQueue(state);
+    }
+}
+
 export async function enqueueInputViaGateway(sessionId, item, writer, provider = 'pilotdeck') {
     if (!isPilotDeckSessionKey(sessionId)) {
         return { ok: false, error: 'A concrete PilotDeck session is required.' };
@@ -2095,6 +2130,9 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
     if (!item || typeof item.id !== 'string' || typeof item.command !== 'string') {
         return { ok: false, error: 'Invalid queued input.' };
     }
+    const inputHash = queuedInputHash(item);
+    const priorHash = state.acceptedInputHashes.get(item.id);
+    if (priorHash && priorHash !== inputHash) return { ok: false, error: 'This input token was already used with different content or Team selection. Start a new submission.' };
     if (state.acceptedInputIds.has(item.id) || state.inputQueue.some((entry) => entry.id === item.id)) {
         return { ok: true, state: inputQueueSnapshot(state) };
     }
@@ -2105,6 +2143,7 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
     const previousSelection = state.lastAcceptedModelSelection;
     const previousRevision = state.queueRevision;
     state.acceptedInputIds.add(item.id);
+    state.acceptedInputHashes.set(item.id, inputHash);
     state.inputQueue.push({
         id: item.id,
         runId: item.runId,
@@ -2114,18 +2153,19 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
         options: item.options || {},
         status: submitting ? 'submitting' : 'queued',
     });
-    captureAcceptedModel(state, item.options?.modelSelection, item.id);
+    if (!item.options?.teamSelection && !item.options?.teamActivationId) captureAcceptedModel(state, item.options?.modelSelection, item.id);
     state.queueRevision += 1;
     try { persistQueueState(state, true); }
     catch (error) {
         state.acceptedInputIds.delete(item.id);
+        state.acceptedInputHashes.delete(item.id);
         state.inputQueue = state.inputQueue.filter(entry => entry.id !== item.id);
         state.lastAcceptedModelSelection = previousSelection;
         state.queueRevision = previousRevision;
         return {ok: false, error: error?.message || 'Failed to persist queued input.'};
     }
     emitInputQueueState(state, writer);
-    if (item.options?.modelSelection) writer?.send?.({
+    if (!item.options?.teamSelection && !item.options?.teamActivationId && item.options?.modelSelection) writer?.send?.({
         type: 'model-selection-saved', sessionId, runId: item.runId || item.id,
         selection: item.options.modelSelection,
     });
@@ -2293,6 +2333,7 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
             itemId: item.id,
             message: item.command,
             projectKey: state.projectKey,
+            ...(Object.hasOwn(hydratedOptions, 'teamActivationId') ? { teamActivationId: hydratedOptions.teamActivationId } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(Array.isArray(hydratedOptions.uploadedAttachments)
                 ? { uploadedAttachments: hydratedOptions.uploadedAttachments }
@@ -2355,6 +2396,9 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck') {
     if (!sessionKey) return false;
     const state = sessionState.get(sessionKey);
     try {
+        // Pause before aborting: completion must not dispatch another queued
+        // input and silently restart a team the user just stopped.
+        pauseSessionInputs(sessionKey);
         const runId = state?.runId;
         await gw.abortTurn({ sessionKey, runId });
         if (state && (!runId || state.runId === runId)) {
@@ -2763,6 +2807,7 @@ function _readFirstPrompt(sessionId, projectKey) {
                 if (firstLine) {
                     const parsed = JSON.parse(firstLine);
                     const text = parsed.messages
+                        ?.filter(m => m.role === 'user' && !m.metadata?.synthetic)
                         ?.flatMap(m => m.content ?? [])
                         .find(b => b.type === 'text')?.text;
                     if (text?.trim()) {
@@ -2864,6 +2909,7 @@ function _readUserQueriesFromTranscript(sessionId, projectKey, limit) {
                     const entry = JSON.parse(line);
                     if (entry.type !== 'accepted_input') continue;
                     const text = entry.messages
+                        ?.filter(m => m.role === 'user' && !m.metadata?.synthetic)
                         ?.flatMap(m => m.content ?? [])
                         .find(b => b.type === 'text')?.text;
                     if (!text?.trim()) continue;
@@ -3478,6 +3524,31 @@ export function createAlwaysOnTurnEventForwarder(forwardFrame) {
     };
 }
 
+/** Team continuations are owned by the Gateway, independent of a browser tab. */
+export function createTeamTurnEventForwarder(forwardFrame) {
+    return (name, payload) => {
+        if (name !== 'team_runtime_event') return;
+        const { sessionKey, projectKey, event } = payload || {};
+        if (typeof sessionKey !== 'string' || !event || typeof event.type !== 'string') return;
+        const state = ensureSessionState(sessionKey, projectKey || sessionState.get(sessionKey)?.projectKey || GENERAL_HOME, 'web');
+        if (event.type === 'turn_started') setLocalActiveRun(state, event.runId);
+        // The Leader model belongs to the Team; it is never a global model preference.
+        if (event.type !== 'input_accepted' && event.type !== 'model_selection_changed') {
+            for (const frame of gatewayEventToFrames(event, sessionKey, 'pilotdeck')) forwardFrame(sessionKey, frame);
+        }
+        if (event.type === 'turn_completed') {
+            clearActiveRunIfCurrent(state, event.runId);
+            if (event.finishReason !== 'completed' && state.inputQueue.length) {
+                state.queuePaused = true;
+                state.queuePauseReason = 'previous_turn_failed';
+                mutateInputQueue(state);
+            } else if (!state.active && !state.queuePaused && state.inputQueue.length) {
+                scheduleQueuedDispatchAfterActivityCheck(state, { send: frame => forwardFrame(sessionKey, frame) }, 'pilotdeck');
+            }
+        }
+    };
+}
+
 /**
  * Register a notification handler that forwards Always-On turn events as
  * NormalizedMessage frames. The UI server can provide a session-scoped
@@ -3503,7 +3574,12 @@ export function registerAlwaysOnNotificationForwarding(clients, forwardToSession
             if (client.readyState === 1) client.send(msg);
         }
     };
-    const onNotification = createAlwaysOnTurnEventForwarder(forwardFrame);
+    const forwardAlwaysOn = createAlwaysOnTurnEventForwarder(forwardFrame);
+    const forwardTeam = createTeamTurnEventForwarder(forwardFrame);
+    const onNotification = (name, payload) => {
+        forwardAlwaysOn(name, payload);
+        forwardTeam(name, payload);
+    };
     gatewayNotificationHandlers.add(onNotification);
 
     const gateway = gatewayConnections.current();

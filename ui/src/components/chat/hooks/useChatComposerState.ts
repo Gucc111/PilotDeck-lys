@@ -1,3 +1,4 @@
+import type { TeamExecutionSelection } from '../../../../../src/team/runtimeTypes';
 import { useSkillConversation } from '../../../contexts/SkillConversationContext';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getSubmittedCommand, isModelIndependentCommand } from '../utils/composerCommand';
@@ -67,6 +68,9 @@ interface UseChatComposerStateArgs {
   currentSessionId: string | null;
   model: string;
   modelSelection?: ChatModelSelection | null;
+  teamSelection?: TeamExecutionSelection;
+  teamActivationId?: string | null;
+  teamDraftSessionId?: string;
   isModelSelectionReady?: boolean;
   isPermissionModeReady?: boolean;
   permissionMode: PermissionMode | string;
@@ -278,6 +282,9 @@ export function useChatComposerState({
   currentSessionId,
   model,
   modelSelection,
+  teamSelection,
+  teamActivationId,
+  teamDraftSessionId,
   isModelSelectionReady = true,
   isPermissionModeReady = true,
   permissionMode,
@@ -346,6 +353,7 @@ export function useChatComposerState({
   const inputValueRef = useRef(input);
   const activeDraftStorageKeyRef = useRef(draftStorageKey);
   const queueAttemptsRef = useRef(new Map<string, { fingerprint: string; id: string }>());
+  const pendingTeamSendRef = useRef<{ runId: string; text: string; draftKey: string | null; receiptKey: string } | null>(null);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSessionGrantResolversRef = useRef(new Map<string, (result: PermissionGrantResult) => void>());
   const activeAttachmentUploadsRef = useRef<AttachmentUploadBatch[]>([]);
@@ -590,6 +598,19 @@ export function useChatComposerState({
       return undefined;
     }
     return subscribe((message: any) => {
+      const teamSend = pendingTeamSendRef.current;
+      if (teamSend && message?.runId === teamSend.runId) {
+        if (message.type === 'session-input-accepted') {
+          pendingTeamSendRef.current = null;
+          safeLocalStorage.removeItem(teamSend.receiptKey);
+        } else if (message.kind === 'error' && message.terminal === true) {
+          pendingTeamSendRef.current = null;
+          if (teamSend.draftKey) safeLocalStorage.setItem(teamSend.draftKey, teamSend.text);
+          if (!inputValueRef.current && activeDraftStorageKeyRef.current === teamSend.draftKey) {
+            inputValueRef.current = teamSend.text; setInput(teamSend.text);
+          }
+        }
+      }
       if (message?.type !== 'session-permission-grant-result') {
         return;
       }
@@ -1168,7 +1189,11 @@ export function useChatComposerState({
       const submitCommand = getSubmittedCommand(inputValueRef.current, selectedCommands, slashCommands);
       if (!isPermissionModeReady) return;
       if (!isModelSelectionReady && (skipSlashDetectionOnceRef.current || !isModelIndependentCommand(submitCommand))) return;
-      const submittedModelSelection = modelSelection ? { ...modelSelection } : undefined;
+      // Capture execution identity before attachments or command expansion yield.
+      const submittedTeamSelection = teamSelection ? { ...teamSelection, team: { ...teamSelection.team } } : undefined;
+      const submittedTeamActivationId = teamActivationId;
+      const submittedTeamDraftSessionId = teamDraftSessionId;
+      const submittedModelSelection = !submittedTeamSelection && !submittedTeamActivationId && modelSelection ? { ...modelSelection } : undefined;
       const currentInput = inputValueRef.current;
       const submitAttachedImages = attachedImages;
       let submittedAttachmentFiles = submitAttachedImages;
@@ -1430,7 +1455,7 @@ export function useChatComposerState({
         const attemptKey = `${getDraftInputStorageKey(selectedProject.name, queueTargetSessionId)}:queue-attempt`;
         const fingerprint = JSON.stringify({
           command: messageContent, uploadedAttachmentRefs, turnAttachments,
-          modelSelection: submittedModelSelection, model, runMode,
+          modelSelection: submittedModelSelection, teamSelection: submittedTeamSelection, teamActivationId: submittedTeamActivationId, model, runMode,
           permissionMode, basePermissionMode, thinkingMode,
         });
         let previousAttempt = queueAttemptsRef.current.get(attemptKey);
@@ -1473,6 +1498,8 @@ export function useChatComposerState({
               displayAttachments: [...uploadedFiles, ...turnAttachments].map(attachmentDisplayMetadata),
               uploadedAttachments: uploadedAttachmentRefs,
               modelSelection: submittedModelSelection,
+              teamSelection: submittedTeamSelection,
+              teamActivationId: submittedTeamActivationId,
             },
           }) ?? { ok: false, error: 'Message queue is unavailable.' };
         } catch (error) {
@@ -1493,6 +1520,19 @@ export function useChatComposerState({
         return;
       }
 
+      // Team drafts own a stable root and receipt; a lost first response must
+      // not create another team activation or accept the same input twice.
+      if (submittedTeamSelection && submittedTeamDraftSessionId) {
+        const attemptKey = `${getDraftInputStorageKey(selectedProject.name, submittedTeamDraftSessionId)}:team-attempt`;
+        const fingerprint = JSON.stringify({ command: messageContent, uploadedAttachmentRefs, turnAttachments, teamSelection: submittedTeamSelection });
+        let attempt = queueAttemptsRef.current.get(attemptKey);
+        if (!attempt) { try { attempt = JSON.parse(safeLocalStorage.getItem(attemptKey) || 'null'); } catch { /* Invalid local receipt is ignored. */ } }
+        if (attempt?.fingerprint === fingerprint && typeof attempt.id === 'string') runId = attempt.id;
+        const receipt = { fingerprint, id: runId };
+        queueAttemptsRef.current.set(attemptKey, receipt);
+        safeLocalStorage.setItem(attemptKey, JSON.stringify(receipt));
+        pendingTeamSendRef.current = { runId, text: currentInput, draftKey: activeDraftStorageKeyRef.current, receiptKey: attemptKey };
+      }
       const userMessage: ChatMessage = {
         type: 'user',
         content: userVisibleInput,
@@ -1512,7 +1552,7 @@ export function useChatComposerState({
         command: messageContent,
         runId,
         userVisibleInput,
-        sessionId: effectiveSessionId,
+        sessionId: effectiveSessionId || submittedTeamDraftSessionId,
         temporarySessionId: optimisticSessionId,
         runMode,
         permissionMode,
@@ -1522,6 +1562,8 @@ export function useChatComposerState({
         sessionSummary,
         toolsSettings,
         modelSelection: submittedModelSelection,
+        teamSelection: submittedTeamSelection,
+        teamActivationId: submittedTeamActivationId,
         images: uploadedImages,
         attachments: turnAttachments,
         uploadedAttachments: uploadedAttachmentRefs,
@@ -1575,6 +1617,9 @@ export function useChatComposerState({
       clearSelectedCommands,
       model,
       modelSelection,
+      teamSelection,
+      teamActivationId,
+      teamDraftSessionId,
       isModelSelectionReady,
       isPermissionModeReady,
       currentSessionId,

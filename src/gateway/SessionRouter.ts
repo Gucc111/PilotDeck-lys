@@ -264,6 +264,12 @@ export class SessionRouter {
     return this.sessions.get(sessionKey)?.session.snapshot();
   }
 
+  /** Host-owned conversation location, never inferred from a later client request. */
+  sessionContext(sessionKey: string): GatewaySessionContext | undefined {
+    const context = this.sessions.get(sessionKey)?.context;
+    return context ? { ...context } : undefined;
+  }
+
   shutdown(): void {
     if (this.isShutdown) return;
     this.isShutdown = true;

@@ -179,9 +179,9 @@ function firstAcceptedInputText(head: string): string | undefined {
     }
     try {
       const entry = JSON.parse(line) as {
-        messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+        messages?: Array<{ metadata?: { synthetic?: boolean }; content?: Array<{ type?: string; text?: string }> }>;
       };
-      const text = entry.messages?.flatMap((message) => message.content ?? []).find((block) => block.type === "text")?.text;
+      const text = entry.messages?.filter(message => !message.metadata?.synthetic).flatMap((message) => message.content ?? []).find((block) => block.type === "text")?.text;
       if (text?.trim()) {
         return text.trim();
       }
@@ -200,9 +200,9 @@ function lastAcceptedInputText(tail: string): string | undefined {
     }
     try {
       const entry = JSON.parse(line) as {
-        messages?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+        messages?: Array<{ metadata?: { synthetic?: boolean }; content?: Array<{ type?: string; text?: string }> }>;
       };
-      const text = entry.messages?.flatMap((message) => message.content ?? []).find((block) => block.type === "text")?.text;
+      const text = entry.messages?.filter(message => !message.metadata?.synthetic).flatMap((message) => message.content ?? []).find((block) => block.type === "text")?.text;
       if (text?.trim()) {
         last = text.trim();
       }

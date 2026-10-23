@@ -95,6 +95,9 @@ export type GatewaySubmitTurnInput = {
   channelKey: GatewayChannelKey;
   message: string;
   projectKey?: string;
+  /** Team execution is independent of the ordinary model preference. */
+  teamSelection?: import("../../team/runtimeTypes.js").TeamExecutionSelection;
+  teamActivationId?: string | null;
   /** Override the agent session's working directory for this session. */
   workspaceCwd?: string;
   attachments?: ChannelAttachment[];
@@ -138,6 +141,7 @@ export type GatewaySteerTurnInput = {
   itemId: string;
   message: string;
   projectKey?: string;
+  teamActivationId?: string | null;
   attachments?: ChannelAttachment[];
   uploadedAttachments?: UploadedAttachmentRef[];
 };

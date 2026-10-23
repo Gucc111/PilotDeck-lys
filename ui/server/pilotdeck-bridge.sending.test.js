@@ -9,7 +9,7 @@ const mock = await vi.hoisted(async () => {
     return { gateway: null, home, previousHome };
 });
 vi.mock('./services/gatewayConnectionCache.js', () => ({ createGatewayConnectionCache: () => ({ get: async () => mock.gateway, invalidate: () => {} }) }));
-import { enqueueInputViaGateway, getInputQueueStateViaGateway, serializeQueuedInputForStorage, runChatViaGateway } from './pilotdeck-bridge.js';
+import { enqueueInputViaGateway, getInputQueueStateViaGateway, serializeQueuedInputForStorage, runChatViaGateway, createTeamTurnEventForwarder } from './pilotdeck-bridge.js';
 import { rm } from 'node:fs/promises';
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const item = id => ({ id, runId: id, command: 'fixture', displayText: id, options: { projectPath: '/tmp/sending-project' } });
@@ -103,4 +103,47 @@ it('assigns a real ID before startup failure without acknowledging the input', a
     expect(frames.find(frame => frame.kind === 'session_created')?.newSessionId).toBe(result.sessionKey);
     expect(frames.some(frame => frame.kind === 'error' && frame.terminal === true && frame.sessionId === result.sessionKey)).toBe(true);
     expect(frames.some(frame => frame.type === 'session-input-accepted')).toBe(false);
+});
+
+it('freezes Team selection through queued execution and rejects a changed retry after completion', async () => {
+    const calls = [], frames = [];
+    mock.gateway = {
+        getActiveTurnSnapshot: async () => ({ active: false, events: [] }),
+        async *submitTurn(input) {
+            calls.push(input);
+            yield { type: 'input_accepted', runId: input.runId };
+            yield { type: 'turn_completed', runId: input.runId, finishReason: 'completed', usage: {} };
+        },
+    };
+    const sid = 'web:s_team_queue', first = item('team-queued');
+    first.options.teamActivationId = 'activation-original';
+    first.options.modelSelection = { mode: 'model', provider: 'test', model: 'solo-model' };
+    await enqueueInputViaGateway(sid, first, { send: frame => frames.push(frame) });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await vi.waitFor(async () => expect((await getInputQueueStateViaGateway(sid)).items).toHaveLength(0));
+    expect(calls[0].teamActivationId).toBe('activation-original');
+    expect(frames.some(frame => frame.type === 'model-selection-saved')).toBe(false);
+    expect(await enqueueInputViaGateway(sid, { ...first, options: { ...first.options, teamActivationId: 'activation-other' } })).toMatchObject({ ok: false });
+    expect(calls).toHaveLength(1);
+    vi.resetModules();
+    const restored = await import('./pilotdeck-bridge.js');
+    expect(await restored.enqueueInputViaGateway(sid, { ...first, command: 'changed' })).toMatchObject({ ok: false });
+});
+
+it('forwards Gateway-owned Leader output and human approval requests to the same conversation', () => {
+    const frames = [];
+    const forward = createTeamTurnEventForwarder((sessionId, frame) => frames.push({ sessionId, frame }));
+    const payload = { sessionKey: 'web:s_background_team', projectKey: '/tmp/sending-project' };
+    for (const event of [
+        { type: 'turn_started', runId: 'continuation' },
+        { type: 'assistant_text_delta', text: 'Collected teammate result.', runId: 'continuation' },
+        { type: 'permission_request', requestId: 'member-approval', toolName: 'bash', payload: { command: 'test' } },
+        { type: 'input_accepted', modelSelection: { mode: 'model', provider: 'test', model: 'leader' } },
+        { type: 'turn_completed', runId: 'continuation', finishReason: 'completed', usage: {} },
+    ]) forward('team_runtime_event', { ...payload, event });
+    expect(frames.every(item => item.sessionId === payload.sessionKey)).toBe(true);
+    expect(frames.some(({ frame }) => frame.kind === 'permission_request' && frame.requestId === 'member-approval')).toBe(true);
+    expect(frames.some(({ frame }) => frame.kind === 'complete')).toBe(true);
+    expect(frames.some(({ frame }) => frame.type === 'model-selection-saved')).toBe(false);
+    expect(frames.some(({ frame }) => frame.kind === 'session_created')).toBe(false);
 });

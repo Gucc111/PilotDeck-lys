@@ -44,6 +44,8 @@ import MessagesPaneV2 from './MessagesPaneV2';
 import { REVIEW_RESTORED_EVENT, useChatReview } from '../chat-review/ChatReviewContext';
 import ComposerV2 from './ComposerV2';
 import QueuedMessagesTray from './QueuedMessagesTray';
+import { useTeamMode } from '../team-runtime/useTeamMode';
+import TeamModeControls from '../team-runtime/TeamModeControls';
 import { buildReconnectStatusMessage, refreshSessionAfterReconnect, shouldRefreshSessionOnReconnect } from './reconnectRecovery';
 
 type PendingViewSession = {
@@ -264,6 +266,18 @@ function ChatInterfaceV2({
     sendMessage,
     subscribe: subscribe || contextSubscribe,
   });
+  const teamMode = useTeamMode({
+    sessionKey: watchedSessionId,
+    project: selectedProject,
+    projects,
+    busy: isLoading || pendingPermissionRequests.length > 0 || inputQueue.queueState.items.length > 0,
+  });
+  const teamSelected = Boolean(teamMode.selectedTeam);
+  const executionReady = teamMode.ready && (teamSelected || isModelSelectionReady);
+  const selectExecutionModel = useCallback((selection: typeof modelSelection) => {
+    if (!selection) return;
+    void teamMode.selectSolo().then(changed => { if (changed) setModelSelection(selection); });
+  }, [teamMode.selectSolo, setModelSelection]);
   const sendingInputs = React.useMemo(() => inputQueue.queueState.sessionId === watchedSessionId
     ? inputQueue.queueState.items.filter(isSendingInput)
     : [], [inputQueue.queueState, watchedSessionId]);
@@ -339,7 +353,10 @@ function ChatInterfaceV2({
     currentSessionId,
     model,
     modelSelection,
-    isModelSelectionReady,
+    teamSelection: teamMode.teamSelection,
+    teamActivationId: teamMode.teamActivationId,
+    teamDraftSessionId: teamMode.teamDraftSessionId,
+    isModelSelectionReady: executionReady,
     isPermissionModeReady,
     runMode,
     permissionMode: effectivePermissionMode,
@@ -451,20 +468,27 @@ function ChatInterfaceV2({
   });
 
   useEffect(() => {
-    if (!isLoading || !canAbortSession) {
+    if ((!isLoading || !canAbortSession) && !teamMode.working) {
       setIsAbortPending(false);
     }
-  }, [canAbortSession, isLoading]);
+  }, [canAbortSession, isLoading, teamMode.working]);
 
   useEffect(() => {
     setIsAbortPending(false);
   }, [currentSessionId, selectedSession?.id]);
 
   const handleAbortWithPending = useCallback(() => {
-    if (!isLoading || !canAbortSession || isAbortPending) return;
+    if (isAbortPending) return;
+    if (teamSelected && (isLoading || teamMode.working)) {
+      setIsAbortPending(true);
+      void teamMode.stop().catch(cause => addToast('error', (cause as Error).message)).finally(() => setIsAbortPending(false));
+      if (isLoading && canAbortSession) handleAbortSession();
+      return;
+    }
+    if (!isLoading || !canAbortSession) return;
     handleAbortSession();
     setIsAbortPending(true);
-  }, [canAbortSession, handleAbortSession, isAbortPending, isLoading]);
+  }, [canAbortSession, handleAbortSession, isAbortPending, isLoading, teamSelected, teamMode.working, teamMode.stop, addToast]);
 
   const handleResumeInputQueue = useCallback(() => {
     void inputQueue.resume().then((result) => {
@@ -691,7 +715,7 @@ function ChatInterfaceV2({
   ]);
 
   useEffect(() => {
-    if (!isLoading || !canAbortSession) return;
+    if ((!isLoading || !canAbortSession) && !teamMode.working) return;
     const handleGlobalEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.repeat || event.defaultPrevented) return;
       if (
@@ -708,7 +732,7 @@ function ChatInterfaceV2({
     return () => {
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
-  }, [canAbortSession, handleAbortWithPending, isLoading]);
+  }, [canAbortSession, handleAbortWithPending, isLoading, teamMode.working]);
 
   useEffect(() => {
     return () => {
@@ -811,27 +835,34 @@ function ChatInterfaceV2({
       getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
       getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
       isDragActive={isDragActive}
-      isLoading={isLoading}
-      canAbortSession={canAbortSession}
+      isLoading={isLoading || teamMode.working}
+      canAbortSession={canAbortSession || teamMode.working}
       isAbortPending={isAbortPending}
       isInputQueuePaused={inputQueue.queueState.paused}
       onResumeInputQueue={handleResumeInputQueue}
       tokenBudget={tokenBudget}
+      teamCatalog={teamMode.teams}
+      selectedTeam={teamMode.selectedTeam}
+      isTeamCatalogLoading={teamMode.catalogLoading}
+      teamCatalogError={teamMode.catalogError}
+      executionSelectionLocked={teamMode.locked}
+      onTeamSelectionChange={teamMode.selectTeam}
+      onRefreshTeams={() => void teamMode.reloadCatalog()}
       modelCatalog={modelCatalog}
       modelSelection={modelSelection}
       isModelCatalogLoading={isModelCatalogLoading}
-      isModelSelectionReady={isModelSelectionReady}
+      isModelSelectionReady={executionReady}
       isPermissionModeReady={isPermissionModeReady}
       permissionModeError={permissionModeError}
       onRetryPermissionMode={reloadPermissionMode}
-      canSubmitWithoutModel={canSubmitWithoutModel}
+      canSubmitWithoutModel={teamMode.ready && canSubmitWithoutModel}
       modelCatalogError={modelCatalogError}
       projectKey={selectedProject?.fullPath || selectedProject?.path || ''}
-      onModelSelectionChange={setModelSelection}
+      onModelSelectionChange={selectExecutionModel}
       pendingPermissionRequests={pendingPermissionRequests}
       handlePermissionDecision={handlePermissionDecision}
       handleGrantToolPermission={handleGrantToolPermission}
-      permissionMode={permissionMode}
+      permissionMode={teamMode.selectedTeam?.leader.config.permissionMode || permissionMode}
       onPermissionModeChange={selectPermissionMode}
       runMode={runMode}
       onRunModeChange={setRunMode}
@@ -854,6 +885,7 @@ function ChatInterfaceV2({
   );
   const composerSlot = (
     <div data-chat-composer-slot className="min-h-0 shrink-0">
+      <TeamModeControls mode={teamMode} onCreateProject={onCreateProject}/>
       {composer}
     </div>
   );
@@ -944,8 +976,8 @@ function ChatInterfaceV2({
           runMode={runMode}
           planModeActive={effectivePermissionMode === 'plan'}
           sessionStore={sessionStore}
-          onFork={sessionIsReadOnly ? undefined : handleFork}
-          onRegenerate={sessionIsReadOnly ? undefined : handleRegenerate}
+          onFork={sessionIsReadOnly || teamSelected || teamMode.loading || teamMode.error || teamMode.history.length > 0 ? undefined : handleFork}
+          onRegenerate={sessionIsReadOnly || teamSelected || teamMode.loading || teamMode.error || teamMode.history.length > 0 ? undefined : handleRegenerate}
           forkDisabled={isForkPending}
         />
       </ErrorBoundary>

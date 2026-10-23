@@ -46,7 +46,7 @@ export type ResumeAgentSessionResult = {
 };
 
 export async function resumeAgentSession(options: ResumeAgentSessionOptions): Promise<ResumeAgentSessionResult> {
-  const storage = createAgentProjectSessionStorage({
+  const storage = options.storage ?? createAgentProjectSessionStorage({
     ...options.projectStorage,
     sessionId: options.sessionId,
     now: options.dependencies.now,
@@ -78,6 +78,7 @@ export async function resumeAgentSession(options: ResumeAgentSessionOptions): Pr
     ...options,
     dependencies,
     projectStorage: options.projectStorage,
+    storage,
     transcript: storage.transcript,
     initialState: createAgentSessionStateFromReplay(options.sessionId, replay),
     replayEvents: replay.events,

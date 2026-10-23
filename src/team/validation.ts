@@ -1,4 +1,4 @@
-import type { ProfileConfig, ProfileRef, TeamCommand, TeamConfig } from './types.js';
+import type { ProfileConfig, ProfileRef, TeamLibraryCommand as TeamCommand, TeamConfig } from './types.js';
 
 export class TeamError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'TeamError'; }

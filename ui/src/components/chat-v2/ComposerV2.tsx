@@ -28,6 +28,7 @@ import {
   Search,
   ShieldAlert,
   Square,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -61,6 +62,7 @@ import ReplyQuoteChip from "./ReplyQuoteChip";
 import WorkspacePickerBar from "./WorkspacePickerBar";
 import { getComposerPrimaryAction } from "./composerPrimaryAction";
 import type { Project } from "../../types/app";
+import type { TeamDefinition } from "../team-library/api";
 
 interface MentionableFile {
   id?: string;
@@ -158,6 +160,13 @@ export type ComposerV2Props = {
   onResumeInputQueue?: () => void;
   isSubmitPending?: boolean;
   tokenBudget?: Record<string, unknown> | null;
+  teamCatalog?: TeamDefinition[];
+  selectedTeam?: TeamDefinition | null;
+  isTeamCatalogLoading?: boolean;
+  teamCatalogError?: string | null;
+  executionSelectionLocked?: boolean;
+  onTeamSelectionChange?: (team: TeamDefinition) => void;
+  onRefreshTeams?: () => void;
   modelCatalog: ChatModelCatalogItem[];
   modelSelection: ChatModelSelection | null;
   isModelCatalogLoading?: boolean;
@@ -514,6 +523,13 @@ export default function ComposerV2({
   onResumeInputQueue,
   isSubmitPending = false,
   tokenBudget,
+  teamCatalog = [],
+  selectedTeam = null,
+  isTeamCatalogLoading = false,
+  teamCatalogError,
+  executionSelectionLocked = false,
+  onTeamSelectionChange,
+  onRefreshTeams,
   modelCatalog,
   modelSelection,
   isModelCatalogLoading = false,
@@ -579,7 +595,7 @@ export default function ComposerV2({
   const permissionMenu = useFloatingPanel(isPermissionMenuOpen, permissionTriggerRef, () => setIsPermissionMenuOpen(false), { width: 220 });
   const contextMenu = useFloatingPanel(isContextPopoverOpen, contextTriggerRef, () => setIsContextPopoverOpen(false), { width: 256 });
   const fileMenu = useFloatingPanel(showFileDropdown, textareaRef, undefined, { matchComposer: true, maxHeight: 320 });
-  const permissionSelectorDisabled = runMode === "plan";
+  const permissionSelectorDisabled = runMode === "plan" || Boolean(selectedTeam);
   const [workspaceMenuForceOpen, setWorkspaceMenuForceOpen] = useState(false);
 
   useEffect(() => {
@@ -738,7 +754,8 @@ export default function ComposerV2({
   }, [filteredModels]);
   const advancedModel =
     modelCatalog.find((item) => item.id === advancedModelId) || null;
-  const modelMenuVisible = isModelMenuOpen && Boolean(isModelCatalogLoading || modelCatalog.length > 0 || modelCatalogError);
+  const modelMenuVisible = isModelMenuOpen;
+  const filteredTeams = teamCatalog.filter(team => !normalizedModelQuery || `${team.config.displayName} ${team.leader.config.displayName} ${team.teammates.map(member => member.config.displayName).join(" ")}`.toLocaleLowerCase().includes(normalizedModelQuery));
   const modelMenu = useModelMenuLayout(modelMenuVisible, Boolean(advancedModel), () => {
     setIsModelMenuOpen(false);
     setAdvancedModelId(null);
@@ -1345,7 +1362,7 @@ export default function ComposerV2({
                               )
                             : "border-[var(--pd-border,#ddd9f3)] bg-[var(--pd-accent-soft,#f8f7ff)] text-[var(--pd-accent-strong,#5d58b6)] dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-200",
                       )}
-                      title={selectedPermissionLabel}
+                      title={selectedTeam ? t("teamMode.rolePermissions", { defaultValue: "Permissions follow the Leader configuration." }) as string : selectedPermissionLabel}
                       aria-label={selectedPermissionLabel}
                       aria-haspopup="menu"
                       aria-expanded={
@@ -1478,7 +1495,7 @@ export default function ComposerV2({
                   <div className="pd-composer-model-control min-w-0">
                     <button
                       type="button"
-                      disabled={!isModelCatalogLoading && modelCatalog.length === 0 && !modelCatalogError}
+                      disabled={executionSelectionLocked}
                       ref={modelMenu.triggerRef}
                       onClick={() => { setIsModelMenuOpen((open) => !open); setAdvancedModelId(null); }}
                       className={cn(
@@ -1488,15 +1505,17 @@ export default function ComposerV2({
                           "border-[var(--pd-border,#ddd9f2)] bg-[var(--pd-accent-soft,#f7f6ff)] text-[var(--pd-accent-strong,#4440a8)] dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-200",
                       )}
                       title={
-                        t("input.models.change", {
-                          defaultValue: "Select model",
+                        t("teamMode.select", {
+                          defaultValue: "Select model or Team",
                         }) as string
                       }
+                      aria-label={t("teamMode.select", { defaultValue: "Select model or Team" }) as string}
                       aria-haspopup="dialog"
                       aria-expanded={isModelMenuOpen}
                     >
-                      <span className="min-w-0 truncate">{selectedModelLabel}</span>
-                      {selectedReasoningLabel && (
+                      {selectedTeam && <Users className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="min-w-0 truncate">{selectedTeam?.config.displayName || selectedModelLabel}</span>
+                      {!selectedTeam && selectedReasoningLabel && (
                         <span className="pd-composer-thinking-label shrink-0 font-normal text-neutral-400 dark:text-neutral-500">
                           {selectedReasoningLabel}
                         </span>
@@ -1514,8 +1533,8 @@ export default function ComposerV2({
                         role="dialog"
                         data-dialog-surface
                         aria-label={
-                          t("input.models.change", {
-                            defaultValue: "Select model",
+                          t("teamMode.select", {
+                            defaultValue: "Select model or Team",
                           }) as string
                         }
                         ref={modelMenu.menuRef}
@@ -1532,8 +1551,8 @@ export default function ComposerV2({
                                 setModelQuery(event.target.value)
                               }
                               placeholder={
-                                t("input.models.search", {
-                                  defaultValue: "Search models",
+                                t("teamMode.search", {
+                                  defaultValue: "Search models and Teams",
                                 }) as string
                               }
                               className="h-8 w-full rounded-lg border border-neutral-200 bg-neutral-50 pl-8 pr-2 text-[12px] outline-none focus:border-[var(--pd-accent-border,#c4b5fd)] focus:bg-white dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-violet-700"
@@ -1541,6 +1560,7 @@ export default function ComposerV2({
                             />
                           </div>
                           <div data-model-list className="min-h-0 max-h-64 overflow-y-auto [scrollbar-color:#c1c1c1_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-button]:h-0 [&::-webkit-scrollbar-button]:w-0 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#c1c1c1] [&::-webkit-scrollbar-track]:bg-transparent">
+                            <div className="px-[9px] pb-1 pt-2 text-[11px] font-semibold text-neutral-500">{t("teamMode.models", { defaultValue: "Models" })}</div>
                             {modelCatalogError ? (
                               <div className="px-3 py-3 text-[12px] text-red-500" role="alert">{modelCatalogError}</div>
                             ) : null}
@@ -1573,7 +1593,7 @@ export default function ComposerV2({
                                   ) : null}
                                   {models.map((item) => {
                                     const isAuto = item.id === "router/auto";
-                                    const isSelected = item.id === selectedModelId;
+                                    const isSelected = !selectedTeam && item.id === selectedModelId;
                                     const hasAdvanced = Boolean(
                                       item.capabilities.reasoning ||
                                       item.capabilities.speed,
@@ -1653,6 +1673,15 @@ export default function ComposerV2({
                                 </div>
                               ))
                             )}
+                            {onTeamSelectionChange && <div role="group" aria-label={t("teamMode.teams", { defaultValue: "Teams" })} className="mt-2 border-t border-neutral-200 pt-1 dark:border-neutral-700">
+                              <div className="flex items-center justify-between px-[9px] py-2 text-[11px] font-semibold text-neutral-500"><span>{t("teamMode.teams", { defaultValue: "Teams" })}</span>{onRefreshTeams && <button type="button" onClick={onRefreshTeams} className="font-normal hover:text-violet-600">{t("teamMode.refresh", { defaultValue: "Refresh" })}</button>}</div>
+                              {teamCatalogError && <p role="alert" className="break-words px-3 py-2 text-xs text-red-500">{teamCatalogError}</p>}
+                              {isTeamCatalogLoading && <div role="status" className="flex justify-center py-3"><Loader2 className="h-4 w-4 animate-spin text-neutral-400"/></div>}
+                              {!isTeamCatalogLoading && !filteredTeams.length && <p className="px-3 py-3 text-xs text-neutral-400">{t("teamMode.empty", { defaultValue: "No matching Teams. Create one in Team settings." })}</p>}
+                              {filteredTeams.map(team => <button key={team.id} type="button" aria-pressed={selectedTeam?.id === team.id} disabled={executionSelectionLocked} onClick={() => { onTeamSelectionChange(team); setIsModelMenuOpen(false); setAdvancedModelId(null); }} className={cn("flex w-full items-center gap-2 rounded-lg px-[9px] py-2 text-left text-[12px] text-neutral-700 hover:bg-violet-50 dark:text-neutral-200 dark:hover:bg-violet-950/40", selectedTeam?.id === team.id && "bg-violet-50 dark:bg-violet-950/60")}>
+                                <Users className="h-4 w-4 shrink-0"/><span className="min-w-0 flex-1"><strong className="block truncate font-medium">{team.config.displayName}</strong><span className="block truncate text-[11px] text-neutral-400">{t("teamMode.teamSubtitle", { leader: team.leader.config.displayName, count: team.teammates.length, defaultValue: "{{leader}} · {{count}} teammates" })}</span></span>{selectedTeam?.id === team.id && <Check className="h-3.5 w-3.5 shrink-0"/>}
+                              </button>)}
+                            </div>}
                           </div>
                         </div>
                         {advancedModel ? (

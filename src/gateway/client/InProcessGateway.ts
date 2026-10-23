@@ -118,6 +118,11 @@ const DEFAULT_REPLACEMENT_TRANSACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_ABORT_TURN_TIMEOUT_MS = 30_000;
 
 export type InProcessGatewayOptions = {
+  prepareTurn?: (input: GatewaySubmitTurnInput) => Promise<{ input: GatewaySubmitTurnInput; metadata?: Record<string, unknown>; isMeta?: boolean; replay?: GatewayEvent[] }>;
+  validateTeamSteer?: (input: GatewaySteerTurnInput) => Promise<void>;
+  abortTeam?: (sessionKey: string) => Promise<void>;
+  protectSessionOperation?: (sessionKey: string, operation: string) => Promise<void>;
+  afterInputAccepted?: (input: GatewaySubmitTurnInput, metadata?: Record<string, unknown>) => Promise<void>;
   teamCommand?: (input: import("../../team/types.js").TeamCommand) => Promise<import("../../team/types.js").TeamCommandResult>;
   manageCheckpoints?: (input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest) => Promise<unknown>;
   /** Absolute command used by the model to install bundled FunASR assets. */
@@ -237,6 +242,22 @@ type PendingTurnReplacement = {
 };
 
 export class InProcessGateway implements Gateway {
+  private readonly turnAbortControllers = new Map<string, AbortController>();
+  async abortSessionExecution(sessionKey: string, reason = "aborted"): Promise<void> {
+    this.turnAbortControllers.get(sessionKey)?.abort(reason);
+    await this.router.abort(sessionKey, reason);
+  }
+  private readonly teamPrompts = new Map<string, { sessionKey: string; internalSessionKey: string; event: GatewayEvent; onAnswered?: () => void }>();
+  registerTeamPrompt(sessionKey: string, internalSessionKey: string, event: GatewayEvent, onAnswered?: () => void): void {
+    if ((event.type === "permission_request" || event.type === "elicitation_request")) {
+      this.teamPrompts.set(event.requestId, { sessionKey, internalSessionKey, event, onAnswered });
+    }
+  }
+  clearTeamPrompts(internalSessionKey: string): void {
+    for (const [id, entry] of this.teamPrompts) if (entry.internalSessionKey === internalSessionKey) this.teamPrompts.delete(id);
+    this.permissionBus.rejectSession(internalSessionKey, "team_participant_ended");
+    this.elicitationBus.rejectSession(internalSessionKey, "team_participant_ended");
+  }
   async teamCommand(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult> {
     if (!this.options.teamCommand) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team configuration is unavailable on this Gateway.");
     return this.options.teamCommand(input);
@@ -439,6 +460,8 @@ export class InProcessGateway implements Gateway {
       resolveTurnDone = resolve;
     });
     this.turnCompletions.set(input.sessionKey, turnDone);
+    const turnAbort = new AbortController();
+    this.turnAbortControllers.set(input.sessionKey, turnAbort);
 
     const queue = new AsyncQueue<GatewayEvent>();
     this.activeTurnReplays.set(input.sessionKey, {
@@ -450,13 +473,16 @@ export class InProcessGateway implements Gateway {
       truncated: false,
     });
     this.emitSinks.set(input.sessionKey, (event) => queue.enqueue(event));
+    let turnLocationValidated = !this.options.prepareTurn;
     const emitGatewayFailureStatus = (status: GatewayRecordAgentStatusMessageInput["status"]): Promise<void> => {
-      const recorded = this.recordGatewayStatusMessage({
+      // A rejected preflight may contain a forged project location. Surface
+      // its error live without creating a transcript at that untrusted path.
+      const recorded = turnLocationValidated ? this.recordGatewayStatusMessage({
         sessionKey: input.sessionKey,
         turnId: runId,
         projectKey: input.projectKey,
         status,
-      });
+      }) : Promise.resolve();
       const statusEvent: GatewayEvent = {
         type: "agent_status",
         runId,
@@ -467,10 +493,6 @@ export class InProcessGateway implements Gateway {
       queue.enqueue(statusEvent);
       return recorded;
     };
-
-    if (input.workspaceCwd && this.options.setSessionCwd) {
-      this.options.setSessionCwd(input.sessionKey, input.workspaceCwd);
-    }
 
     const telemetryContext = resolveSubmitTurnTelemetry(input);
     let timeoutHandle: NodeJS.Timeout | undefined;
@@ -502,6 +524,17 @@ export class InProcessGateway implements Gateway {
           }
         }
         markTiming("configMs");
+        const prepared = await this.options.prepareTurn?.({ ...input, runId });
+        turnLocationValidated = true;
+        if (prepared) {
+          input = prepared.input;
+          if (prepared.replay) {
+            for (const event of prepared.replay) queue.enqueue(event);
+            return;
+          }
+        }
+        if (turnAbort.signal.aborted) throw new DialogGatewayError("TURN_ABORTED", "The turn was stopped before execution.");
+        if (input.workspaceCwd && this.options.setSessionCwd) this.options.setSessionCwd(input.sessionKey, input.workspaceCwd);
         const session = await this.router.getOrCreate({
           sessionKey: input.sessionKey,
           projectKey: input.projectKey,
@@ -511,6 +544,7 @@ export class InProcessGateway implements Gateway {
         if (input.timeoutMs !== undefined && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0) {
           timeoutHandle = setTimeout(() => {
             timedOut = true;
+            turnAbort.abort("turn_timeout");
             const message = `Turn exceeded the ${input.timeoutMs}ms timeout.`;
             void emitGatewayFailureStatus(createGatewayFailureStatus({
               event: "turn_timeout",
@@ -578,6 +612,7 @@ export class InProcessGateway implements Gateway {
           input.projectKey,
           this.options.funasrInstallCommand ?? getPilotDeckInstallCommand(),
         );
+        if (prepared?.isMeta) agentInput.isMeta = true;
         const syntheticMessages: CanonicalMessage[] = (input.syntheticMessages ?? []).map((s) => ({
           role: "user" as const,
           content: [{ type: "text" as const, text: s.text }],
@@ -611,6 +646,8 @@ export class InProcessGateway implements Gateway {
           agentInput,
           {
             turnId: runId,
+            abortSignal: turnAbort.signal,
+            metadata: prepared?.metadata,
             modelSelection: input.modelSelection,
             maxTurns: input.maxTurns,
             runMode,
@@ -652,6 +689,7 @@ export class InProcessGateway implements Gateway {
             phase: telemetryContext.phase,
           });
           if (event.type === "input_accepted") {
+            if (!turnAbort.signal.aborted) await this.options.afterInputAccepted?.(input, prepared?.metadata);
             await this.commitAcceptedTurnReplacement(input.sessionKey, runId);
             markTiming("acceptanceMs");
             const totalMs = Math.round(performance.now() - timingStart);
@@ -712,16 +750,17 @@ export class InProcessGateway implements Gateway {
         });
         if (this.turnCompletions.get(input.sessionKey) === turnDone) {
           const message = error instanceof Error ? error.message : String(error);
+          const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "gateway_submit_failed";
           await emitGatewayFailureStatus(createGatewayFailureStatus({
             event: "gateway_submit_failed",
-            code: "gateway_submit_failed",
+            code,
             message,
             userHint: "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
           }));
           const gatewayEvent: GatewayEvent = {
             type: "error",
             runId,
-            code: "gateway_submit_failed",
+            code,
             message,
             recoverable: false,
             userHint: "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
@@ -773,6 +812,7 @@ export class InProcessGateway implements Gateway {
       if (this.turnCompletions.get(input.sessionKey) === turnDone) {
         this.turnCompletions.delete(input.sessionKey);
       }
+      if (this.turnAbortControllers.get(input.sessionKey) === turnAbort) this.turnAbortControllers.delete(input.sessionKey);
       resolveTurnDone();
       this.releasePendingTurnReplacementClaim(input.sessionKey, runId);
       this.options.afterTurnCompleted?.({
@@ -784,6 +824,7 @@ export class InProcessGateway implements Gateway {
   }
 
   async steerTurn(input: GatewaySteerTurnInput): Promise<GatewaySteerTurnResult> {
+    await this.options.validateTeamSteer?.(input);
     const activeRunId = this.router.activeTurnRunId(input.sessionKey);
     if (!activeRunId) return { accepted: false, reason: "no_active_turn" };
     if (activeRunId !== input.runId) return { accepted: false, reason: "turn_mismatch" };
@@ -826,8 +867,9 @@ export class InProcessGateway implements Gateway {
   }
 
   async abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void> {
+    await this.options.abortTeam?.(input.sessionKey);
     const reason = input.reason ?? (input.runId ? `aborted:${input.runId}` : "aborted");
-    await this.router.abort(input.sessionKey, reason);
+    await this.abortSessionExecution(input.sessionKey, reason);
     // Wait for the in-flight `submitTurn` (if any) to fully unwind so
     // `inFlightTurns` has been cleared by the time the RPC response is
     // sent. Otherwise a fast "stop → re-send" from a client races the
@@ -875,6 +917,7 @@ export class InProcessGateway implements Gateway {
   }
 
   async closeSession(input: { sessionKey: string; reason?: string }): Promise<void> {
+    if (input.reason === "session_deleted") await this.options.protectSessionOperation?.(input.sessionKey, "delete");
     await this.router.close(input.sessionKey);
     this.sessionPermissionGrants.delete(input.sessionKey);
   }
@@ -982,11 +1025,12 @@ export class InProcessGateway implements Gateway {
 
   async getActiveTurnSnapshot(input: GatewayActiveTurnSnapshotInput): Promise<GatewayActiveTurnSnapshot> {
     const replay = this.activeTurnReplays.get(input.sessionKey);
+    const prompts = [...this.teamPrompts.values()].filter(entry => entry.sessionKey === input.sessionKey).map(entry => cloneGatewayEvent(entry.event));
     if (!replay) {
       return {
         active: false,
         sessionKey: input.sessionKey,
-        events: [],
+        events: input.includeEvents === false ? [] : prompts,
       };
     }
     return {
@@ -995,7 +1039,7 @@ export class InProcessGateway implements Gateway {
       runId: replay.runId,
       events: input.includeEvents === false
         ? []
-        : [...replay.events, ...replay.timelineEvents.values()]
+        : [...replay.events, ...replay.timelineEvents.values(), ...prompts]
           .filter((event) => this.shouldReplayActiveTurnEvent(input.sessionKey, event))
           .map((event) => cloneGatewayEvent(event)),
       ...(replay.truncated ? { truncated: true } : {}),
@@ -1027,16 +1071,24 @@ export class InProcessGateway implements Gateway {
   }
 
   async respondElicitation(input: GatewayElicitationResponseInput): Promise<{ delivered: boolean }> {
-    const entry = this.elicitationBus.consume(input.sessionKey, input.requestId);
+    const prompt = this.teamPrompts.get(input.requestId);
+    const key = prompt?.sessionKey === input.sessionKey ? prompt.internalSessionKey : input.sessionKey;
+    const entry = this.elicitationBus.consume(key, input.requestId);
     if (!entry) return { delivered: false };
+    this.teamPrompts.delete(input.requestId);
+    prompt?.onAnswered?.();
     entry.resolve(input.answer);
     this.options.dispatchHookForSession?.(input.sessionKey, "ElicitationResult", { requestId: input.requestId, delivered: true });
     return { delivered: true };
   }
 
   async permissionDecide(input: GatewayPermissionDecisionInput): Promise<{ delivered: boolean }> {
-    const entry = this.permissionBus.consume(input.sessionKey, input.requestId);
+    const prompt = this.teamPrompts.get(input.requestId);
+    const key = prompt?.sessionKey === input.sessionKey ? prompt.internalSessionKey : input.sessionKey;
+    const entry = this.permissionBus.consume(key, input.requestId);
     if (!entry) return { delivered: false };
+    this.teamPrompts.delete(input.requestId);
+    prompt?.onAnswered?.();
     entry.resolve({
       requestId: input.requestId,
       decision: input.decision,
@@ -1091,6 +1143,7 @@ export class InProcessGateway implements Gateway {
   }
 
   async forkSession(input: WebForkSessionInput): Promise<WebForkSessionResult> {
+    await this.options.protectSessionOperation?.(input.sessionKey, "fork");
     if (!this.options.forkSession) {
       throw new Error(
         "fork_session is not configured. Wire `forkSession` via createLocalGateway.",
@@ -1100,6 +1153,7 @@ export class InProcessGateway implements Gateway {
   }
 
   async replaceLastTurn(input: WebReplaceLastTurnInput): Promise<WebReplaceLastTurnResult> {
+    await this.options.protectSessionOperation?.(input.sessionKey, "replace");
     if (!this.options.replaceLastTurn) {
       throw new Error(
         "replace_last_turn is not configured. Wire `replaceLastTurn` via createLocalGateway.",

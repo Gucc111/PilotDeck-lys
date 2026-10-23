@@ -40,6 +40,64 @@ describe('useChatComposerState attachment submission', () => {
     vi.restoreAllMocks();
   });
 
+  it('freezes Team activation in queued input without leaking the remembered model', async () => {
+    const enqueuePreparedInput = vi.fn(async (_input: any) => ({ ok: true }));
+    const options: Parameters<typeof useChatComposerState>[0] = {
+      selectedProject: { name: 'team-work', displayName: 'Team work', fullPath: '/work' }, selectedSession: { id: 'web:team' }, currentSessionId: 'web:team',
+      model: 'browser/last-model', modelSelection: { mode: 'model', provider: 'browser', model: 'last-model' }, teamActivationId: 'activation-a',
+      permissionMode: 'default', cycleRunMode: vi.fn(), isLoading: true, canAbortSession: true, tokenBudget: null,
+      sendMessage: vi.fn(), enqueuePreparedInput, pendingViewSessionRef: { current: null }, scrollToBottom: vi.fn(), addMessage: vi.fn(), clearMessages: vi.fn(), rewindMessages: vi.fn(),
+      setIsLoading: vi.fn(), setCanAbortSession: vi.fn(), setIsAborting: vi.fn(), setClaudeStatus: vi.fn(), setPilotDeckStatus: vi.fn(), setIsUserScrolledUp: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),
+    };
+    const { result } = renderHook(() => useChatComposerState(options));
+    act(() => result.current.setInput('Add this finding'));
+    await act(() => result.current.handleSubmit({ preventDefault: vi.fn() } as never));
+    expect(enqueuePreparedInput.mock.calls[0][0].options.teamActivationId).toBe('activation-a');
+    expect(enqueuePreparedInput.mock.calls[0][0].options.modelSelection).toBeUndefined();
+  });
+
+  it('retries a failed first Team send with the same root and input token', async () => {
+    const sendMessage = vi.fn((_message: any) => false);
+    const options: Parameters<typeof useChatComposerState>[0] = {
+      selectedProject: { name: 'team-draft', displayName: 'Team draft', fullPath: '/work' }, selectedSession: null, currentSessionId: null,
+      model: 'browser/last-model', modelSelection: { mode: 'auto' }, teamActivationId: null,
+      teamSelection: { team: { id: 'team-1', revision: 1 }, projectKey: '/work', requestToken: 'create-1', probeFingerprint: 'probe' }, teamDraftSessionId: 'web:s_stable',
+      permissionMode: 'default', cycleRunMode: vi.fn(), isLoading: false, canAbortSession: false, tokenBudget: null,
+      sendMessage, pendingViewSessionRef: { current: null }, scrollToBottom: vi.fn(), addMessage: vi.fn(), clearMessages: vi.fn(), rewindMessages: vi.fn(),
+      setIsLoading: vi.fn(), setCanAbortSession: vi.fn(), setIsAborting: vi.fn(), setClaudeStatus: vi.fn(), setPilotDeckStatus: vi.fn(), setIsUserScrolledUp: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),
+    };
+    const { result } = renderHook(() => useChatComposerState(options));
+    act(() => result.current.setInput('Review release'));
+    await act(() => result.current.handleSubmit({ preventDefault: vi.fn() } as never));
+    await act(() => result.current.handleSubmit({ preventDefault: vi.fn() } as never));
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    const first = sendMessage.mock.calls[0][0].options, second = sendMessage.mock.calls[1][0].options;
+    expect(first.sessionId).toBe('web:s_stable');
+    expect(second.runId).toBe(first.runId);
+    expect(first.teamSelection).toEqual(second.teamSelection);
+    expect(first.modelSelection).toBeUndefined();
+  });
+
+  it('restores a first Team draft if the server rejects it before acceptance', async () => {
+    let receive!: (message: any) => void;
+    const sendMessage = vi.fn((_message: any) => true);
+    const options: Parameters<typeof useChatComposerState>[0] = {
+      selectedProject: { name: 'team-rejected', displayName: 'Team rejected', fullPath: '/work' }, selectedSession: null, currentSessionId: null,
+      model: 'browser/last-model', teamActivationId: null,
+      teamSelection: { team: { id: 'team-1', revision: 1 }, projectKey: '/work', requestToken: 'create-rejected' }, teamDraftSessionId: 'web:s_rejected',
+      permissionMode: 'default', cycleRunMode: vi.fn(), isLoading: false, canAbortSession: false, tokenBudget: null,
+      sendMessage, subscribe: handler => { receive = handler; return () => {}; }, pendingViewSessionRef: { current: null }, scrollToBottom: vi.fn(), addMessage: vi.fn(), clearMessages: vi.fn(), rewindMessages: vi.fn(),
+      setIsLoading: vi.fn(), setCanAbortSession: vi.fn(), setIsAborting: vi.fn(), setClaudeStatus: vi.fn(), setPilotDeckStatus: vi.fn(), setIsUserScrolledUp: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),
+    };
+    const { result } = renderHook(() => useChatComposerState(options));
+    act(() => result.current.setInput('Review release after reconnect'));
+    await act(() => result.current.handleSubmit({ preventDefault: vi.fn() } as never));
+    expect(result.current.input).toBe('');
+    const runId = sendMessage.mock.calls[0][0].options.runId;
+    act(() => receive({ kind: 'error', terminal: true, runId, sessionId: 'web:s_rejected' }));
+    expect(result.current.input).toBe('Review release after reconnect');
+  });
+
   it.each([false, true])('retries a timed-out draft once, including after reload (reload=%s)', async (reload) => {
     const acceptedIds = new Set<string>();
     let attempts = 0;

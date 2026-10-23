@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { TeamStore, hash, type LibraryState, type Receipt } from './store.js';
 import { command as validateCommand, TeamError } from './validation.js';
-import type { AgentProfile, ProfileRef, TeamCommand, TeamCommandResult, TeamDefinition, TeamServiceOptions } from './types.js';
+import type { AgentProfile, ProfileRef, TeamLibraryCommand as TeamCommand, TeamLibraryCommandResult as TeamCommandResult, TeamDefinition, TeamServiceOptions } from './types.js';
 
 const latest = <T>(items: T[] | undefined): T | undefined => items?.at(-1);
 const timestamp = () => new Date().toISOString();
@@ -11,6 +11,14 @@ const sameRef = (a: ProfileRef, b: ProfileRef) => a.id === b.id && a.revision ==
 export class TeamService {
   private readonly store: TeamStore;
   constructor(private readonly options: TeamServiceOptions) { this.store = new TeamStore(options.pilotHome); }
+
+  /** Resolve a pinned configuration for activation; historical runs keep their own snapshot. */
+  async resolveTeam(ref: ProfileRef): Promise<TeamDefinition> {
+    const state = await this.store.read();
+    const team = this.teamVersion(state, ref);
+    if (latest(state.teams[ref.id])?.archived) throw new TeamError('TEAM_ARCHIVED', 'Restore this Team before selecting it for a conversation.');
+    return clone(team);
+  }
 
   async execute(input: TeamCommand): Promise<TeamCommandResult> {
     const cmd = validateCommand(input);

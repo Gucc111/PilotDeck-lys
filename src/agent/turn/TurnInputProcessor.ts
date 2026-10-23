@@ -15,6 +15,7 @@ export class TurnInputProcessor {
           {
             role: "user",
             content: [{ type: "text", text: input.text }],
+            ...(input.isMeta ? { metadata: { synthetic: true, purpose: "team_runtime" } } : {}),
           },
         ],
       };
@@ -26,6 +27,7 @@ export class TurnInputProcessor {
         {
           role: "user",
           content: input.content,
+          ...(input.isMeta ? { metadata: { synthetic: true, purpose: "team_runtime" } } : {}),
         },
       ],
     };

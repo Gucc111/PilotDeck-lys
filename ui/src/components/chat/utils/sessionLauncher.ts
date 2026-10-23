@@ -1,3 +1,4 @@
+import type { TeamExecutionSelection } from '../../../../../src/team/runtimeTypes';
 import type { ChatModelSelection } from '../hooks/useChatProviderState';
 import type { Project, ProjectSession } from '../../../types/app';
 import type { ChatAttachment, ChatRunMode, PilotDeckSettings, PermissionMode } from '../types/types';
@@ -19,6 +20,8 @@ type StartSessionOptions = {
   sessionSummary?: string | null;
   toolsSettings?: PilotDeckSettings;
   modelSelection?: ChatModelSelection;
+  teamSelection?: TeamExecutionSelection;
+  teamActivationId?: string | null;
   modelOverride?: {
     mode: 'model';
     provider: string;
@@ -113,6 +116,8 @@ export function startSessionCommand({
   toolsSettings = getPilotDeckSettings(),
   modelOverride,
   modelSelection,
+  teamSelection,
+  teamActivationId,
   images,
   attachments,
   uploadedAttachments,
@@ -142,6 +147,8 @@ export function startSessionCommand({
       sessionSummary,
       ...(modelOverride ? { modelOverride } : {}),
       ...(modelSelection ? { modelSelection: { ...modelSelection } } : {}),
+      ...(teamSelection ? { teamSelection: { ...teamSelection, team: { ...teamSelection.team } } } : {}),
+      ...(teamActivationId !== undefined ? { teamActivationId } : {}),
       ...(typeof userVisibleInput === 'string' && userVisibleInput.trim()
         ? { userVisibleInput: userVisibleInput.trim() }
         : {}),

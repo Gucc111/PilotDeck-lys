@@ -1,3 +1,4 @@
+import type { TeamExecutionSelection } from '../../../../../src/team/runtimeTypes';
 import type { ChatModelSelection } from '../hooks/useChatProviderState';
 import type { ChatAttachment } from './types';
 
@@ -37,6 +38,8 @@ export type PreparedQueuedInput = {
     basePermissionMode?: string;
     model?: string;
     modelSelection?: ChatModelSelection;
+    teamSelection?: TeamExecutionSelection;
+    teamActivationId?: string | null;
     modelOverride?: {
       mode: 'model';
       provider: string;

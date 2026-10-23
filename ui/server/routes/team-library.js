@@ -1,27 +1,32 @@
 import express from 'express';
-import { getPilotDeckGateway } from '../pilotdeck-bridge.js';
+import { getPilotDeckGateway, hasPendingSessionInputs, pauseSessionInputs } from '../pilotdeck-bridge.js';
 
 const actions = new Set([
   'library', 'inventory', 'profile_save', 'profile_fork', 'profile_archive',
   'team_save', 'team_fork', 'team_archive', 'project_references',
+  'runtime_probe', 'runtime_select', 'runtime_get', 'runtime_stop',
 ]);
 
 export function teamErrorStatus(error) {
   const code = typeof error?.code === 'string' ? error.code : '';
   if (/NOT_FOUND$/.test(code)) return 404;
-  if (/INVALID_INPUT|VALIDATION|ROLE_MISMATCH/.test(code)) return 400;
+  if (/INVALID_INPUT|VALIDATION|ROLE_MISMATCH|PROJECT_REQUIRED/.test(code)) return 400;
   if (/CONFLICT|REFERENCED|PROTECTED|ARCHIVED|BUSY|MISMATCH/.test(code)) return 409;
   if (/UNAVAILABLE|CORRUPT/.test(code) || /Gateway WebSocket|ECONNREFUSED|connect timeout|gateway is not connected/i.test(error?.message || '')) return 503;
   return 500;
 }
 
-export function createTeamLibraryHandler({ getGateway = getPilotDeckGateway } = {}) {
+export function createTeamLibraryHandler({ getGateway = getPilotDeckGateway, hasPendingInputs = hasPendingSessionInputs, pauseInputs = pauseSessionInputs } = {}) {
   return async (req, res) => {
     const input = req.body;
     if (!input || typeof input !== 'object' || Array.isArray(input) || !actions.has(input.action)) {
       return res.status(400).json({ error: { code: 'TEAM_INVALID_INPUT', message: 'A valid team-library action is required.' } });
     }
     try {
+      if (input.action === 'runtime_select' && hasPendingInputs(input.sessionKey)) {
+        throw Object.assign(new Error('Finish or remove queued inputs before changing this conversation’s Team.'), { code: 'TEAM_BUSY' });
+      }
+      if (input.action === 'runtime_stop') pauseInputs(input.sessionKey);
       const gateway = await getGateway();
       if (!gateway.teamCommand || (typeof gateway.describeServer === 'function'
         && !(await gateway.describeServer()).capabilities?.includes('team_command'))) {

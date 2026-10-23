@@ -9,6 +9,8 @@ export type AgentRuntimeConfig = {
   modelMultimodal?: MultimodalConstraints;
   cwd: string;
   systemPrompt?: string;
+  /** Role instructions appended after the standard PilotDeck system prompt. */
+  appendSystemPrompt?: string;
   maxOutputTokens?: number;
   thinking?: CanonicalThinkingConfig;
   toolChoice?: CanonicalToolChoice;

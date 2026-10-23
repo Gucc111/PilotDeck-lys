@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('../pilotdeck-bridge.js', () => ({ getPilotDeckGateway: vi.fn() }));
+vi.mock('../pilotdeck-bridge.js', () => ({ getPilotDeckGateway: vi.fn(), hasPendingSessionInputs: vi.fn(() => false), pauseSessionInputs: vi.fn() }));
 import { createTeamLibraryHandler } from './team-library.js';
 
 const response = () => ({ statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; return this; } });
@@ -27,6 +27,27 @@ describe('Team library HTTP boundary', () => {
       expect(res.body.error.code).toBe('TEAM_INVALID_INPUT');
     }
     expect(getGateway).not.toHaveBeenCalled();
+  });
+
+  it('forwards runtime commands but blocks a mode switch while inputs are pending', async () => {
+    const teamCommand = vi.fn(async () => ({ activation: null }));
+    const getGateway = vi.fn(async () => ({ teamCommand }));
+    const handler = createTeamLibraryHandler({ getGateway, hasPendingInputs: () => true });
+    const res = response();
+    await handler({ body: { action: 'runtime_select', sessionKey: 'web:team', team: null, requestToken: 'switch' } }, res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('TEAM_BUSY');
+    expect(getGateway).not.toHaveBeenCalled();
+    const read = response();
+    await handler({ body: { action: 'runtime_get', sessionKey: 'web:team' } }, read);
+    expect(read.body).toEqual({ activation: null });
+  });
+
+  it('pauses queued user inputs before stopping the whole Team', async () => {
+    const order = [];
+    const handler = createTeamLibraryHandler({ pauseInputs: sessionKey => order.push(['pause', sessionKey]), getGateway: async () => ({ teamCommand: async command => { order.push(['stop', command.sessionKey]); return { activation: null }; } }) });
+    await handler({ body: { action: 'runtime_stop', sessionKey: 'web:team' } }, response());
+    expect(order).toEqual([['pause', 'web:team'], ['stop', 'web:team']]);
   });
 
   it.each([

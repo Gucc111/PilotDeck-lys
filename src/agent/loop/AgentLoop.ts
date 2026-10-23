@@ -2030,7 +2030,7 @@ export class AgentLoop {
       tools,
       maxMessages: this.config.maxContextMessages,
       customSystemPrompt: this.config.systemPrompt,
-      appendSystemPrompt: planTodo?.buildPromptAddendum(),
+      appendSystemPrompt: [this.config.appendSystemPrompt, planTodo?.buildPromptAddendum()].filter(Boolean).join("\n\n") || undefined,
       abortSignal: input.abortSignal,
     });
 

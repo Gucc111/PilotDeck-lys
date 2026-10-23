@@ -55,6 +55,9 @@ export class AgentSession {
     this.state.status = "running";
     this.state.currentTurnId = turnId;
     this.state.abortController = new AbortController();
+    const turnSignal = submitOptions.abortSignal
+      ? AbortSignal.any([this.state.abortController.signal, submitOptions.abortSignal])
+      : this.state.abortController.signal;
     yield { type: "session_started", sessionId: this.state.sessionId };
     await this.options.lifecycle?.dispatch({
       event: "SessionStart",
@@ -65,7 +68,7 @@ export class AgentSession {
       },
       payload: { source: "startup" },
       matchQuery: "SessionStart",
-      signal: this.state.abortController.signal,
+      signal: turnSignal,
     });
     await this.options.lifecycle?.dispatch({
       event: "Setup",
@@ -76,7 +79,7 @@ export class AgentSession {
       },
       payload: {},
       matchQuery: "Setup",
-      signal: this.state.abortController.signal,
+      signal: turnSignal,
     });
     yield { type: "setup_completed", sessionId: this.state.sessionId };
 
@@ -96,7 +99,8 @@ export class AgentSession {
       syntheticMessages: submitOptions.syntheticMessages,
       modelOverride: submitOptions.modelOverride,
       modelSelection: submitOptions.modelSelection,
-      abortSignal: this.state.abortController.signal,
+      metadata: submitOptions.metadata,
+      abortSignal: turnSignal,
       openSteerMailbox: () => this.steerMailbox.start(turnId),
       drainSteerMessages: () => this.steerMailbox.drain(turnId),
       drainOrCloseSteerMailbox: () => this.steerMailbox.drainOrClose(turnId),
@@ -122,7 +126,7 @@ export class AgentSession {
       },
       payload: { reason: sessionEndReason },
       matchQuery: "SessionEnd",
-      signal: this.state.abortController.signal,
+      signal: turnSignal,
     });
     yield { type: "session_ended", sessionId: this.state.sessionId, reason: sessionEndReason };
   }

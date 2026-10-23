@@ -1,0 +1,34 @@
+.team-mode-strip { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 auto 8px; max-width:860px; padding:0 12px; font-size:12px; color:#6b647b; }
+.team-mode-strip-name { min-width:0; max-width:50%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.team-mode-strip button,.team-mode-dialog button { cursor:pointer; border:1px solid #dedbe7; border-radius:7px; padding:5px 9px; font-size:12px; background:transparent; }
+.team-mode-dialog button:disabled { cursor:not-allowed; opacity:.5; }
+.team-mode-overlay { position:fixed; z-index:150; inset:0; display:flex; align-items:center; justify-content:center; background:#0005; padding:16px; }
+.team-mode-dialog { display:flex; flex-direction:column; max-height:calc(100dvh - 32px); width:min(560px,100%); min-width:0; border:1px solid #e2dfea; border-radius:16px; background:#fff; color:#302d38; box-shadow:0 20px 60px #0003; outline:none; }
+.team-mode-header { display:flex; align-items:center; gap:12px; padding:16px 20px; border-bottom:1px solid #eae7ef; }
+.team-mode-header h2 { flex:1; min-width:0; font-size:16px; font-weight:600; overflow-wrap:anywhere; }
+.team-mode-header button { flex-shrink:0; border:0; }
+.team-mode-body { overflow-y:auto; padding:16px 20px; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.team-mode-body h3 { margin:20px 0 8px; font-size:13px; font-weight:600; }
+.team-mode-label { display:flex; flex-direction:column; gap:6px; margin:14px 0 4px; font-weight:500; }
+.team-mode-label select { width:100%; border:1px solid #ddd7e7; border-radius:8px; padding:8px; background:transparent; font-weight:400; }
+.team-mode-muted { color:#7c7586; font-size:12px; }
+.team-mode-roster { display:flex; flex-direction:column; gap:4px; margin:16px 0; }
+.team-mode-inline { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.team-mode-card { display:flex; flex-direction:column; gap:5px; border:1px solid #e6e1ec; border-radius:9px; padding:12px; margin-bottom:8px; }
+.team-mode-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.team-mode-error,.team-mode-warning { border-radius:8px; padding:10px; margin:8px 0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.team-mode-error { background:#fef2f2; color:#b42323; }
+.team-mode-warning { background:#fff9eb; color:#8f5d09; }
+.team-mode-error button { margin-left:8px; }
+.team-mode-strip .team-mode-error { width:100%; }
+.team-mode-footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; border-top:1px solid #eae7ef; padding:14px 20px; }
+.team-mode-dialog button.team-mode-primary { background:#6150a8; color:white; border-color:#6150a8; }
+.team-mode-side { justify-content:flex-end; }
+.team-mode-side .team-mode-dialog { height:100%; width:min(460px,100%); }
+.dark .team-mode-dialog { background:#18171c; border-color:#3d3748; color:#e4deec; }
+.dark .team-mode-header,.dark .team-mode-footer,.dark .team-mode-card,.dark .team-mode-label select,.dark .team-mode-dialog button { border-color:#3d3748; }
+.dark .team-mode-label option { background:#18171c; }
+.dark .team-mode-muted,.dark .team-mode-strip { color:#b4a9c1; }
+.dark .team-mode-error { background:#441f28; color:#f5adb2; }
+.dark .team-mode-warning { background:#3b301c; color:#e9c789; }
+@media(max-width:600px) { .team-mode-overlay { padding:8px; }.team-mode-dialog { max-height:calc(100dvh - 16px); }.team-mode-header,.team-mode-body { padding:12px; }.team-mode-strip { padding:0 6px; } }

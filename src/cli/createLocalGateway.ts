@@ -70,6 +70,7 @@ import { UsageCounter, withUsageCounter } from "../model/usage/UsageCounter.js";
 import { createDefaultPermissionContext, type PermissionRule } from "../permission/index.js";
 import {
   ensureWritableDirectory,
+  getPilotProjectChatDir,
   loadPilotConfig,
   resolvePilotHome,
   resolveProjectStorageId,
@@ -112,7 +113,16 @@ import { DialogGatewayError } from "../gateway/dialog/errors.js";
 import { listModelCatalog, normalizeSessionModelSelection, restoreSessionModelSelection, validateExplicitModelSelection, validateModelSelection } from "../gateway/dialog/modelCatalog.js";
 import { createDialogProjectRegistry } from "../gateway/dialog/projectRegistry.js";
 import { TeamService } from "../team/TeamService.js";
-import type { TeamInventory } from "../team/types.js";
+import type { TeamInventory, TeamDefinition, ProfileRef } from "../team/types.js";
+import { TeamRuntime } from "../team/TeamRuntime.js";
+import { validateRuntimeCommand } from "../team/TeamRuntime.js";
+import { object as teamObject } from "../team/validation.js";
+import { createTeamRuntimeTools } from "../team/runtimeTools.js";
+import type { TeamRuntimeActivation, TeamRuntimeParticipant, TeamParticipantExecution, TeamRuntimeIssue } from "../team/runtimeTypes.js";
+import { hash as teamHash } from "../team/store.js";
+import { JsonlTranscriptWriter } from "../session/transcript/JsonlTranscriptWriter.js";
+import { createReadSkillTool } from "../tool/builtin/readSkill.js";
+import { TeamRuntimeStore } from "../team/runtimeStore.js";
 import { TEAM_CONFIGURABLE_TOOLS } from "../team/capabilities.js";
 import type { SessionModelSelection } from "../gateway/protocol/types.js";
 import { listCommands } from "../gateway/dialog/commands.js";
@@ -171,7 +181,7 @@ export type CreateLocalGatewayResult = {
   gateway: Gateway;
   configStore: PilotConfigStore;
   registry: ProjectRuntimeRegistry;
-  dispose: () => void;
+  dispose: () => Promise<void>;
   bindServer: (server: { broadcastNotification(name: string, payload?: unknown): void }) => void;
   /**
    * Returns true when at least one interactive (non-background) turn is
@@ -380,6 +390,106 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       return registry.teamInventory(projectKey);
     },
   });
+  const teamRuntimeStore = new TeamRuntimeStore(pilotHome);
+  const internalTeamTurns = new Set<string>();
+  const selectingTeamSessions = new Set<string>();
+  const broadcastTeamEvent = (sessionKey: string, projectKey: string | undefined, event: import("../gateway/protocol/types.js").GatewayEvent) => {
+    boundServer?.broadcastNotification("team_runtime_event", { sessionKey, projectKey, event });
+  };
+  const registeredExecutionProject = async (key: string) => {
+    const result = await dialogProjects.resolveProjectKey(key);
+    if (resolve(result) === resolve(pilotHome) || !(await stat(result)).isDirectory()) throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Select a registered project for Team execution.");
+    return result;
+  };
+  const resolveTeamStorageProject = async (sessionKey: string, requested?: string): Promise<string> => {
+    if (!sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
+    const requestedProject = requested === undefined ? undefined : await dialogProjects.resolveProjectKey(requested);
+    const knownProjects = new Set<string>();
+    const cached = router!.sessionContext(sessionKey);
+    if (cached) knownProjects.add(resolve(cached.projectKey ?? fallbackProjectRoot));
+    const state = await teamRuntimeStore.read();
+    for (const activation of Object.values(state.activations)) {
+      if (activation.sessionKey === sessionKey) knownProjects.add(resolve(activation.storageProjectKey ?? activation.projectKey));
+    }
+    const candidates = new Set([...(await dialogProjects.listProjectKeys()).map(key => resolve(key)), ...knownProjects, resolve(fallbackProjectRoot)]);
+    // Inspect only this exact session filename, never every project's history.
+    // Durable files remain authoritative after router eviction or process restart.
+    await Promise.all([...candidates].map(async projectKey => {
+      const path = joinPath(getPilotProjectChatDir(projectKey, pilotHome), `${sanitizeSessionIdForPath(sessionKey)}.jsonl`);
+      try {
+        if ((await stat(path)).isFile()) knownProjects.add(projectKey);
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }));
+    if (knownProjects.size > 1) throw new DialogGatewayError("TEAM_SESSION_LOCATION_CONFLICT", "This session has conflicting project locations. Resolve its duplicate history before selecting a Team.");
+    const existingProject = [...knownProjects][0];
+    if (existingProject && requestedProject && existingProject !== resolve(requestedProject)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team selection cannot change the existing conversation's storage project.");
+    return dialogProjects.resolveProjectKey(existingProject ?? requestedProject ?? fallbackProjectRoot);
+  };
+  const teamRuntime: TeamRuntime = new TeamRuntime({
+    pilotHome,
+    resolveTeam: ref => teamService.resolveTeam(ref),
+    validateSelection: async (probe, context) => {
+      await resolveTeamStorageProject(context.sessionKey, context.storageProjectKey);
+      if (probe) for (const participant of probe.participants) await registeredExecutionProject(participant.projectKey);
+    },
+    probe: async (team, selectedProject, context) => {
+      const storage = context?.sessionKey ? await resolveTeamStorageProject(context.sessionKey, context.storageProjectKey) : context?.storageProjectKey;
+      const currentProject = storage && resolve(storage) !== resolve(pilotHome) ? storage : undefined;
+      const project = currentProject ?? selectedProject ?? team.config.defaultProjectKey ?? (team.leader.config.workspace.mode === "fixed" ? team.leader.config.workspace.projectKey : undefined);
+      if (!project) throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Select a registered project for Team execution.");
+      if (currentProject && selectedProject && resolve(currentProject) !== resolve(selectedProject)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "The current conversation's project cannot be replaced by Team selection.");
+      return registry.probeTeam(team, await registeredExecutionProject(project), registeredExecutionProject);
+    },
+    executeParticipant: async input => {
+      await configStore.reload("team-participant-start");
+      const frozen = structuredClone(input.activation.team);
+      for (const profile of [frozen.leader, ...frozen.teammates]) profile.config.model = input.activation.participants.find(item => item.id === profile.id)!.model;
+      const checked = await registry.probeTeam(frozen, input.activation.projectKey, registeredExecutionProject);
+      if (checked.issues.some(issue => issue.severity === "error")) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.filter(issue => issue.severity === "error").map(issue => issue.message).join("\n"));
+      for (const participant of input.activation.participants) if (teamHash(checked.participants.find(item => item.id === participant.id)?.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed before member execution. Recheck and select the Team again.");
+      return registry.executeTeamParticipant(input);
+    },
+    isLeaderBusy: sessionKey => !selectingTeamSessions.has(sessionKey) && router!.hasActiveTurn(sessionKey),
+    stopLeader: (sessionKey): Promise<void> => gateway.abortSessionExecution(sessionKey, "team_stopped"),
+    notifyLeader: async ({ activation, notifications, signal }) => {
+      const current = (await teamRuntime.get(activation.sessionKey)).activation;
+      if (signal.aborted || current?.id !== activation.id || current.status !== "active") return false;
+      const message = "Team updates (internal background context). Collect completed tasks by work ID. Ordinary messages do not imply task completion.\n" + notifications.map(({ id, kind, workId, messageId, participantId, summary, createdAt }) => JSON.stringify({ id, kind, workId, messageId, participantId, summary, createdAt })).join("\n");
+      const runId = router!.activeTurnRunId(activation.sessionKey);
+      // Pending notifications remain durable while the Leader is busy. The
+      // next idle boundary drains them; mailbox admission is not durable input.
+      if (runId) return false;
+      const continuationId = `team:${notifications[0]!.batchId}`;
+      internalTeamTurns.add(continuationId);
+      // Consume on the server: disconnecting a browser only stops observation.
+      return new Promise<boolean>(resolveReceipt => {
+        void (async () => {
+          let accepted = false;
+          try {
+            if (signal.aborted) return;
+            for await (const event of gateway.submitTurn({ sessionKey: activation.sessionKey, channelKey: "web", projectKey: activation.storageProjectKey ?? activation.projectKey, message, runId: continuationId, teamActivationId: activation.id, maxTurns: 25 })) {
+              if (event.type === "input_accepted") { accepted = true; resolveReceipt(true); }
+              broadcastTeamEvent(activation.sessionKey, activation.storageProjectKey, event);
+            }
+          } finally { internalTeamTurns.delete(continuationId); if (!accepted) resolveReceipt(false); }
+        })().catch(error => { console.warn("[pilotdeck] Team Leader continuation failed:", error); resolveReceipt(false); });
+      });
+    },
+  });
+  registry.setTeamRuntime(teamRuntime, broadcastTeamEvent);
+  const protectTeamHistory = async (sessionKey: string, operation: string) => {
+    await assertTeamJournal(sessionKey, await resolveTeamStorageProject(sessionKey));
+    const state = await teamRuntimeStore.read();
+    if (Object.values(state.activations).some(item => item.sessionKey === sessionKey)) throw new DialogGatewayError("TEAM_HISTORY_PROTECTED", `Cannot ${operation} a conversation with Team execution history.`);
+  };
+  const assertTeamJournal = async (sessionKey: string, storageProjectKey: string) => {
+    const state = await teamRuntimeStore.read();
+    if (Object.prototype.hasOwnProperty.call(state.sessions, sessionKey)) return;
+    const storage = createAgentProjectSessionStorage({ projectRoot: storageProjectKey, pilotHome, sessionId: sessionKey, now });
+    const { entries, diagnostics } = await readTranscript(storage.transcriptPath);
+    if (diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Conversation history cannot be checked safely for Team execution records.");
+    if (entries.some(entry => entry.type === "accepted_input" && typeof entry.metadata?.teamActivationId === "string")) throw new DialogGatewayError("TEAM_RUNTIME_MISSING", "This conversation has Team execution history, but its Team records are missing. Restore the Team runtime data before continuing.");
+  };
   const readSavedModel = async (projectKey: string, sessionKey: string): Promise<SessionModelSelection | undefined> => {
     if (!sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
     const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: sessionKey, now });
@@ -406,10 +516,85 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       },
     };
   };
-  const gateway = new InProcessGateway(router, {
+  const gateway: InProcessGateway = new InProcessGateway(router, {
+    protectSessionOperation: protectTeamHistory,
+    validateTeamSteer: async input => { await teamRuntime.assertActivation(input.sessionKey, input.teamActivationId); },
+    abortTeam: async sessionKey => { await teamRuntime.stop(sessionKey); },
+    afterInputAccepted: async (input, metadata) => {
+      if (input.runId && internalTeamTurns.has(input.runId)) return;
+      const { activation } = await teamRuntime.get(input.sessionKey);
+      if (activation) await teamRuntime.onHumanTurn(input.sessionKey, activation.id, typeof metadata?.teamStopVersion === "number" ? metadata.teamStopVersion : undefined);
+    },
+    prepareTurn: async input => {
+      if (input.teamActivationId !== undefined && input.teamActivationId !== null && typeof input.teamActivationId !== "string") throw new DialogGatewayError("TEAM_INVALID_INPUT", "teamActivationId must be a string or null.");
+      if (input.teamSelection !== undefined) teamObject(input.teamSelection, "teamSelection", ["team", "projectKey", "requestToken", "probeFingerprint"]);
+      const isMeta = !!input.runId && internalTeamTurns.has(input.runId);
+      const storageProjectKey = input.teamSelection || (await teamRuntime.get(input.sessionKey)).activation
+        ? await resolveTeamStorageProject(input.sessionKey, input.projectKey)
+        : await dialogProjects.resolveProjectKey(input.projectKey ?? fallbackProjectRoot);
+      await assertTeamJournal(input.sessionKey, storageProjectKey);
+      let selectedActivationId: string | undefined;
+      if (input.teamSelection) {
+        selectingTeamSessions.add(input.sessionKey);
+        try { selectedActivationId = (await teamRuntime.execute(validateRuntimeCommand({ ...input.teamSelection, action: "runtime_select", sessionKey: input.sessionKey, storageProjectKey })) as import("../team/runtimeTypes.js").TeamRuntimeView).activation?.id; }
+        finally { selectingTeamSessions.delete(input.sessionKey); }
+        await router!.close(input.sessionKey);
+      }
+      const activation = await teamRuntime.assertActivation(input.sessionKey, selectedActivationId ?? input.teamActivationId);
+      if (!activation) return { input };
+      if (isMeta && activation.status !== "active") throw new DialogGatewayError("TEAM_STOPPED", "Stopped Team work cannot restart itself.");
+      if (activation.storageProjectKey && resolve(activation.storageProjectKey) !== resolve(storageProjectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team conversation storage project cannot change.");
+      const leader = activation.participants.find(item => item.role === "leader")!;
+      if (input.workspaceCwd && resolve(input.workspaceCwd) !== resolve(leader.projectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team Leader workspace cannot be overridden by a chat request.");
+      const frozenTeam = structuredClone(activation.team);
+      for (const profile of [frozenTeam.leader, ...frozenTeam.teammates]) profile.config.model = activation.participants.find(item => item.id === profile.id)!.model;
+      const current = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject);
+      const errors = current.issues.filter(item => item.severity === "error");
+      if (errors.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", errors.map(item => item.message).join("\n"));
+      for (const participant of activation.participants) {
+        const next = current.participants.find(item => item.id === participant.id)!;
+        if (teamHash(next.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed. Recheck and select the Team again to confirm the current environment.");
+      }
+      const inputHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, activationId: activation.id });
+      const storage = createAgentProjectSessionStorage({ projectRoot: storageProjectKey, pilotHome, sessionId: input.sessionKey, now });
+      const transcript = await readTranscript(storage.transcriptPath);
+      if (transcript.diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Team conversation history cannot be read safely.");
+      const accepted = transcript.entries.find(item => item.type === "accepted_input" && item.turnId === input.runId);
+      if (accepted?.type === "accepted_input") {
+        if (accepted.metadata?.teamInputHash !== inputHash) throw new DialogGatewayError("TEAM_INPUT_CONFLICT", "This input token was already accepted with different contents.");
+        const result = transcript.entries.find(item => item.type === "turn_result" && item.turnId === input.runId);
+        return { input, replay: [
+          { type: "input_accepted" as const, runId: input.runId! },
+          { type: "agent_status" as const, event: "team_input_already_accepted", detail: { interrupted: !result, message: result ? "This input was already accepted. Read the conversation to see its result." : "This input was accepted before execution was interrupted. Continue in the Leader conversation; it will not be replayed." } },
+          { type: "turn_completed" as const, usage: {}, finishReason: "completed" as const },
+        ] };
+      }
+      return { input: { ...input, projectKey: storageProjectKey, workspaceCwd: undefined, modelSelection: undefined, modelOverride: undefined, mode: leader.profile.config.permissionMode, basePermissionMode: leader.profile.config.permissionMode }, isMeta, metadata: { teamActivationId: activation.id, teamInputHash: inputHash, teamStopVersion: activation.stopVersion ?? 0 } };
+    },
     teamCommand: async input => {
       if (input.action === "inventory") await configStore.reload("team-inventory");
-      return teamService.execute(input);
+      if (input.action.startsWith("runtime_")) {
+        if (input.action === "runtime_select") {
+          const reservation = `team-selection:${randomUUID()}`;
+          if (!router!.beginTurn(input.sessionKey, reservation)) throw new DialogGatewayError("TEAM_BUSY", "Wait for the current turn or stop it before changing Team mode.");
+          selectingTeamSessions.add(input.sessionKey);
+          try {
+            const storageProjectKey = await resolveTeamStorageProject(input.sessionKey, input.storageProjectKey);
+            await assertTeamJournal(input.sessionKey, storageProjectKey);
+            const result = await teamRuntime.execute({ ...input, storageProjectKey });
+            await router!.close(input.sessionKey);
+            return result;
+          } finally { selectingTeamSessions.delete(input.sessionKey); router!.endTurn(input.sessionKey, reservation); }
+        }
+        if (input.action === "runtime_get") await assertTeamJournal(input.sessionKey, await resolveTeamStorageProject(input.sessionKey));
+        if (input.action === "runtime_probe" && input.sessionKey) return teamRuntime.execute({ ...input, storageProjectKey: await resolveTeamStorageProject(input.sessionKey, input.storageProjectKey) });
+        return teamRuntime.execute(input as import("../team/runtimeTypes.js").TeamRuntimeCommand);
+      }
+      if (input.action === "project_references") {
+        const state = await teamRuntimeStore.read();
+        if (Object.values(state.activations).some(item => item.projectKey === input.projectKey || item.storageProjectKey === input.projectKey || item.participants.some(participant => participant.projectKey === input.projectKey))) return { referenced: true };
+      }
+      return teamService.execute(input as import("../team/types.js").TeamLibraryCommand);
     },
     funasrInstallCommand: getPilotDeckInstallCommand(),
     now,
@@ -419,6 +604,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     cron: options.cron,
     skillManager,
     async manageCheckpoints(input) {
+      if (input.action !== "list" && input.action !== "diff") await protectTeamHistory(input.sessionKey, "restore history or files");
       if (!input.sessionKey?.trim() || !["list", "diff", "preview", "restore", "undo", "git"].includes(input.action)) throw new CheckpointError("INVALID_ACTION", "A conversation and valid checkpoint action are required.");
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey);
       const store = await getCheckpointStore(projectKey, pilotHome);
@@ -508,6 +694,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       return modelResult(projectKey, input.sessionKey, await readSavedModel(projectKey, input.sessionKey));
     },
     async sessionModelSet(input) {
+      if ((await teamRuntime.get(input.sessionKey)).activation) throw new DialogGatewayError("TEAM_MODEL_MANAGED", "Team role models are managed by the selected Team. Exit Team mode to select an ordinary model.");
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey);
       if (router.hasActiveTurn(input.sessionKey)) throw new DialogGatewayError("SESSION_BUSY", "Cannot change the model during an active turn.");
       if (!input.selection || typeof input.selection !== "object") throw new DialogGatewayError("INVALID_MODEL_OVERRIDE", "selection is required.");
@@ -524,6 +711,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       return modelResult(projectKey, input.sessionKey, input.selection);
     },
     async sessionModelClear(input) {
+      if ((await teamRuntime.get(input.sessionKey)).activation) throw new DialogGatewayError("TEAM_MODEL_MANAGED", "Team role models are managed by the selected Team.");
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey);
       if (!input.sessionKey?.trim()) throw new DialogGatewayError("INVALID_SESSION_KEY", "sessionKey is required.");
       if (router.hasActiveTurn(input.sessionKey)) throw new DialogGatewayError("SESSION_BUSY", "Cannot clear the model during an active turn.");
@@ -537,6 +725,8 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       });
     },
     async resolveTurnModelSelection(input) {
+      const team = (await teamRuntime.get(input.sessionKey)).activation;
+      if (team) return { selection: team.participants.find(item => item.role === "leader")!.model, source: "session" as const };
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey ?? fallbackProjectRoot);
       if (input.modelSelection !== undefined && input.modelOverride !== undefined) {
         throw new DialogGatewayError("INVALID_MODEL_OVERRIDE", "Specify modelSelection or modelOverride, not both.");
@@ -580,14 +770,16 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         })));
     },
     setSessionCwd: (sessionKey, cwd) => registry.setSessionCwd(sessionKey, cwd),
-    readSessionMessages: (input) =>
-      readWebSessionMessages(input, {
+    readSessionMessages: async (input) => {
+      await assertTeamJournal(input.sessionKey, input.projectKey ?? fallbackProjectRoot);
+      return readWebSessionMessages(input, {
         projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
         pilotHome,
         maxContextTokens: defaultRuntime.snapshot.config.agent.maxContextTokens,
         maxOutputTokens: defaultRuntime.snapshot.config.agent.maxOutputTokens,
         now,
-      }),
+      });
+    },
     readSubagentMessages: (input) =>
       readSubagentWebMessages(input, {
         projectRoot: input.projectKey ? input.projectKey : fallbackProjectRoot,
@@ -672,6 +864,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       refreshManagedMcp();
     },
     afterTurnCompleted: ({ sessionKey, projectKey, runId }) => {
+      void teamRuntime.onLeaderIdle(sessionKey).catch(error => console.warn("[pilotdeck] Team continuation failed:", error));
       if (memoryDiagnosticsEnabled) {
         const snapshot = router?.snapshotSession(sessionKey);
         logGatewayMemoryDiagnostic({
@@ -696,7 +889,8 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     gateway,
     configStore,
     registry,
-    dispose: () => {
+    dispose: async () => {
+      const disposingTeam = teamRuntime.dispose();
       registry.invalidate();
       router?.shutdown();
       stopConfigWatching();
@@ -705,6 +899,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       if (ownsTelemetry) {
         void telemetry.shutdown();
       }
+      await disposingTeam;
     },
     bindServer: (server) => { boundServer = server; },
     isProjectBusy: (projectKey: string) => router!.hasActiveUserTurn(projectKey),
@@ -793,6 +988,99 @@ const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 30_000;
 const DEFAULT_BROWSER_NAVIGATION_TIMEOUT_MS = 90_000;
 
 class ProjectRuntimeRegistry {
+  private teamRuntime?: TeamRuntime;
+  private readonly teamRoles = new Map<string, { activation: TeamRuntimeActivation; participant: TeamRuntimeParticipant }>();
+  private readonly teamParticipantStatus = new Map<string, TeamParticipantExecution["updateStatus"]>();
+  private teamEvent?: (sessionKey: string, projectKey: string | undefined, event: import("../gateway/protocol/types.js").GatewayEvent) => void;
+  setTeamRuntime(runtime: TeamRuntime, emit: NonNullable<ProjectRuntimeRegistry["teamEvent"]>): void { this.teamRuntime = runtime; this.teamEvent = emit; }
+
+  async probeTeam(team: TeamDefinition, projectKey: string, resolveProject: (key: string) => Promise<string>) {
+    const issues: TeamRuntimeIssue[] = [];
+    const participants: TeamRuntimeParticipant[] = [];
+    const fingerprints: unknown[] = [];
+    for (const profile of [team.leader, ...team.teammates]) {
+      const id = profile.id;
+      const selectedProject = profile.config.workspace.mode === "fixed" ? profile.config.workspace.projectKey : projectKey;
+      let actualProject = selectedProject;
+      const issue = (severity: "error" | "warning", code: string, message: string) => issues.push({ severity, code, message: `${profile.config.displayName}: ${message}`, participantId: id });
+      try { actualProject = await resolveProject(selectedProject); }
+      catch (error) { issue("error", "TEAM_PROJECT_REQUIRED", (error as Error).message); }
+      if (profile.role === "leader" && resolve(actualProject) !== resolve(projectKey)) issue("error", "TEAM_WORKSPACE_CONFLICT", "Leader workspace conflicts with the current conversation project.");
+      const runtime = this.resolve(actualProject);
+      const model = profile.config.model.mode === "default" ? { mode: "model" as const, provider: runtime.snapshot.config.agent.model.provider, model: runtime.snapshot.config.agent.model.model } : profile.config.model;
+      try { validateExplicitModelSelection(actualProject, model, this.options.env); }
+      catch (error) { issue("error", "TEAM_MODEL_UNAVAILABLE", (error as Error).message); }
+      await runtime.pluginRuntime.refresh();
+      const inventory = await this.teamInventory(actualProject);
+      const optional = (kind: "tool" | "skill" | "mcp", name: string) => profile.config.optionalCapabilities.some(value => value.kind === kind && value.name === name);
+      const available = { tools: [] as string[], skills: [] as string[], mcpServers: [] as string[] };
+      for (const [key, kind] of [["tools", "tool"], ["skills", "skill"], ["mcpServers", "mcp"]] as const) {
+        for (const name of profile.config.capabilities[key]) {
+          if (inventory[key].some(item => item.name === name)) available[key].push(name);
+          else issue(optional(kind, name) ? "warning" : "error", "TEAM_CAPABILITY_MISSING", `${kind} ${name} is unavailable.`);
+        }
+      }
+      const mcp = new McpRuntime(this.teamMcpSpecs(runtime, available.mcpServers));
+      try {
+        for (const status of await mcp.start()) if (status.status !== "ready") {
+          available.mcpServers = available.mcpServers.filter(name => name !== status.serverId);
+          issue(optional("mcp", status.serverId) ? "warning" : "error", "TEAM_MCP_UNAVAILABLE", `${status.serverId}: ${status.error ?? status.status}`);
+        }
+      } finally { await mcp.stop(); }
+      participants.push({ id, role: profile.role, profile: structuredClone(profile), projectKey: actualProject, projectPath: actualProject, model, capabilities: available });
+      fingerprints.push({ project: actualProject, model, inventory, available, specs: this.teamMcpSpecs(runtime, profile.config.capabilities.mcpServers) });
+    }
+    return { projectKey, participants, issues, environmentFingerprint: teamHash(fingerprints) };
+  }
+
+  private teamMcpSpecs(runtime: ProjectRuntime, allowed: string[]) {
+    const config = loadMcpServerConfig(runtime.projectRoot, this.options.pilotHome);
+    return parsePluginMcpServers({ ...runtime.pluginRuntime.mcpServers(), ...config.servers }).servers
+      .filter(spec => allowed.includes(spec.id))
+      .map(spec => patchProjectScopedMcpSpec(spec, runtime.projectRoot, this.options.pilotHome));
+  }
+
+  async executeTeamParticipant(input: TeamParticipantExecution): Promise<{ text: string }> {
+    const sessionKey = `team-internal:${input.activation.id}:${input.participant.id}`;
+    this.teamRoles.set(sessionKey, { activation: input.activation, participant: input.participant });
+    this.teamParticipantStatus.set(sessionKey, input.updateStatus);
+    let session: AgentSession | undefined;
+    const onAbort = () => session?.abort("team_stopped");
+    let text = "";
+    try {
+      const context = { sessionKey, projectKey: input.participant.projectKey, channelKey: "team" };
+      const prepared = await this.prepareSessionRuntime(context);
+      const storage = this.teamParticipantStorage(input.activation.id, input.participant.id);
+      const config = this.createAgentConfig(prepared.runtime, sessionKey);
+      session = (await resumeAgentSession({ sessionId: sessionKey, config: { ...config, isSubagent: true }, dependencies: prepared.baseDependencies, projectStorage: prepared.runtime.projectStorage, storage, extendDependencies: prepared.extendDependencies, collectFileArtifacts: false })).session;
+      input.signal.addEventListener("abort", onAbort, { once: true });
+      const prompt = [input.work ? `Task ${input.work.id}:\n${input.work.task}\n\nAttached context:\n${input.work.context ?? "(none)"}` : "Coordination messages received. Respond with team_send_message when needed; this is not a delegated task.", ...(input.messages ?? []).map(message => `Message ${message.id} from ${message.senderId}, intended for ${message.intendedRecipientId}:\n${message.text}`)].join("\n\n");
+      if (input.signal.aborted) throw new Error("Team participant was stopped.");
+      // A waiting task may resume several times. Each model turn gets its own
+      // token namespace; the durable work ID remains the result correlation.
+      for await (const event of session.submit({ type: "text", text: prompt, isMeta: true }, { turnId: randomUUID(), metadata: { teamActivationId: input.activation.id, teamWorkId: input.work?.id }, maxTurns: 25, abortSignal: input.signal })) {
+        if (event.type === "model_event" && event.event.type === "text_delta") text += event.event.text;
+        if (event.type === "turn_failed") throw new Error(event.error.message);
+      }
+      if (input.signal.aborted) throw new Error("Team participant was stopped.");
+      return { text };
+    } finally {
+      input.signal.removeEventListener("abort", onAbort);
+      this.gateway?.clearTeamPrompts(sessionKey);
+      await session?.dispose();
+      this.evictSessionMcp(sessionKey);
+      this.teamRoles.delete(sessionKey);
+      this.teamParticipantStatus.delete(sessionKey);
+    }
+  }
+
+  private teamParticipantStorage(activationId: string, participantId: string): ReturnType<typeof createAgentProjectSessionStorage> {
+    const chatDir = joinPath(this.options.pilotHome, "team-runtime", "contexts", sanitizeSessionIdForPath(activationId), sanitizeSessionIdForPath(participantId));
+    const transcriptPath = joinPath(chatDir, "context.jsonl");
+    const subagentsDir = joinPath(chatDir, "subagents");
+    const subagentTranscriptPath = (id: string) => joinPath(subagentsDir, `${sanitizeSessionIdForPath(id)}.jsonl`);
+    return { chatDir, transcriptPath, subagentsDir, subagentTranscriptPath, toolResultsDir: joinPath(chatDir, "tool-results"), fileHistoryDir: joinPath(chatDir, "file-history"), transcript: new JsonlTranscriptWriter({ path: transcriptPath, now: this.options.now, subagentTranscriptPath }) };
+  }
   private readonly runtimes = new Map<string, ProjectRuntime>();
   private usageCounter?: UsageCounter;
   private gateway?: InProcessGateway;
@@ -1211,7 +1499,7 @@ class ProjectRuntimeRegistry {
       sessionId: context.sessionKey,
       config: this.createAgentConfig(prepared.runtime, context.sessionKey),
       dependencies: prepared.baseDependencies,
-      projectStorage: prepared.runtime.projectStorage,
+      projectStorage: { ...prepared.runtime.projectStorage, projectRoot: context.projectKey ?? prepared.runtime.projectRoot },
       extendDependencies: prepared.extendDependencies,
       sessionTitleGenerator: prepared.sessionTitleGenerator,
       collectFileArtifacts: this.shouldCollectFileArtifacts(prepared.runtime),
@@ -1224,6 +1512,7 @@ class ProjectRuntimeRegistry {
     const previous = previousSession.snapshotForRuntimeReload();
     const storage = createAgentProjectSessionStorage({
       ...prepared.runtime.projectStorage,
+      projectRoot: context.projectKey ?? prepared.runtime.projectRoot,
       sessionId: context.sessionKey,
       now: prepared.baseDependencies.now,
     });
@@ -1254,16 +1543,28 @@ class ProjectRuntimeRegistry {
   }
 
   private async prepareSessionRuntime(context: GatewaySessionContext) {
-    const runtime = this.resolve(context.projectKey);
+    if (!context.sessionKey.startsWith("team-internal:") && this.teamRuntime) {
+      const { activation } = await this.teamRuntime.get(context.sessionKey);
+      if (activation && activation.status !== "closed") {
+        const participant = activation.participants.find(item => item.role === "leader")!;
+        this.teamRoles.set(context.sessionKey, { activation, participant });
+      } else this.teamRoles.delete(context.sessionKey);
+    }
+    const teamRole = this.teamRoles.get(context.sessionKey);
+    const runtime = this.resolve(teamRole?.participant.projectKey ?? context.projectKey);
     await runtime.pluginRuntime.refresh();
-    await this.ensureMcpReady(runtime);
+    if (!teamRole) await this.ensureMcpReady(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
 
     // -- per-session MCP runtime (e.g. browser-use) --------------------
     let sessionTools: ToolRegistry = runtime.tools;
-    const perSpecs = runtime.perSessionServerSpecs;
+    if (teamRole) {
+      sessionTools = runtime.tools.clone();
+      for (const tool of sessionTools.list()) if (tool.kind === "mcp") sessionTools.unregister(tool.name);
+    }
+    const perSpecs = teamRole ? this.teamMcpSpecs(runtime, teamRole.participant.capabilities.mcpServers) : runtime.perSessionServerSpecs;
     const maxInstances = runtime.snapshot.config.gateway?.maxPerSessionMcpInstances ?? 5;
-    if (perSpecs && perSpecs.length > 0 && this.sessionMcpRuntimes.size < maxInstances) {
+    if (perSpecs && perSpecs.length > 0 && (teamRole || this.sessionMcpRuntimes.size < maxInstances)) {
       this.evictSessionMcp(context.sessionKey);
       const patchedPerSpecs = perSpecs.map((spec) => {
         if (spec.transport === "stdio" && spec.id === "browser-use") {
@@ -1285,6 +1586,7 @@ class ProjectRuntimeRegistry {
       this.sessionMcpRuntimes.set(context.sessionKey, sessionMcp);
       try {
         const statuses = await sessionMcp.start();
+        if (teamRole && statuses.some(status => status.status !== "ready")) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "An authorized MCP server became unavailable. Recheck Team compatibility before continuing.");
         for (const status of statuses) {
           if (status.status === "error") {
             // eslint-disable-next-line no-console
@@ -1296,7 +1598,7 @@ class ProjectRuntimeRegistry {
         }
         const defs = await createMcpToolDefinitionsFromRuntime(sessionMcp);
         if (defs.length > 0) {
-          sessionTools = runtime.tools.clone();
+          sessionTools = sessionTools.clone();
           for (const def of defs) {
             if (sessionTools.has(def.name)) {
               sessionTools.replace(def);
@@ -1306,6 +1608,7 @@ class ProjectRuntimeRegistry {
           }
         }
       } catch (err) {
+        if (teamRole) { this.evictSessionMcp(context.sessionKey); throw err; }
         // eslint-disable-next-line no-console
         console.warn(
           `[pilotdeck] Per-session MCP startup failed for ${context.sessionKey}:`,
@@ -1355,6 +1658,19 @@ class ProjectRuntimeRegistry {
     });
     sessionTools = availability.registry;
     runtime.unavailableTools = availability.unavailable;
+    if (teamRole) {
+      sessionTools = sessionTools.clone();
+      const privateMcp = this.sessionMcpRuntimes.get(context.sessionKey);
+      const allowedMcpTools = new Set((await privateMcp?.listAllTools() ?? []).map(tool => tool.wireName));
+      for (const tool of sessionTools.list()) if (!teamRole.participant.capabilities.tools.includes(tool.name) && !allowedMcpTools.has(tool.name)) sessionTools.unregister(tool.name);
+      const allowedSkills = new Set(teamRole.participant.capabilities.skills);
+      if (sessionTools.has("read_skill")) sessionTools.replace(createReadSkillTool({ loader: name => allowedSkills.has(name) ? runtime.pluginRuntime.loadSkillPrompt(name) : Promise.resolve(undefined), lister: () => runtime.pluginRuntime.getAllSkills().filter(skill => allowedSkills.has(skill.name)) }));
+      for (const tool of createTeamRuntimeTools(this.teamRuntime!, { sessionKey: teamRole.activation.sessionKey, activationId: teamRole.activation.id, participantId: teamRole.participant.id })) {
+        if (teamRole.participant.role === "teammate" && ["team_delegate", "team_followup", "team_relay_message"].includes(tool.name)) continue;
+        if (teamRole.participant.role === "leader" && tool.name === "team_wait_for_information") continue;
+        sessionTools.register(tool);
+      }
+    }
 
     // Inject the gateway's interactive permission hook so the agent's
     // PermissionRequest lifecycle is round-tripped through whichever
@@ -1368,6 +1684,17 @@ class ProjectRuntimeRegistry {
     // client is actively streaming, `gw.emitForSession()` returns false
     // and the hook auto-denies — better than silently hanging.
     const gw = this.gateway;
+    const emitInteractive = (event: import("../gateway/protocol/types.js").GatewayEvent): boolean => {
+      if (teamRole?.participant.role === "teammate" && gw) {
+        const updateStatus = this.teamParticipantStatus.get(context.sessionKey);
+        if (event.type === "permission_request" || event.type === "elicitation_request") void updateStatus?.("waiting_approval").catch(() => {});
+        gw.registerTeamPrompt(teamRole.activation.sessionKey, context.sessionKey, event, () => { void updateStatus?.("running").catch(() => {}); });
+        if (event.type === "permission_request") event = { ...event, payload: { participant: teamRole.participant.profile.config.displayName, input: event.payload } };
+        this.teamEvent?.(teamRole.activation.sessionKey, teamRole.activation.storageProjectKey, event);
+        return true;
+      }
+      return gw?.emitForSession(context.sessionKey, event) ?? false;
+    };
     const liveRuleSet = this.getLiveRuleSet(context.sessionKey);
     const hookSettings: typeof contributions.hooks = gw
       ? {
@@ -1389,16 +1716,21 @@ class ProjectRuntimeRegistry {
         createGatewayPermissionHook({
           sessionKey: context.sessionKey,
           bus: gw.getPermissionBus(),
-          emit: (event) => gw.emitForSession(context.sessionKey, event),
+          emit: emitInteractive,
           permissionRules: liveRuleSet.allow,
         }),
       );
     }
     const lifecycle = new LifecycleRuntime(hookRuntime);
-    const extension = new PluginRuntimeExtensionResolver(runtime.pluginRuntime, () => [
+    const baseExtension = new PluginRuntimeExtensionResolver(runtime.pluginRuntime, () => [
       ...(runtime.mcpRuntime?.getInstructions() ?? []),
       ...(this.sessionMcpRuntimes.get(context.sessionKey)?.getInstructions() ?? []),
     ].map(({ serverId, instructions }) => ({ serverName: serverId, instructions })));
+    const extension = teamRole ? {
+      listCommands: () => [],
+      listSkills: () => baseExtension.listSkills().filter(skill => teamRole.participant.capabilities.skills.includes(skill.name)),
+      listMcpInstructions: () => (this.sessionMcpRuntimes.get(context.sessionKey)?.getInstructions() ?? []).filter(item => teamRole.participant.capabilities.mcpServers.includes(item.serverId)).map(item => ({ serverName: item.serverId, instructions: item.instructions })),
+    } : baseExtension;
     const projectRoot = runtime.projectRoot;
     const memoryResolver = runtime.memory;
     const now = this.options.now;
@@ -1527,7 +1859,7 @@ class ProjectRuntimeRegistry {
           ? new GatewayElicitationChannel({
               sessionKey: context.sessionKey,
               bus: gw.getElicitationBus(),
-              emit: (event) => gw.emitForSession(context.sessionKey, event),
+              emit: emitInteractive,
               dispatchHook: (hookEvent, payload) => {
                 lifecycle.dispatch({
                   event: hookEvent as import("../extension/hooks/protocol/events.js").PilotDeckHookEvent,
@@ -1620,10 +1952,11 @@ class ProjectRuntimeRegistry {
     runtime: ProjectRuntime,
     sessionKey: string,
   ): CreateAgentSessionOptions["config"] {
-    const agent = runtime.snapshot.config.agent;
+    const teamRole = this.teamRoles.get(sessionKey);
+    const agent = teamRole ? { ...runtime.snapshot.config.agent, model: { ...runtime.snapshot.config.agent.model, ...teamRole.participant.model } } : runtime.snapshot.config.agent;
     const override = this._sessionOverrides?.get(sessionKey);
-    const permissionMode = override?.permissionMode ?? this.options.permissionMode;
-    const cwd = override?.cwd ?? runtime.projectRoot;
+    const permissionMode = teamRole?.participant.profile.config.permissionMode ?? override?.permissionMode ?? this.options.permissionMode;
+    const cwd = teamRole?.participant.projectKey ?? override?.cwd ?? runtime.projectRoot;
     // Hand `PermissionContext` the same live rule-set reference the
     // gateway permission hook owns (see `getLiveRuleSet`). With this
     // shared reference, an "allow + remember" decision pushed by the
@@ -1689,6 +2022,14 @@ class ProjectRuntimeRegistry {
       modelMultimodal,
       cwd,
       permissionMode,
+      ...(teamRole ? { appendSystemPrompt: [
+        `You are ${teamRole.participant.profile.config.displayName}, the ${teamRole.participant.role} of Team ${teamRole.activation.team.config.displayName}.`,
+        teamRole.participant.profile.config.systemPrompt,
+        teamRole.activation.team.config.instructions,
+        `Team roster: ${teamRole.activation.participants.map(item => `${item.id}: ${item.profile.config.displayName} (${item.role})`).join("; ")}`,
+        teamRole.participant.role === "leader" ? "Answer the human in this conversation. Delegate independent work asynchronously using team_delegate. A task receipt means admitted, not completed. Read durable results with team_collect. Teammate peer messages arrive for your mediation: preserve sender and relay references when forwarding. Do not claim completion before collecting results. You may answer simple requests directly." : "You have only your own context and explicitly attached task context. Use team_send_message for coordination; peer messages go through the Leader. Do not impersonate another participant, delegate work, or approve permissions. Return your completed task result in your final response.",
+        "Capability settings restrict tool interfaces, skill entry points and MCP access. They are not an operating-system sandbox. Follow the existing human permission and approval mechanisms.",
+      ].join("\n\n") } : {}),
       jsonSelfCorrect: true,
       ...(subagentRuntimeModel ? { subagentModel: subagentRuntimeModel } : {}),
       subagentTimeoutMs: agent.subagents?.timeoutMs,

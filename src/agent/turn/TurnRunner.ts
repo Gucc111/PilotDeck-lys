@@ -23,6 +23,7 @@ export type TurnRunnerOptions = {
   messages: CanonicalMessage[];
   input: AgentInput;
   maxTurns?: number;
+  metadata?: Record<string, unknown>;
   runMode?: AgentRunMode;
   permissionMode?: PermissionMode;
   allowedReadFiles?: string[];
@@ -441,7 +442,7 @@ export class TurnRunner {
     options: TurnRunnerOptions,
     acceptedMessages: CanonicalMessage[],
   ): PendingSessionTitle | undefined {
-    if (this.disposed || this.turnDependencies.autoGenerateSessionTitle !== true) {
+    if (options.input.isMeta || this.disposed || this.turnDependencies.autoGenerateSessionTitle !== true) {
       return undefined;
     }
     const metadataStore = this.turnDependencies.metadataStore;
@@ -512,7 +513,7 @@ export class TurnRunner {
     acceptedMessages: CanonicalMessage[],
   ): Promise<void> {
     const metadataStore = this.turnDependencies.metadataStore;
-    if (!metadataStore) return;
+    if (!metadataStore || options.input.isMeta) return;
 
     const snapshot = metadataStore.getSnapshot();
     const prompt = allHumanText(acceptedMessages);
@@ -535,7 +536,7 @@ function isVisibleFailureStatus(status: AgentStatusMessageInput): boolean {
 }
 
 function acceptedInputMetadata(options: TurnRunnerOptions): Record<string, unknown> | undefined {
-  const metadata: Record<string, unknown> = {};
+  const metadata: Record<string, unknown> = { ...options.metadata };
   // Save alongside input so a crash before the metadata snapshot cannot lose the choice.
   if (options.modelSelection) metadata.modelSelection = { ...options.modelSelection };
   if (options.permissionMode) {
