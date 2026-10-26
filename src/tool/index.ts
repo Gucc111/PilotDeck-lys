@@ -39,7 +39,6 @@ export type {
   PilotDeckFileUpdateNotifier,
   PilotDeckPlanTodoStateHandle,
   PilotDeckPlanTodoStateSnapshot,
-  PilotDeckToolFileHistorySink,
   PilotDeckToolKind,
   PilotDeckToolModelClient,
   PilotDeckToolProgressEvent,

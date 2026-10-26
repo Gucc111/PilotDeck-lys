@@ -19,7 +19,10 @@ export class GatewayWsConnection {
     private readonly ws: TextWebSocketConnection,
     private readonly options: GatewayWsConnectionOptions,
   ) {
-    ws.onMessage((message) => void this.handleMessage(message));
+    ws.onMessage((message) => void this.handleMessage(message).catch(() => {
+      // A lost observer may also reject an error/hello response.
+      try { ws.close(1011, "observer_write_failed"); } catch { /* already disconnected */ }
+    }));
     ws.onClose(() => this.abortInFlightTurns());
   }
 
@@ -34,7 +37,8 @@ export class GatewayWsConnection {
 
   sendNotification(name: string, payload?: unknown): void {
     if (!this.authed) return;
-    this.ws.sendText(JSON.stringify({ type: "notification", name, payload }));
+    try { this.ws.sendText(JSON.stringify({ type: "notification", name, payload })); }
+    catch { /* Notification observers cannot interrupt server-owned execution. */ }
   }
 
   onClose(callback: () => void): void {
@@ -90,7 +94,20 @@ export class GatewayWsConnection {
     try {
       if (frame.method === "submit_turn") {
         const sessionKey = (frame.params as { sessionKey?: string } | undefined)?.sessionKey;
-        if (sessionKey) this.inFlightSessions.add(sessionKey);
+        const params = frame.params as { teamActivationId?: string; teamSelection?: unknown };
+        const serverOwned = !!(params.teamActivationId || params.teamSelection);
+        let observerFailed = false;
+        const sendEvent = (payload: unknown) => {
+          if (observerFailed) return;
+          try { this.ws.sendText(JSON.stringify(payload)); }
+          catch (error) {
+            if (!serverOwned) throw error;
+            // A failed observer must not close the server-owned execution iterator.
+            observerFailed = true;
+          }
+        };
+        // Team turns are server-owned; a disconnected observer must not stop them.
+        if (sessionKey && !serverOwned) this.inFlightSessions.add(sessionKey);
         let seq = 0;
         let lastCompleted: GatewayEvent | undefined;
         try {
@@ -98,22 +115,20 @@ export class GatewayWsConnection {
             if (event.type === "turn_completed") {
               lastCompleted = event;
             }
-            this.ws.sendText(JSON.stringify({ type: "event", id: frame.id, seq: seq++, final: false, event }));
+            sendEvent({ type: "event", id: frame.id, seq: seq++, final: false, event });
           }
         } finally {
           if (sessionKey) this.inFlightSessions.delete(sessionKey);
         }
         const usage = lastCompleted?.type === "turn_completed" ? lastCompleted.usage : {};
         const finishReason = lastCompleted?.type === "turn_completed" ? lastCompleted.finishReason : "completed";
-        this.ws.sendText(
-          JSON.stringify({
+        sendEvent({
             type: "event",
             id: frame.id,
             seq,
             final: true,
             event: { type: "turn_completed", usage, finishReason },
-          }),
-        );
+          });
         return;
       }
 
@@ -256,9 +271,11 @@ export class GatewayWsConnection {
         return this.options.gateway.readSubagentMessages(frame.params as never);
       case "fork_session":
         return this.options.gateway.forkSession(frame.params as never);
+      case "repository_operation":
+        if (!this.options.gateway.repositoryOperation) throw new Error("Git operations are unavailable on this Gateway.");
+        return this.options.gateway.repositoryOperation(frame.params as never);
       case "manage_checkpoints":
-        if (!this.options.gateway.manageCheckpoints) throw new Error("File checkpoints are unavailable on this Gateway.");
-        return this.options.gateway.manageCheckpoints(frame.params as never);
+        throw new DialogGatewayError("CHECKPOINTS_REMOVED", "File checkpoints and restore have been removed. / 文件检查点与恢复功能已移除。");
       case "replace_last_turn":
         return this.options.gateway.replaceLastTurn(frame.params as never);
       case "finalize_last_turn_replacement":

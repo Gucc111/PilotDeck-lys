@@ -226,12 +226,6 @@ export function createEditNotebookTool(): PilotDeckToolDefinition<EditNotebookIn
       }
 
       const freshness = await ensureWriteSnapshotFresh(context, resolved.absolutePath);
-      if (context.fileHistory) {
-        await context.fileHistory.trackEdit(
-          resolved.absolutePath,
-          context.messageId ?? context.turnId,
-        );
-      }
 
       const originalContent = freshness.previousContent ?? await readNotebookJson(resolved.absolutePath);
       const notebook = parseNotebook(originalContent);
@@ -287,7 +281,6 @@ export function createEditNotebookTool(): PilotDeckToolDefinition<EditNotebookIn
 
       const updatedContent = `${JSON.stringify(notebook, null, 1)}\n`;
       await writeTextFile(resolved.absolutePath, updatedContent, { allowOverwrite: true });
-      await context.fileHistory?.recordEdit?.(resolved.absolutePath, context.messageId ?? context.turnId, updatedContent);
       const fileStat = await stat(resolved.absolutePath);
       invalidateReadFileState(context, resolved.absolutePath);
       recordWriteSnapshot(context, resolved.absolutePath, updatedContent, Math.floor(fileStat.mtimeMs));

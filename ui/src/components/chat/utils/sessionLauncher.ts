@@ -22,6 +22,7 @@ type StartSessionOptions = {
   modelSelection?: ChatModelSelection;
   teamSelection?: TeamExecutionSelection;
   teamActivationId?: string | null;
+  teamStopVersion?: number;
   modelOverride?: {
     mode: 'model';
     provider: string;
@@ -118,6 +119,7 @@ export function startSessionCommand({
   modelSelection,
   teamSelection,
   teamActivationId,
+  teamStopVersion,
   images,
   attachments,
   uploadedAttachments,
@@ -149,6 +151,7 @@ export function startSessionCommand({
       ...(modelSelection ? { modelSelection: { ...modelSelection } } : {}),
       ...(teamSelection ? { teamSelection: { ...teamSelection, team: { ...teamSelection.team } } } : {}),
       ...(teamActivationId !== undefined ? { teamActivationId } : {}),
+      ...(teamStopVersion !== undefined ? { teamStopVersion } : {}),
       ...(typeof userVisibleInput === 'string' && userVisibleInput.trim()
         ? { userVisibleInput: userVisibleInput.trim() }
         : {}),

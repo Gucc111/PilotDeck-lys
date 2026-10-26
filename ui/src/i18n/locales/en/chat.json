@@ -36,7 +36,11 @@
     "resumeFailed": "Failed to resume the queue.",
     "steerFailed": "The message remains queued.",
     "deleteFailed": "Failed to delete the queued message.",
-    "moveFailed": "Failed to reorder the queue."
+    "moveFailed": "Failed to reorder the queue.",
+    "invalidatedHelp": "These Team inputs expired after a stop or restart and will not be sent automatically. Put them back in the composer to send a new request.",
+    "restoreComposer": "Put back in composer",
+    "recoveredDraft": "Input and attachment references restored. Sending creates a new request.",
+    "removeRecovered": "Remove restored attachments"
   },
   "copyMessage": {
     "copy": "Copy message",
@@ -776,7 +780,7 @@
     "messages": "Messages",
     "noMessages": "No coordination messages yet.",
     "awaitingRelay": "Intended for {{name}}; awaiting Leader relay",
-    "stopHelp": "Team work was stopped. Interrupted tasks are not replayed automatically. Send the Leader a message to continue.",
+    "stopHelp": "This Team run stopped. Old tasks, messages, notifications and queued inputs have expired. Send a new request to start a new run.",
     "status": {
       "queued": "Queued",
       "running": "Running",
@@ -786,7 +790,8 @@
       "failed": "Failed",
       "interrupted": "Interrupted",
       "stopped": "Stopped",
-      "delivered": "Delivered"
+      "delivered": "Delivered",
+      "invalidated": "Expired"
     },
     "close": "Close",
     "relayed": "Forwarded by Leader to {{name}}",
@@ -796,6 +801,13 @@
     "rolePermissions": "Permissions follow the Leader configuration.",
     "continuationPaused": "Automatic continuation is paused. Send a message to continue, or stop the Team.",
     "capabilities": "Available capabilities",
-    "coordinationOnly": "Team coordination tools only"
+    "coordinationOnly": "Team coordination tools only",
+    "stopping": "Stopping",
+    "restartInterrupted": "Interrupted by restart",
+    "stoppingHelp": "Cancelling execution and waiting for cleanup. A new Team run cannot start yet.",
+    "stopTimeout": "Stop timed out. The executions below are still being cleaned up; exit is not yet confirmed.",
+    "cleanupNotifications": "Team notification delivery",
+    "cleanupResources": "Final resource cleanup",
+    "cleanupExecution": "Execution cleanup"
   }
 }

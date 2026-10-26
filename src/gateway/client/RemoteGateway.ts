@@ -109,7 +109,7 @@ export class RemoteGateway implements Gateway {
     return (await this.client.request("cancel_steer", input)) as GatewayCancelSteerResult;
   }
 
-  async abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void> {
+  async abortTurn(input: { sessionKey: string; runId?: string; reason?: string; teamActivationId?: string; teamStopVersion?: number }): Promise<void> {
     await this.client.request("abort_turn", input);
   }
 
@@ -217,7 +217,10 @@ export class RemoteGateway implements Gateway {
     return (await this.client.request("fork_session", input)) as WebForkSessionResult;
   }
 
-  async manageCheckpoints(input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest): Promise<unknown> {
+  async repositoryOperation(input: import("../../session/repository/operations.js").RepositoryOperationInput): Promise<unknown> {
+    return this.client.request("repository_operation", input);
+  }
+  async manageCheckpoints(input: import("../../session/checkpoints/removed.js").CheckpointRequest): Promise<unknown> {
     return this.client.request("manage_checkpoints", input);
   }
 

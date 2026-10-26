@@ -549,13 +549,13 @@ function MainAreaV2Content(props: MainAreaV2Props) {
                   <button type="button" role="menuitem" onClick={() => {
                       setDashboardMenuOpen(false);
                       chatHistorySearch.closeSearch();
-                      setReviewOpenRequest(previous => ({ tab: 'changes', sequence: (previous?.sequence ?? 0) + 1 }));
+                      setReviewOpenRequest(previous => ({ tab: 'git', sequence: (previous?.sequence ?? 0) + 1 }));
                     }} className="relative flex h-9 w-full items-center justify-center gap-2 rounded-lg px-2 text-[13px] text-neutral-600 transition-colors hover:bg-blue-50 hover:text-blue-700 focus:bg-blue-50 focus:text-blue-700 focus:outline-none dark:text-neutral-300 dark:hover:bg-blue-950/60 dark:hover:text-blue-200 dark:focus:bg-blue-950/60 dark:focus:text-blue-200">
                     <svg aria-hidden="true" className="h-4 w-4 shrink-0 text-neutral-400" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.75" viewBox="0 0 24 24">
                       <rect x="3" y="3" width="18" height="18" rx="4" />
                       <path d="M9 9h6m-3-3v6M9 16h6" />
                     </svg>
-                    <span>{t('dashboardSwitcher.changes')}</span>
+                    <span>{t('tabs.git')}</span>
                   </button>
                 </div>
               ) : null}

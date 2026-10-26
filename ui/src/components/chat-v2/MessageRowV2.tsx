@@ -611,7 +611,6 @@ function MessageRowV2({
         artifacts={assistantArtifacts}
         project={selectedProject}
         onBrowse={onFileOpen}
-        includeCheckpoint={showAssistantActions === true && !message.isStreaming}
         streaming={Boolean(message.isStreaming)}
       />
       {shouldRenderAssistantActions ? (

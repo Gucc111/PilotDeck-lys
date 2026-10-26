@@ -1,0 +1,2 @@
+src/components/chat/hooks/useChatRealtimeHandlers.test.ts(2,10): error TS2305: Module '"./useChatSessionState"' has no exported member 'ABORT_ACK_TIMEOUT_MS'.
+src/components/chat/hooks/useChatRealtimeHandlers.test.ts(3,10): error TS2305: Module '"./useChatRealtimeHandlers"' has no exported member 'shouldUnlockOnTerminalFrame'.

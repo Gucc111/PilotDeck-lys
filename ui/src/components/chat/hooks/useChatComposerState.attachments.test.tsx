@@ -474,3 +474,27 @@ describe('useChatComposerState attachment submission', () => {
   });
 
 });
+
+it('restores expired Team input and attachment references with a fresh token and current generation', async () => {
+  const enqueuePreparedInput = vi.fn(async (_input: any) => ({ ok: false, error: 'lost response' }));
+  const options: Parameters<typeof useChatComposerState>[0] = {
+    selectedProject: { name: 'restored-team', displayName: 'Restored Team', fullPath: '/work' }, selectedSession: { id: 'web:restored-team' }, currentSessionId: 'web:restored-team',
+    model: 'unused', teamActivationId: 'activation', teamStopVersion: 3,
+    permissionMode: 'default', cycleRunMode: vi.fn(), isLoading: false, canAbortSession: false, tokenBudget: null,
+    sendMessage: vi.fn(), enqueuePreparedInput, pendingViewSessionRef: { current: null }, scrollToBottom: vi.fn(), addMessage: vi.fn(), clearMessages: vi.fn(), rewindMessages: vi.fn(),
+    setIsLoading: vi.fn(), setCanAbortSession: vi.fn(), setIsAborting: vi.fn(), setClaudeStatus: vi.fn(), setPilotDeckStatus: vi.fn(), setIsUserScrolledUp: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),
+  };
+  const hook = renderHook(() => useChatComposerState(options));
+  act(() => hook.result.current.setInput('Please inspect the attachment'));
+  await act(() => hook.result.current.handleSubmit({ preventDefault: vi.fn() } as never));
+  const oldId = enqueuePreparedInput.mock.calls[0][0].id;
+  act(() => hook.result.current.restoreQueuedInput({ id: oldId, status: 'invalidated', createdAt: '', displayText: 'Please inspect the attachment', recovery: { command: 'Please inspect the attachment', uploadedAttachments: [{ uploadId: 'original-upload', attachmentIds: ['file-1'] }], displayAttachments: [{ name: 'notes.txt', path: 'attachments/notes.txt', kind: 'file' }] } }));
+  enqueuePreparedInput.mockResolvedValue({ ok: true, error: '' });
+  await act(() => hook.result.current.handleSubmit({ preventDefault: vi.fn() } as never));
+  const resent = enqueuePreparedInput.mock.calls[1][0];
+  expect(resent.id).not.toBe(oldId);
+  expect(resent.options.teamStopVersion).toBe(3);
+  expect(resent.options.uploadedAttachments).toEqual([{ uploadId: 'original-upload', attachmentIds: ['file-1'] }]);
+  expect(resent.options.displayAttachments[0].name).toBe('notes.txt');
+  expect(hook.result.current.recoveredInput).toBeUndefined();
+});

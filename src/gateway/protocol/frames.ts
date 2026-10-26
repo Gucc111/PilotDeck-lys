@@ -49,6 +49,7 @@ export type WsGatewayMethod =
   | "read_session_messages"
   | "read_subagent_messages"
   | "fork_session"
+  | "repository_operation"
   | "manage_checkpoints"
   | "replace_last_turn"
   | "finalize_last_turn_replacement"

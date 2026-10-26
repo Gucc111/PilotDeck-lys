@@ -252,7 +252,15 @@ export class AgentLoop {
     const allowedReadFiles = this.allowedReadFiles;
     const applySteerMessages = async function* (pending: AgentSteerMessage[]): AsyncGenerator<AgentEvent, void, unknown> {
       for (const steer of pending) {
+        if (input.abortSignal?.aborted || (steer.beforeApply && !await steer.beforeApply()) || input.abortSignal?.aborted) {
+          yield { type: "steer_unapplied", sessionId: input.sessionId, turnId: input.turnId, itemId: steer.itemId, reason: "turn_ended" };
+          continue;
+        }
         await input.onDurableMessage?.(steer.message);
+        if (input.abortSignal?.aborted || (steer.beforeApply && !await steer.beforeApply()) || input.abortSignal?.aborted) {
+          yield { type: "steer_unapplied", sessionId: input.sessionId, turnId: input.turnId, itemId: steer.itemId, reason: "turn_ended" };
+          continue;
+        }
         for (const filePath of steer.allowedReadFiles ?? []) {
           allowedReadFiles.add(filePath);
         }
@@ -2334,11 +2342,6 @@ export class AgentLoop {
     return {
       sessionId: input.sessionId,
       turnId: input.turnId,
-      // Group key for `FileHistoryStore.trackEdit` (C4). Our canonical
-      // assistant messages don't carry an id, so the turn id is the closest
-      // stable scope: every edit/write produced inside this turn rewinds as
-      // a single batch — semantic match to legacy "rewind by messageId".
-      messageId: input.turnId,
       cwd: this.config.cwd,
       abortSignal: input.abortSignal,
       subagentTimeoutMs: this.config.subagentTimeoutMs,
@@ -2370,7 +2373,6 @@ export class AgentLoop {
           }),
       },
       elicitation: this.dependencies.elicitation,
-      fileHistory: this.dependencies.fileHistory,
       subagentDepth: this.config.subagentDepth ?? 0,
       subagent: this.buildSubagentForkApi(input, messages),
       modelMultimodal: this.config.modelMultimodal,

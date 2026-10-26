@@ -241,6 +241,9 @@ const gatewayConnections = createGatewayConnectionCache({
         for (const handler of gatewayNotificationHandlers) {
             gateway.onNotification(handler);
         }
+        for (const state of sessionState.values()) {
+            void reconcileTeamQueueEpoch(state, gateway).catch(error => console.warn('[pilotdeck-bridge] Team queue verification failed:', error?.message || error));
+        }
     },
     onDisconnected(error) {
         console.warn(
@@ -334,6 +337,7 @@ function loadQueueState(state) {
     if (!filePath) return;
     try {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (!parsed || !Array.isArray(parsed.items) || parsed.items.some(item => !item || typeof item.id !== 'string' || typeof item.command !== 'string')) throw new Error('Invalid queued input record.');
         state.lastAcceptedModelSelection = parsed.lastAcceptedModelSelection;
         state.acceptedInputIds = new Set((Array.isArray(parsed.acceptedInputIds) ? parsed.acceptedInputIds : []).filter(id => typeof id === 'string'));
         state.acceptedInputHashes = new Map(Object.entries(parsed.acceptedInputHashes || {}));
@@ -348,13 +352,15 @@ function loadQueueState(state) {
             if (last) captureAcceptedModel(state, last.options.modelSelection, last.id);
         }
         if (state.inputQueue.length > 0) {
-            state.queuePaused = true;
-            state.queuePauseReason = 'restart_recovery';
+            state.queuePaused = state.inputQueue.some(item => item.status !== 'invalidated');
+            state.queuePauseReason = state.queuePaused ? 'restart_recovery' : undefined;
         }
         state.queueRevision = Number.isFinite(parsed.revision) ? parsed.revision : state.queueRevision;
+        if (state.inputQueue.some(item => item.status === 'invalidated')) { state.queueRevision += 1; persistQueueState(state, true); }
     } catch (error) {
         if (error?.code !== 'ENOENT') {
-            console.warn('[pilotdeck-bridge] failed to restore queued inputs:', error?.message || error);
+            state.queueLoaded = false;
+            throw Object.assign(new Error(`Queued inputs could not be restored: ${error?.message || error}`), { code: 'TEAM_INPUT_QUEUE_CORRUPT' });
         }
     }
 }
@@ -362,7 +368,8 @@ function loadQueueState(state) {
 export function restoreQueuedInputFromStorage(item) {
     return {
         ...item,
-        status: item?.status === 'delivery_uncertain' ? 'delivery_uncertain' : 'queued',
+        status: isTeamQueuedInput(item) || item?.status === 'invalidated' ? 'invalidated' : item?.status === 'delivery_uncertain' ? 'delivery_uncertain' : 'queued',
+        ...(isTeamQueuedInput(item) ? { invalidatedAt: item.invalidatedAt || new Date().toISOString(), invalidationReason: item.invalidationReason || 'bridge_restart' } : {}),
     };
 }
 
@@ -392,7 +399,7 @@ export function serializeQueuedInputForStorage(item) {
     } = item || {};
     return {
         ...persistedItem,
-        status: inFlight || alreadyUncertain ? 'delivery_uncertain' : 'queued',
+        status: item?.status === 'invalidated' ? 'invalidated' : inFlight || alreadyUncertain ? 'delivery_uncertain' : 'queued',
         ...(inFlight || alreadyUncertain ? { deliveryKind, deliveryRunId } : {}),
         options: {
             ...options,
@@ -411,7 +418,7 @@ export function reconcileRecoveredQueueItems(items, evidence = {}) {
     );
     const acceptedActiveRunIds = new Set(
         (evidence.activeEvents || [])
-            .filter((event) => event?.type === 'input_accepted')
+            .filter((event) => event?.type === 'input_accepted' && event.purpose !== 'team_runtime')
             .map((event) => event?.runId)
             .filter((runId) => typeof runId === 'string' && runId.length > 0),
     );
@@ -422,13 +429,13 @@ export function reconcileRecoveredQueueItems(items, evidence = {}) {
     );
     const appliedSteerItemIds = new Set(
         (evidence.activeEvents || [])
-            .filter((event) => event?.type === 'steer_applied')
+            .filter((event) => event?.type === 'steer_applied' && event.purpose !== 'team_runtime' && event.message?.metadata?.purpose !== 'team_runtime')
             .map((event) => event.itemId)
             .filter((itemId) => typeof itemId === 'string' && itemId.length > 0),
     );
     const unappliedSteerItemIds = new Set(
         (evidence.activeEvents || [])
-            .filter((event) => event?.type === 'steer_unapplied')
+            .filter((event) => event?.type === 'steer_unapplied' && event.purpose !== 'team_runtime')
             .map((event) => event.itemId)
             .filter((itemId) => typeof itemId === 'string' && itemId.length > 0),
     );
@@ -520,6 +527,56 @@ function persistQueueState(state, strict = false) {
     }
 }
 
+export function isTeamQueuedInput(item) {
+    return Boolean(item?.options?.teamSelection || item?.options?.teamActivationId);
+}
+
+export function invalidateTeamQueueItems(items, reason, identity) {
+    let changed = false;
+    for (const item of items || []) {
+        if (!isTeamQueuedInput(item) || item.status === 'invalidated') continue;
+        if (identity && !(identity.includeDrafts && !item.options.teamActivationId) && (item.options.teamActivationId !== identity.activationId || item.options.teamStopVersion !== identity.stopVersion)) continue;
+        item.status = 'invalidated';
+        item.invalidatedAt = new Date().toISOString();
+        item.invalidationReason = reason;
+        delete item.steerTargetRunId;
+        delete item.deliveryKind;
+        delete item.deliveryRunId;
+        changed = true;
+    }
+    return changed;
+}
+
+export function invalidateTeamSessionInputs(sessionKey, reason = 'abort', identity) {
+    const state = sessionState.get(sessionKey);
+    if (!state || !invalidateTeamQueueItems(state.inputQueue, reason, identity)) return;
+    // Invalid rows are history/recovery drafts, never dispatch candidates.
+    if (!state.inputQueue.some(item => item.status !== 'invalidated')) {
+        state.queuePaused = false; state.queuePauseReason = undefined;
+    }
+    mutateInputQueue(state, undefined, true);
+}
+
+export async function reconcileTeamQueueEpoch(state, gateway) {
+    const pending = (state.inputQueue || []).filter(item => isTeamQueuedInput(item) && item.status !== 'invalidated');
+    if (!pending.length) return;
+    const { serverInstanceId } = await gateway.describeServer();
+    if (!serverInstanceId) throw new Error('This Gateway does not expose a process identity required for Team inputs.');
+    const activation = (await gateway.teamCommand({ action: 'runtime_get', sessionKey: state.sessionKey })).activation;
+    let changed = false;
+    for (const item of pending) {
+        const changedProcess = item.gatewayInstanceId !== serverInstanceId;
+        const changedEpoch = item.options.teamActivationId
+            ? !activation || activation.id !== item.options.teamActivationId || activation.stopVersion !== item.options.teamStopVersion || activation.status === 'stopping' || activation.status === 'closed'
+            : Boolean(activation && (activation.status !== 'active' || activation.stopVersion !== 0));
+        if (changedProcess || changedEpoch) changed = invalidateTeamQueueItems([item], changedProcess ? 'gateway_restart' : 'run_invalidated') || changed;
+    }
+    if (changed) {
+        if (!state.inputQueue.some(item => item.status !== 'invalidated')) { state.queuePaused = false; state.queuePauseReason = undefined; }
+        mutateInputQueue(state, undefined, true);
+    }
+}
+
 function publicQueueItem(item) {
     const uploadedAttachmentCount = Array.isArray(item.options?.uploadedAttachments)
         ? item.options.uploadedAttachments.reduce((count, upload) => (
@@ -531,6 +588,13 @@ function publicQueueItem(item) {
         displayText: item.displayText,
         createdAt: item.createdAt,
         status: item.status,
+        ...(item.status === 'invalidated' ? {
+            invalidationReason: item.invalidationReason, invalidatedAt: item.invalidatedAt,
+            recovery: { command: item.command, ...Object.fromEntries(
+                Object.entries(serializeQueuedInputForStorage(item).options)
+                    .filter(([key]) => ['images', 'attachments', 'displayAttachments', 'uploadedAttachments'].includes(key)),
+            ) },
+        } : {}),
         attachmentCount: [
             ...(Array.isArray(item.options?.images) ? item.options.images : []),
             ...(Array.isArray(item.options?.attachments) ? item.options.attachments : []),
@@ -543,7 +607,7 @@ function inputQueueSnapshot(state) {
         type: 'input-queue-state',
         sessionId: state.sessionKey,
         revision: state.queueRevision,
-        paused: state.queuePaused && state.inputQueue.length > 0,
+        paused: state.queuePaused && state.inputQueue.some(item => item.status !== 'invalidated'),
         ...(state.queuePauseReason ? { pauseReason: state.queuePauseReason } : {}),
         ...(state.active && state.runId ? { activeRunId: state.runId } : {}),
         items: state.inputQueue.map(publicQueueItem),
@@ -901,10 +965,12 @@ export function gatewayEventToFrames(event, sessionId, provider) {
     const base = { sessionId, provider, ...(event.runId ? { runId: event.runId } : {}), ...(event.timeline ? { timeline: event.timeline, streamState: event.streamState } : {}), ...(event.streamBoundary ? { streamBoundary: event.streamBoundary } : {}) };
     switch (event.type) {
         case 'input_accepted':
+            if (event.purpose === 'team_runtime') return [];
             return event.modelSelection ? [{ type: 'model-selection-saved', ...base, selection: { ...event.modelSelection } }] : [];
         case 'steer_unapplied':
             return [];
         case 'steer_applied': {
+            if (event.purpose === 'team_runtime' || event.message?.metadata?.purpose === 'team_runtime') return [];
             const text = typeof event.displayText === 'string'
                 ? event.displayText
                 : (event.message?.content || [])
@@ -1634,12 +1700,13 @@ export async function runChatViaGateway(
 
     if (!staleRunId) {
         setLocalActiveRun(state, runId);
+        if (options.teamSelection?.requestToken) state.teamDraftRun = { runId, requestToken: options.teamSelection.requestToken };
         setPendingGatewayRun(state, runId);
         state.hasVisibleFailureStatus = false;
     }
 
     const attachments = [
-        ...(uiImagesToAttachments(options?.images) || []),
+        ...(uiImagesToAttachments(hydrateQueuedInputOptions(options)?.images) || []),
         ...(uiFilesToAttachments(options?.attachments) || []),
     ];
     const resolvedMode = resolvePermissionMode(options);
@@ -1670,6 +1737,11 @@ export async function runChatViaGateway(
             return { sessionKey, runId, inputAccepted, sawTurnCompleted, sawGatewayError: true };
         }
 
+        if (hooks.fromQueue && isTeamTurn) {
+            const item = state.inputQueue.find(entry => entry.id === runId || entry.runId === runId);
+            await reconcileTeamQueueEpoch(state, gw);
+            if (!item || item.status === 'invalidated') return { sessionKey, runId, inputAccepted: false, sawTurnCompleted: false, sawGatewayError: true };
+        }
         const stream = gw.submitTurn({
             sessionKey,
             channelKey,
@@ -1683,6 +1755,7 @@ export async function runChatViaGateway(
             ...(options?.modelSelection ? { modelSelection: options.modelSelection } : {}),
             ...(options?.teamSelection ? { teamSelection: options.teamSelection } : {}),
             ...(Object.hasOwn(options || {}, 'teamActivationId') ? { teamActivationId: options.teamActivationId } : {}),
+            ...(Number.isInteger(options?.teamStopVersion) ? { teamStopVersion: options.teamStopVersion } : {}),
             ...(basePermissionMode ? { basePermissionMode } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(workspaceCwd ? { workspaceCwd } : {}),
@@ -1690,7 +1763,7 @@ export async function runChatViaGateway(
         });
 
         for await (const event of stream) {
-            if (event && event.type === 'input_accepted') {
+            if (event && event.type === 'input_accepted' && event.purpose !== 'team_runtime') {
                 inputAccepted = true;
                 writer.send({ type: 'session-input-accepted', sessionId: sessionKey, runId });
                 // Queue acceptance already recorded this choice; execution must
@@ -1752,8 +1825,8 @@ export async function runChatViaGateway(
                     },
                 }
                 : event;
-            if (event?.type === 'steer_applied') {
-                const queuedItem = state.inputQueue.find((item) => item.id === event.itemId);
+            if (event?.type === 'steer_applied' && event.purpose !== 'team_runtime' && event.message?.metadata?.purpose !== 'team_runtime') {
+                const queuedItem = state.inputQueue.find((item) => item.id === event.itemId && item.status !== 'invalidated');
                 if (queuedItem) {
                     const hydratedOptions = hydrateQueuedInputOptions(queuedItem.options);
                     eventForFrames = {
@@ -1766,7 +1839,7 @@ export async function runChatViaGateway(
                     mutateInputQueue(state);
                 }
             }
-            if (event?.type === 'steer_unapplied') {
+            if (event?.type === 'steer_unapplied' && event.purpose !== 'team_runtime') {
                 resetSteeringItemForRun(state, event.itemId, runId, writer);
             }
             if (compactTokenBudget) {
@@ -1853,6 +1926,7 @@ export async function runChatViaGateway(
         state.hasVisibleFailureStatus = true;
         sendBridgeStatusEvent(writer, statusEvent, sessionKey, provider);
     } finally {
+        if (state.teamDraftRun?.runId === runId) delete state.teamDraftRun;
         if (state.pendingGatewayRunId === runId) {
             setPendingGatewayRun(state, undefined);
         }
@@ -1870,7 +1944,7 @@ export async function runChatViaGateway(
         }
     }
     if (releasedSteeringItem) mutateInputQueue(state, writer);
-    if (state.inputQueue.length > 0) {
+    if (state.inputQueue.some(item => item.status !== 'invalidated')) {
         const disposition = queuedInputDispositionAfterTurn(turnFinishReason, state.queuePaused);
         if (disposition === 'dispatch') {
             await dispatchNextQueuedInput(state, writer, provider);
@@ -1907,7 +1981,7 @@ export function queuedUserFrame(item, sessionKey, runId, provider) {
 
 async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
     if (state.deleted || state.deleting || state.active || state.queuePaused || state.queueDispatching) return false;
-    const item = state.inputQueue[0];
+    const item = state.inputQueue.find(entry => entry.status !== 'invalidated');
     if (!item) return false;
     if (item.status === 'delivery_uncertain') {
         state.queuePaused = true;
@@ -1936,7 +2010,7 @@ async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
                 fromQueue: true,
                 onInputAccepted: async () => {
                     accepted = true;
-                    state.inputQueue = state.inputQueue.filter((entry) => entry.id !== item.id);
+                    state.inputQueue = state.inputQueue.filter((entry) => entry.id !== item.id || entry.status === 'invalidated');
                     mutateInputQueue(state, writer);
                     writer.send(queuedUserFrame(hydratedItem, state.sessionKey, runId, provider));
                 },
@@ -1944,6 +2018,7 @@ async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
         );
         if (!accepted && !result?.inputAccepted) {
             const current = state.inputQueue.find((entry) => entry.id === item.id);
+            if (current?.status === 'invalidated') return false;
             if (current) current.status = 'failed';
             state.queuePaused = true;
             state.queuePauseReason = 'previous_turn_failed';
@@ -1952,7 +2027,7 @@ async function dispatchNextQueuedInput(state, writer, provider = 'pilotdeck') {
         return accepted || result?.inputAccepted === true;
     } finally {
         state.queueDispatching = false;
-        if (!state.active && !state.queuePaused && state.inputQueue.length > 0) {
+        if (!state.active && !state.queuePaused && state.inputQueue.some(item => item.status !== 'invalidated')) {
             void dispatchNextQueuedInput(state, writer, provider);
         }
     }
@@ -2016,9 +2091,10 @@ export async function getInputQueueStateViaGateway(sessionId, options = {}) {
         resolveInputQueueProjectKey(existing, options),
         'web',
     );
-    if (state.inputQueue.some((item) => item.status === 'delivery_uncertain')) {
+    if (state.inputQueue.some((item) => item.status === 'delivery_uncertain' || isTeamQueuedInput(item) && item.status !== 'invalidated')) {
         try {
             const gw = await ensureGateway();
+            await reconcileTeamQueueEpoch(state, gw);
             const snapshotGuard = beginActivitySnapshotRead(state);
             const activeSnapshot = await gw.getActiveTurnSnapshot({
                 sessionKey: state.sessionKey,
@@ -2052,6 +2128,7 @@ export function scheduleQueuedDispatchAfterActivityCheck(
     const pending = (async () => {
         try {
             const gw = await getGateway();
+            await reconcileTeamQueueEpoch(state, gw);
             const snapshotGuard = beginActivitySnapshotRead(state);
             const activeSnapshot = await gw.getActiveTurnSnapshot({
                 sessionKey: state.sessionKey,
@@ -2074,6 +2151,7 @@ export function scheduleQueuedDispatchAfterActivityCheck(
             }
         } catch (error) {
             console.warn('[pilotdeck-bridge] failed to verify activity before queued dispatch:', error?.message || error);
+            if (state.inputQueue?.some(item => isTeamQueuedInput(item) && item.status !== 'invalidated')) return;
         }
 
         // If the snapshot was rejected because a local run started or ended,
@@ -2106,7 +2184,7 @@ function queuedInputHash(item) {
 /** Used by mode changes: queued inputs belong to their original execution selection. */
 export function hasPendingSessionInputs(sessionKey) {
     const state = sessionState.get(sessionKey);
-    return Boolean(state?.inputQueue.length || state?.queueDispatching || state?.pendingGatewayRunId);
+    return Boolean(state?.inputQueue.some(item => item.status !== 'invalidated') || state?.queueDispatching || state?.pendingGatewayRunId);
 }
 
 export function pauseSessionInputs(sessionKey) {
@@ -2133,13 +2211,26 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
     const inputHash = queuedInputHash(item);
     const priorHash = state.acceptedInputHashes.get(item.id);
     if (priorHash && priorHash !== inputHash) return { ok: false, error: 'This input token was already used with different content or Team selection. Start a new submission.' };
+    if (state.inputQueue.some(entry => entry.id === item.id && entry.status === 'invalidated')) return { ok: false, error: 'This Team input has expired. Put it back in the composer and send it as a new request.', state: inputQueueSnapshot(state) };
     if (state.acceptedInputIds.has(item.id) || state.inputQueue.some((entry) => entry.id === item.id)) {
         return { ok: true, state: inputQueueSnapshot(state) };
     }
-    if (state.inputQueue.length >= 20) {
+    if (state.inputQueue.filter(item => item.status !== 'invalidated').length >= 20) {
         return { ok: false, error: 'The message queue is full.' };
     }
-    const submitting = !state.active && !state.queuePaused && !state.queueDispatching && state.inputQueue.length === 0;
+    let gatewayInstanceId;
+    if (isTeamQueuedInput(item)) {
+        try {
+            gatewayInstanceId = (await (await ensureGateway()).describeServer()).serverInstanceId;
+            if (!gatewayInstanceId) throw new Error('This Gateway does not support restart-safe Team inputs.');
+        } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+    }
+    // Gateway inspection yields; another retry may have persisted the same token.
+    if (state.inputQueue.some(entry => entry.id === item.id && entry.status === 'invalidated')) return { ok: false, error: 'This Team input has expired. Put it back in the composer to send a new request.', state: inputQueueSnapshot(state) };
+    const persistedHash = state.acceptedInputHashes.get(item.id);
+    if (persistedHash && persistedHash !== inputHash) return { ok: false, error: 'This input token was already used with different content or Team selection.' };
+    if (state.acceptedInputIds.has(item.id)) return { ok: true, state: inputQueueSnapshot(state) };
+    const submitting = !state.active && !state.queuePaused && !state.queueDispatching && !state.inputQueue.some(item => item.status !== 'invalidated');
     const previousSelection = state.lastAcceptedModelSelection;
     const previousRevision = state.queueRevision;
     state.acceptedInputIds.add(item.id);
@@ -2151,6 +2242,7 @@ export async function enqueueInputViaGateway(sessionId, item, writer, provider =
         displayText: String(item.displayText || item.command).trim(),
         createdAt: item.createdAt || new Date().toISOString(),
         options: item.options || {},
+        ...(gatewayInstanceId ? { gatewayInstanceId } : {}),
         status: submitting ? 'submitting' : 'queued',
     });
     if (!item.options?.teamSelection && !item.options?.teamActivationId) captureAcceptedModel(state, item.options?.modelSelection, item.id);
@@ -2242,7 +2334,7 @@ export async function deleteQueuedInputViaGateway(sessionId, itemId, writer) {
 export function moveQueuedInputToFrontViaGateway(sessionId, itemId, writer) {
     const state = sessionState.get(sessionId);
     if (!state) return { ok: false, error: 'Session queue was not found.' };
-    const index = state.inputQueue.findIndex((item) => item.id === itemId && item.status !== 'dispatching');
+    const index = state.inputQueue.findIndex((item) => item.id === itemId && item.status !== 'dispatching' && item.status !== 'invalidated');
     if (index < 0) return { ok: false, error: 'Queued message was not found.' };
     const [item] = state.inputQueue.splice(index, 1);
     state.inputQueue.unshift(item);
@@ -2263,6 +2355,8 @@ export function pauseInputQueueViaGateway(sessionId, writer, reason = 'user_stop
 export async function resumeInputQueueViaGateway(sessionId, writer, provider = 'pilotdeck') {
     const state = sessionState.get(sessionId);
     if (!state) return { ok: false, error: 'Session queue was not found.' };
+    try { if (state.inputQueue.some(item => isTeamQueuedInput(item) && item.status !== 'invalidated')) await reconcileTeamQueueEpoch(state, await ensureGateway()); }
+    catch (error) { return { ok: false, error: error?.message || String(error), state: inputQueueSnapshot(state) }; }
     return resumeInputQueueState(state, writer, provider);
 }
 
@@ -2272,6 +2366,7 @@ export function resumeInputQueueState(
     provider = 'pilotdeck',
     { scheduleDispatch = scheduleQueuedDispatchAfterActivityCheck } = {},
 ) {
+    if (state.inputQueue.length && !state.inputQueue.some(item => item.status !== 'invalidated')) return { ok: false, error: 'These Team inputs have expired. Put them back in the composer to send new requests.', state: inputQueueSnapshot(state) };
     for (const item of state.inputQueue) {
         if (item.status !== 'delivery_uncertain') continue;
         item.status = 'queued';
@@ -2291,6 +2386,7 @@ export function resumeInputQueueState(
 }
 
 export function getQueuedInputSteerError(state, item) {
+    if (item?.status === 'invalidated') return 'This Team input has expired. Put it back in the composer to send a new request.';
     if (state?.queuePaused) return 'The queue is paused; resume it before adjusting direction.';
     if (item?.status === 'queued') return null;
     if (item?.status === 'dispatching') return 'This message is already being sent.';
@@ -2314,6 +2410,7 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
     mutateInputQueue(state, writer);
     try {
         const gw = await ensureGateway();
+        await reconcileTeamQueueEpoch(state, gw);
         const currentBeforeSteer = state.inputQueue.find((entry) => entry.id === itemId);
         if (
             !currentBeforeSteer
@@ -2334,6 +2431,7 @@ export async function steerQueuedInputViaGateway(sessionId, itemId, writer, prov
             message: item.command,
             projectKey: state.projectKey,
             ...(Object.hasOwn(hydratedOptions, 'teamActivationId') ? { teamActivationId: hydratedOptions.teamActivationId } : {}),
+            ...(Number.isInteger(hydratedOptions.teamStopVersion) ? { teamStopVersion: hydratedOptions.teamStopVersion } : {}),
             ...(attachments.length > 0 ? { attachments } : {}),
             ...(Array.isArray(hydratedOptions.uploadedAttachments)
                 ? { uploadedAttachments: hydratedOptions.uploadedAttachments }
@@ -2390,7 +2488,7 @@ async function recordGatewayStatusMessage(gateway, { sessionKey, turnId, project
     }
 }
 
-export async function abortViaGateway(sessionId, _provider = 'pilotdeck') {
+export async function abortViaGateway(sessionId, _provider = 'pilotdeck', teamIdentity = {}) {
     const gw = await ensureGateway();
     const sessionKey = isPilotDeckSessionKey(sessionId) ? sessionId : null;
     if (!sessionKey) return false;
@@ -2398,9 +2496,23 @@ export async function abortViaGateway(sessionId, _provider = 'pilotdeck') {
     try {
         // Pause before aborting: completion must not dispatch another queued
         // input and silently restart a team the user just stopped.
-        pauseSessionInputs(sessionKey);
-        const runId = state?.runId;
-        await gw.abortTurn({ sessionKey, runId });
+        if (teamIdentity.runId && state?.runId && teamIdentity.runId !== state.runId) return false;
+        if (!teamIdentity.teamActivationId && teamIdentity.runId && state) {
+            const queued = state.inputQueue.find(item => (item.runId || item.id) === teamIdentity.runId);
+            const requestToken = state.teamDraftRun?.runId === teamIdentity.runId ? state.teamDraftRun.requestToken : queued?.options?.teamSelection?.requestToken;
+            const targets = requestToken ? state.inputQueue.filter(item => item.options?.teamSelection?.requestToken === requestToken) : queued ? [queued] : [];
+            if (invalidateTeamQueueItems(targets, 'abort')) mutateInputQueue(state, undefined, true);
+        }
+        if (teamIdentity.teamActivationId) invalidateTeamSessionInputs(sessionKey, 'abort', { activationId: teamIdentity.teamActivationId, stopVersion: teamIdentity.teamStopVersion });
+        else pauseSessionInputs(sessionKey);
+        const runId = teamIdentity.runId || state?.runId;
+        await gw.abortTurn({ sessionKey, runId, ...teamIdentity });
+        const snapshot = await gw.getActiveTurnSnapshot({ sessionKey, includeEvents: false });
+        if (snapshot.active && (!runId || snapshot.runId === runId)) return false;
+        if (gw.teamCommand) {
+            const view = await gw.teamCommand({ action: 'runtime_get', sessionKey });
+            if (view.activation?.status === 'stopping') return false;
+        }
         if (state && (!runId || state.runId === runId)) {
             setLocalActiveRun(state, undefined);
         }
@@ -3527,6 +3639,10 @@ export function createAlwaysOnTurnEventForwarder(forwardFrame) {
 /** Team continuations are owned by the Gateway, independent of a browser tab. */
 export function createTeamTurnEventForwarder(forwardFrame) {
     return (name, payload) => {
+        if (name === 'team_runtime_invalidated') {
+            if (typeof payload?.sessionKey === 'string') invalidateTeamSessionInputs(payload.sessionKey, payload.reason || 'run_invalidated', { activationId: payload.activationId, stopVersion: payload.stopVersion, includeDrafts: true });
+            return;
+        }
         if (name !== 'team_runtime_event') return;
         const { sessionKey, projectKey, event } = payload || {};
         if (typeof sessionKey !== 'string' || !event || typeof event.type !== 'string') return;
@@ -3538,7 +3654,7 @@ export function createTeamTurnEventForwarder(forwardFrame) {
         }
         if (event.type === 'turn_completed') {
             clearActiveRunIfCurrent(state, event.runId);
-            if (event.finishReason !== 'completed' && state.inputQueue.length) {
+            if (event.finishReason !== 'completed' && state.inputQueue.some(item => item.status !== 'invalidated')) {
                 state.queuePaused = true;
                 state.queuePauseReason = 'previous_turn_failed';
                 mutateInputQueue(state);

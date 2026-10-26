@@ -159,12 +159,6 @@ export function createEditFileTool(): PilotDeckToolDefinition<EditFileInput> {
       }
 
       const freshness = await ensureWriteSnapshotFresh(context, resolved.absolutePath);
-      if (context.fileHistory) {
-        await context.fileHistory.trackEdit(
-          resolved.absolutePath,
-          context.messageId ?? context.turnId,
-        );
-      }
 
       const content = freshness.previousContent ?? "";
       let occurrences = 0;
@@ -202,7 +196,6 @@ export function createEditFileTool(): PilotDeckToolDefinition<EditFileInput> {
       }
 
       const action = await writeTextFile(resolved.absolutePath, nextContent, { allowOverwrite: true });
-      await context.fileHistory?.recordEdit?.(resolved.absolutePath, context.messageId ?? context.turnId, nextContent);
       const fileStat = await stat(resolved.absolutePath);
       invalidateReadFileState(context, resolved.absolutePath);
       recordWriteSnapshot(context, resolved.absolutePath, nextContent, Math.floor(fileStat.mtimeMs));

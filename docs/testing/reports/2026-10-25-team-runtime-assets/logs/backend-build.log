@@ -1,0 +1,19 @@
+
+> pilotdeck@0.1.0 prebuild
+> npm run check:runtime && cd src/context/memory/edgeclaw-memory-core && npm run build
+
+
+> pilotdeck@0.1.0 check:runtime
+> node scripts/check-node-runtime.mjs
+
+
+> edgeclaw-memory-core@0.0.0 build
+> node -e "require('fs').rmSync('lib',{recursive:true,force:true})" && tsc -p tsconfig.json
+
+
+> pilotdeck@0.1.0 build
+> node scripts/prepare-computer-use.mjs && node -e "require('fs').rmSync('dist',{recursive:true,force:true})" && tsc -p tsconfig.json && node -e "require('fs').cpSync('src/extension/plugins/builtin','dist/src/extension/plugins/builtin',{recursive:true})"
+
+
+> pilotdeck@0.1.0 postbuild
+> node scripts/write-web-build-metadata.mjs dist

@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensurePilotProjectGitIgnore } from "../../src/pilot/paths.js";
-import { runRepositoryOperation } from "../../src/session/checkpoints/repositoryOperation.js";
+import { runRepositoryOperation } from "../../src/session/repository/operations.js";
 import { createAgentProjectSessionStorage } from "../../src/session/storage/ProjectSessionStorage.js";
 import { createPlanFileManager } from "../../src/tool/builtin/planFile.js";
 

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('../pilotdeck-bridge.js', () => ({ getPilotDeckGateway: vi.fn(), hasPendingSessionInputs: vi.fn(() => false), pauseSessionInputs: vi.fn() }));
+vi.mock('../pilotdeck-bridge.js', () => ({ getPilotDeckGateway: vi.fn(), hasPendingSessionInputs: vi.fn(() => false), invalidateTeamSessionInputs: vi.fn() }));
 import { createTeamLibraryHandler } from './team-library.js';
 
 const response = () => ({ statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; return this; } });
@@ -43,11 +43,11 @@ describe('Team library HTTP boundary', () => {
     expect(read.body).toEqual({ activation: null });
   });
 
-  it('pauses queued user inputs before stopping the whole Team', async () => {
+  it('invalidates only the captured Team generation before stopping', async () => {
     const order = [];
-    const handler = createTeamLibraryHandler({ pauseInputs: sessionKey => order.push(['pause', sessionKey]), getGateway: async () => ({ teamCommand: async command => { order.push(['stop', command.sessionKey]); return { activation: null }; } }) });
-    await handler({ body: { action: 'runtime_stop', sessionKey: 'web:team' } }, response());
-    expect(order).toEqual([['pause', 'web:team'], ['stop', 'web:team']]);
+    const handler = createTeamLibraryHandler({ invalidateInputs: (sessionKey, reason, identity) => order.push(['invalidate', sessionKey, identity]), getGateway: async () => ({ teamCommand: async command => { order.push(['stop', command.sessionKey]); return { activation: null }; } }) });
+    await handler({ body: { action: 'runtime_stop', sessionKey: 'web:team', activationId: 'a', stopVersion: 2 } }, response());
+    expect(order).toEqual([['invalidate', 'web:team', { activationId: 'a', stopVersion: 2 }], ['stop', 'web:team']]);
   });
 
   it.each([

@@ -5,7 +5,19 @@ import { Loader2, RefreshCw, Users, X } from 'lucide-react';
 import { projectDisplayName } from '../../lib/customNames';
 import { workspaceKey } from '../team-library/api';
 import type { TeamModeState } from './useTeamMode';
+import type { TeamRuntimeActivation } from '../../../../src/team/runtimeTypes';
 import './TeamMode.css';
+
+/** Runtime cleanup keys identify executions, not profile IDs. */
+export function cleanupTarget(activation: TeamRuntimeActivation, key: string) {
+  const participant = key === 'leader'
+    ? activation.participants.find(item => item.role === 'leader')
+    : activation.participants.find(item => key === item.id || key.startsWith(`${activation.id}:${item.id}:`));
+  if (participant) return { participantId: participant.id, label: `${participant.role === 'leader' ? 'Leader' : 'Teammate'} · ${participant.profile.config.displayName}` };
+  if (key === `${activation.id}:notifications` || key.startsWith(`${activation.id}:notifications:`)) return { translationKey: 'teamMode.cleanupNotifications' };
+  if (key === 'final resource cleanup') return { translationKey: 'teamMode.cleanupResources' };
+  return { translationKey: 'teamMode.cleanupExecution' };
+}
 
 function TeamDialog({ title, onClose, children, side = false }: { title: string; onClose: () => void; children: React.ReactNode; side?: boolean }) {
   const { t } = useTranslation('chat');
@@ -47,7 +59,7 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
   return <>
     {(mode.selectedTeam || mode.history.length > 0 || mode.loading || mode.error) && <div className="team-mode-strip" aria-live="polite">
       <Users size={14}/><span className="team-mode-strip-name">{mode.selectedTeam?.config.displayName || (mode.history.length ? t('teamMode.history') : t('teamMode.loading'))}</span>
-      <span>{!mode.selectedTeam && mode.history.length ? '' : mode.loading ? t('teamMode.loading') : mode.working ? t('teamMode.working') : mode.activation?.status === 'stopped' ? t('teamMode.stopped') : t('teamMode.ready')}</span>
+      <span>{!mode.selectedTeam && mode.history.length ? '' : mode.loading ? t('teamMode.loading') : mode.activation?.status === 'stopping' ? t('teamMode.stopping') : mode.activation?.stopReason === 'restart' && mode.activation.status === 'stopped' ? t('teamMode.restartInterrupted') : mode.working ? t('teamMode.working') : mode.activation?.status === 'stopped' ? t('teamMode.stopped') : t('teamMode.ready')}</span>
       {(mode.selectedTeam || mode.history.length > 0) && <button type="button" onClick={() => { mode.setPanelOpen(true); void mode.refresh(); }}>{t('teamMode.details')}</button>}
       {mode.continuationPaused && <div role="status" className="team-mode-warning">{t("teamMode.continuationPaused")}</div>}
       {mode.error && <div role="alert" className="team-mode-error">{mode.error}<button type="button" onClick={() => void mode.refresh()}>{t('teamMode.retry')}</button></div>}
@@ -79,7 +91,7 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
         <h3>{t('teamMode.members')}</h3>
         {(activation?.participants || [panelTeam.leader, ...panelTeam.teammates].map(profile => ({ id: profile.id, profile, role: profile.role, model: profile.config.model, capabilities: profile.config.capabilities, projectKey: profile.config.workspace.mode === 'fixed' ? profile.config.workspace.projectKey : mode.draft?.selection.projectKey }))).map(participant => {
           const activeWork = activation?.works.find(work => work.participantId === participant.id && ['running', 'waiting_information', 'waiting_approval', 'queued'].includes(work.status));
-          return <article className="team-mode-card" key={participant.id}><strong>{participant.profile.config.displayName}</strong><span className="team-mode-muted">{participant.role === 'leader' ? 'Leader' : 'Teammate'} · {activeWork ? workStatus(activeWork.status) : t('teamMode.idle')}</span><span>{participant.model.mode === 'model' ? `${participant.model.provider}/${participant.model.model}` : t('teamMode.defaultModel')}</span><span className="team-mode-muted">{participant.projectKey}</span><details><summary>{t("teamMode.capabilities")}</summary><p className="team-mode-text">{[...(participant.capabilities?.tools || []), ...(participant.capabilities?.skills || []), ...(participant.capabilities?.mcpServers || [])].join(" · ") || t("teamMode.coordinationOnly")}</p></details></article>;
+          return <article className="team-mode-card" key={participant.id}><strong>{participant.profile.config.displayName}</strong><span className="team-mode-muted">{participant.role === 'leader' ? 'Leader' : 'Teammate'} · {activation?.status === 'stopping' && activation.cleanup?.pending.some(key => cleanupTarget(activation, key).participantId === participant.id) ? t('teamMode.stopping') : activeWork ? workStatus(activeWork.status) : t('teamMode.idle')}</span><span>{participant.model.mode === 'model' ? `${participant.model.provider}/${participant.model.model}` : t('teamMode.defaultModel')}</span><span className="team-mode-muted">{participant.projectKey}</span><details><summary>{t("teamMode.capabilities")}</summary><p className="team-mode-text">{[...(participant.capabilities?.tools || []), ...(participant.capabilities?.skills || []), ...(participant.capabilities?.mcpServers || [])].join(" · ") || t("teamMode.coordinationOnly")}</p></details></article>;
         })}
         <h3>{t('teamMode.tasks')}</h3>
         {!activation?.works.length && <p className="team-mode-muted">{t('teamMode.noTasks')}</p>}
@@ -87,6 +99,7 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
         <h3>{t('teamMode.messages')}</h3>
         {!activation?.messages.length && <p className="team-mode-muted">{t('teamMode.noMessages')}</p>}
         {activation?.messages.map(message => <article className="team-mode-card" key={message.id}><strong>{memberName(message.senderId)} → {memberName(message.recipientId)}</strong>{message.intendedRecipientId !== message.recipientId && <span className="team-mode-muted">{t(activation.messages.some(relay => relay.relayOf === message.id) ? 'teamMode.relayed' : 'teamMode.awaitingRelay', { name: memberName(message.intendedRecipientId) })}</span>}<span className="team-mode-muted">{workStatus(message.status)}</span><p className="team-mode-text">{message.text}</p></article>)}
+        {activation?.status === 'stopping' && <div role="status" className="team-mode-warning"><p>{t('teamMode.stoppingHelp')}</p>{activation.cleanup?.pending.map(key => { const target = cleanupTarget(activation, key); return <p key={key} className="team-mode-text">{target.label || t(target.translationKey!)}</p>; })}{activation.cleanup?.error && <p className="team-mode-error">{activation.cleanup.error}</p>}{activation.cleanup?.timedOut && <p>{t('teamMode.stopTimeout')}</p>}</div>}
         {activation?.status === 'stopped' && <p className="team-mode-warning">{t('teamMode.stopHelp')}</p>}
       </div>
     </TeamDialog>}

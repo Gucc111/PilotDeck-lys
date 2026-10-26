@@ -181,7 +181,7 @@ export class SessionRouter {
 
   steer(
     sessionKey: string,
-    input: { turnId: string; itemId: string; message: CanonicalMessage; allowedReadFiles?: string[] },
+    input: { turnId: string; itemId: string; message: CanonicalMessage; allowedReadFiles?: string[]; beforeApply?: () => Promise<boolean> },
   ): AgentSteerResult {
     const record = this.sessions.get(sessionKey);
     if (!record) return { accepted: false, reason: "no_active_turn" };

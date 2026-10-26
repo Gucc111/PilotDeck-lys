@@ -290,20 +290,20 @@ describe('MainAreaV2 dashboard switcher', () => {
     });
   });
 
-  it('opens changes from the single Explore entry and emits a fresh request for each opening', () => {
+  it('opens Git from the single Explore entry and emits a fresh request for each opening', () => {
     render(<Harness withSession />);
     expect(screen.queryByRole('button', { name: 'dashboardSwitcher.git' })).toBeNull();
     const menuButton = screen.getByRole('button', { name: 'Open dashboards menu' });
     fireEvent.click(menuButton);
     expect(screen.queryByRole('menuitem', { name: 'dashboardSwitcher.git' })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: 'dashboardSwitcher.checkpoints' })).toBeNull();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'dashboardSwitcher.changes' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'tabs.git' }));
     expect(screen.queryByRole('menu')).toBeNull();
-    expect(screen.getByTestId('main-content').getAttribute('data-review-tab')).toBe('changes');
+    expect(screen.getByTestId('main-content').getAttribute('data-review-tab')).toBe('git');
     expect(screen.getByTestId('main-content').getAttribute('data-review-request')).toBe('1');
     fireEvent.click(menuButton);
-    fireEvent.click(screen.getByRole('menuitem', { name: 'dashboardSwitcher.changes' }));
-    expect(screen.getByTestId('main-content').getAttribute('data-review-tab')).toBe('changes');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'tabs.git' }));
+    expect(screen.getByTestId('main-content').getAttribute('data-review-tab')).toBe('git');
     expect(screen.getByTestId('main-content').getAttribute('data-review-request')).toBe('2');
   });
 

@@ -4,6 +4,8 @@ export type AgentSteerMessage = {
   itemId: string;
   message: CanonicalMessage;
   allowedReadFiles?: string[];
+  /** Internal execution fence, checked immediately before durable application. */
+  beforeApply?: () => Promise<boolean>;
 };
 
 export type AgentSteerResult = {

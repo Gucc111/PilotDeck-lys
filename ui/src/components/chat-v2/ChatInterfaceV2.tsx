@@ -41,7 +41,7 @@ import {
 import { useSessionWatch } from '../../hooks/useSessionWatch';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import MessagesPaneV2 from './MessagesPaneV2';
-import { REVIEW_RESTORED_EVENT, useChatReview } from '../chat-review/ChatReviewContext';
+import { useChatReview } from '../chat-review/ChatReviewContext';
 import ComposerV2 from './ComposerV2';
 import QueuedMessagesTray from './QueuedMessagesTray';
 import { useTeamMode } from '../team-runtime/useTeamMode';
@@ -239,17 +239,6 @@ function ChatInterfaceV2({
   useEffect(() => {
     bindReview?.(selectedProject && !isGeneralProject(selectedProject) ? selectedProject : null, selectedSession?.id ?? currentSessionId ?? null, isLoading, sessionIsReadOnly);
   }, [bindReview, selectedProject, selectedSession?.id, currentSessionId, isLoading, sessionIsReadOnly]);
-  useEffect(() => {
-    const restored = (event: Event) => {
-      const id = (event as CustomEvent<{ sessionId: string }>).detail?.sessionId;
-      if (!id || id !== (selectedSession?.id ?? currentSessionId) || !selectedProject) return;
-      resetStreamingState();
-      sessionStore.clearRealtime(id);
-      void sessionStore.refreshFromServer(id, { provider: 'pilotdeck', projectName: selectedProject.name, projectPath: selectedProject.fullPath || selectedProject.path || '', ...sessionRequestParams, afterRestore: true });
-    };
-    window.addEventListener(REVIEW_RESTORED_EVENT, restored);
-    return () => window.removeEventListener(REVIEW_RESTORED_EVENT, restored);
-  }, [selectedSession?.id, currentSessionId, selectedProject, sessionRequestParams, sessionStore.clearRealtime, sessionStore.refreshFromServer, resetStreamingState]);
 
   useEffect(() => {
     const ready = !isLoadingSessionMessages && !sessionLoadError && currentSessionId && currentSessionId === selectedSession?.id && chatMessages.length > 0;
@@ -270,7 +259,7 @@ function ChatInterfaceV2({
     sessionKey: watchedSessionId,
     project: selectedProject,
     projects,
-    busy: isLoading || pendingPermissionRequests.length > 0 || inputQueue.queueState.items.length > 0,
+    busy: isLoading || pendingPermissionRequests.length > 0 || inputQueue.queueState.items.some(item => item.status !== 'invalidated'),
   });
   const teamSelected = Boolean(teamMode.selectedTeam);
   const executionReady = teamMode.ready && (teamSelected || isModelSelectionReady);
@@ -343,11 +332,15 @@ function ChatInterfaceV2({
     handleTextareaInput,
     syncInputOverlayScroll,
     handleAbortSession,
+    restoreQueuedInput,
+    recoveredInput,
+    clearRecoveredInput,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleGrantSessionToolPermission,
     handleInputFocusChange,
   } = useChatComposerState({
+    activeRunId,
     selectedProject,
     selectedSession,
     currentSessionId,
@@ -355,6 +348,7 @@ function ChatInterfaceV2({
     modelSelection,
     teamSelection: teamMode.teamSelection,
     teamActivationId: teamMode.teamActivationId,
+    teamStopVersion: teamMode.teamStopVersion,
     teamDraftSessionId: teamMode.teamDraftSessionId,
     isModelSelectionReady: executionReady,
     isPermissionModeReady,
@@ -481,14 +475,14 @@ function ChatInterfaceV2({
     if (isAbortPending) return;
     if (teamSelected && (isLoading || teamMode.working)) {
       setIsAbortPending(true);
+      if (!teamMode.activation) { handleAbortSession(); return; }
       void teamMode.stop().catch(cause => addToast('error', (cause as Error).message)).finally(() => setIsAbortPending(false));
-      if (isLoading && canAbortSession) handleAbortSession();
       return;
     }
     if (!isLoading || !canAbortSession) return;
     handleAbortSession();
     setIsAbortPending(true);
-  }, [canAbortSession, handleAbortSession, isAbortPending, isLoading, teamSelected, teamMode.working, teamMode.stop, addToast]);
+  }, [canAbortSession, handleAbortSession, isAbortPending, isLoading, teamSelected, teamMode.activation, teamMode.working, teamMode.stop, addToast]);
 
   const handleResumeInputQueue = useCallback(() => {
     void inputQueue.resume().then((result) => {
@@ -772,7 +766,8 @@ function ChatInterfaceV2({
     </div>
   ) : (
     <ComposerV2
-      queueTray={(
+      queueTray={(<>
+        {recoveredInput && <div className="mx-3 flex items-center gap-2 rounded-lg border border-neutral-200 p-3 text-sm dark:border-neutral-700"><span className="min-w-0 flex-1 break-words">{t('inputQueue.recoveredDraft')} {(recoveredInput.displayAttachments || recoveredInput.attachments || []).map(file => file.name).join(' · ')}</span><button type="button" onClick={clearRecoveredInput}>{t('inputQueue.removeRecovered')}</button></div>}
         <QueuedMessagesTray
           state={inputQueue.queueState}
           isLoading={isLoading}
@@ -780,8 +775,9 @@ function ChatInterfaceV2({
           onSteer={handleSteerQueuedInput}
           onDelete={handleDeleteQueuedInput}
           onMoveToFront={handleMoveQueuedInputToFront}
+          onRestore={itemId => { const item = inputQueue.queueState.items.find(entry => entry.id === itemId); if (item) { teamMode.renewDraftRequest(); restoreQueuedInput(item); } }}
         />
-      )}
+      </>)}
       input={input}
       placeholder={t('composer.placeholder', { defaultValue: 'Tell PilotDeck what you want to get done…' })}
       textareaRef={textareaRef}
@@ -835,9 +831,9 @@ function ChatInterfaceV2({
       getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
       getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
       isDragActive={isDragActive}
-      isLoading={isLoading || teamMode.working}
-      canAbortSession={canAbortSession || teamMode.working}
-      isAbortPending={isAbortPending}
+      isLoading={isLoading || teamMode.working || teamMode.activation?.status === 'stopping'}
+      canAbortSession={teamMode.activation?.status !== 'stopping' && (canAbortSession || teamMode.working)}
+      isAbortPending={isAbortPending || teamMode.activation?.status === 'stopping'}
       isInputQueuePaused={inputQueue.queueState.paused}
       onResumeInputQueue={handleResumeInputQueue}
       tokenBudget={tokenBudget}

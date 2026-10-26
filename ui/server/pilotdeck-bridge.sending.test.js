@@ -108,6 +108,8 @@ it('assigns a real ID before startup failure without acknowledging the input', a
 it('freezes Team selection through queued execution and rejects a changed retry after completion', async () => {
     const calls = [], frames = [];
     mock.gateway = {
+        describeServer: async () => ({ serverInstanceId: 'gateway-one' }),
+        teamCommand: async () => ({ activation: { id: 'activation-original', stopVersion: 0, status: 'active' } }),
         getActiveTurnSnapshot: async () => ({ active: false, events: [] }),
         async *submitTurn(input) {
             calls.push(input);
@@ -117,11 +119,13 @@ it('freezes Team selection through queued execution and rejects a changed retry 
     };
     const sid = 'web:s_team_queue', first = item('team-queued');
     first.options.teamActivationId = 'activation-original';
+    first.options.teamStopVersion = 0;
     first.options.modelSelection = { mode: 'model', provider: 'test', model: 'solo-model' };
     await enqueueInputViaGateway(sid, first, { send: frame => frames.push(frame) });
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     await vi.waitFor(async () => expect((await getInputQueueStateViaGateway(sid)).items).toHaveLength(0));
     expect(calls[0].teamActivationId).toBe('activation-original');
+    expect(calls[0].teamStopVersion).toBe(0);
     expect(frames.some(frame => frame.type === 'model-selection-saved')).toBe(false);
     expect(await enqueueInputViaGateway(sid, { ...first, options: { ...first.options, teamActivationId: 'activation-other' } })).toMatchObject({ ok: false });
     expect(calls).toHaveLength(1);
@@ -146,4 +150,112 @@ it('forwards Gateway-owned Leader output and human approval requests to the same
     expect(frames.some(({ frame }) => frame.kind === 'complete')).toBe(true);
     expect(frames.some(({ frame }) => frame.type === 'model-selection-saved')).toBe(false);
     expect(frames.some(({ frame }) => frame.kind === 'session_created')).toBe(false);
+});
+
+it('invalidates Team inputs on Abort without changing ordinary queued inputs and fences stale Abort', async () => {
+    const bridge = await import('./pilotdeck-bridge.js');
+    mock.gateway = {
+        describeServer: async () => ({ serverInstanceId: 'queue-gateway' }),
+        teamCommand: async () => ({ activation: { id: 'activation', stopVersion: 2, status: 'active' } }),
+        getActiveTurnSnapshot: async () => ({ active: true, runId: 'busy', events: [] }),
+        submitTurn: vi.fn(),
+    };
+    const sid = 'web:s_epoch_abort';
+    const team = { ...item('old-team'), options: { ...item('').options, teamActivationId: 'activation', teamStopVersion: 2, uploadedAttachments: [{ uploadId: 'upload', attachmentIds: ['file'] }] } };
+    await bridge.enqueueInputViaGateway(sid, team, { send() {} });
+    await vi.waitFor(async () => expect((await bridge.getInputQueueStateViaGateway(sid)).items[0].status).toBe('queued'));
+    await bridge.enqueueInputViaGateway(sid, item('ordinary'), { send() {} });
+    bridge.invalidateTeamSessionInputs(sid, 'abort', { activationId: 'activation', stopVersion: 1 });
+    expect((await bridge.getInputQueueStateViaGateway(sid)).items[0].status).toBe('queued');
+    bridge.invalidateTeamSessionInputs(sid, 'abort', { activationId: 'activation', stopVersion: 2 });
+    expect((await bridge.getInputQueueStateViaGateway(sid)).items).toMatchObject([
+        { id: 'old-team', status: 'invalidated', recovery: { command: 'fixture', uploadedAttachments: [{ uploadId: 'upload', attachmentIds: ['file'] }] } },
+        { id: 'ordinary', status: 'queued' },
+    ]);
+    expect(await bridge.enqueueInputViaGateway(sid, team)).toMatchObject({ ok: false });
+    expect(bridge.moveQueuedInputToFrontViaGateway(sid, team.id)).toMatchObject({ ok: false });
+    expect(await bridge.steerQueuedInputViaGateway(sid, team.id)).toMatchObject({ ok: false });
+    expect(mock.gateway.submitTurn).not.toHaveBeenCalled();
+});
+
+it.each(['gateway', 'bridge'])('invalidates unbound Team draft input after %s restart without losing attachments', async restart => {
+    let instanceId = 'first-process';
+    mock.gateway = {
+        describeServer: async () => ({ serverInstanceId: instanceId }),
+        teamCommand: async () => ({ activation: null }),
+        getActiveTurnSnapshot: async () => ({ active: true, runId: 'busy', events: [] }),
+        submitTurn: vi.fn(),
+    };
+    let bridge = await import('./pilotdeck-bridge.js');
+    const sid = `web:s_draft_restart_${restart}`;
+    const draft = { ...item(`draft-${restart}`), options: { ...item('').options, teamSelection: { team: { id: 'team', revision: 1 }, requestToken: 'choice' }, uploadedAttachments: [{ uploadId: 'original', attachmentIds: ['image'] }] } };
+    await bridge.enqueueInputViaGateway(sid, draft, { send() {} });
+    await vi.waitFor(async () => expect((await bridge.getInputQueueStateViaGateway(sid)).items[0].status).toBe('queued'));
+    // A transport reconnection to the same Gateway must not invalidate work.
+    expect((await bridge.getInputQueueStateViaGateway(sid)).items[0].status).toBe('queued');
+    if (restart === 'gateway') instanceId = 'second-process';
+    else { vi.resetModules(); bridge = await import('./pilotdeck-bridge.js'); }
+    expect((await bridge.getInputQueueStateViaGateway(sid, { projectPath: '/tmp/sending-project' })).items[0]).toMatchObject({ status: 'invalidated', recovery: { uploadedAttachments: draft.options.uploadedAttachments } });
+    expect(await bridge.resumeInputQueueViaGateway(sid, { send() {} })).toMatchObject({ ok: false });
+    expect(await bridge.enqueueInputViaGateway(sid, draft)).toMatchObject({ ok: false });
+    expect(mock.gateway.submitTurn).not.toHaveBeenCalled();
+});
+
+it('never renders internal Team steer events as user messages', async () => {
+    const { gatewayEventToFrames } = await import('./pilotdeck-bridge.js');
+    for (const event of [
+        { type: 'steer_applied', purpose: 'team_runtime', itemId: 'internal', message: { content: [{ type: 'text', text: 'teammate message' }] } },
+        { type: 'steer_applied', itemId: 'internal', message: { metadata: { purpose: 'team_runtime' }, content: [{ type: 'text', text: 'teammate message' }] } },
+    ]) expect(gatewayEventToFrames(event, 'session', 'pilotdeck')).toEqual([]);
+});
+
+it('invalidates a queued bound input when Gateway advances its generation without waiting for a push event', async () => {
+    let version = 4;
+    const bridge = await import('./pilotdeck-bridge.js');
+    mock.gateway = {
+        describeServer: async () => ({ serverInstanceId: 'epoch-process' }),
+        teamCommand: async () => ({ activation: { id: 'epoch-team', stopVersion: version, status: 'stopped' } }),
+        getActiveTurnSnapshot: async () => ({ active: true, runId: 'busy', events: [] }),
+        submitTurn: vi.fn(),
+    };
+    const sid = 'web:s_epoch_changed', input = { ...item('epoch-input'), options: { ...item('').options, teamActivationId: 'epoch-team', teamStopVersion: 4 } };
+    await bridge.enqueueInputViaGateway(sid, input, { send() {} });
+    await vi.waitFor(async () => expect((await bridge.getInputQueueStateViaGateway(sid)).items[0].status).toBe('queued'));
+    version += 1;
+    expect((await bridge.getInputQueueStateViaGateway(sid)).items[0]).toMatchObject({ status: 'invalidated', invalidationReason: 'run_invalidated' });
+    expect(await bridge.resumeInputQueueViaGateway(sid, { send() {} })).toMatchObject({ ok: false });
+    expect(mock.gateway.submitTurn).not.toHaveBeenCalled();
+});
+
+it('does not acknowledge completed Abort while draft execution or Team cleanup is still active', async () => {
+    const bridge = await import('./pilotdeck-bridge.js');
+    const abortTurn = vi.fn(async () => {});
+    mock.gateway = { abortTurn, getActiveTurnSnapshot: async () => ({ active: true, runId: 'draft-run' }) };
+    expect(await bridge.abortViaGateway('web:s_draft_stop', 'pilotdeck', { runId: 'draft-run' })).toBe(false);
+    mock.gateway.getActiveTurnSnapshot = async () => ({ active: false });
+    mock.gateway.teamCommand = async () => ({ activation: { status: 'stopping' } });
+    expect(await bridge.abortViaGateway('web:s_draft_stop', 'pilotdeck', { runId: 'draft-run' })).toBe(false);
+    mock.gateway.teamCommand = async () => ({ activation: { status: 'stopped' } });
+    expect(await bridge.abortViaGateway('web:s_draft_stop', 'pilotdeck', { runId: 'draft-run' })).toBe(true);
+    expect(abortTurn).toHaveBeenLastCalledWith({ sessionKey: 'web:s_draft_stop', runId: 'draft-run' });
+});
+
+it('invalidates same-selection draft followups when Abort arrives before activation is created', async () => {
+    const bridge = await import('./pilotdeck-bridge.js');
+    const finish = deferred();
+    mock.gateway = {
+        describeServer: async () => ({ serverInstanceId: 'preflight-process' }),
+        teamCommand: async () => ({ activation: null }),
+        getActiveTurnSnapshot: async () => ({ active: true, runId: 'draft-first' }),
+        abortTurn: async () => { finish.resolve(); },
+        async *submitTurn() { await finish.promise; yield { type: 'turn_completed', runId: 'draft-first', finishReason: 'aborted', usage: {} }; },
+    };
+    const sid = 'web:s_draft_preflight', selection = { team: { id: 'test-team', revision: 1 }, requestToken: 'same-choice' };
+    const run = bridge.runChatViaGateway('first', { projectPath: '/tmp/sending-project', sessionId: sid, runId: 'draft-first', teamSelection: selection }, { send() {} });
+    const queued = { ...item('draft-second'), options: { ...item('').options, teamSelection: selection } };
+    await bridge.enqueueInputViaGateway(sid, queued, { send() {} });
+    expect((await bridge.getInputQueueStateViaGateway(sid)).items[0].status).toBe('queued');
+    await bridge.abortViaGateway(sid, 'pilotdeck', { runId: 'draft-first' });
+    await run;
+    expect((await bridge.getInputQueueStateViaGateway(sid)).items[0]).toMatchObject({ status: 'invalidated', invalidationReason: 'abort' });
 });

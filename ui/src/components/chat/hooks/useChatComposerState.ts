@@ -46,7 +46,7 @@ import type {
   ProjectSession,
 } from '../../../types/app';
 import { isImeEnterEvent } from '../../../utils/ime';
-import type { PreparedQueuedInput } from '../types/queuedInput';
+import type { PreparedQueuedInput, QueuedInputSummary } from '../types/queuedInput';
 import {
   cancelAttachmentUpload,
   uploadAttachmentBatch,
@@ -66,10 +66,12 @@ interface UseChatComposerStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
+  activeRunId?: string | null;
   model: string;
   modelSelection?: ChatModelSelection | null;
   teamSelection?: TeamExecutionSelection;
   teamActivationId?: string | null;
+  teamStopVersion?: number;
   teamDraftSessionId?: string;
   isModelSelectionReady?: boolean;
   isPermissionModeReady?: boolean;
@@ -280,10 +282,12 @@ export function useChatComposerState({
   selectedProject,
   selectedSession,
   currentSessionId,
+  activeRunId,
   model,
   modelSelection,
   teamSelection,
   teamActivationId,
+  teamStopVersion,
   teamDraftSessionId,
   isModelSelectionReady = true,
   isPermissionModeReady = true,
@@ -1181,6 +1185,24 @@ export function useChatComposerState({
     noDragEventsBubbling: true,
   });
 
+  const [recoveredInput, setRecoveredInput] = useState<QueuedInputSummary['recovery']>();
+  const restoreQueuedInput = useCallback((item: QueuedInputSummary) => {
+    if (!item.recovery) return;
+    setRecoveredInput(item.recovery);
+    setInput(item.recovery.command);
+    inputValueRef.current = item.recovery.command;
+    queueAttemptsRef.current.clear();
+    // Explicit resend always gets a fresh token even when the text is unchanged.
+    if (selectedProject) {
+      const key = getDraftInputStorageKey(selectedProject.name, currentSessionId || selectedSession?.id || '');
+      safeLocalStorage.removeItem(`${key}:queue-attempt`);
+      safeLocalStorage.removeItem(`${key}:team-attempt`);
+    }
+    textareaRef.current?.focus();
+  }, [selectedProject, currentSessionId, selectedSession?.id]);
+
+  useEffect(() => { setRecoveredInput(undefined); }, [currentSessionId, selectedSession?.id]);
+
   const performSubmit = useCallback(
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
@@ -1192,6 +1214,8 @@ export function useChatComposerState({
       // Capture execution identity before attachments or command expansion yield.
       const submittedTeamSelection = teamSelection ? { ...teamSelection, team: { ...teamSelection.team } } : undefined;
       const submittedTeamActivationId = teamActivationId;
+      const submittedTeamStopVersion = teamStopVersion;
+      const submittedRecoveredInput = recoveredInput;
       const submittedTeamDraftSessionId = teamDraftSessionId;
       const submittedModelSelection = !submittedTeamSelection && !submittedTeamActivationId && modelSelection ? { ...modelSelection } : undefined;
       const currentInput = inputValueRef.current;
@@ -1202,7 +1226,7 @@ export function useChatComposerState({
       const submitSkills = selectedSkills;
       const submitCommands = selectedCommands;
       const hasDocumentReferences = submitDocumentReferences.length > 0;
-      const hasAttachments = submitAttachedImages.length > 0 || hasDocumentReferences;
+      const hasAttachments = submitAttachedImages.length > 0 || hasDocumentReferences || Boolean(submittedRecoveredInput);
       const hasProjectMentions = submitFileMentions.length > 0;
       const hasSelectedSkills = submitSkills.length > 0;
       const hasSelectedCommands = submitCommands.length > 0;
@@ -1351,15 +1375,15 @@ export function useChatComposerState({
         );
       };
 
-      let uploadedImages: unknown[] = [];
-      let uploadedFiles: UploadedAttachmentFile[] = [];
-      let uploadedAttachmentRefs: UploadedAttachmentRef[] = [];
+      let uploadedImages: unknown[] = submittedRecoveredInput?.images || [];
+      let uploadedFiles: UploadedAttachmentFile[] = (submittedRecoveredInput?.displayAttachments || []) as UploadedAttachmentFile[];
+      let uploadedAttachmentRefs: UploadedAttachmentRef[] = submittedRecoveredInput?.uploadedAttachments || [];
       if (submitAttachedImages.length > 0) {
         submittedAttachmentFiles = submitAttachedImages.filter(file =>
           attachedImagesRef.current.includes(file) && !removedAttachmentFilesRef.current.has(file));
         if (submittedAttachmentFiles.some(file => !completedAttachmentUploadsRef.current.has(file))) return;
         const refsByUploadId = new Map<string, string[]>();
-        uploadedFiles = submittedAttachmentFiles.flatMap((file) => {
+        uploadedFiles = [...uploadedFiles, ...submittedAttachmentFiles.flatMap((file) => {
           const completed = completedAttachmentUploadsRef.current.get(file);
           if (!completed) return [];
           const attachmentIds = refsByUploadId.get(completed.uploadId) ?? [];
@@ -1375,11 +1399,11 @@ export function useChatComposerState({
             attachmentId: completed.attachmentId,
             previewData: completed.previewData,
           }];
-        });
-        uploadedAttachmentRefs = [...refsByUploadId.entries()].map(([uploadId, attachmentIds]) => ({
+        })];
+        uploadedAttachmentRefs = [...uploadedAttachmentRefs, ...[...refsByUploadId.entries()].map(([uploadId, attachmentIds]) => ({
           uploadId,
           attachmentIds,
-        }));
+        }))];
         uploadedFiles.forEach(rememberUploadedPreview);
       }
 
@@ -1390,6 +1414,7 @@ export function useChatComposerState({
         && !hasProjectMentions
         && !hasSelectedSkills
         && !hasSelectedCommands
+        && !submittedRecoveredInput
       ) {
         return;
       }
@@ -1405,7 +1430,7 @@ export function useChatComposerState({
           selectedProject.fullPath || selectedProject.path || '',
         ));
       const documentReferenceAttachments = submitDocumentReferences.map(contentReferenceToAttachment);
-      const turnAttachments = [...projectMentionAttachments, ...documentReferenceAttachments];
+      const turnAttachments = [...(submittedRecoveredInput?.attachments || []), ...projectMentionAttachments, ...documentReferenceAttachments];
       messageContent = `${messageContent}${formatContentReferencePromptBlock(submitDocumentReferences)}`;
 
       const effectiveSessionId = submitTargetSessionId;
@@ -1415,6 +1440,7 @@ export function useChatComposerState({
       const resolvedProjectPath = getSelectedProjectPath(selectedProject);
 
       const clearSubmittedComposerState = () => {
+        if (submittedRecoveredInput === recoveredInput) setRecoveredInput(undefined);
         if (inputValueRef.current === currentInput) {
           setInput('');
           inputValueRef.current = '';
@@ -1455,7 +1481,7 @@ export function useChatComposerState({
         const attemptKey = `${getDraftInputStorageKey(selectedProject.name, queueTargetSessionId)}:queue-attempt`;
         const fingerprint = JSON.stringify({
           command: messageContent, uploadedAttachmentRefs, turnAttachments,
-          modelSelection: submittedModelSelection, teamSelection: submittedTeamSelection, teamActivationId: submittedTeamActivationId, model, runMode,
+          modelSelection: submittedModelSelection, teamSelection: submittedTeamSelection, teamActivationId: submittedTeamActivationId, teamStopVersion: submittedTeamStopVersion, model, runMode,
           permissionMode, basePermissionMode, thinkingMode,
         });
         let previousAttempt = queueAttemptsRef.current.get(attemptKey);
@@ -1499,7 +1525,7 @@ export function useChatComposerState({
               uploadedAttachments: uploadedAttachmentRefs,
               modelSelection: submittedModelSelection,
               teamSelection: submittedTeamSelection,
-              teamActivationId: submittedTeamActivationId,
+              teamActivationId: submittedTeamActivationId, teamStopVersion: submittedTeamStopVersion,
             },
           }) ?? { ok: false, error: 'Message queue is unavailable.' };
         } catch (error) {
@@ -1563,7 +1589,7 @@ export function useChatComposerState({
         toolsSettings,
         modelSelection: submittedModelSelection,
         teamSelection: submittedTeamSelection,
-        teamActivationId: submittedTeamActivationId,
+        teamActivationId: submittedTeamActivationId, teamStopVersion: submittedTeamStopVersion,
         images: uploadedImages,
         attachments: turnAttachments,
         uploadedAttachments: uploadedAttachmentRefs,
@@ -1618,6 +1644,8 @@ export function useChatComposerState({
       model,
       modelSelection,
       teamSelection,
+      teamStopVersion,
+      recoveredInput,
       teamActivationId,
       teamDraftSessionId,
       isModelSelectionReady,
@@ -1940,6 +1968,7 @@ export function useChatComposerState({
   }, [attachedImages, startAttachmentUploads]);
 
   const handleClearInput = useCallback(() => {
+    setRecoveredInput(undefined);
     setInput('');
     inputValueRef.current = '';
     setDocumentReferences([]);
@@ -1982,6 +2011,8 @@ export function useChatComposerState({
       type: 'abort-session',
       sessionId: targetSessionId,
       provider: 'pilotdeck',
+      runId: activeRunId || pendingTeamSendRef.current?.runId,
+      ...(teamActivationId ? { teamActivationId, teamStopVersion } : {}),
     });
 
     setCanAbortSession(false);
@@ -1991,7 +2022,7 @@ export function useChatComposerState({
       tokens: 0,
       can_interrupt: false,
     });
-  }, [canAbortSession, currentSessionId, pendingViewSessionRef, selectedSession?.id, sendMessage, setCanAbortSession, setIsAborting, setPilotDeckStatus]);
+  }, [activeRunId, teamActivationId, teamStopVersion, canAbortSession, currentSessionId, pendingViewSessionRef, selectedSession?.id, sendMessage, setCanAbortSession, setIsAborting, setPilotDeckStatus]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
@@ -2194,6 +2225,9 @@ export function useChatComposerState({
     handleTextareaInput,
     syncInputOverlayScroll,
     handleClearInput,
+    restoreQueuedInput,
+    recoveredInput,
+    clearRecoveredInput: () => setRecoveredInput(undefined),
     handleAbortSession,
     handlePermissionDecision,
     handleGrantToolPermission,

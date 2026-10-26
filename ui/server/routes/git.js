@@ -344,14 +344,14 @@ router.get('/status', async (req, res) => {
   }
 });
 
-// Mutations use the Gateway's workspace lease so they cannot race an Agent turn or restore.
+// Git mutations use a repository-only queue, independent of agent execution.
 router.post('/operation', async (req, res) => {
   try {
     const { project, sessionId, ...repositoryOperation } = req.body ?? {};
     if (typeof project !== 'string') return res.status(400).json({ error: 'Project is required.' });
     const gateway = await getPilotDeckGateway();
-    if (!gateway.manageCheckpoints) return res.status(503).json({ error: 'This Gateway cannot coordinate Git operations.' });
-    const result = await gateway.manageCheckpoints({ projectKey: await getActualProjectPath(project), sessionKey: sessionId || 'git:management', action: 'git', repositoryOperation });
+    if (!gateway.repositoryOperation) return res.status(503).json({ error: 'This Gateway cannot coordinate Git operations.' });
+    const result = await gateway.repositoryOperation({ projectKey: await getActualProjectPath(project), sessionKey: sessionId, repositoryOperation });
     return res.json(result);
   } catch (error) {
     return res.status(/being modified|busy|changed/i.test(error.message) ? 409 : 400).json({ error: error.message });

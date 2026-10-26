@@ -85,14 +85,28 @@ describe('Team mode current conversation selection', () => {
   });
 
   it('prevents mode switches for pending member work and stops the whole activation', async () => {
-    const running = { ...activation, works: [{ id: 'work', participantId: 'reviewer', task: 'Review', status: 'waiting_approval' as const, createdAt: '' }] };
+    const running = { ...activation, works: [{ id: 'work', stopVersion: 0, participantId: 'reviewer', task: 'Review', status: 'waiting_approval' as const, createdAt: '' }] };
     command.mockImplementation(async (input) => input.action === 'library' ? { teams: [team], profiles: [] } : { activation: input.action === 'runtime_stop' ? { ...running, status: 'stopped' } : running });
     const hook = renderHook(() => useTeamMode({ ...props, sessionKey: 'web:s_one' }));
     await waitFor(() => expect(hook.result.current.working).toBe(true));
     expect(hasTeamWork(running)).toBe(true);
     await act(async () => expect(await hook.result.current.selectSolo()).toBe(false));
     await act(() => hook.result.current.stop());
-    expect(command).toHaveBeenCalledWith({ action: 'runtime_stop', sessionKey: 'web:s_one' });
+    expect(command).toHaveBeenCalledWith({ action: 'runtime_stop', sessionKey: 'web:s_one', activationId: 'activation-1', stopVersion: 0 });
     expect(hook.result.current.working).toBe(false);
   });
+});
+
+it('keeps the clicked run identity when a stop response races a refresh and blocks sends while cleaning up', async () => {
+  let reply!: (view: unknown) => void;
+  const stopping = { ...activation, stopVersion: 1, status: 'stopping', cleanup: { startedAt: '', pending: ['member'], timedOut: true } };
+  command.mockImplementation(async input => input.action === 'library' ? { teams: [team], profiles: [] } : input.action === 'runtime_stop' ? new Promise(resolve => { reply = resolve; }) : { activation });
+  const hook = renderHook(() => useTeamMode({ ...props, sessionKey: 'web:s_one' }));
+  await waitFor(() => expect(hook.result.current.activation?.id).toBe(activation.id));
+  let pending!: Promise<void>;
+  act(() => { pending = hook.result.current.stop(); });
+  expect(command).toHaveBeenCalledWith({ action: 'runtime_stop', sessionKey: 'web:s_one', activationId: activation.id, stopVersion: 0 });
+  await act(async () => { reply({ activation: stopping }); await pending; });
+  expect(hook.result.current.ready).toBe(false);
+  expect(hook.result.current.locked).toBe(true);
 });

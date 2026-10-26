@@ -33,9 +33,7 @@ import {
   ToolResultBudget,
   createEdgeClawMemoryProviderFromConfig,
 } from "../context/index.js";
-import { WorkspaceCheckpoints, getCheckpointStore, CheckpointError } from "../session/checkpoints/WorkspaceCheckpoints.js";
-import { activeTranscriptEntries } from "../session/transcript/CompactSnapshot.js";
-import { runRepositoryOperation, repositoryRoot } from "../session/checkpoints/repositoryOperation.js";
+import { runRepositoryOperation, repositoryRoot, withRepositoryOperationLock, validateRepositoryOperation } from "../session/repository/operations.js";
 import type { AgentSubagentTranscriptHooks } from "../agent/runtime/AgentRuntimeDependencies.js";
 import { createPlanTodoStateManager } from "../agent/runtime/PlanTodoState.js";
 import { HookRuntime, PluginRuntime } from "../extension/index.js";
@@ -115,10 +113,11 @@ import { createDialogProjectRegistry } from "../gateway/dialog/projectRegistry.j
 import { TeamService } from "../team/TeamService.js";
 import type { TeamInventory, TeamDefinition, ProfileRef } from "../team/types.js";
 import { TeamRuntime } from "../team/TeamRuntime.js";
+import { TeamMessageDelivery } from "../team/TeamMessageDelivery.js";
 import { validateRuntimeCommand } from "../team/TeamRuntime.js";
 import { object as teamObject } from "../team/validation.js";
 import { createTeamRuntimeTools } from "../team/runtimeTools.js";
-import type { TeamRuntimeActivation, TeamRuntimeParticipant, TeamParticipantExecution, TeamRuntimeIssue } from "../team/runtimeTypes.js";
+import type { TeamRuntimeActivation, TeamRuntimeParticipant, TeamParticipantExecution, TeamRuntimeIssue, TeamRuntimeMessage, TeamRuntimeNotification } from "../team/runtimeTypes.js";
 import { hash as teamHash } from "../team/store.js";
 import { JsonlTranscriptWriter } from "../session/transcript/JsonlTranscriptWriter.js";
 import { createReadSkillTool } from "../tool/builtin/readSkill.js";
@@ -391,7 +390,8 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     },
   });
   const teamRuntimeStore = new TeamRuntimeStore(pilotHome);
-  const internalTeamTurns = new Set<string>();
+  const internalTeamTurns = new Map<string, import("../model/index.js").CanonicalMessage>();
+  const teamDelivery = new TeamMessageDelivery();
   const selectingTeamSessions = new Set<string>();
   const broadcastTeamEvent = (sessionKey: string, projectKey: string | undefined, event: import("../gateway/protocol/types.js").GatewayEvent) => {
     boundServer?.broadcastNotification("team_runtime_event", { sessionKey, projectKey, event });
@@ -450,29 +450,57 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       return registry.executeTeamParticipant(input);
     },
     isLeaderBusy: sessionKey => !selectingTeamSessions.has(sessionKey) && router!.hasActiveTurn(sessionKey),
-    stopLeader: (sessionKey): Promise<void> => gateway.abortSessionExecution(sessionKey, "team_stopped"),
-    notifyLeader: async ({ activation, notifications, signal }) => {
-      const current = (await teamRuntime.get(activation.sessionKey)).activation;
-      if (signal.aborted || current?.id !== activation.id || current.status !== "active") return false;
-      const message = "Team updates (internal background context). Collect completed tasks by work ID. Ordinary messages do not imply task completion.\n" + notifications.map(({ id, kind, workId, messageId, participantId, summary, createdAt }) => JSON.stringify({ id, kind, workId, messageId, participantId, summary, createdAt })).join("\n");
+    stopLeader: async sessionKey => {
+      const current = (await teamRuntime.get(sessionKey)).activation;
+      if (current) boundServer?.broadcastNotification("team_runtime_invalidated", { sessionKey, activationId: current.id, stopVersion: current.stopFromVersion, reason: "abort" });
+      teamDelivery.close(sessionKey);
+      await gateway.abortSessionExecution(sessionKey, "team_stopped");
+      await gateway.waitForSessionExecution(sessionKey);
+      await registry.evictSessionMcp(sessionKey);
+      await router!.close(sessionKey);
+    },
+    finishCleanup: activation => registry.awaitTeamMcpCleanup(activation.id),
+    deliverParticipantMessages: input => registry.deliverTeamMessages(input),
+    notifyLeader: async ({ activation, notifications, signal, allowStartTurn }) => {
+      const isCurrent = async () => {
+        const current = (await teamRuntime.get(activation.sessionKey)).activation;
+        return !signal.aborted && current?.id === activation.id && current.stopVersion === activation.stopVersion && current.status === "active";
+      };
+      if (!await isCurrent()) return { delivered: false };
+      const message = teamNotificationMessage(activation, notifications);
+      const itemId = `team-event:${activation.id}:${activation.stopVersion}:${notifications[0]!.batchId}`;
+      const continuationId = `team:${activation.id}:${activation.stopVersion}:${notifications[0]!.batchId}`;
+      const storage = createAgentProjectSessionStorage({ projectRoot: activation.storageProjectKey ?? activation.projectKey, pilotHome, sessionId: activation.sessionKey, now });
       const runId = router!.activeTurnRunId(activation.sessionKey);
-      // Pending notifications remain durable while the Leader is busy. The
-      // next idle boundary drains them; mailbox admission is not durable input.
-      if (runId) return false;
-      const continuationId = `team:${notifications[0]!.batchId}`;
-      internalTeamTurns.add(continuationId);
-      // Consume on the server: disconnecting a browser only stops observation.
-      return new Promise<boolean>(resolveReceipt => {
+      if (runId) {
+        const delivered = await teamDelivery.deliver({
+          sessionKey: activation.sessionKey, turnId: runId, itemId, message, signal, isCurrent,
+          wasApplied: () => teamEventsApplied(storage.transcriptPath, message.metadata!.teamEventIds as string[], activation),
+          enqueue: beforeApply => router!.steer(activation.sessionKey, { turnId: runId, itemId, message, beforeApply }),
+          cancel: () => { router!.cancelSteer(activation.sessionKey, { turnId: runId, itemId }); },
+        });
+        // A prior idle admission may have succeeded before its journal ack
+        // failed. Preserve that batch's one wakeup even while its turn runs.
+        const startedTurn = delivered && (await readTranscript(storage.transcriptPath)).entries.some(entry => entry.type === "accepted_input" && entry.turnId === continuationId);
+        return { delivered, startedTurn };
+      }
+      if (!allowStartTurn || !await isCurrent()) return { delivered: false };
+      if (await teamEventsApplied(storage.transcriptPath, message.metadata!.teamEventIds as string[], activation)) {
+        const transcript = await readTranscript(storage.transcriptPath);
+        return { delivered: await isCurrent(), startedTurn: transcript.entries.some(entry => entry.type === "accepted_input" && entry.turnId === continuationId) };
+      }
+      internalTeamTurns.set(continuationId, message);
+      return new Promise<{ delivered: boolean; startedTurn?: boolean }>(resolveReceipt => {
         void (async () => {
           let accepted = false;
           try {
-            if (signal.aborted) return;
-            for await (const event of gateway.submitTurn({ sessionKey: activation.sessionKey, channelKey: "web", projectKey: activation.storageProjectKey ?? activation.projectKey, message, runId: continuationId, teamActivationId: activation.id, maxTurns: 25 })) {
-              if (event.type === "input_accepted") { accepted = true; resolveReceipt(true); }
-              broadcastTeamEvent(activation.sessionKey, activation.storageProjectKey, event);
+            if (!await isCurrent()) return;
+            for await (const event of gateway.submitTurn({ sessionKey: activation.sessionKey, channelKey: "web", projectKey: activation.storageProjectKey ?? activation.projectKey, message: message.content.map(block => block.type === "text" ? block.text : "").join("\n"), runId: continuationId, teamActivationId: activation.id, teamStopVersion: activation.stopVersion, maxTurns: 25 })) {
+              if (event.type === "input_accepted") { accepted = true; resolveReceipt({ delivered: true, startedTurn: true }); }
+              broadcastTeamEvent(activation.sessionKey, activation.storageProjectKey, { ...event, purpose: "team_runtime" });
             }
-          } finally { internalTeamTurns.delete(continuationId); if (!accepted) resolveReceipt(false); }
-        })().catch(error => { console.warn("[pilotdeck] Team Leader continuation failed:", error); resolveReceipt(false); });
+          } finally { internalTeamTurns.delete(continuationId); if (!accepted) resolveReceipt({ delivered: false }); }
+        })().catch(error => { console.warn("[pilotdeck] Team Leader continuation failed:", error); resolveReceipt({ delivered: false }); });
       });
     },
   });
@@ -518,58 +546,79 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
   };
   const gateway: InProcessGateway = new InProcessGateway(router, {
     protectSessionOperation: protectTeamHistory,
-    validateTeamSteer: async input => { await teamRuntime.assertActivation(input.sessionKey, input.teamActivationId); },
-    abortTeam: async sessionKey => { await teamRuntime.stop(sessionKey); },
-    afterInputAccepted: async (input, metadata) => {
-      if (input.runId && internalTeamTurns.has(input.runId)) return;
+    replayAcceptedInput: async input => {
+      const projectRoot = await resolveTeamStorageProject(input.sessionKey, input.projectKey);
+      await assertTeamJournal(input.sessionKey, projectRoot);
+      const storage = createAgentProjectSessionStorage({ projectRoot, pilotHome, sessionId: input.sessionKey, now });
+      return teamAcceptedInputReplay(await readTranscript(storage.transcriptPath), input, router!.activeTurnRunId(input.sessionKey) === input.runId);
+    },
+    onAgentEvent: (sessionKey, event) => {
+      teamDelivery.observe(sessionKey, event);
+      if (event.type === "model_event" && event.event.type === "request_started") void teamRuntime.onExecutionReady(sessionKey).catch(() => {});
+    },
+    validateTeamSteer: async input => {
+      const activation = await teamRuntime.assertActivation(input.sessionKey, input.teamActivationId, input.teamStopVersion);
+      if (activation && (!Number.isSafeInteger(input.teamStopVersion) || input.teamActivationId !== activation.id)) throw new DialogGatewayError("TEAM_GENERATION_REQUIRED", "Refresh the Team before sending this input.");
+    },
+    abortTeam: async input => {
       const { activation } = await teamRuntime.get(input.sessionKey);
-      if (activation) await teamRuntime.onHumanTurn(input.sessionKey, activation.id, typeof metadata?.teamStopVersion === "number" ? metadata.teamStopVersion : undefined);
+      if (!activation) return false;
+      if (typeof input.teamActivationId !== "string" || !Number.isSafeInteger(input.teamStopVersion)) throw new DialogGatewayError("TEAM_GENERATION_REQUIRED", "Refresh the Team before stopping it.");
+      const stopped = await teamRuntime.stop(input.sessionKey, { activationId: input.teamActivationId, stopVersion: input.teamStopVersion! });
+      if (stopped.activation?.status === "stopping") throw new DialogGatewayError("TEAM_STOPPING", "The Team is still stopping. Execution cleanup has not completed.");
+      return true;
+    },
+    afterInputAccepted: async (input, metadata) => {
+      if (input.runId && internalTeamTurns.has(input.runId)) {
+        await teamRuntime.assertActivation(input.sessionKey, metadata!.teamActivationId as string, metadata!.teamStopVersion as number);
+        return;
+      }
+      const { activation } = await teamRuntime.get(input.sessionKey);
+      if (activation) await teamRuntime.onHumanTurn(input.sessionKey, activation.id, metadata!.teamStopVersion as number);
     },
     prepareTurn: async input => {
       if (input.teamActivationId !== undefined && input.teamActivationId !== null && typeof input.teamActivationId !== "string") throw new DialogGatewayError("TEAM_INVALID_INPUT", "teamActivationId must be a string or null.");
+      if (input.teamStopVersion !== undefined && (!Number.isSafeInteger(input.teamStopVersion) || input.teamStopVersion < 0)) throw new DialogGatewayError("TEAM_INVALID_INPUT", "teamStopVersion must be a nonnegative integer.");
       if (input.teamSelection !== undefined) teamObject(input.teamSelection, "teamSelection", ["team", "projectKey", "requestToken", "probeFingerprint"]);
       const isMeta = !!input.runId && internalTeamTurns.has(input.runId);
-      const storageProjectKey = input.teamSelection || (await teamRuntime.get(input.sessionKey)).activation
+      const existing = (await teamRuntime.get(input.sessionKey)).activation;
+      const storageProjectKey = input.teamSelection || existing
         ? await resolveTeamStorageProject(input.sessionKey, input.projectKey)
         : await dialogProjects.resolveProjectKey(input.projectKey ?? fallbackProjectRoot);
       await assertTeamJournal(input.sessionKey, storageProjectKey);
-      let selectedActivationId: string | undefined;
+      // Read-only retries must be resolved before selection or generation renewal.
+      const storage = createAgentProjectSessionStorage({ projectRoot: storageProjectKey, pilotHome, sessionId: input.sessionKey, now });
+      const transcript = existing || input.teamSelection ? await readTranscript(storage.transcriptPath) : undefined;
+      if (transcript?.diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Team conversation history cannot be read safely.");
+      const requestHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, teamSelection: input.teamSelection, teamActivationId: input.teamActivationId, teamStopVersion: input.teamStopVersion });
+      const replay = transcript && teamAcceptedInputReplay(transcript, input);
+      if (replay) return { input, replay };
+      let selection: TeamRuntimeActivation | null | undefined;
       if (input.teamSelection) {
         selectingTeamSessions.add(input.sessionKey);
-        try { selectedActivationId = (await teamRuntime.execute(validateRuntimeCommand({ ...input.teamSelection, action: "runtime_select", sessionKey: input.sessionKey, storageProjectKey })) as import("../team/runtimeTypes.js").TeamRuntimeView).activation?.id; }
+        try { selection = (await teamRuntime.execute(validateRuntimeCommand({ ...input.teamSelection, action: "runtime_select", sessionKey: input.sessionKey, storageProjectKey })) as import("../team/runtimeTypes.js").TeamRuntimeView).activation; }
         finally { selectingTeamSessions.delete(input.sessionKey); }
         await router!.close(input.sessionKey);
       }
-      const activation = await teamRuntime.assertActivation(input.sessionKey, selectedActivationId ?? input.teamActivationId);
+      const activation = await teamRuntime.assertActivation(input.sessionKey, selection?.id ?? input.teamActivationId, selection?.stopVersion ?? input.teamStopVersion);
       if (!activation) return { input };
+      if (!selection && (input.teamActivationId !== activation.id || !Number.isSafeInteger(input.teamStopVersion))) throw new DialogGatewayError("TEAM_GENERATION_REQUIRED", "Refresh the Team before sending this input.");
       if (isMeta && activation.status !== "active") throw new DialogGatewayError("TEAM_STOPPED", "Stopped Team work cannot restart itself.");
       if (activation.storageProjectKey && resolve(activation.storageProjectKey) !== resolve(storageProjectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team conversation storage project cannot change.");
       const leader = activation.participants.find(item => item.role === "leader")!;
       if (input.workspaceCwd && resolve(input.workspaceCwd) !== resolve(leader.projectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team Leader workspace cannot be overridden by a chat request.");
+      if (activation.status === "stopped") await router!.close(input.sessionKey);
       const frozenTeam = structuredClone(activation.team);
       for (const profile of [frozenTeam.leader, ...frozenTeam.teammates]) profile.config.model = activation.participants.find(item => item.id === profile.id)!.model;
-      const current = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject);
-      const errors = current.issues.filter(item => item.severity === "error");
+      const checked = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject);
+      const errors = checked.issues.filter(item => item.severity === "error");
       if (errors.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", errors.map(item => item.message).join("\n"));
       for (const participant of activation.participants) {
-        const next = current.participants.find(item => item.id === participant.id)!;
-        if (teamHash(next.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed. Recheck and select the Team again to confirm the current environment.");
+        if (teamHash(checked.participants.find(item => item.id === participant.id)!.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed. Recheck and select the Team again to confirm the current environment.");
       }
-      const inputHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, activationId: activation.id });
-      const storage = createAgentProjectSessionStorage({ projectRoot: storageProjectKey, pilotHome, sessionId: input.sessionKey, now });
-      const transcript = await readTranscript(storage.transcriptPath);
-      if (transcript.diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Team conversation history cannot be read safely.");
-      const accepted = transcript.entries.find(item => item.type === "accepted_input" && item.turnId === input.runId);
-      if (accepted?.type === "accepted_input") {
-        if (accepted.metadata?.teamInputHash !== inputHash) throw new DialogGatewayError("TEAM_INPUT_CONFLICT", "This input token was already accepted with different contents.");
-        const result = transcript.entries.find(item => item.type === "turn_result" && item.turnId === input.runId);
-        return { input, replay: [
-          { type: "input_accepted" as const, runId: input.runId! },
-          { type: "agent_status" as const, event: "team_input_already_accepted", detail: { interrupted: !result, message: result ? "This input was already accepted. Read the conversation to see its result." : "This input was accepted before execution was interrupted. Continue in the Leader conversation; it will not be replayed." } },
-          { type: "turn_completed" as const, usage: {}, finishReason: "completed" as const },
-        ] };
-      }
-      return { input: { ...input, projectKey: storageProjectKey, workspaceCwd: undefined, modelSelection: undefined, modelOverride: undefined, mode: leader.profile.config.permissionMode, basePermissionMode: leader.profile.config.permissionMode }, isMeta, metadata: { teamActivationId: activation.id, teamInputHash: inputHash, teamStopVersion: activation.stopVersion ?? 0 } };
+      await teamRuntime.assertActivation(input.sessionKey, activation.id, activation.stopVersion);
+      const inputHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, activationId: activation.id, stopVersion: activation.stopVersion });
+      return { input: { ...input, teamActivationId: activation.id, teamStopVersion: activation.stopVersion, projectKey: storageProjectKey, workspaceCwd: undefined, modelSelection: undefined, modelOverride: undefined, mode: leader.profile.config.permissionMode, basePermissionMode: leader.profile.config.permissionMode }, isMeta, metadata: { teamActivationId: activation.id, teamInputHash: inputHash, teamRequestHash: requestHash, teamStopVersion: activation.stopVersion, ...(isMeta ? internalTeamTurns.get(input.runId!)?.metadata : {}) } };
     },
     teamCommand: async input => {
       if (input.action === "inventory") await configStore.reload("team-inventory");
@@ -603,84 +652,12 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     toolResultsDir: resolve(tmpdir(), "pilotdeck-tool-output", process.pid.toString()),
     cron: options.cron,
     skillManager,
-    async manageCheckpoints(input) {
-      if (input.action !== "list" && input.action !== "diff") await protectTeamHistory(input.sessionKey, "restore history or files");
-      if (!input.sessionKey?.trim() || !["list", "diff", "preview", "restore", "undo", "git"].includes(input.action)) throw new CheckpointError("INVALID_ACTION", "A conversation and valid checkpoint action are required.");
+    async repositoryOperation(input) {
+      validateRepositoryOperation(input.repositoryOperation);
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey);
-      const store = await getCheckpointStore(projectKey, pilotHome);
-      if (input.action === "list" || input.action === "diff") {
-        if (!store.busy && !router.hasActiveTurn(input.sessionKey)) {
-          const release = await store.acquire();
-          try { await store.recoverInterrupted(input.sessionKey); } finally { release(); }
-        }
-        const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: input.sessionKey, now });
-        const { entries } = await readTranscript(storage.transcriptPath);
-        const activeTurns = new Set(activeTranscriptEntries(entries).filter(entry => entry.type === "accepted_input").map(entry => entry.turnId));
-        if (input.action === "diff") return store.diff(input.sessionKey, input.checkpointId ?? "", input.filePath ?? "", input.scope, activeTurns);
-        const checkpoints = await store.list(input.sessionKey);
-        const latest = checkpoints.filter(item => item.phase === "after").at(-1);
-        const sessionChanges = latest ? await store.selectChanges(latest, "session", activeTurns) : [];
-        return {
-          checkpoints: checkpoints.map(checkpoint => ({ ...store.summary(checkpoint), activeBranch: activeTurns.has(checkpoint.turnId) })),
-          sessionChanges: latest ? store.summary({ ...latest, changes: sessionChanges }).changes : [],
-          sessionRevision: createHash("sha256").update(JSON.stringify(sessionChanges)).digest("hex"),
-          operations: (await store.operations(input.sessionKey)).map(({ id, status, applied, skipped, createdAt, mode, checkpointId, undoOf }) => ({ id, status, applied, skipped, createdAt, mode, checkpointId, undoOf })),
-          busy: store.busy,
-        };
-      }
-      if (store.busy || router.hasActiveTurn(input.sessionKey)) throw new CheckpointError("WORKSPACE_BUSY", "The directory is being modified. Stop active turns and background tasks before restoring files or operating Git.");
-      if (input.action === "git") {
-        const root = input.repositoryOperation?.operation === "init" ? projectKey : await repositoryRoot(projectKey);
-        const repositoryStore = await getCheckpointStore(root, pilotHome);
-        if (repositoryStore.busy) throw new CheckpointError("WORKSPACE_BUSY", "The repository is being modified. Stop active turns and background tasks before operating Git.");
-        const release = await repositoryStore.acquire();
-        try { return await runRepositoryOperation(projectKey, input.repositoryOperation!); }
-        finally { release(); }
-      }
-      const runId = `checkpoint:${randomUUID()}`;
-      if (!router.beginTurn(input.sessionKey, runId)) throw new CheckpointError("WORKSPACE_BUSY", "The conversation is busy.");
-      const release = await store.acquire();
-      try {
-        await router.close(input.sessionKey);
-        const storage = createAgentProjectSessionStorage({ projectRoot: projectKey, pilotHome, sessionId: input.sessionKey, now });
-        const { entries, diagnostics } = await readTranscript(storage.transcriptPath);
-        if (diagnostics.some(item => item.severity === "error")) throw new CheckpointError("TRANSCRIPT_UNAVAILABLE", "Conversation history cannot be read safely.");
-        const activeEntries = activeTranscriptEntries(entries);
-        const activeTurns = new Set(activeEntries.filter(entry => entry.type === "accepted_input").map(entry => entry.turnId));
-        const messages = replayTranscriptEntries(entries).messages;
-        if (input.action === "preview") {
-          const checkpoint = await store.readCheckpoint(input.checkpointId ?? "", input.sessionKey);
-          if (input.scope === "since" && !activeTurns.has(checkpoint.turnId)) throw new CheckpointError("CONTEXT_UNAVAILABLE", "This turn is on a previous conversation branch. Review and restore this turn individually.");
-          const first = input.scope === "session" ? (await store.list(input.sessionKey)).find(item => item.phase === "before" && activeTurns.has(item.turnId)) : checkpoint;
-          const cutoff = activeEntries.findIndex(entry => entry.type === "accepted_input" && entry.turnId === first?.turnId);
-          if (input.mode !== "files" && input.mode !== undefined && cutoff < 0) throw new CheckpointError("CONTEXT_UNAVAILABLE", "This turn is not on the active conversation branch.");
-          return store.preview(input.sessionKey, checkpoint.id, input.scope, input.mode, {
-            contextBeforeHash: await store.putObject(Buffer.from(JSON.stringify(messages))),
-            visibleBeforeSequences: activeEntries.map(entry => entry.sequence),
-            visibleSequences: (cutoff < 0 ? activeEntries : activeEntries.slice(0, cutoff)).map(entry => entry.sequence),
-          }, activeTurns);
-        }
-        if (input.action === "undo") {
-          const boundaryIndex = activeEntries.findIndex(entry => entry.type === "control_boundary" && entry.boundary.kind === "restore" && entry.boundary.operationId === input.operationId);
-          const laterTurn = boundaryIndex < 0 || activeEntries.slice(boundaryIndex + 1).some(entry => entry.type === "accepted_input");
-          return store.undoPreview(input.sessionKey, input.operationId ?? "", {
-            contextBeforeHash: await store.putObject(Buffer.from(JSON.stringify(messages))), visibleBeforeSequences: activeEntries.map(entry => entry.sequence),
-            ...(laterTurn ? { mode: "files" } : {}),
-          });
-        }
-        const plan = await store.readPlan(input.sessionKey, input.planId ?? "");
-        if (plan.mode !== "files" && plan.contextBeforeHash !== await store.putObject(Buffer.from(JSON.stringify(messages)))) throw new CheckpointError("STALE_PLAN", "The conversation changed after the preview. Review the restore again.");
-        const operation = await store.restore(input.sessionKey, input.planId ?? "", input.paths);
-        if (!entries.some(entry => entry.type === "control_boundary" && entry.boundary.kind === "restore" && entry.boundary.operationId === operation.id)) {
-          const last = entries.at(-1);
-          storage.transcript.restoreState(last?.sequence ?? 0, last?.entryId ?? null);
-          const restored = operation.mode === "files" ? messages : JSON.parse((await store.readObject(operation.contextHash!)).toString("utf8")) as import("../model/index.js").CanonicalMessage[];
-          restored.push({ role: "user", content: [{ type: "text", text: `The user restored local files. Restored paths: ${operation.applied.join(", ") || "none"}. Preserved or conflicting paths: ${operation.skipped.join(", ") || "none"}. Re-read affected files before continuing; the current filesystem is authoritative.` }], metadata: { synthetic: true, purpose: "file-restoration" } });
-          await storage.transcript.recordControlBoundary(input.sessionKey, runId, { kind: "restore", operationId: operation.id, snapshot: { version: 1, messages: restored }, visibleSequences: operation.mode === "files" ? activeEntries.map(entry => entry.sequence) : operation.visibleSequences ?? [] });
-          await storage.transcript.recordAgentStatusMessage(input.sessionKey, runId, { event: "files_restored", kind: "status", text: operation.mode === "conversation" ? "对话已回退，文件保持不变" : `已恢复 ${operation.applied.length} 个文件，保留 ${operation.skipped.length} 个文件`, detail: { operationId: operation.id, files: operation.applied, skipped: operation.skipped } });
-        }
-        return operation;
-      } finally { release(); router.endTurn(input.sessionKey, runId); }
+      const operation = input.repositoryOperation;
+      const root = operation?.operation === "init" ? projectKey : await repositoryRoot(projectKey);
+      return withRepositoryOperationLock(root, () => runRepositoryOperation(projectKey, operation));
     },
     async commandsList(input) {
       const projectKey = await dialogProjects.resolveProjectKey(input.projectKey);
@@ -891,7 +868,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     registry,
     dispose: async () => {
       const disposingTeam = teamRuntime.dispose();
-      registry.invalidate();
+      const disposingRegistry = registry.dispose();
       router?.shutdown();
       stopConfigWatching();
       stopExtensionWatching();
@@ -899,7 +876,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       if (ownsTelemetry) {
         void telemetry.shutdown();
       }
-      await disposingTeam;
+      await Promise.all([disposingTeam, disposingRegistry]);
     },
     bindServer: (server) => { boundServer = server; },
     isProjectBusy: (projectKey: string) => router!.hasActiveUserTurn(projectKey),
@@ -948,6 +925,51 @@ type ProjectRuntimeRegistryOptions = {
   onProjectActivated?: (projectRoot: string) => void;
 };
 
+function teamCoordinationMessage(activation: TeamRuntimeActivation, messages: TeamRuntimeMessage[]): import("../model/index.js").CanonicalMessage {
+  return {
+    role: "user", content: [{ type: "text", text: "Team coordination (internal context, not a human request).\n" + messages.map(({ id, senderId, recipientId, intendedRecipientId, replyTo, relayOf, workId, text }) => JSON.stringify({ id, senderId, recipientId, intendedRecipientId, replyTo, relayOf, workId, text })).join("\n") }],
+    metadata: { synthetic: true, purpose: "team_runtime", teamActivationId: activation.id, teamStopVersion: activation.stopVersion, teamEventIds: messages.map(message => message.id) },
+  };
+}
+function teamNotificationMessage(activation: TeamRuntimeActivation, notifications: TeamRuntimeNotification[]): import("../model/index.js").CanonicalMessage {
+  const coordination = notifications.flatMap(notice => notice.messageId ? activation.messages.filter(message => message.id === notice.messageId) : []);
+  const message = teamCoordinationMessage(activation, coordination);
+  message.content = [{ type: "text", text: "Team updates (internal background context). Ordinary messages do not imply task completion. Collect final task results by work ID using team_collect.\n"
+    + notifications.filter(notice => notice.kind !== "message").map(({ id, kind, workId, participantId, summary }) => JSON.stringify({ id, kind, workId, participantId, summary })).join("\n")
+    + "\n" + coordination.map(({ id, senderId, recipientId, intendedRecipientId, replyTo, relayOf, workId, text }) => JSON.stringify({ id, senderId, recipientId, intendedRecipientId, replyTo, relayOf, workId, text })).join("\n") }];
+  message.metadata!.teamEventIds = notifications.map(notice => notice.id);
+  return message;
+}
+function teamAcceptedInputReplay(transcript: Awaited<ReturnType<typeof readTranscript>>, input: import("../gateway/protocol/types.js").GatewaySubmitTurnInput, running = false): import("../gateway/protocol/types.js").GatewayEvent[] | undefined {
+  if (transcript.diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Team conversation history cannot be read safely.");
+  const accepted = transcript.entries.find(item => item.type === "accepted_input" && item.turnId === input.runId);
+  if (accepted?.type !== "accepted_input" || !accepted.metadata?.teamActivationId) return;
+  const hash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, teamSelection: input.teamSelection, teamActivationId: input.teamActivationId, teamStopVersion: input.teamStopVersion });
+  const legacyHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, activationId: accepted.metadata.teamActivationId });
+  if (accepted.metadata.teamRequestHash ? accepted.metadata.teamRequestHash !== hash : accepted.metadata.teamInputHash !== legacyHash) throw new DialogGatewayError("TEAM_INPUT_CONFLICT", "This input token was already accepted with different contents.");
+  const result = transcript.entries.find(item => item.type === "turn_result" && item.turnId === input.runId);
+  return [
+    { type: "input_accepted", runId: input.runId! },
+    { type: "agent_status", event: "team_input_already_accepted", detail: { running, interrupted: !running && !result, message: "This input was already accepted. This receipt does not execute it again." } },
+    { type: "turn_completed", usage: {}, finishReason: "completed" },
+  ];
+}
+async function teamEventsApplied(transcriptPath: string, ids: string[], activation: TeamRuntimeActivation): Promise<boolean> {
+  const transcript = await readTranscript(transcriptPath);
+  if (transcript.diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Cannot verify Team delivery receipts.");
+  const applied = new Set<string>();
+  for (const entry of transcript.entries) {
+    if (entry.type === "accepted_input" && entry.metadata?.teamActivationId === activation.id && entry.metadata?.teamStopVersion === activation.stopVersion) {
+      for (const id of Array.isArray(entry.metadata.teamEventIds) ? entry.metadata.teamEventIds : []) applied.add(String(id));
+    }
+    const messages = entry.type === "accepted_input" ? entry.messages : "message" in entry ? [entry.message] : [];
+    for (const message of messages) if (message.metadata?.purpose === "team_runtime" && message.metadata.teamActivationId === activation.id && message.metadata.teamStopVersion === activation.stopVersion) {
+      for (const id of Array.isArray(message.metadata.teamEventIds) ? message.metadata.teamEventIds : []) applied.add(String(id));
+    }
+  }
+  return ids.length > 0 && ids.every(id => applied.has(id));
+}
+
 type ProjectRuntime = {
   projectRoot: string;
   snapshot: ReturnType<typeof loadPilotConfig>;
@@ -990,6 +1012,8 @@ const DEFAULT_BROWSER_NAVIGATION_TIMEOUT_MS = 90_000;
 class ProjectRuntimeRegistry {
   private teamRuntime?: TeamRuntime;
   private readonly teamRoles = new Map<string, { activation: TeamRuntimeActivation; participant: TeamRuntimeParticipant }>();
+  private readonly teamMessageDelivery = new TeamMessageDelivery();
+  private readonly activeTeamParticipants = new Map<string, { session: AgentSession; turnId: string; executionId: string; stopVersion: number }>();
   private readonly teamParticipantStatus = new Map<string, TeamParticipantExecution["updateStatus"]>();
   private teamEvent?: (sessionKey: string, projectKey: string | undefined, event: import("../gateway/protocol/types.js").GatewayEvent) => void;
   setTeamRuntime(runtime: TeamRuntime, emit: NonNullable<ProjectRuntimeRegistry["teamEvent"]>): void { this.teamRuntime = runtime; this.teamEvent = emit; }
@@ -1040,25 +1064,47 @@ class ProjectRuntimeRegistry {
       .map(spec => patchProjectScopedMcpSpec(spec, runtime.projectRoot, this.options.pilotHome));
   }
 
+  async deliverTeamMessages(input: { activation: TeamRuntimeActivation; participant: TeamRuntimeParticipant; messages: TeamRuntimeMessage[]; signal: AbortSignal }): Promise<boolean> {
+    const sessionKey = `team-internal:${input.activation.id}:${input.participant.id}`;
+    const active = this.activeTeamParticipants.get(sessionKey);
+    if (!active || active.stopVersion !== input.activation.stopVersion) return false;
+    const message = teamCoordinationMessage(input.activation, input.messages);
+    const itemId = `team-event:${input.activation.id}:${input.activation.stopVersion}:${input.messages[0]!.batchId ?? input.messages.map(message => message.id).join(":")}`;
+    return this.teamMessageDelivery.deliver({ sessionKey, turnId: active.turnId, itemId, message, signal: input.signal,
+      isCurrent: async () => { const current = (await this.teamRuntime!.get(input.activation.sessionKey)).activation; return this.activeTeamParticipants.get(sessionKey) === active && current?.id === input.activation.id && current.stopVersion === input.activation.stopVersion && current.status === "active"; },
+      wasApplied: () => teamEventsApplied(this.teamParticipantStorage(input.activation.id, input.participant.id).transcriptPath, input.messages.map(message => message.id), input.activation),
+      enqueue: beforeApply => active.session.steer({ turnId: active.turnId, itemId, message, beforeApply }),
+      cancel: () => { active.session.cancelSteer({ turnId: active.turnId, itemId }); },
+    });
+  }
+
   async executeTeamParticipant(input: TeamParticipantExecution): Promise<{ text: string }> {
     const sessionKey = `team-internal:${input.activation.id}:${input.participant.id}`;
     this.teamRoles.set(sessionKey, { activation: input.activation, participant: input.participant });
     this.teamParticipantStatus.set(sessionKey, input.updateStatus);
     let session: AgentSession | undefined;
-    const onAbort = () => session?.abort("team_stopped");
+    const onAbort = () => { session?.abort("team_stopped"); this.teamMessageDelivery.close(sessionKey); this.gateway?.clearTeamPrompts(sessionKey); };
     let text = "";
     try {
+      const storage = this.teamParticipantStorage(input.activation.id, input.participant.id);
+      const pendingMessages: TeamRuntimeMessage[] = [];
+      for (const message of input.messages ?? []) if (!await teamEventsApplied(storage.transcriptPath, [message.id], input.activation)) pendingMessages.push(message);
+      if (!input.work && input.messages?.length && !pendingMessages.length) { await input.acceptMessages(); return { text: "" }; }
       const context = { sessionKey, projectKey: input.participant.projectKey, channelKey: "team" };
       const prepared = await this.prepareSessionRuntime(context);
-      const storage = this.teamParticipantStorage(input.activation.id, input.participant.id);
       const config = this.createAgentConfig(prepared.runtime, sessionKey);
       session = (await resumeAgentSession({ sessionId: sessionKey, config: { ...config, isSubagent: true }, dependencies: prepared.baseDependencies, projectStorage: prepared.runtime.projectStorage, storage, extendDependencies: prepared.extendDependencies, collectFileArtifacts: false })).session;
       input.signal.addEventListener("abort", onAbort, { once: true });
-      const prompt = [input.work ? `Task ${input.work.id}:\n${input.work.task}\n\nAttached context:\n${input.work.context ?? "(none)"}` : "Coordination messages received. Respond with team_send_message when needed; this is not a delegated task.", ...(input.messages ?? []).map(message => `Message ${message.id} from ${message.senderId}, intended for ${message.intendedRecipientId}:\n${message.text}`)].join("\n\n");
+      const prompt = [input.work ? `Task ${input.work.id}:\n${input.work.task}\n\nAttached context:\n${input.work.context ?? "(none)"}` : "Coordination messages received. Respond with team_send_message when needed; this is not a delegated task.", ...pendingMessages.map(({ id, senderId, recipientId, intendedRecipientId, replyTo, relayOf, workId, text }) => JSON.stringify({ id, senderId, recipientId, intendedRecipientId, replyTo, relayOf, workId, text }))].join("\n\n");
       if (input.signal.aborted) throw new Error("Team participant was stopped.");
       // A waiting task may resume several times. Each model turn gets its own
       // token namespace; the durable work ID remains the result correlation.
-      for await (const event of session.submit({ type: "text", text: prompt, isMeta: true }, { turnId: randomUUID(), metadata: { teamActivationId: input.activation.id, teamWorkId: input.work?.id }, maxTurns: 25, abortSignal: input.signal })) {
+      const turnId = randomUUID();
+      this.activeTeamParticipants.set(sessionKey, { session, turnId, executionId: input.executionId, stopVersion: input.activation.stopVersion });
+      for await (const event of session.submit({ type: "text", text: prompt, isMeta: true }, { turnId, metadata: { teamActivationId: input.activation.id, teamStopVersion: input.activation.stopVersion, teamWorkId: input.work?.id, teamEventIds: input.messages?.map(message => message.id) ?? [] }, maxTurns: 25, abortSignal: input.signal })) {
+        this.teamMessageDelivery.observe(sessionKey, event);
+        if (event.type === "model_event" && event.event.type === "request_started") void this.teamRuntime!.onExecutionReady(input.activation.sessionKey).catch(() => {});
+        if (event.type === "input_accepted") await input.acceptMessages();
         if (event.type === "model_event" && event.event.type === "text_delta") text += event.event.text;
         if (event.type === "turn_failed") throw new Error(event.error.message);
       }
@@ -1066,9 +1112,11 @@ class ProjectRuntimeRegistry {
       return { text };
     } finally {
       input.signal.removeEventListener("abort", onAbort);
+      this.teamMessageDelivery.close(sessionKey);
+      if (this.activeTeamParticipants.get(sessionKey)?.executionId === input.executionId) this.activeTeamParticipants.delete(sessionKey);
       this.gateway?.clearTeamPrompts(sessionKey);
       await session?.dispose();
-      this.evictSessionMcp(sessionKey);
+      await this.evictSessionMcp(sessionKey);
       this.teamRoles.delete(sessionKey);
       this.teamParticipantStatus.delete(sessionKey);
     }
@@ -1079,7 +1127,7 @@ class ProjectRuntimeRegistry {
     const transcriptPath = joinPath(chatDir, "context.jsonl");
     const subagentsDir = joinPath(chatDir, "subagents");
     const subagentTranscriptPath = (id: string) => joinPath(subagentsDir, `${sanitizeSessionIdForPath(id)}.jsonl`);
-    return { chatDir, transcriptPath, subagentsDir, subagentTranscriptPath, toolResultsDir: joinPath(chatDir, "tool-results"), fileHistoryDir: joinPath(chatDir, "file-history"), transcript: new JsonlTranscriptWriter({ path: transcriptPath, now: this.options.now, subagentTranscriptPath }) };
+    return { chatDir, transcriptPath, subagentsDir, subagentTranscriptPath, toolResultsDir: joinPath(chatDir, "tool-results"), transcript: new JsonlTranscriptWriter({ path: transcriptPath, now: this.options.now, subagentTranscriptPath }) };
   }
   private readonly runtimes = new Map<string, ProjectRuntime>();
   private usageCounter?: UsageCounter;
@@ -1121,6 +1169,8 @@ class ProjectRuntimeRegistry {
    * evicts the session (idle sweep, explicit close, or dirty-recreate).
    */
   private readonly sessionMcpRuntimes = new Map<string, McpRuntime>();
+  private readonly sessionMcpClosures = new Map<string, Promise<void>>();
+  private readonly runtimeCleanups = new Set<Promise<void>>();
 
   private _extraTools: PilotDeckToolDefinition[];
   private _sessionOverrides: SessionConfigOverrides | undefined;
@@ -1137,12 +1187,38 @@ class ProjectRuntimeRegistry {
    * Stop and discard the per-session MCP runtime for `sessionKey`.
    * Called by the `SessionRouter.onSessionEvict` callback.
    */
-  evictSessionMcp(sessionKey: string): void {
+  evictSessionMcp(sessionKey: string): Promise<void> {
+    const closing = this.sessionMcpClosures.get(sessionKey);
+    if (closing) return closing;
     const mcp = this.sessionMcpRuntimes.get(sessionKey);
-    if (mcp) {
-      this.sessionMcpRuntimes.delete(sessionKey);
-      mcp.stop().catch(() => {});
-    }
+    if (!mcp) return Promise.resolve();
+    const operation = Promise.resolve().then(() => mcp.stop()).then(() => {
+      if (this.sessionMcpRuntimes.get(sessionKey) === mcp) this.sessionMcpRuntimes.delete(sessionKey);
+    }).finally(() => {
+      if (this.sessionMcpClosures.get(sessionKey) === operation) this.sessionMcpClosures.delete(sessionKey);
+    });
+    this.sessionMcpClosures.set(sessionKey, operation);
+    // Ordinary eviction can be best-effort; Team stop/disposal await this same
+    // promise and therefore cannot claim cleanup before the connection closes.
+    void operation.catch(() => {});
+    return operation;
+  }
+
+  async awaitTeamMcpCleanup(activationId: string): Promise<void> {
+    const prefix = `team-internal:${activationId}:`;
+    const keys = new Set([...this.sessionMcpRuntimes.keys(), ...this.sessionMcpClosures.keys()]);
+    await Promise.all([...keys].filter(key => key.startsWith(prefix)).map(key => this.evictSessionMcp(key)));
+  }
+
+  private trackRuntimeCleanup(operation: Promise<void>): void {
+    const tracked = operation.finally(() => this.runtimeCleanups.delete(tracked));
+    this.runtimeCleanups.add(tracked);
+    void tracked.catch(() => {});
+  }
+
+  async dispose(): Promise<void> {
+    this.invalidate();
+    await Promise.all([...this.sessionMcpClosures.values(), ...this.runtimeCleanups]);
   }
 
   setGateway(gateway: InProcessGateway): void {
@@ -1230,26 +1306,23 @@ class ProjectRuntimeRegistry {
    * discarding the entry.
    */
   invalidate(projectRoot?: string): void {
-    for (const [, mcp] of this.sessionMcpRuntimes) {
-      mcp.stop().catch(() => {});
-    }
-    this.sessionMcpRuntimes.clear();
+    for (const sessionKey of this.sessionMcpRuntimes.keys()) void this.evictSessionMcp(sessionKey).catch(() => {});
 
     if (projectRoot) {
       const runtime = this.runtimes.get(projectRoot);
       if (runtime?.mcpRuntime) {
-        runtime.mcpRuntime.stop().catch(() => {});
+        this.trackRuntimeCleanup(runtime.mcpRuntime.stop());
       }
       runtime?.memoryService?.close();
-      runtime?.router?.shutdown().catch(() => {});
+      if (runtime?.router) this.trackRuntimeCleanup(runtime.router.shutdown());
       this.runtimes.delete(projectRoot);
     } else {
       for (const [, runtime] of this.runtimes) {
         if (runtime.mcpRuntime) {
-          runtime.mcpRuntime.stop().catch(() => {});
+          this.trackRuntimeCleanup(runtime.mcpRuntime.stop());
         }
         runtime.memoryService?.close();
-        runtime.router?.shutdown().catch(() => {});
+        if (runtime.router) this.trackRuntimeCleanup(runtime.router.shutdown());
       }
       this.runtimes.clear();
     }
@@ -1565,7 +1638,7 @@ class ProjectRuntimeRegistry {
     const perSpecs = teamRole ? this.teamMcpSpecs(runtime, teamRole.participant.capabilities.mcpServers) : runtime.perSessionServerSpecs;
     const maxInstances = runtime.snapshot.config.gateway?.maxPerSessionMcpInstances ?? 5;
     if (perSpecs && perSpecs.length > 0 && (teamRole || this.sessionMcpRuntimes.size < maxInstances)) {
-      this.evictSessionMcp(context.sessionKey);
+      await this.evictSessionMcp(context.sessionKey);
       const patchedPerSpecs = perSpecs.map((spec) => {
         if (spec.transport === "stdio" && spec.id === "browser-use") {
           const outDir = resolveBrowserUseOutputDir({
@@ -1608,7 +1681,7 @@ class ProjectRuntimeRegistry {
           }
         }
       } catch (err) {
-        if (teamRole) { this.evictSessionMcp(context.sessionKey); throw err; }
+        if (teamRole) { await this.evictSessionMcp(context.sessionKey); throw err; }
         // eslint-disable-next-line no-console
         console.warn(
           `[pilotdeck] Per-session MCP startup failed for ${context.sessionKey}:`,
@@ -1665,11 +1738,18 @@ class ProjectRuntimeRegistry {
       for (const tool of sessionTools.list()) if (!teamRole.participant.capabilities.tools.includes(tool.name) && !allowedMcpTools.has(tool.name)) sessionTools.unregister(tool.name);
       const allowedSkills = new Set(teamRole.participant.capabilities.skills);
       if (sessionTools.has("read_skill")) sessionTools.replace(createReadSkillTool({ loader: name => allowedSkills.has(name) ? runtime.pluginRuntime.loadSkillPrompt(name) : Promise.resolve(undefined), lister: () => runtime.pluginRuntime.getAllSkills().filter(skill => allowedSkills.has(skill.name)) }));
-      for (const tool of createTeamRuntimeTools(this.teamRuntime!, { sessionKey: teamRole.activation.sessionKey, activationId: teamRole.activation.id, participantId: teamRole.participant.id })) {
+      for (const tool of createTeamRuntimeTools(this.teamRuntime!, { sessionKey: teamRole.activation.sessionKey, activationId: teamRole.activation.id, participantId: teamRole.participant.id, stopVersion: teamRole.activation.stopVersion })) {
         if (teamRole.participant.role === "teammate" && ["team_delegate", "team_followup", "team_relay_message"].includes(tool.name)) continue;
         if (teamRole.participant.role === "leader" && tool.name === "team_wait_for_information") continue;
         sessionTools.register(tool);
       }
+      // Fence actual tool entry as well as coordination tools, including nested
+      // calls and approval responses racing a persisted stop.
+      for (const tool of sessionTools.list()) sessionTools.replace({ ...tool, execute: async (input, toolContext) => {
+        const current = await this.teamRuntime!.assertActivation(teamRole.activation.sessionKey, teamRole.activation.id, teamRole.activation.stopVersion);
+        if (current?.status !== "active" || toolContext.abortSignal?.aborted) throw new DialogGatewayError("TEAM_STOPPED", "This Team execution is no longer active.");
+        return tool.execute(input, toolContext);
+      } });
     }
 
     // Inject the gateway's interactive permission hook so the agent's
@@ -1685,10 +1765,16 @@ class ProjectRuntimeRegistry {
     // and the hook auto-denies — better than silently hanging.
     const gw = this.gateway;
     const emitInteractive = (event: import("../gateway/protocol/types.js").GatewayEvent): boolean => {
+      if (teamRole && gw) {
+        const updateStatus = this.teamParticipantStatus.get(context.sessionKey);
+        gw.registerTeamPrompt(teamRole.activation.sessionKey, context.sessionKey, event, () => { void updateStatus?.("running").catch(() => {}); }, async () => {
+          const current = await this.teamRuntime!.assertActivation(teamRole.activation.sessionKey, teamRole.activation.id, teamRole.activation.stopVersion);
+          return current?.status === "active";
+        });
+      }
       if (teamRole?.participant.role === "teammate" && gw) {
         const updateStatus = this.teamParticipantStatus.get(context.sessionKey);
         if (event.type === "permission_request" || event.type === "elicitation_request") void updateStatus?.("waiting_approval").catch(() => {});
-        gw.registerTeamPrompt(teamRole.activation.sessionKey, context.sessionKey, event, () => { void updateStatus?.("running").catch(() => {}); });
         if (event.type === "permission_request") event = { ...event, payload: { participant: teamRole.participant.profile.config.displayName, input: event.payload } };
         this.teamEvent?.(teamRole.activation.sessionKey, teamRole.activation.storageProjectKey, event);
         return true;
@@ -1735,9 +1821,22 @@ class ProjectRuntimeRegistry {
     const memoryResolver = runtime.memory;
     const now = this.options.now;
     const eventBuf = createAgentEventBuffer();
+    const assertTeamExecution = async () => {
+      if (!teamRole) return;
+      const current = await this.teamRuntime!.assertActivation(teamRole.activation.sessionKey, teamRole.activation.id, teamRole.activation.stopVersion);
+      if (current?.status !== "active") throw new DialogGatewayError("TEAM_STOPPED", "This Team execution is no longer active.");
+    };
+    const sessionRouter: import("../agent/runtime/AgentRuntimeDependencies.js").AgentRouterRuntime = teamRole ? {
+      decide: runtime.router.decide.bind(runtime.router),
+      materializeRequest: runtime.router.materializeRequest.bind(runtime.router),
+      observeUsage: runtime.router.observeUsage.bind(runtime.router),
+      invalidateSticky: runtime.router.invalidateSticky.bind(runtime.router),
+      async *execute(...args) { await assertTeamExecution(); yield* runtime.router.execute(...args); },
+      async *stream(...args) { await assertTeamExecution(); yield* runtime.router.stream(...args); },
+    } : runtime.router;
 
     const baseDependencies: CreateAgentSessionOptions["dependencies"] = {
-      router: runtime.router,
+      router: sessionRouter,
       tools: { registry: sessionTools },
       lifecycle,
       now: this.options.now,
@@ -1785,7 +1884,7 @@ class ProjectRuntimeRegistry {
       const compactionEngine = new CompactionEngine({
         model: {
           stream: (request, signal) =>
-            runtime.router.stream(request, {
+            sessionRouter.stream(request, {
               sessionId: context.sessionKey,
               turnId: "compact",
               projectPath: context.projectKey,
@@ -1849,9 +1948,6 @@ class ProjectRuntimeRegistry {
         maxContextTokens: runtime.snapshot.config.agent.maxContextTokens ?? caps.maxContextTokens,
         now,
       });
-      const fileHistory = this.shouldCollectFileArtifacts(runtime)
-        ? new WorkspaceCheckpoints(this.createAgentConfig(runtime, context.sessionKey).cwd, this.options.pilotHome)
-        : undefined;
       const gw = this.gateway;
       const elicitation = this.options.autoElicitation
         ? createAutoElicitationChannel()
@@ -1917,7 +2013,6 @@ class ProjectRuntimeRegistry {
       const planTodoManager = createPlanTodoStateManager();
       return {
         context: contextRuntime,
-        fileHistory,
         subagentTranscript,
         elicitation,
         planFileManager,
@@ -2024,10 +2119,11 @@ class ProjectRuntimeRegistry {
       permissionMode,
       ...(teamRole ? { appendSystemPrompt: [
         `You are ${teamRole.participant.profile.config.displayName}, the ${teamRole.participant.role} of Team ${teamRole.activation.team.config.displayName}.`,
+        teamRole.activation.stopVersion > 0 ? "A previous Team run was stopped or interrupted. Its tasks, messages, approvals, and notifications are historical and no longer executable. Act only on the current human request and current-run coordination." : "",
         teamRole.participant.profile.config.systemPrompt,
         teamRole.activation.team.config.instructions,
         `Team roster: ${teamRole.activation.participants.map(item => `${item.id}: ${item.profile.config.displayName} (${item.role})`).join("; ")}`,
-        teamRole.participant.role === "leader" ? "Answer the human in this conversation. Delegate independent work asynchronously using team_delegate. A task receipt means admitted, not completed. Read durable results with team_collect. Teammate peer messages arrive for your mediation: preserve sender and relay references when forwarding. Do not claim completion before collecting results. You may answer simple requests directly." : "You have only your own context and explicitly attached task context. Use team_send_message for coordination; peer messages go through the Leader. Do not impersonate another participant, delegate work, or approve permissions. Return your completed task result in your final response.",
+        teamRole.participant.role === "leader" ? "Answer the human in this conversation. Delegate independent work asynchronously using team_delegate. A task receipt means admitted, not completed. Read durable results with team_collect. Teammate peer messages arrive for your mediation: preserve sender and relay references when forwarding. Do not claim completion before collecting results. You may answer simple requests directly." : "You have only your own context and explicitly attached task context. Use team_send_message for coordination; peer messages go through the Leader. Do not impersonate another participant, delegate work, or approve permissions. Use team_send_message only for questions, progress, clarification, and coordination; never send final deliverables through it. Return your completed task result only in your final response.",
         "Capability settings restrict tool interfaces, skill entry points and MCP access. They are not an operating-system sandbox. Follow the existing human permission and approval mechanisms.",
       ].join("\n\n") } : {}),
       jsonSelfCorrect: true,
@@ -2057,14 +2153,13 @@ function mergeSessionDependencies(
   extension: Partial<
     Pick<
       AgentRuntimeDependencies,
-      "context" | "fileHistory" | "subagentTranscript" | "elicitation" | "eventEmitter" | "drainEvents" | "planFileManager" | "planTodoManager"
+      "context" | "subagentTranscript" | "elicitation" | "eventEmitter" | "drainEvents" | "planFileManager" | "planTodoManager"
     >
   >,
 ): CreateAgentSessionOptions["dependencies"] {
   return {
     ...base,
     ...(extension.context ? { context: extension.context } : {}),
-    ...(extension.fileHistory ? { fileHistory: extension.fileHistory } : {}),
     ...(extension.subagentTranscript ? { subagentTranscript: extension.subagentTranscript } : {}),
     ...(extension.elicitation ? { elicitation: extension.elicitation } : {}),
     ...(extension.eventEmitter ? { eventEmitter: extension.eventEmitter } : {}),

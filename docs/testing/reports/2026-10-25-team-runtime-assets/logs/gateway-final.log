@@ -1,0 +1,189 @@
+TAP version 13
+# (node:63045) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"one","decisionType":"skip","snapshot":{"tokens":1555,"estimateSource":"estimator","localEstimateTokens":1555,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.054234095982142856,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"two","decisionType":"skip","snapshot":{"tokens":1602,"estimateSource":"estimator","localEstimateTokens":1602,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.055873325892857144,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: Team binds current conversation with frozen persona/model/capabilities and reopens after restart
+ok 1 - Team binds current conversation with frozen persona/model/capabilities and reopens after restart
+  ---
+  duration_ms: 531.819958
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"capabilities","decisionType":"skip","snapshot":{"tokens":1827,"estimateSource":"estimator","localEstimateTokens":1827,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.063720703125,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"capabilities","decisionType":"skip","snapshot":{"tokens":1949,"estimateSource":"estimator","localEstimateTokens":1949,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.06797572544642858,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"capabilities","decisionType":"skip","snapshot":{"tokens":2067,"estimateSource":"estimator","localEstimateTokens":2067,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.07209123883928571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"capabilities","decisionType":"skip","snapshot":{"tokens":2189,"estimateSource":"estimator","localEstimateTokens":2189,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.07634626116071429,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: forbidden direct, alias and execute_code nested tool calls cannot escape the role registry
+ok 2 - forbidden direct, alias and execute_code nested tool calls cannot escape the role registry
+  ---
+  duration_ms: 285.798625
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"d03d6987-b688-4b6c-91d1-986d5ab4916e","decisionType":"skip","snapshot":{"tokens":1527,"estimateSource":"estimator","localEstimateTokens":1527,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.053257533482142856,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"d03d6987-b688-4b6c-91d1-986d5ab4916e","decisionType":"skip","snapshot":{"tokens":1560,"estimateSource":"estimator","localEstimateTokens":1560,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.054408482142857144,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: unauthorized skills are absent from context and reader; unauthorized MCP is never connected
+ok 3 - unauthorized skills are absent from context and reader; unauthorized MCP is never connected
+  ---
+  duration_ms: 209.78825
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"journal-one","decisionType":"skip","snapshot":{"tokens":1558,"estimateSource":"estimator","localEstimateTokens":1558,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05433872767857143,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: missing runtime records never silently demote a Team conversation to ordinary chat
+ok 4 - missing runtime records never silently demote a Team conversation to ordinary chat
+  ---
+  duration_ms: 199.240834
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"ordinary-history","decisionType":"skip","snapshot":{"tokens":7261,"estimateSource":"estimator","localEstimateTokens":7261,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.2532435825892857,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"continue-existing","decisionType":"skip","snapshot":{"tokens":1570,"estimateSource":"estimator","localEstimateTokens":1570,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05475725446428571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: existing conversation storage is authoritative for Team preview, selection and first-send binding after restart
+ok 5 - existing conversation storage is authoritative for Team preview, selection and first-send binding after restart
+  ---
+  duration_ms: 243.305208
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"general-before-team","decisionType":"skip","snapshot":{"tokens":7260,"estimateSource":"estimator","localEstimateTokens":7260,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.25320870535714285,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# Subtest: General conversation storage cannot be replaced by its selected Team execution project
+ok 6 - General conversation storage cannot be replaced by its selected Team execution project
+  ---
+  duration_ms: 224.807
+  type: 'test'
+  ...
+# Subtest: stop while async Team preflight is pending prevents session creation and human acceptance
+ok 7 - stop while async Team preflight is pending prevents session creation and human acceptance
+  ---
+  duration_ms: 0.323375
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"stable-input","decisionType":"skip","snapshot":{"tokens":1554,"estimateSource":"estimator","localEstimateTokens":1554,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05419921875,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# Subtest: first input selection is durable and duplicate retry/restart never calls model twice
+ok 8 - first input selection is durable and duplicate retry/restart never calls model twice
+  ---
+  duration_ms: 260.775917
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"general","decisionType":"skip","snapshot":{"tokens":1556,"estimateSource":"estimator","localEstimateTokens":1556,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05426897321428571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: General conversation retains its transcript path while Team runs in registered project
+ok 9 - General conversation retains its transcript path while Team runs in registered project
+  ---
+  duration_ms: 202.625333
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"delegate","decisionType":"skip","snapshot":{"tokens":1557,"estimateSource":"estimator","localEstimateTokens":1557,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05430385044642857,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"delegate","decisionType":"skip","snapshot":{"tokens":1692,"estimateSource":"estimator","localEstimateTokens":1692,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05901227678571429,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:3a810364-805b-4e36-8486-3b62c4c93684:72d0d89e-dbd1-4356-8470-e08301d5e14f","turnId":"6106ff3e-4e53-4a24-bc2c-e55adef1b4b7","decisionType":"skip","snapshot":{"tokens":1273,"estimateSource":"estimator","localEstimateTokens":1273,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.044398716517857144,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"team:3a810364-805b-4e36-8486-3b62c4c93684:0:ec6cf8db-8da1-48f4-ae08-21c29763aa33","decisionType":"skip","snapshot":{"tokens":1855,"estimateSource":"estimator","localEstimateTokens":1855,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.064697265625,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: async teammate execution stays internal and durable results resume Leader in the same chat
+ok 10 - async teammate execution stays internal and durable results resume Leader in the same chat
+  ---
+  duration_ms: 371.304417
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:3af56c19-64cf-43ca-9d5f-db8897176d21:1d03b2f2-6e98-49ac-b4b1-40c03b6d8ace","turnId":"0b31a5a7-058b-4a86-9116-ded31a5055a8","decisionType":"skip","snapshot":{"tokens":1150,"estimateSource":"estimator","localEstimateTokens":1150,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.04010881696428571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:3af56c19-64cf-43ca-9d5f-db8897176d21:1d03b2f2-6e98-49ac-b4b1-40c03b6d8ace","turnId":"0b31a5a7-058b-4a86-9116-ded31a5055a8","decisionType":"skip","snapshot":{"tokens":1340,"estimateSource":"estimator","localEstimateTokens":1340,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.04673549107142857,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:3af56c19-64cf-43ca-9d5f-db8897176d21:1d03b2f2-6e98-49ac-b4b1-40c03b6d8ace","turnId":"c2752323-90fd-427f-a586-f50fb9dad86d","decisionType":"skip","snapshot":{"tokens":1362,"estimateSource":"estimator","localEstimateTokens":1362,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.04750279017857143,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:3af56c19-64cf-43ca-9d5f-db8897176d21:1d03b2f2-6e98-49ac-b4b1-40c03b6d8ace","turnId":"c2752323-90fd-427f-a586-f50fb9dad86d","decisionType":"skip","snapshot":{"tokens":1552,"estimateSource":"estimator","localEstimateTokens":1552,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05412946428571429,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"team:3af56c19-64cf-43ca-9d5f-db8897176d21:0:57d6f541-50a4-4388-9e57-7f57568e92c7","decisionType":"skip","snapshot":{"tokens":1590,"estimateSource":"estimator","localEstimateTokens":1590,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.055454799107142856,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: resuming the same member work gives each model turn a distinct tool retry namespace
+ok 11 - resuming the same member work gives each model turn a distinct tool retry namespace
+  ---
+  duration_ms: 256.907333
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"permission-human","decisionType":"skip","snapshot":{"tokens":2163,"estimateSource":"estimator","localEstimateTokens":2163,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.075439453125,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"permission-human","decisionType":"skip","snapshot":{"tokens":2293,"estimateSource":"estimator","localEstimateTokens":2293,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.07997349330357142,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:eaee1250-c578-4806-986b-7a8326282cb0:14b75b8f-909a-4018-92db-e1b16865da79","turnId":"819e61b4-1543-4823-812e-e01c87afce2e","decisionType":"skip","snapshot":{"tokens":1877,"estimateSource":"estimator","localEstimateTokens":1877,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.06546456473214286,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:eaee1250-c578-4806-986b-7a8326282cb0:14b75b8f-909a-4018-92db-e1b16865da79","turnId":"819e61b4-1543-4823-812e-e01c87afce2e","decisionType":"skip","snapshot":{"tokens":1980,"estimateSource":"estimator","localEstimateTokens":1980,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.06905691964285714,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: member human permission survives Leader end and refresh, scopes decisions to parent, and resumes work
+ok 12 - member human permission survives Leader end and refresh, scopes decisions to parent, and resumes work
+  ---
+  duration_ms: 419.1735
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"busy-leader","decisionType":"skip","snapshot":{"tokens":1454,"estimateSource":"estimator","localEstimateTokens":1454,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05071149553571429,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"busy-leader","decisionType":"skip","snapshot":{"tokens":1587,"estimateSource":"estimator","localEstimateTokens":1587,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05535016741071429,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:b4f1166d-9e7b-4c13-887b-7498ee8762d4:a71a2c08-216f-4ee0-bf9e-affbd421a5fa","turnId":"70722560-e213-4510-b185-18f1f5018d51","decisionType":"skip","snapshot":{"tokens":1170,"estimateSource":"estimator","localEstimateTokens":1170,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.040806361607142856,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:b4f1166d-9e7b-4c13-887b-7498ee8762d4:a71a2c08-216f-4ee0-bf9e-affbd421a5fa","turnId":"70722560-e213-4510-b185-18f1f5018d51","decisionType":"skip","snapshot":{"tokens":1376,"estimateSource":"estimator","localEstimateTokens":1376,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.04799107142857143,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [team:delivery] {"at":"2026-10-25T05:58:39.289Z","state":"enqueued","sessionKey":"web:team-test","turnId":"busy-leader","eventId":"team-event:b4f1166d-9e7b-4c13-887b-7498ee8762d4:0:49c78dff-d0ce-42e3-8737-311053ebd2a7","activationId":"b4f1166d-9e7b-4c13-887b-7498ee8762d4","stopVersion":0}
+# [team:delivery] {"at":"2026-10-25T05:58:39.292Z","state":"applied","reason":"steer_applied","sessionKey":"web:team-test","turnId":"busy-leader","eventId":"team-event:b4f1166d-9e7b-4c13-887b-7498ee8762d4:0:49c78dff-d0ce-42e3-8737-311053ebd2a7","activationId":"b4f1166d-9e7b-4c13-887b-7498ee8762d4","stopVersion":0}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"busy-leader","decisionType":"skip","snapshot":{"tokens":1740,"estimateSource":"estimator","localEstimateTokens":1740,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.06068638392857143,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"team:b4f1166d-9e7b-4c13-887b-7498ee8762d4:0:959f5e1b-6f49-4812-9d26-1f4524211d5e","decisionType":"skip","snapshot":{"tokens":1903,"estimateSource":"estimator","localEstimateTokens":1903,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.06637137276785714,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: same-workspace member message reaches busy Leader before next LLM without ending its run
+ok 13 - same-workspace member message reaches busy Leader before next LLM without ending its run
+  ---
+  duration_ms: 484.846709
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"member-note","decisionType":"skip","snapshot":{"tokens":1448,"estimateSource":"estimator","localEstimateTokens":1448,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.050502232142857144,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"member-note","decisionType":"skip","snapshot":{"tokens":1570,"estimateSource":"estimator","localEstimateTokens":1570,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05475725446428571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:051ef830-5031-4b7e-bb8e-bd3696baaf55:13c79480-8202-4d03-a0ab-779965eb588c","turnId":"e759706b-46b5-4634-9675-4b40ae8ba384","decisionType":"skip","snapshot":{"tokens":1164,"estimateSource":"estimator","localEstimateTokens":1164,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.04059709821428571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"member-note","decisionType":"skip","snapshot":{"tokens":1757,"estimateSource":"estimator","localEstimateTokens":1757,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.061279296875,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [team:delivery] {"at":"2026-10-25T05:58:39.748Z","state":"enqueued","sessionKey":"team-internal:051ef830-5031-4b7e-bb8e-bd3696baaf55:13c79480-8202-4d03-a0ab-779965eb588c","turnId":"e759706b-46b5-4634-9675-4b40ae8ba384","eventId":"team-event:051ef830-5031-4b7e-bb8e-bd3696baaf55:0:d7d3f2a9-f914-46de-b0ab-1ac5dddef8a6","activationId":"051ef830-5031-4b7e-bb8e-bd3696baaf55","stopVersion":0}
+# [team:delivery] {"at":"2026-10-25T05:58:39.752Z","state":"applied","reason":"steer_applied","sessionKey":"team-internal:051ef830-5031-4b7e-bb8e-bd3696baaf55:13c79480-8202-4d03-a0ab-779965eb588c","turnId":"e759706b-46b5-4634-9675-4b40ae8ba384","eventId":"team-event:051ef830-5031-4b7e-bb8e-bd3696baaf55:0:d7d3f2a9-f914-46de-b0ab-1ac5dddef8a6","activationId":"051ef830-5031-4b7e-bb8e-bd3696baaf55","stopVersion":0}
+# [context:auto-compact] policy_skip {"sessionId":"team-internal:051ef830-5031-4b7e-bb8e-bd3696baaf55:13c79480-8202-4d03-a0ab-779965eb588c","turnId":"e759706b-46b5-4634-9675-4b40ae8ba384","decisionType":"skip","snapshot":{"tokens":1291,"estimateSource":"estimator","localEstimateTokens":1291,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.04502650669642857,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: running member receives coordination in its current task turn
+ok 14 - running member receives coordination in its current task turn
+  ---
+  duration_ms: 434.229959
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"to-stop","decisionType":"skip","snapshot":{"tokens":1459,"estimateSource":"estimator","localEstimateTokens":1459,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05088588169642857,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"fresh","decisionType":"skip","snapshot":{"tokens":1501,"estimateSource":"estimator","localEstimateTokens":1501,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05235072544642857,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: Abort fences old requests, clears actual execution, and fresh send uses new role tools
+ok 15 - Abort fences old requests, clears actual execution, and fresh send uses new role tools
+  ---
+  duration_ms: 362.102209
+  type: 'test'
+  ...
+# [pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+# [session-title] generation skipped (empty_content)
+# [context:auto-compact] policy_skip {"sessionId":"web:team-test","turnId":"reconnect","decisionType":"skip","snapshot":{"tokens":1458,"estimateSource":"estimator","localEstimateTokens":1458,"totalContextTokens":32768,"maxContextTokens":28672,"effectiveContextTokens":28672,"maxOutputTokens":4096,"warningRatio":0.8,"blockingRatio":0.9,"state":"ok","ratio":0.05085100446428571,"source":"local","exact":false,"reservedOutputTokens":4096}}
+# Subtest: accepted Team input replay while original execution is running returns a receipt without another model call
+ok 16 - accepted Team input replay while original execution is running returns a receipt without another model call
+  ---
+  duration_ms: 190.787125
+  type: 'test'
+  ...
+1..16
+# tests 16
+# suites 0
+# pass 16
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5670.561583

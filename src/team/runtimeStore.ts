@@ -7,7 +7,7 @@ import type { TeamRuntimeActivation } from './runtimeTypes.js';
 
 export type RuntimeReceipt = { token: string; hash: string; result: unknown };
 export type RuntimeState = {
-  version: 1;
+  version: 1 | 2;
   sessions: Record<string, string | null>;
   activations: Record<string, TeamRuntimeActivation>;
   receipts: Record<string, RuntimeReceipt[]>;
@@ -28,15 +28,33 @@ export class TeamRuntimeStore {
     let raw: string;
     try { raw = await readFile(this.file, 'utf8'); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, sessions: {}, activations: {}, receipts: {} };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 2, sessions: {}, activations: {}, receipts: {} };
       throw error;
     }
     try {
       const envelope = JSON.parse(raw) as { checksum: string; state: RuntimeState };
       const s = envelope.state;
-      if (!s || s.version !== 1 || !s.sessions || !s.activations || !s.receipts || envelope.checksum !== hash(s)) throw new Error('invalid journal or checksum');
+      if (!s || ![1, 2].includes(s.version) || !s.sessions || !s.activations || !s.receipts || envelope.checksum !== hash(s)) throw new Error('invalid journal or checksum');
+      const validOwner = (owner: unknown) => {
+        if (owner === undefined) return true;
+        if (!owner || typeof owner !== 'object') return false;
+        const item = owner as { pid?: number; instanceId?: string; executionId?: string };
+        return Number.isSafeInteger(item.pid) && Number(item.pid) > 0 && typeof item.instanceId === 'string' && item.instanceId.length > 0 && (item.executionId === undefined || typeof item.executionId === 'string');
+      };
       for (const [key, activation] of Object.entries(s.activations)) {
-        if (activation.id !== key || !Array.isArray(activation.participants) || !Array.isArray(activation.works) || !Array.isArray(activation.messages) || !Array.isArray(activation.notifications)) throw new Error('invalid activation');
+        if (!activation || activation.id !== key || typeof activation.sessionKey !== 'string' || !Array.isArray(activation.participants) || !Array.isArray(activation.works) || !Array.isArray(activation.messages) || !Array.isArray(activation.notifications)) throw new Error('invalid activation');
+        if (!['active', 'stopping', 'stopped', 'closed'].includes(activation.status) || ((s.version === 2 || activation.stopVersion !== undefined) && (!Number.isSafeInteger(activation.stopVersion) || activation.stopVersion < 0))) throw new Error('invalid activation lifecycle');
+        if (!validOwner(activation.runtimeOwner)) throw new Error('invalid runtime owner');
+        for (const items of [activation.works, activation.messages, activation.notifications]) {
+          if (new Set(items.map(item => item?.id)).size !== items.length) throw new Error('duplicate runtime record');
+          for (const item of items) {
+            if (!item || typeof item.id !== 'string' || !item.id || !validOwner(item.owner)) throw new Error('invalid runtime record');
+            if ((s.version === 2 || item.stopVersion !== undefined) && (!Number.isSafeInteger(item.stopVersion) || item.stopVersion < 0 || item.stopVersion > (activation.stopVersion ?? 0))) throw new Error('invalid record generation');
+          }
+        }
+        if (activation.works.some(work => !['queued', 'running', 'waiting_information', 'waiting_approval', 'completed', 'failed', 'interrupted', 'stopped'].includes(work.status))) throw new Error('invalid work status');
+        if (activation.messages.some(message => !['queued', 'delivered', 'interrupted', 'stopped'].includes(message.status))) throw new Error('invalid message status');
+        if (activation.notifications.some(notice => !['work_completed', 'work_failed', 'message'].includes(notice.kind))) throw new Error('invalid notification kind');
       }
       for (const id of Object.values(s.sessions)) if (id !== null && !s.activations[id]) throw new Error('missing activation');
       return s;

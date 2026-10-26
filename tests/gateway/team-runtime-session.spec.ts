@@ -51,11 +51,11 @@ model:
   const team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'team', config: { displayName: 'Release review', description: '', instructions: 'TEAM_MARKER', defaultProjectKey: workspace, leader: { id: leader.id, revision: leader.revision }, teammates: [{ id: worker.id, revision: worker.revision }] } }) as TeamDefinition;
   const sessionKey = 'web:team-test';
   return { home, workspace, sessionKey, requests, broadcasts, team, leader, worker,
-    get gateway() { return local.gateway; }, setResponse(value: typeof respond) { respond = value; },
+    get gateway() { return local.gateway; }, get registry() { return local.registry; }, setResponse(value: typeof respond) { respond = value; },
     executeParticipant(input: TeamParticipantExecution) { return local.registry.executeTeamParticipant(input); },
     async restart() { await local.dispose(); local = createLocalGateway(options); bind(); },
     async select(storageProjectKey = workspace) { return await local.gateway.teamCommand!({ action: 'runtime_select', sessionKey, storageProjectKey, team: { id: team.id, revision: team.revision }, requestToken: 'select' }) as TeamRuntimeView; },
-    async submit(extra: Partial<GatewaySubmitTurnInput> = {}) { const events: GatewayEvent[] = []; for await (const event of local.gateway.submitTurn({ sessionKey, projectKey: workspace, channelKey: 'web', message: 'hello', ...extra })) events.push(event); return events; },
+    async submit(extra: Partial<GatewaySubmitTurnInput> = {}) { const events: GatewayEvent[] = []; const view = await local.gateway.teamCommand!({ action: 'runtime_get', sessionKey }).catch(() => ({activation:null})) as TeamRuntimeView; const epoch = view.activation && !extra.teamSelection ? {teamActivationId: view.activation.id, teamStopVersion:view.activation.stopVersion} : {}; for await (const event of local.gateway.submitTurn({ sessionKey, projectKey: workspace, channelKey: 'web', message: 'hello', ...epoch, ...extra })) events.push(event); return events; },
   };
 }
 
@@ -227,8 +227,8 @@ test('resuming the same member work gives each model turn a distinct tool retry 
   const { activation } = await f.select();
   const input: TeamParticipantExecution = {
     activation: activation!, participant: activation!.participants.find(item => item.role === 'teammate')!,
-    work: { id: 'same-work', participantId: f.worker.id, task: 'resume work', status: 'running', createdAt: new Date().toISOString() },
-    signal: new AbortController().signal, updateStatus: async () => {},
+    work: { id: 'same-work', stopVersion: activation!.stopVersion, participantId: f.worker.id, task: 'resume work', status: 'running', createdAt: new Date().toISOString() },
+    signal: new AbortController().signal, executionId: "test-execution", acceptMessages: async () => {}, updateStatus: async () => {},
   };
   await f.executeParticipant(input); await f.executeParticipant(input);
   const view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
@@ -272,4 +272,120 @@ test('member human permission survives Leader end and refresh, scopes decisions 
   }
   assert.equal(view.activation!.works[0]!.status, 'completed');
   assert.ok(!(await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events.some(event => event.type === 'permission_request'));
+});
+
+function gate<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
+async function eventually(check: () => Promise<boolean>, label: string) {
+  const until = Date.now() + 6000;
+  while (Date.now() < until) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
+  assert.fail(`Timed out: ${label}`);
+}
+
+test('same-workspace member message reaches busy Leader before next LLM without ending its run', async t => {
+  const f = await fixture(t, []);
+  const leaderWaiting = gate(), releaseLeader = gate(), messageEnqueued = gate(); let leaderCalls = 0, workerCalls = 0;
+  const router = (f.gateway as any).router;
+  const originalSteer = router.steer.bind(router);
+  router.steer = (sessionKey: string, input: any) => { const result = originalSteer(sessionKey, input); if (sessionKey === f.sessionKey && result.accepted) messageEnqueued.resolve(); return result; };
+  f.setResponse(async function* (request) {
+    if (request.model === 'worker') {
+      await leaderWaiting.promise;
+      if (++workerCalls === 1) {
+        yield { type: 'tool_call_start', id: 'question', name: 'team_send_message' };
+        yield { type: 'tool_call_end', toolCall: { id: 'question', name: 'team_send_message', input: { recipientId: f.leader.id, text: 'COORDINATION_MARKER', requestToken: 'question' } } }; return;
+      }
+      yield { type: 'text_delta', text: 'FINAL_WORKER_RESULT_PRIVATE' }; return;
+    }
+    if (++leaderCalls === 1) {
+      yield { type: 'tool_call_start', id: 'delegate', name: 'team_delegate' };
+      yield { type: 'tool_call_end', toolCall: { id: 'delegate', name: 'team_delegate', input: { participantId: f.worker.id, task: 'inspect', requestToken: 'inspect' } } }; return;
+    }
+    if (leaderCalls === 2) { leaderWaiting.resolve(); await releaseLeader.promise; }
+    yield { type: 'text_delta', text: 'leader continues' };
+  });
+  const { activation } = await f.select(); const events: GatewayEvent[] = [];
+  const running = (async () => { for await (const event of f.gateway.submitTurn({ sessionKey: f.sessionKey, projectKey: f.workspace, channelKey: 'web', message: 'inspect', runId: 'busy-leader', teamActivationId: activation!.id, teamStopVersion: activation!.stopVersion })) events.push(event); })();
+  t.after(() => releaseLeader.resolve());
+  await leaderWaiting.promise;
+  await messageEnqueued.promise;
+  await eventually(async () => {
+    const view = await f.gateway.teamCommand!({ action:'runtime_get', sessionKey:f.sessionKey }) as TeamRuntimeView;
+    return !!view.activation?.notifications.some(n => n.kind === 'message' && n.owner);
+  }, 'message claimed while Leader LLM is in flight');
+  assert.ok(f.requests.some(request => request.model === 'worker'), 'member starts while Leader still holds its run');
+  releaseLeader.resolve(); await running;
+  await eventually(async () => { const view = await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView; return view.activation!.notifications.every(n => !!n.deliveredAt); }, 'notifications applied');
+  const mainStorage = createAgentProjectSessionStorage({projectRoot:f.workspace,pilotHome:f.home,sessionId:f.sessionKey});
+  const transcript = await readTranscript(mainStorage.transcriptPath);
+  const applied = transcript.entries.filter(entry => entry.type === 'durable_message' && entry.message.metadata?.purpose === 'team_runtime');
+  assert.ok(applied.some(entry => entry.turnId === 'busy-leader' && JSON.stringify(entry).includes('COORDINATION_MARKER')));
+  assert.ok(events.some(event => event.type === 'steer_applied' && event.purpose === 'team_runtime'));
+  assert.ok(f.requests.filter(request => request.model === 'leader').slice(2).some(request => JSON.stringify(request.messages).includes('COORDINATION_MARKER')));
+  assert.ok(!f.requests.filter(request => request.model === 'leader').some(request => JSON.stringify(request.messages).includes('FINAL_WORKER_RESULT_PRIVATE')), 'auto notification omits final member reply');
+  await assert.rejects(stat(join(f.home, 'checkpoints')), {code:'ENOENT'});
+});
+
+test('running member receives coordination in its current task turn', async t => {
+  const f = await fixture(t, []); const workerWaiting = gate(), releaseWorker = gate(), allowMessage = gate(), messageEnqueued = gate(); let leaderCalls = 0, workerCalls = 0;
+  f.setResponse(async function* (request) {
+    if (request.model === 'worker') {
+      if (++workerCalls === 1) { workerWaiting.resolve(); await releaseWorker.promise; }
+      yield {type:'text_delta',text:'member final'}; return;
+    }
+    if (++leaderCalls === 1) {
+      yield {type:'tool_call_start',id:'delegate',name:'team_delegate'};
+      yield {type:'tool_call_end',toolCall:{id:'delegate',name:'team_delegate',input:{participantId:f.worker.id,task:'work'}}}; return;
+    }
+    if (leaderCalls === 2) {
+      await workerWaiting.promise; await allowMessage.promise;
+      yield {type:'tool_call_start',id:'note',name:'team_send_message'};
+      yield {type:'tool_call_end',toolCall:{id:'note',name:'team_send_message',input:{recipientId:f.worker.id,text:'MEMBER_COORDINATION'}}}; return;
+    }
+    yield {type:'text_delta',text:'leader'};
+  });
+  const {activation} = await f.select(); const running = f.submit({runId:'member-note'}); t.after(() => releaseWorker.resolve());
+  await workerWaiting.promise;
+  const active = (f.registry as any).activeTeamParticipants.get(`team-internal:${activation!.id}:${f.worker.id}`);
+  const originalSteer = active.session.steer.bind(active.session);
+  active.session.steer = (input: any) => { const result=originalSteer(input); if(result.accepted) messageEnqueued.resolve(); return result; };
+  allowMessage.resolve(); await messageEnqueued.promise;
+  await eventually(async () => {const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;return !!view.activation!.messages.find(m=>m.text==='MEMBER_COORDINATION' && m.owner);}, 'member message claimed');
+  releaseWorker.resolve(); await running;
+  await eventually(async () => {const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;return view.activation!.works[0]?.status==='completed';}, 'member task completion');
+  const entries=(await readTranscript(join(f.home,'team-runtime','contexts',activation!.id,f.worker.id,'context.jsonl'))).entries;
+  assert.equal(entries.filter(entry=>entry.type==='accepted_input').length,1,'no extra coordination turn');
+  assert.ok(entries.some(entry=>entry.type==='durable_message' && JSON.stringify(entry).includes('MEMBER_COORDINATION')));
+  assert.equal(workerCalls,2);
+});
+
+test('Abort fences old requests, clears actual execution, and fresh send uses new role tools', async t => {
+  const f=await fixture(t,[]);const waiting=gate(),release=gate();let calls=0;
+  f.setResponse(async function*(){ if(++calls===1){waiting.resolve();await release.promise;} yield {type:'text_delta',text:'done'}; });
+  const {activation}=await f.select();const run=f.submit({runId:'to-stop'});await waiting.promise;
+  let stopped=false; const stopping=f.gateway.abortTurn({sessionKey:f.sessionKey,runId:'to-stop',teamActivationId:activation!.id,teamStopVersion:activation!.stopVersion}).then(()=>{stopped=true;});
+  await eventually(async()=> (await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView).activation?.status==='stopping','stopping persisted');
+  assert.equal(stopped,false);
+  release.resolve();await run;await stopping;
+  const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;
+  assert.equal(view.activation!.status,'stopped'); assert.equal(view.activation!.stopVersion,activation!.stopVersion+1);
+  const old=await f.submit({runId:'old-epoch',teamActivationId:activation!.id,teamStopVersion:activation!.stopVersion});
+  assert.ok(old.some(event=>event.type==='error' && event.code==='TEAM_GENERATION_EXPIRED'));
+  const fresh=await f.submit({runId:'fresh'});assert.deepEqual(fresh.filter(event=>event.type==='error'),[]);
+  assert.match(f.requests.at(-1)!.systemPrompt!,/previous Team run was stopped or interrupted/);
+  await assert.rejects(f.gateway.abortTurn({sessionKey:f.sessionKey,teamActivationId:activation!.id,teamStopVersion:activation!.stopVersion}), /expired/);
+});
+
+test('accepted Team input replay while original execution is running returns a receipt without another model call', async t => {
+  const f = await fixture(t, []); const started = gate(), release = gate();
+  f.setResponse(async function* () { started.resolve(); await release.promise; yield { type: 'text_delta', text: 'done' }; });
+  const { activation } = await f.select();
+  const input = { runId: 'reconnect', teamActivationId: activation!.id, teamStopVersion: activation!.stopVersion };
+  const running = f.submit(input); t.after(() => release.resolve()); await started.promise;
+  const replay = await f.submit(input);
+  assert.ok(replay.some(event => event.type === 'input_accepted'));
+  assert.ok(replay.some(event => event.type === 'agent_status' && event.event === 'team_input_already_accepted' && event.detail?.running === true));
+  assert.ok(!replay.some(event => event.type === 'error')); assert.equal(f.requests.length, 1);
+  const changed = await f.submit({ ...input, message: 'different' });
+  assert.ok(changed.some(event => event.type === 'error' && event.code === 'TEAM_INPUT_CONFLICT'));
+  release.resolve(); await running;
 });

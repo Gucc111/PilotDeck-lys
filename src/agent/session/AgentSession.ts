@@ -146,6 +146,7 @@ export class AgentSession {
     itemId: string;
     message: CanonicalMessage;
     allowedReadFiles?: string[];
+    beforeApply?: () => Promise<boolean>;
   }): AgentSteerResult {
     if (this.state.status !== "running" || !this.state.currentTurnId) {
       return { accepted: false, reason: "no_active_turn" };
@@ -154,6 +155,7 @@ export class AgentSession {
       itemId: input.itemId,
       message: input.message,
       allowedReadFiles: input.allowedReadFiles,
+      beforeApply: input.beforeApply,
     });
   }
 

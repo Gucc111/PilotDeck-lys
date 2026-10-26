@@ -36,7 +36,11 @@
     "resumeFailed": "无法继续队列。",
     "steerFailed": "消息仍保留在队列中。",
     "deleteFailed": "无法删除排队消息。",
-    "moveFailed": "无法调整队列顺序。"
+    "moveFailed": "无法调整队列顺序。",
+    "invalidatedHelp": "这些团队输入已因停止或重启失效，不会自动发送。可以放回输入框后重新发送。",
+    "restoreComposer": "放回输入框",
+    "recoveredDraft": "已恢复输入和附件引用；发送时将创建新请求。",
+    "removeRecovered": "移除恢复的附件"
   },
   "copyMessage": {
     "copy": "复制消息",
@@ -758,7 +762,7 @@
     "messages": "通信记录",
     "noMessages": "暂无协作消息。",
     "awaitingRelay": "目标为 {{name}}，等待 Leader 转交",
-    "stopHelp": "团队工作已停止。中断的任务不会自动重放，向 Leader 发消息即可继续。",
+    "stopHelp": "团队运行已停止。旧任务、消息、通知与排队输入均已失效。明确发送新请求可开始新的运行。",
     "status": {
       "queued": "排队中",
       "running": "执行中",
@@ -768,7 +772,8 @@
       "failed": "失败",
       "interrupted": "已中断",
       "stopped": "已停止",
-      "delivered": "已送达"
+      "delivered": "已送达",
+      "invalidated": "已失效"
     },
     "close": "关闭",
     "relayed": "Leader 已转交给 {{name}}",
@@ -778,6 +783,13 @@
     "rolePermissions": "权限模式使用 Leader 的配置。",
     "continuationPaused": "自动续行已暂停。发送新消息继续，或停止团队。",
     "capabilities": "可用能力",
-    "coordinationOnly": "仅团队协作工具"
+    "coordinationOnly": "仅团队协作工具",
+    "stopping": "正在停止",
+    "restartInterrupted": "重启后已中断",
+    "stoppingHelp": "正在取消执行并等待清理完成，暂时不能开始新的团队运行。",
+    "stopTimeout": "停止等待已超时，以下执行仍在清理；尚未确认全部退出。",
+    "cleanupNotifications": "团队通知交付",
+    "cleanupResources": "最终资源清理",
+    "cleanupExecution": "执行资源清理"
   }
 }

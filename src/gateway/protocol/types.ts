@@ -98,6 +98,7 @@ export type GatewaySubmitTurnInput = {
   /** Team execution is independent of the ordinary model preference. */
   teamSelection?: import("../../team/runtimeTypes.js").TeamExecutionSelection;
   teamActivationId?: string | null;
+  teamStopVersion?: number;
   /** Override the agent session's working directory for this session. */
   workspaceCwd?: string;
   attachments?: ChannelAttachment[];
@@ -142,6 +143,7 @@ export type GatewaySteerTurnInput = {
   message: string;
   projectKey?: string;
   teamActivationId?: string | null;
+  teamStopVersion?: number;
   attachments?: ChannelAttachment[];
   uploadedAttachments?: UploadedAttachmentRef[];
 };
@@ -170,6 +172,7 @@ export type GatewayRecordAgentStatusMessageInput = {
 };
 
 type GatewayTurnScopedEventMetadata = {
+  purpose?: "team_runtime";
   timeline?: TimelinePosition;
   streamBoundary?: StreamBoundary;
   streamState?: "open" | "closed";
@@ -384,6 +387,7 @@ export type NewSessionInput = {
 };
 
 export type GatewayServerInfo = {
+  serverInstanceId?: string;
   mode: "in_process" | "remote";
   protocolVersion?: string;
   projectKey?: string;
@@ -392,6 +396,7 @@ export type GatewayServerInfo = {
 };
 
 export type GatewayCapability =
+  | "repository_operation"
   | "team_command"
   | "project_files_list"
   | "commands_list"
@@ -576,11 +581,12 @@ export type AlwaysOnRerunPlanResult = {
 export interface Gateway {
   /** Reusable Leader, Teammate, and Team configuration. */
   teamCommand?(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult>;
-  manageCheckpoints?(input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest): Promise<unknown>;
+  repositoryOperation?(input: import("../../session/repository/operations.js").RepositoryOperationInput): Promise<unknown>;
+  manageCheckpoints?(input: import("../../session/checkpoints/removed.js").CheckpointRequest): Promise<unknown>;
   submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent>;
   steerTurn(input: GatewaySteerTurnInput): Promise<GatewaySteerTurnResult>;
   cancelSteer(input: GatewayCancelSteerInput): Promise<GatewayCancelSteerResult>;
-  abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void>;
+  abortTurn(input: { sessionKey: string; runId?: string; reason?: string; teamActivationId?: string; teamStopVersion?: number }): Promise<void>;
   listSessions(input: ListSessionsInput): Promise<ListSessionsResult>;
   resumeSession(input: { sessionKey: string }): Promise<{ sessionKey: string }>;
   newSession(input: NewSessionInput): Promise<{ sessionKey: string }>;

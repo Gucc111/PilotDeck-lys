@@ -143,6 +143,10 @@ export type CanonicalContentBlock = { timeline?: TimelinePosition } & (
   | CanonicalMediaReferenceBlock);
 
 export type CanonicalMessageMetadata = {
+  /** Internal Team provenance; never grants human authority. */
+  teamActivationId?: string;
+  teamStopVersion?: number;
+  teamEventIds?: string[];
   /** Actual model that generated this assistant message. */
   model?: string;
   /** True for messages injected by the system (e.g. JSON self-correct prompts). */

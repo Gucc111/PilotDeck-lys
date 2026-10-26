@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRepositoryOperation } from "../../src/session/checkpoints/repositoryOperation.js";
+import { runRepositoryOperation, withRepositoryOperationLock } from "../../src/session/repository/operations.js";
 const execute = promisify(execFile);
 
 test("Git operations honor the real index, literal filenames, unborn branches, stale staging and first push", async t => {
@@ -37,4 +37,19 @@ test("Git operations honor the real index, literal filenames, unborn branches, s
   await runRepositoryOperation(workspace, { operation: "commit", message: "second commit", expectedIndexTree: await git("write-tree") });
   await runRepositoryOperation(workspace, { operation: "push" });
   assert.equal(await git("rev-parse", "@{upstream}"), await git("rev-parse", "HEAD"));
+});
+
+test("Git mutation queue serializes one repository and releases after failures", async t => {
+  const base = await mkdtemp(join(tmpdir(), "pilotdeck-git-queue-")); t.after(() => rm(base, { recursive: true, force: true }));
+  const other = join(base, "other"); await mkdir(other);
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const order: string[] = [];
+  const first = withRepositoryOperationLock(base, async () => { order.push("first"); entered(); await held; throw new Error("failure"); });
+  const firstFailure = assert.rejects(first, /failure/); await started;
+  const second = withRepositoryOperationLock(base, async () => { order.push("second"); });
+  await withRepositoryOperationLock(other, async () => { order.push("other"); });
+  assert.deepEqual(order, ["first", "other"]); release(); await Promise.all([firstFailure, second]);
+  assert.deepEqual(order, ["first", "other", "second"]);
 });

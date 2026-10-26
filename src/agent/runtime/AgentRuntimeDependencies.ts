@@ -3,7 +3,6 @@ import type {
   PilotDeckElicitationChannel,
   PilotDeckToolAuditRecorder,
   PilotDeckFileUpdateNotifier,
-  PilotDeckToolFileHistorySink,
   PilotDeckToolScheduler,
   ToolRegistry,
 } from "../../tool/index.js";
@@ -121,12 +120,6 @@ export type AgentRuntimeDependencies = {
    * tool returns a `mcp_unavailable` error instead of crashing.
    */
   elicitation?: PilotDeckElicitationChannel;
-  /**
-   * File-history sink — wired into the per-tool runtime context so
-   * `edit_file` / `write_file` (C4) snapshot the file before mutation.
-   * `FileHistoryStore` directly satisfies this contract.
-   */
-  fileHistory?: PilotDeckToolFileHistorySink;
   /**
    * Optional sink for propagating successful file writes to editor / LSP
    * integrations. When absent, write_file still succeeds and performs no

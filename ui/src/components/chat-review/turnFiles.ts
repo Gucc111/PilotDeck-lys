@@ -1,7 +1,6 @@
 import type { ChatFileArtifact } from '../chat/types/types';
 import type { Project } from '../../types/app';
 import { canonicalizeWorkspaceFilePath, getWorkspaceFileIdentity } from '../../utils/workspaceFileMention';
-import type { CheckpointSummary } from './ChatReviewContext';
 import { visibleReviewFiles } from './reviewFiles';
 
 export type TurnFile = {
@@ -10,12 +9,9 @@ export type TurnFile = {
   name: string;
   directory: string;
   artifact?: ChatFileArtifact;
-  change?: CheckpointSummary['changes'][number];
 };
 
-// Both records describe the same result. Checkpoints own change semantics;
-// artifacts supply file metadata and existing workspace actions.
-export function mergeTurnFiles(artifacts: ChatFileArtifact[], checkpoint: CheckpointSummary | undefined, project: Project | null): TurnFile[] {
+export function mergeTurnFiles(artifacts: ChatFileArtifact[], project: Project | null): TurnFile[] {
   const root = project?.fullPath || project?.path || '';
   const files = new Map<string, TurnFile>();
   const entry = (path: string) => {
@@ -27,7 +23,6 @@ export function mergeTurnFiles(artifacts: ChatFileArtifact[], checkpoint: Checkp
     return file;
   };
   for (const artifact of visibleReviewFiles(artifacts, root)) entry(artifact.path).artifact = artifact;
-  for (const change of visibleReviewFiles(checkpoint?.changes ?? [], root)) entry(change.path).change = change;
   return [...files.values()];
 }
 

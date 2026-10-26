@@ -3,22 +3,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { createCheckpointHandler } from './checkpoints.js';
 import { parseGitStatus, gitStatusError } from '../utils/gitStatus.js';
 
-describe('checkpoint HTTP boundary', () => {
-  const response = () => ({ statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
-  it('resolves registered project identity and forwards explicit selections', async () => {
-    const manageCheckpoints = vi.fn(async () => ({ id: 'plan' }));
-    const resolveProject = vi.fn(async () => '/registered/project');
-    const handler = createCheckpointHandler({ getGateway: async () => ({ manageCheckpoints }), resolveProject });
-    const res = response();
-    await handler({ body: { project: 'encoded-project', sessionId: 'web:session', action: 'restore', planId: 'plan', paths: ['a.txt'] } }, res);
-    expect(res.statusCode).toBe(200); expect(manageCheckpoints).toHaveBeenCalledWith(expect.objectContaining({ projectKey: '/registered/project', sessionKey: 'web:session', paths: ['a.txt'] }));
-  });
-  it('rejects malformed selections and maps modification conflicts to 409', async () => {
-    const gateway = vi.fn(async () => ({ manageCheckpoints: async () => { throw new Error('File changed after the preview'); } }));
-    const handler = createCheckpointHandler({ getGateway: gateway, resolveProject: async () => '/project' });
-    const invalid = response(); await handler({ body: { project: 'p', sessionId: 's', action: 'restore', paths: [7] } }, invalid);
-    expect(invalid.statusCode).toBe(400); expect(gateway).not.toHaveBeenCalled();
-    const stale = response(); await handler({ body: { project: 'p', sessionId: 's', action: 'restore' } }, stale); expect(stale.statusCode).toBe(409);
+describe('removed checkpoint HTTP boundary', () => {
+  it.each(['list', 'diff', 'preview', 'restore', 'undo', 'git', undefined])('rejects %s with a stable removed response', async action => {
+    const res = { statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+    await createCheckpointHandler()({ body: { action } }, res);
+    expect(res.statusCode).toBe(410); expect(res.body.code).toBe('CHECKPOINTS_REMOVED');
   });
 });
 

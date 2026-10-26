@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalGateway } from "../../src/cli/createLocalGateway.js";
@@ -9,11 +9,10 @@ import type { PilotConfigSnapshot } from "../../src/pilot/config/types.js";
 import { createAgentProjectSessionStorage, readTranscript, replayTranscriptEntries } from "../../src/session/index.js";
 import { activeTranscriptEntries } from "../../src/session/transcript/CompactSnapshot.js";
 import { readWebSessionMessages } from "../../src/web/server/readSessionMessages.js";
-import type { CheckpointSummary, RestorePlan, RestoreOperation } from "../../src/session/checkpoints/types.js";
 import { createProjectId } from "../../src/pilot/index.js";
 import { replaceLastWebSessionTurn, finalizeLastWebSessionTurnReplacement } from "../../src/web/server/replaceLastTurn.js";
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, onRequest?: (request: CanonicalModelRequest) => Promise<void>) {
   const base = await mkdtemp(join(tmpdir(), "pilotdeck-gateway-checkpoints-")), home = join(base, "home"), workspace = join(base, "workspace");
   await mkdir(home); await mkdir(workspace); await mkdir(join(home, "skills"));
   const registration = join(home, "projects", createProjectId(workspace));
@@ -40,6 +39,7 @@ model:
       ...createModelRuntime(snapshot.config.model),
       async *stream(request: CanonicalModelRequest): AsyncIterable<CanonicalModelEvent> {
         requests.push(request);
+        await onRequest?.(request);
         const text = request.messages.at(-1)?.content.filter(item => item.type === "text").map(item => item.type === "text" ? item.text : "").join("");
         if (text === "first" || text === "second") await writeFile(join(workspace, "demo.txt"), text);
         yield { type: "request_started", provider: request.provider, model: request.model };
@@ -58,7 +58,6 @@ model:
     get gateway() { return local.gateway; },
     restart() { local.dispose(); local = createLocalGateway(options); },
     async submit(message: string) { for await (const _event of local.gateway.submitTurn({ ...input, channelKey: "web", message })) { /* consume */ } },
-    async list() { return await local.gateway.manageCheckpoints!({ ...input, action: "list" }) as { checkpoints: CheckpointSummary[]; sessionChanges: CheckpointSummary["changes"]; sessionRevision: string }; },
     async history() {
       const storage = createAgentProjectSessionStorage({ projectRoot: workspace, pilotHome: home, sessionId: sessionKey });
       return (await readTranscript(storage.transcriptPath)).entries;
@@ -66,98 +65,77 @@ model:
   };
 }
 
-test("restoration changes persisted model context and UI history, survives restart, and preserves later conversation on undo", async t => {
+// A saved restore boundary remains readable; no restore API is exercised.
+async function legacyRestore(f: Awaited<ReturnType<typeof fixture>>, keepTurns: number) {
+  const entries = await f.history();
+  const inputs = entries.filter(entry => entry.type === "accepted_input");
+  const cutoff = keepTurns < inputs.length ? inputs[keepTurns].sequence : Number.MAX_SAFE_INTEGER;
+  const visible = entries.filter(entry => entry.sequence < cutoff);
+  const storage = createAgentProjectSessionStorage({ projectRoot: f.workspace, pilotHome: f.home, sessionId: f.sessionKey });
+  storage.transcript.restoreState(entries.at(-1)!.sequence, entries.at(-1)!.entryId!);
+  await storage.transcript.recordControlBoundary(f.sessionKey, "legacy-restore", {
+    kind: "restore", operationId: "old-operation", visibleSequences: visible.map(entry => entry.sequence),
+    snapshot: { version: 1, messages: replayTranscriptEntries(visible).messages },
+  });
+}
+
+test("removed checkpoint API rejects every action without touching user data", async t => {
   const f = await fixture(t);
-  await writeFile(join(f.workspace, "demo.txt"), "baseline");
-  await f.submit("first"); await f.submit("second");
-  const checkpoints = (await f.list()).checkpoints.filter(item => item.phase === "after");
-  assert.equal(checkpoints.length, 2); assert.equal(checkpoints[0].changes.length, 1);
-  const plan = await f.gateway.manageCheckpoints!({ ...f.input, action: "preview", checkpointId: checkpoints[0].id, scope: "since", mode: "both" }) as RestorePlan;
-  assert.equal(plan.files[0].status, "ready");
-  const operation = await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: plan.id }) as RestoreOperation;
-  assert.equal(await readFile(join(f.workspace, "demo.txt"), "utf8"), "baseline");
-  const raw = await f.history();
-  assert.equal(raw.filter(entry => entry.type === "accepted_input").length, 2);
-  assert.equal(activeTranscriptEntries(raw).filter(entry => entry.type === "accepted_input").length, 0);
-  const ui = await readWebSessionMessages({ sessionKey: f.sessionKey }, { projectRoot: f.workspace, pilotHome: f.home });
-  assert.ok(!ui.messages.some(message => message.text === "first" || message.text === "second"));
-  assert.equal((await f.list()).sessionChanges.length, 0);
+  const directory = join(f.home, "checkpoints", "legacy"); await mkdir(directory, { recursive: true });
+  const backup = join(directory, "existing-backup"); await writeFile(backup, "keep this backup");
+  await writeFile(join(f.workspace, "manual.txt"), "keep this file");
+  for (const action of ["list", "diff", "preview", "restore", "undo", "git"]) {
+    await assert.rejects(f.gateway.manageCheckpoints!({ ...f.input, action }), { code: "CHECKPOINTS_REMOVED" });
+  }
+  assert.equal(await readFile(backup, "utf8"), "keep this backup");
+  assert.equal(await readFile(join(f.workspace, "manual.txt"), "utf8"), "keep this file");
+});
+
+test("same-directory sessions reach the model concurrently and produce no checkpoints", async t => {
+  let release!: () => void, bothStarted!: () => void, count = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { bothStarted = resolve; });
+  const f = await fixture(t, async () => { if (++count === 2) bothStarted(); await held; });
+  const consume = async (sessionKey: string) => { for await (const _event of f.gateway.submitTurn({ projectKey: f.workspace, sessionKey, channelKey: "web", message: "read only" })) {} };
+  const first = consume("first"), second = consume("second");
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([started, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("Another Agent Loop blocked model entry")), 10_000); })]);
+    // A Git operation does not wait for either held model request to end.
+    assert.deepEqual(await f.gateway.repositoryOperation!({ projectKey: f.workspace, repositoryOperation: { operation: "init" } }).then(result => ({ success: (result as { success: boolean }).success })), { success: true });
+  } finally { clearTimeout(timeout); release(); await Promise.all([first, second]); }
+  assert.equal(count, 2);
+  await assert.rejects(readdir(join(f.home, "checkpoints")), { code: "ENOENT" });
+  assert.ok(!(await readdir(f.workspace, { recursive: true })).some(path => /file-history|checkpoint/.test(String(path))));
+});
+
+test("legacy restore boundaries preserve active UI pages and model context after restart", async t => {
+  const f = await fixture(t); await f.submit("first"); await f.submit("second");
+  await legacyRestore(f, 1);
+  assert.equal(activeTranscriptEntries(await f.history()).filter(entry => entry.type === "accepted_input").length, 1);
+  const whole = await readWebSessionMessages({ sessionKey: f.sessionKey }, { projectRoot: f.workspace, pilotHome: f.home });
+  for (let offset = 0; offset < whole.messages.length; offset++) {
+    const page = await readWebSessionMessages({ sessionKey: f.sessionKey, cursor: String(offset), limit: 1 }, { projectRoot: f.workspace, pilotHome: f.home });
+    assert.ok(!JSON.stringify(page.messages).includes('"text":"second"'));
+  }
   f.restart(); await f.submit("continue");
-  const latest = f.requests.at(-1)!;
-  const contextText = JSON.stringify(latest.messages);
-  assert.ok(contextText.includes("continue")); assert.ok(!contextText.includes('"text":"first"')); assert.ok(!contextText.includes('"text":"second"'));
-  assert.ok(contextText.includes("current filesystem is authoritative"));
-  const undo = await f.gateway.manageCheckpoints!({ ...f.input, action: "undo", operationId: operation.id }) as RestorePlan;
-  assert.equal(undo.mode, "files");
-  await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: undo.id });
-  assert.equal(await readFile(join(f.workspace, "demo.txt"), "utf8"), "second");
-  assert.ok(JSON.stringify(replayTranscriptEntries(await f.history()).messages).includes('"text":"continue"'));
+  const context = JSON.stringify(f.requests.at(-1)!.messages);
+  assert.ok(context.includes('"text":"first"')); assert.ok(context.includes('"text":"continue"')); assert.ok(!context.includes('"text":"second"'));
 });
 
-test("partial file/conversation rewind keeps the remaining session diff restorable, including undo and conversation-only branches", async t => {
-  const f = await fixture(t); await writeFile(join(f.workspace, "demo.txt"), "baseline");
-  await f.submit("first"); await f.submit("second");
-  const original = await f.list(), rounds = original.checkpoints.filter(item => item.phase === "after");
-  const plan = await f.gateway.manageCheckpoints!({ ...f.input, action: "preview", checkpointId: rounds[1].id, mode: "both" }) as RestorePlan;
-  const operation = await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: plan.id }) as RestoreOperation;
-  assert.equal(await readFile(join(f.workspace, "demo.txt"), "utf8"), "first");
-  const restored = await f.list(); assert.equal(restored.sessionChanges[0].restorable, true);
-  assert.notEqual(restored.sessionRevision, original.sessionRevision);
-  const diff = await f.gateway.manageCheckpoints!({ ...f.input, action: "diff", checkpointId: rounds[0].id, filePath: "demo.txt", scope: "session" }) as { oldContent: string; newContent: string };
-  assert.equal(diff.oldContent, "baseline"); assert.equal(diff.newContent, "first");
-  const sessionPlan = await f.gateway.manageCheckpoints!({ ...f.input, action: "preview", checkpointId: rounds[0].id, scope: "session" }) as RestorePlan;
-  assert.equal(sessionPlan.files[0].status, "ready");
-  await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: sessionPlan.id });
-  assert.equal(await readFile(join(f.workspace, "demo.txt"), "utf8"), "baseline");
-  const undo = await f.gateway.manageCheckpoints!({ ...f.input, action: "undo", operationId: operation.id }) as RestorePlan;
-  assert.equal(undo.files[0].status, "conflict"); // A later session restore is protected.
-
-  const g = await fixture(t); await writeFile(join(g.workspace, "demo.txt"), "baseline"); await g.submit("first");
-  const checkpoint = (await g.list()).checkpoints.find(item => item.phase === "after")!;
-  const conversationPlan = await g.gateway.manageCheckpoints!({ ...g.input, action: "preview", checkpointId: checkpoint.id, mode: "conversation" }) as RestorePlan;
-  await g.gateway.manageCheckpoints!({ ...g.input, action: "restore", planId: conversationPlan.id });
-  assert.equal(activeTranscriptEntries(await g.history()).filter(entry => entry.type === "accepted_input").length, 0);
-  assert.equal((await g.list()).sessionChanges[0].restorable, true);
-});
-
-test("editing the last visible turn after a rewind preserves archived history and supports transaction rollback", async t => {
-  const f = await fixture(t); await writeFile(join(f.workspace, "demo.txt"), "baseline"); await f.submit("first"); await f.submit("second");
-  const rounds = (await f.list()).checkpoints.filter(item => item.phase === "after");
-  const plan = await f.gateway.manageCheckpoints!({ ...f.input, action: "preview", checkpointId: rounds[1].id, mode: "both" }) as RestorePlan;
-  await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: plan.id });
+test("editing the last visible turn after a legacy restore preserves archived history and transaction rollback", async t => {
+  const f = await fixture(t); await f.submit("first"); await f.submit("second"); await legacyRestore(f, 1);
   const original = await f.history(), firstInput = activeTranscriptEntries(original).find(entry => entry.type === "accepted_input")!;
   const input = { ...f.input, expectedTurnId: firstInput.turnId, replacementTurnId: "replacement" };
   const options = { projectRoot: f.workspace, pilotHome: f.home };
   const replacement = await replaceLastWebSessionTurn(input, options);
-  const prepared = await f.history(); assert.equal(prepared.filter(entry => entry.type === "accepted_input").length, 2);
-  assert.equal(activeTranscriptEntries(prepared).filter(entry => entry.type === "accepted_input").length, 0);
-  assert.equal(replayTranscriptEntries(prepared).messages.length, 0);
-  assert.equal(replayTranscriptEntries(prepared).metadata.firstPrompt, undefined);
+  assert.equal((await f.history()).filter(entry => entry.type === "accepted_input").length, 2);
+  assert.equal(activeTranscriptEntries(await f.history()).filter(entry => entry.type === "accepted_input").length, 0);
   await finalizeLastWebSessionTurnReplacement({ ...f.input, transactionId: replacement.transactionId, action: "rollback" }, options);
   assert.deepEqual(await f.history(), original);
   const committed = await replaceLastWebSessionTurn(input, options);
   await finalizeLastWebSessionTurnReplacement({ ...f.input, transactionId: committed.transactionId, action: "commit" }, options);
   f.restart(); await f.submit("corrected first");
-  const raw = await f.history(); assert.equal(raw.filter(entry => entry.type === "accepted_input").length, 3);
-  assert.equal(activeTranscriptEntries(raw).filter(entry => entry.type === "accepted_input").length, 1);
   const context = JSON.stringify(f.requests.at(-1)!.messages);
   assert.ok(context.includes('"text":"corrected first"')); assert.ok(!context.includes('"text":"first"')); assert.ok(!context.includes('"text":"second"'));
-  assert.equal(await readFile(join(f.workspace, "demo.txt"), "utf8"), "first");
-  assert.equal(replayTranscriptEntries(raw).metadata.firstPrompt, "corrected first");
-});
-
-test("conversation-only rewind preserves files, and new turns invalidate a conversation restore preview", async t => {
-  const f = await fixture(t);
-  await writeFile(join(f.workspace, "demo.txt"), "baseline"); await f.submit("first");
-  const checkpoint = (await f.list()).checkpoints.find(item => item.phase === "after")!;
-  const stale = await f.gateway.manageCheckpoints!({ ...f.input, action: "preview", checkpointId: checkpoint.id, mode: "conversation" }) as RestorePlan;
-  await f.submit("second");
-  await assert.rejects(f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: stale.id }), { code: "STALE_PLAN" });
-  const plan = await f.gateway.manageCheckpoints!({ ...f.input, action: "preview", checkpointId: checkpoint.id, mode: "conversation" }) as RestorePlan;
-  const operation = await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: plan.id }) as RestoreOperation;
-  assert.equal(await readFile(join(f.workspace, "demo.txt"), "utf8"), "second"); assert.equal(operation.applied.length, 0);
-  const undo = await f.gateway.manageCheckpoints!({ ...f.input, action: "undo", operationId: operation.id }) as RestorePlan;
-  assert.equal(undo.mode, "conversation");
-  await f.gateway.manageCheckpoints!({ ...f.input, action: "restore", planId: undo.id });
-  assert.equal(activeTranscriptEntries(await f.history()).filter(entry => entry.type === "accepted_input").length, 2);
 });

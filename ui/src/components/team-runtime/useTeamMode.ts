@@ -26,6 +26,7 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [activation, setActivation] = useState<TeamRuntimeActivation | null>(null);
+  const activationRef = useRef(activation); activationRef.current = activation;
   const [history, setHistory] = useState<TeamRuntimeActivation[]>([]);
   const [continuationPaused, setContinuationPaused] = useState<'budget' | undefined>();
   const [draft, setDraft] = useState<TeamDraft | null>(() => !sessionKey ? readDraft(project ? workspaceKey(project) : '') : null);
@@ -87,7 +88,7 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
     return () => { window.clearInterval(timer); window.removeEventListener('focus', onFocus); };
   }, [sessionKey, activation?.id, busy, refresh]);
 
-  const locked = busy || hasTeamWork(activation) || changing || loading || Boolean(error);
+  const locked = busy || activation?.status === 'stopping' || hasTeamWork(activation) || changing || loading || Boolean(error);
   const probe = useCallback(async (next: Choice) => {
     const sequence = ++choiceSequence.current;
     setChoice({ ...next, checking: true, probe: null, error: null });
@@ -143,15 +144,25 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
     }
     setActivation(null); setDraft(null); safeLocalStorage.removeItem(draftKey(context.storageProjectKey)); setError(null); return true;
   }, [activation, history, locked]);
+  const renewDraftRequest = useCallback(() => {
+    setDraft(previous => {
+      if (!previous) return previous;
+      const next = { ...previous, selection: { ...previous.selection, requestToken: newRequestToken() } };
+      safeLocalStorage.setItem(draftKey(contextRef.current.storageProjectKey), JSON.stringify(next));
+      return next;
+    });
+  }, []);
   const stop = useCallback(async () => {
     const key = contextRef.current.sessionKey;
-    if (!key) return;
-    const view = await teamCommand<TeamRuntimeView>({ action: 'runtime_stop', sessionKey: key });
-    if (contextRef.current.sessionKey === key) setActivation(view.activation);
-  }, []);
+    if (!key || !activation) return;
+    // Capture the identity at click time. A retry must never target a newer run.
+    const identity = { activationId: activation.id, stopVersion: activation.stopVersion };
+    const view = await teamCommand<TeamRuntimeView>({ action: 'runtime_stop', sessionKey: key, ...identity });
+    if (contextRef.current.sessionKey === key && activationRef.current?.id === identity.activationId && activationRef.current.stopVersion <= (view.activation?.stopVersion ?? identity.stopVersion)) setActivation(view.activation);
+  }, [activation]);
   return { teams, catalogLoading, catalogError, reloadCatalog: catalog, activation, history, continuationPaused, draft, selectedTeam: activation?.team || draft?.team || null,
-    teamSelection: draft?.selection, teamDraftSessionId: draft?.sessionKey, teamActivationId: activation?.id ?? null, loading, error, refresh,
-    ready: !loading && !error && !changing && !choice, locked, changing, choice, selectTeam, selectSolo, confirmChoice, cancelChoice,
+    teamSelection: draft?.selection, teamDraftSessionId: draft?.sessionKey, teamActivationId: activation?.id ?? null, teamStopVersion: activation?.stopVersion, renewDraftRequest, loading, error, refresh,
+    ready: !loading && !error && !changing && !choice && activation?.status !== 'stopping', locked, changing, choice, selectTeam, selectSolo, confirmChoice, cancelChoice,
     changeChoiceProject: (projectKey: string) => { if (choice && !changing) void probe({ ...choice, projectKey, requestToken: newRequestToken() }); },
     retryProbe: () => { if (choice) void probe(choice); },
     registeredProjects: projects.filter(item => !isGeneralProject(item)), projectIsFixed: Boolean(project && !isGeneralProject(project)),

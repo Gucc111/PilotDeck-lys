@@ -1,0 +1,92 @@
+TAP version 13
+# [team:delivery] {"at":"2026-10-25T05:53:56.852Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.853Z","state":"applied","reason":"steer_applied","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.854Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: volatile mailbox admission is not a delivery receipt; only durable application resolves it
+ok 1 - volatile mailbox admission is not a delivery receipt; only durable application resolves it
+  ---
+  duration_ms: 2.054041
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.854Z","state":"applied","reason":"steer_applied","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.854Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: concurrent retries share one mailbox item and a durable receipt prevents re-enqueue
+ok 2 - concurrent retries share one mailbox item and a durable receipt prevents re-enqueue
+  ---
+  duration_ms: 0.456167
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.854Z","state":"unapplied","reason":"aborted","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.854Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: abort cancels queued delivery, rejects a late application, and cannot be replayed
+ok 3 - abort cancels queued delivery, rejects a late application, and cannot be replayed
+  ---
+  duration_ms: 0.232
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"applied","reason":"steer_applied","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: retry during a durable append still waits for the original steer_applied event
+ok 4 - retry during a durable append still waits for the original steer_applied event
+  ---
+  duration_ms: 0.226209
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"unapplied","reason":"steer_unapplied","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: generation is checked again after asynchronous transcript lookup and by the application fence
+ok 5 - generation is checked again after asynchronous transcript lookup and by the application fence
+  ---
+  duration_ms: 0.316625
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"unapplied","reason":"steer_unapplied","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"enqueued","sessionKey":"leader","turnId":"turn-2","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"applied","reason":"steer_applied","sessionKey":"leader","turnId":"turn-2","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: unapplied and terminal results allow a valid event to be retried by the idle host
+ok 6 - unapplied and terminal results allow a valid event to be retried by the idle host
+  ---
+  duration_ms: 0.251375
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"unapplied","reason":"execution_closed","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.855Z","state":"enqueued","sessionKey":"leader","turnId":"turn-2","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.856Z","state":"applied","reason":"steer_applied","sessionKey":"leader","turnId":"turn-2","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.856Z","state":"unapplied","reason":"turn_closing","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.856Z","state":"unapplied","reason":"enqueue_failed","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# [team:delivery] {"at":"2026-10-25T05:53:56.856Z","state":"enqueued","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: late application from an old turn cannot acknowledge a retry admitted to a new turn
+ok 7 - late application from an old turn cannot acknowledge a retry admitted to a new turn
+  ---
+  duration_ms: 0.260292
+  type: 'test'
+  ...
+# [team:delivery] {"at":"2026-10-25T05:53:56.856Z","state":"applied","reason":"steer_applied","sessionKey":"leader","turnId":"turn-1","eventId":"event-1"}
+# Subtest: closed mailbox and enqueue failure clear delivery tracking for a later valid retry
+ok 8 - closed mailbox and enqueue failure clear delivery tracking for a later valid retry
+  ---
+  duration_ms: 0.341041
+  type: 'test'
+  ...
+# Subtest: a durable receipt lookup cannot acknowledge a generation invalidated while the lookup was pending
+ok 9 - a durable receipt lookup cannot acknowledge a generation invalidated while the lookup was pending
+  ---
+  duration_ms: 0.62
+  type: 'test'
+  ...
+# Subtest: Abort during durable receipt lookup returns invalidated rather than applied
+ok 10 - Abort during durable receipt lookup returns invalidated rather than applied
+  ---
+  duration_ms: 0.305
+  type: 'test'
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 107.115541

@@ -14,6 +14,7 @@ type QueuedMessagesTrayProps = {
   onSteer: (itemId: string) => void;
   onDelete: (itemId: string) => void;
   onMoveToFront: (itemId: string) => void;
+  onRestore?: (itemId: string) => void;
 };
 
 export default function QueuedMessagesTray({
@@ -23,6 +24,7 @@ export default function QueuedMessagesTray({
   onSteer,
   onDelete,
   onMoveToFront,
+  onRestore,
 }: QueuedMessagesTrayProps) {
   const { t } = useTranslation('chat');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -87,7 +89,8 @@ export default function QueuedMessagesTray({
       aria-live="polite"
       className="relative z-0 mx-3 -mb-3 overflow-hidden rounded-t-[22px] border border-b-0 border-neutral-200 bg-white pb-3 shadow-[0_-8px_24px_rgba(0,0,0,0.025)] dark:border-neutral-800 dark:bg-neutral-950"
     >
-      {state.paused ? (
+      {state.items.some(item => item.status === 'invalidated') && <div role="status" className="border-b border-neutral-100 px-4 py-2 text-[13px] text-amber-700 dark:border-neutral-800 dark:text-amber-300">{t('inputQueue.invalidatedHelp')}</div>}
+      {state.paused && queuedItems.some(item => item.status !== 'invalidated') ? (
         <div className="flex min-h-11 items-center gap-2 border-b border-neutral-100 px-4 text-[13px] text-neutral-700 dark:border-neutral-800 dark:text-neutral-300">
           <Pause className="h-3.5 w-3.5 shrink-0 text-neutral-400" strokeWidth={1.8} />
           <span className="min-w-0 flex-1 truncate">
@@ -116,6 +119,7 @@ export default function QueuedMessagesTray({
 
       <div data-testid="queue-scroll-region" className="max-h-[156px] overflow-y-auto">
         {queuedItems.map((item, index) => {
+          const invalidated = item.status === 'invalidated';
           const busy = item.status === 'steering' || item.status === 'dispatching';
           const deliveryUncertain = item.status === 'delivery_uncertain';
           return (
@@ -139,7 +143,7 @@ export default function QueuedMessagesTray({
               {item.attachmentCount ? (
                 <span className="shrink-0 text-[11px] text-neutral-400">+{item.attachmentCount}</span>
               ) : null}
-              <button
+              {invalidated ? <button type="button" onClick={() => onRestore?.(item.id)} className="shrink-0 rounded-md px-2 py-1 text-[12px] text-blue-600 hover:bg-neutral-100 dark:text-blue-400 dark:hover:bg-neutral-800">{t('inputQueue.restoreComposer')}</button> : <button
                 type="button"
                 onClick={() => onSteer(item.id)}
                 disabled={!isLoading || state.paused || busy || deliveryUncertain}
@@ -155,7 +159,7 @@ export default function QueuedMessagesTray({
               >
                 <Route className="h-3.5 w-3.5" />
                 {t('inputQueue.steer', { defaultValue: 'Adjust direction' })}
-              </button>
+              </button>}
               <button
                 type="button"
                 onClick={() => onDelete(item.id)}
@@ -165,7 +169,7 @@ export default function QueuedMessagesTray({
               >
                 <Trash2 className="h-4 w-4" />
               </button>
-              {index > 0 ? (
+              {index > 0 && !invalidated ? (
                 <div>
                   <button
                     ref={(node) => {

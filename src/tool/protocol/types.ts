@@ -17,22 +17,6 @@ import type { PilotDeckElicitationChannel } from "../elicitation/PilotDeckElicit
 import type { PilotDeckToolInputSchema, PilotDeckToolValidationResult } from "./schema.js";
 
 /**
- * File-history sink used by `edit_file` / `write_file` to backup files
- * before mutation (C4 §6.4 / F1 trackEdit). Wired in by the agent loop
- * when a `FileHistoryStore` is available; absent for stand-alone tool
- * runtimes (tests, scripted invocations) — affected tools tolerate the
- * missing sink and proceed without backups.
- */
-export type PilotDeckToolFileHistorySink = {
-  trackEdit(filePath: string, messageId: string): Promise<void>;
-  recordEdit?(filePath: string, messageId: string, writtenContent?: string): Promise<void>;
-  /** Capture an execution through completion, including failed or background commands. */
-  trackCommand?(options?: { background?: boolean }): Promise<() => Promise<void>>;
-  beginTurn?(sessionId: string, turnId: string, messages: import("../../model/index.js").CanonicalMessage[], signal?: AbortSignal): Promise<void>;
-  finishTurn?(status: "complete" | "incomplete"): Promise<import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointSummary | undefined>;
-};
-
-/**
  * Minimal model client surface tools may use to issue secondary model calls
  * (e.g. `agent` subagent prompts, `web_fetch` content extraction). Mirrors
  * `AgentModelRuntime` but lives in the tool protocol to avoid a tool→agent
@@ -282,22 +266,6 @@ export type PilotDeckToolRuntimeContext = {
    * tools must report `unsupported_tool`.
    */
   elicitation?: PilotDeckElicitationChannel;
-  /**
-   * Optional file-history sink (C4). When provided, `edit_file` /
-   * `write_file` call `trackEdit(filePath, messageId)` *before* mutating,
-   * so a later `pilotdeck rewind` can restore the prior content. Absent
-   * for stand-alone runtimes; tools tolerate the absence by simply
-   * skipping backup capture (intentional — never block the edit on
-   * snapshot infrastructure).
-   */
-  fileHistory?: PilotDeckToolFileHistorySink;
-  /**
-   * Optional opaque "message id" the file-history sink uses to group
-   * snapshots. Set by the agent loop per user turn (typically the user
-   * message UUID). When `fileHistory` is set but `messageId` is missing,
-   * tools fall back to `turnId` so trackEdit still runs.
-   */
-  messageId?: string;
   /**
    * Subagent fork depth (C2 §6.2 / S?). Top-level agent runs at depth 0;
    * subagent forks pass `depth + 1`. The `agent` tool throws

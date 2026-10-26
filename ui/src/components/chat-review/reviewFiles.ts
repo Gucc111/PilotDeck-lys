@@ -1,6 +1,6 @@
 import { getWorkspaceFileIdentity } from '../../utils/workspaceFileMention';
 
-// Presentation only: keep the original checkpoint and restore plan intact.
+// Presentation filtering does not change persisted artifacts.
 export function isInternalReviewPath(path: string, workspaceRoot = ''): boolean {
   return getWorkspaceFileIdentity(path, workspaceRoot).split('/').includes('.pilotdeck');
 }

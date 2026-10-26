@@ -109,3 +109,14 @@ it('shows only waiting messages while submission and dispatch appear in the conv
   view.rerender(<QueuedMessagesTray state={{ ...state, items: [{ ...item('sending', 'Sending now'), status: 'dispatching' }] }} isLoading={false} onResume={vi.fn()} onSteer={vi.fn()} onDelete={vi.fn()} onMoveToFront={vi.fn()} />);
   expect(screen.queryByRole('region', { name: 'Queued messages' })).toBeNull();
 });
+
+it('offers explicit composer recovery instead of retry, steer or queue resume for expired Team inputs', () => {
+  const onRestore = vi.fn();
+  render(<QueuedMessagesTray state={{ sessionId: 'team', revision: 5, paused: true, items: [{ ...item('expired', 'Preserved input'), status: 'invalidated', attachmentCount: 2 }] }}
+    isLoading onResume={vi.fn()} onSteer={vi.fn()} onDelete={vi.fn()} onMoveToFront={vi.fn()} onRestore={onRestore} />);
+  expect(screen.getByText('Preserved input')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Adjust direction' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'inputQueue.restoreComposer' }));
+  expect(onRestore).toHaveBeenCalledWith('expired');
+});

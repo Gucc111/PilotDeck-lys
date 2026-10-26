@@ -13,13 +13,10 @@ it.each([
   ['Windows UNC', '\\\\SERVER\\Share\\Repo\\Subproject', '//server/share/repo', 'subproject/Report.txt'],
   ['POSIX', '/repo/subproject', '/repo', 'subproject/report.txt'],
   ['repository root', 'c:\\REPO', 'C:/Repo', 'Report.txt'],
-])('preselects the round files using Git filenames in a %s workspace', async (_label, workspace, repository, file) => {
-  const checkpoint = { id: 'checkpoint', phase: 'after', turnId: 'turn', sessionId: 'session', createdAt: '2026-10-09T00:00:00Z', status: 'complete', changes: [{ path: 'report.txt' }] };
+])('preserves explicit selection using Git filenames in a %s workspace', async (_label, workspace, repository, file) => {
   const entry = (path: string) => ({ path, indexStatus: '?', worktreeStatus: '?', untracked: true, unstaged: true });
   mocks.fetch.mockImplementation(async (url: string, options?: { body?: string }) => {
-    const input = options?.body ? JSON.parse(options.body) : {};
-    const body = input.action === 'list' ? { checkpoints: [checkpoint], sessionChanges: checkpoint.changes, operations: [], busy: false }
-      : url.includes('/git/status') ? { branch: 'main', repositoryRoot: repository, hasCommits: true, entries: [entry(file), entry('unrelated.txt')] }
+    const body = url.includes('/git/status') ? { branch: 'main', repositoryRoot: repository, hasCommits: true, entries: [entry(file), entry('unrelated.txt')] }
       : url.includes('/git/branches') ? { localBranches: ['main'] } : {};
     return { ok: true, json: async () => body };
   });
@@ -27,7 +24,8 @@ it.each([
     <GitReviewTab />
   </ChatReviewProvider>);
   const selected = await screen.findByLabelText(`选择未暂存文件 ${file}`) as HTMLInputElement;
-  await waitFor(() => expect(selected.checked).toBe(true));
+  expect(selected.checked).toBe(false);
+  fireEvent.click(selected);
   expect((screen.getByLabelText('选择未暂存文件 unrelated.txt') as HTMLInputElement).checked).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: '暂存所选' }));
   await waitFor(() => expect(mocks.fetch.mock.calls.some(([url]) => url === '/api/git/operation')).toBe(true));
@@ -35,27 +33,24 @@ it.each([
   expect(JSON.parse(options.body)).toMatchObject({ operation: 'stage', files: [file] });
 });
 
-it('keeps manual selections across fresh status/checkpoint responses, drops missing files, and stages the chosen files', async () => {
-  const checkpoint = { id: 'checkpoint', phase: 'after', turnId: 'turn', changes: [{ path: 'round.txt' }] };
+it('keeps manual selections across fresh status responses, drops missing files, and stages the chosen files', async () => {
   let files = ['round.txt', 'manual.txt'];
   const entry = (path: string) => ({ path, indexStatus: '?', worktreeStatus: '?', untracked: true, unstaged: true });
   mocks.fetch.mockImplementation(async (url: string, options?: { body?: string }) => {
-    const input = options?.body ? JSON.parse(options.body) : {};
-    const body = input.action === 'list' ? { checkpoints: [checkpoint], sessionChanges: checkpoint.changes, operations: [], busy: false }
-      : url.includes('/git/status') ? { branch: 'main', repositoryRoot: '/qa', hasCommits: true, entries: files.map(entry) }
+    const body = url.includes('/git/status') ? { branch: 'main', repositoryRoot: '/qa', hasCommits: true, entries: files.map(entry) }
       : url.includes('/git/branches') ? { localBranches: ['main'] } : {};
     return { ok: true, json: async () => JSON.parse(JSON.stringify(body)) };
   });
   function Controls() {
     const review = useChatReview()!;
-    return <button onClick={() => { void review.refresh(); void review.refreshGit(); }}>Refresh test</button>;
+    return <button onClick={() => { void review.refreshGit(); }}>Refresh test</button>;
   }
   render(<ChatReviewProvider project={{ name: 'qa', fullPath: '/qa' } as Project} session={{ id: 'session' } as ProjectSession} openGit onOpen={() => {}}><Controls /><GitReviewTab /></ChatReviewProvider>);
   const round = await screen.findByLabelText('选择未暂存文件 round.txt') as HTMLInputElement;
-  await waitFor(() => expect(round.checked).toBe(true));
-  fireEvent.click(round); fireEvent.click(screen.getByLabelText('选择未暂存文件 manual.txt'));
+  expect(round.checked).toBe(false);
+  fireEvent.click(screen.getByLabelText('选择未暂存文件 manual.txt'));
   fireEvent.click(screen.getByText('Refresh test'));
-  await waitFor(() => expect(mocks.fetch.mock.calls.filter(([, options]) => options?.body && JSON.parse(options.body).action === 'list')).toHaveLength(2));
+  await waitFor(() => expect(mocks.fetch.mock.calls.filter(([url]) => String(url).includes('/git/status'))).toHaveLength(2));
   expect(round.checked).toBe(false); expect((screen.getByLabelText('选择未暂存文件 manual.txt') as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: '暂存所选' }));
   await waitFor(() => expect(mocks.fetch.mock.calls.some(([url]) => url === '/api/git/operation')).toBe(true));
@@ -68,18 +63,16 @@ it('keeps manual selections across fresh status/checkpoint responses, drops miss
 function gitEntry(path: string, options: Partial<GitEntry> = {}): GitEntry {
   return { path, indexStatus: ' ', worktreeStatus: 'M', staged: false, unstaged: true, untracked: false, conflicted: false, ...options };
 }
-function renderRepository(initialEntries: GitEntry[], busy = false) {
+function renderRepository(initialEntries: GitEntry[]) {
   let entries = initialEntries;
   mocks.fetch.mockImplementation(async (url: string, options?: { body?: string }) => {
-    const input = options?.body ? JSON.parse(options.body) : {};
-    const body = input.action === 'list' ? { checkpoints: [], sessionChanges: [], operations: [], busy }
-      : url.includes('/git/status') ? { branch: 'main', repositoryRoot: '/qa', hasCommits: true, indexTree: 'reviewed-index', entries }
+    const body = url.includes('/git/status') ? { branch: 'main', repositoryRoot: '/qa', hasCommits: true, indexTree: 'reviewed-index', entries }
       : url.includes('/git/branches') ? { localBranches: ['main'] } : {};
     return { ok: true, json: async () => JSON.parse(JSON.stringify(body)) };
   });
   function Controls() {
     const review = useChatReview()!;
-    return <button onClick={() => { void review.refresh(); void review.refreshGit(); }}>Refresh test</button>;
+    return <button onClick={() => { void review.refreshGit(); }}>Refresh test</button>;
   }
   render(<ChatReviewProvider project={{ name: 'qa', fullPath: '/qa' } as Project} session={{ id: 'session' } as ProjectSession} openGit onOpen={() => {}}>
     <Controls /><GitReviewTab />
@@ -160,13 +153,12 @@ it('drops only the selection for a removed Git side during refresh', async () =>
   expect((screen.getByLabelText('选择已暂存文件 selected.txt') as HTMLInputElement).checked).toBe(true);
 });
 
-it('disables both batch and individual mutations while the workspace is busy', async () => {
-  renderRepository([gitEntry('file.txt')], true);
+it('allows Git operations without an Agent-wide workspace lease', async () => {
+  renderRepository([gitEntry('file.txt')]);
   const group = within(await screen.findByRole('group', { name: '未暂存' }));
-  await waitFor(() => expect((group.getByRole('button', { name: '暂存全部' }) as HTMLButtonElement).disabled).toBe(true));
-  expect((group.getByRole('button', { name: '暂存 file.txt' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((group.getByRole('button', { name: '暂存全部' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(group.getByRole('button', { name: '暂存全部' }));
-  expect(operations()).toEqual([]);
+  await waitFor(() => expect(operations()).toHaveLength(1));
 });
 
 it('lists conflicts once and allows staging their selected resolution', async () => {

@@ -14,13 +14,6 @@ export type AgentProjectSessionStorage = {
   transcriptPath: string;
   toolResultsDir: string;
   /**
-   * Per-session directory for file-history backups (C4 / F5). Backups land
-   * at `<fileHistoryDir>/<sha16(filePath)>@v<version>` and survive process
-   * restarts. The `FileHistoryStore` lazily creates the dir on first
-   * `trackEdit`.
-   */
-  fileHistoryDir: string;
-  /**
    * Per-session directory for subagent sidechain transcripts (C3 §6.3).
    * Each forked subagent gets its own `<subagentId>.jsonl` here.
    */
@@ -64,7 +57,6 @@ export function createAgentProjectSessionStorage(
   // project-local .pilotdeck directory is gitignored and already within the
   // workspace path boundary enforced by read_file.
   const toolResultsDir = resolve(options.projectRoot, ".pilotdeck", "tool-results", safeId);
-  const fileHistoryDir = resolve(chatDir, safeId, "file-history");
   const subagentsDir = resolve(chatDir, safeId, "subagents");
   const subagentTranscriptPath = (subagentId: string): string =>
     resolve(subagentsDir, `${sanitizeSessionIdForPath(subagentId)}.jsonl`);
@@ -72,7 +64,6 @@ export function createAgentProjectSessionStorage(
     chatDir,
     transcriptPath,
     toolResultsDir,
-    fileHistoryDir,
     subagentsDir,
     subagentTranscriptPath,
     transcript: new JsonlTranscriptWriter({

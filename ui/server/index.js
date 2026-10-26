@@ -90,7 +90,6 @@ import {
     enqueueInputViaGateway,
     deleteQueuedInputViaGateway,
     moveQueuedInputToFrontViaGateway,
-    pauseInputQueueViaGateway,
     resumeInputQueueViaGateway,
     steerQueuedInputViaGateway,
 } from './pilotdeck-bridge.js';
@@ -2511,9 +2510,10 @@ function handleChatConnection(ws, request) {
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
                 const provider = data.provider || 'pilotdeck';
-                pauseInputQueueViaGateway(data.sessionId, streamWriter, 'user_stopped');
-                const success = await abortViaGateway(data.sessionId, provider);
-                writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider }));
+                const success = await abortViaGateway(data.sessionId, provider, { ...(data.runId ? { runId: data.runId } : {}), ...(data.teamActivationId ? { teamActivationId: data.teamActivationId, teamStopVersion: data.teamStopVersion } : {}) });
+                writer.send(success
+                    ? createNormalizedMessage({ kind: 'complete', exitCode: 0, aborted: true, success: true, runId: data.runId, sessionId: data.sessionId, provider })
+                    : createNormalizedMessage({ kind: 'error', code: 'abort_unconfirmed', terminal: false, content: 'Stopping is not yet confirmed. Execution may still be cleaning up; check the current status before sending again.', runId: data.runId, sessionId: data.sessionId, provider }));
             } else if (data.type === 'permission-response') {
                 if (data.requestId) {
                     await decidePermissionViaGateway(

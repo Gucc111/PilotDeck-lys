@@ -50,3 +50,13 @@ For isolated UI edge cases (empty model catalog, long errors, mobile menu and st
 ```sh
 pnpm --dir ui exec playwright test --config e2e/team-mode.config.mjs
 ```
+
+## Current runtime expectations (2026-10-25)
+
+- Delegation acknowledges durable admission without waiting for the member result. Leader lifecycle and `team_collect` queries are unchanged; the model is not instructed to end its turn after delegating.
+- Leader and running Teammates receive internal messages at existing safe model/tool boundaries. An already sent model request is unchanged, tool call/result pairing remains intact, and internal messages are not rendered as human bubbles. Only genuinely started idle Leader follow-up turns consume the automatic wake-up budget.
+- Abort stops the whole Team. Pending internal messages, notifications and Team user queue entries expire; they are not merely paused. Cleanup remains `stopping` until execution exits. An uncooperative tool must not yield a false stopped acknowledgment. Expired user input can be explicitly put back in the composer with preserved attachment references and a fresh request token.
+- A Gateway restart interrupts all unfinished old work, including unclaimed queued work, and invalidates old messages/notifications without waking the Leader. A Web bridge restart also invalidates queued Team inputs, including drafts with only a Team selection. Browser reconnect to a live service does not invalidate the run. Completed results and chat history remain readable.
+- Automatic workspace checkpoints and rollback are removed. All legacy checkpoint operations, including list/diff and the old Git branch of that API, explicitly reject with the removed-feature error. Independent Git operations and file artifacts remain supported.
+
+The smoke above does not cover every failure/race branch. Controlled bridge/UI tests exercise expired queues, generation fencing, interrupted draft sends and internal-message rendering. The isolated layout checks in `docs/testing/reports/2026-10-25-team-runtime-assets/` render actual components with fixture state; they do not prove a real Team run or model result. Do not describe an unexecuted smoke as passed.

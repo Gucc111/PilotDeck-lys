@@ -15,20 +15,20 @@ import { replayTranscriptEntries } from "../transcript/TranscriptReplay.js";
  * Optional hook fired once the per-session `storage` has been created. Lets
  * the caller (e.g. `createLocalGateway`) attach per-session runtime pieces
  * that depend on session-scoped paths or the JSONL transcript writer
- * (ToolResultBudget, FileHistoryStore, sidechain hooks, etc.).
+ * (ToolResultBudget, sidechain hooks, etc.).
  *
  * The returned object is shallow-merged into `options.dependencies`, with
  * the sub-fields of `tools` and `context` handled specially:
  *   - `context` overrides the runtime entirely (caller passes the upgraded
  *     `DefaultContextRuntime` with the freshly-created `toolResultBudget`).
- *   - `fileHistory` / `subagentTranscript` are forwarded as-is.
+ *   - `subagentTranscript` is forwarded as-is.
  */
 export type ResumeSessionDependencyExtension = (
   storage: AgentProjectSessionStorage,
 ) => Partial<
   Pick<
     AgentRuntimeDependencies,
-    "context" | "fileHistory" | "subagentTranscript" | "elicitation" | "eventEmitter" | "drainEvents" | "planFileManager" | "planTodoManager"
+    "context" | "subagentTranscript" | "elicitation" | "eventEmitter" | "drainEvents" | "planFileManager" | "planTodoManager"
   >
 >;
 
@@ -65,7 +65,6 @@ export async function resumeAgentSession(options: ResumeAgentSessionOptions): Pr
   const dependencies: typeof options.dependencies = {
     ...options.dependencies,
     ...(extension.context ? { context: extension.context } : {}),
-    ...(extension.fileHistory ? { fileHistory: extension.fileHistory } : {}),
     ...(extension.subagentTranscript ? { subagentTranscript: extension.subagentTranscript } : {}),
     ...(extension.elicitation ? { elicitation: extension.elicitation } : {}),
     ...(extension.eventEmitter ? { eventEmitter: extension.eventEmitter } : {}),

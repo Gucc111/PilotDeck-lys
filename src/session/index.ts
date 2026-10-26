@@ -83,20 +83,3 @@ export {
   findGitRoot,
   resolveCanonicalRoot,
 } from "./worktree/index.js";
-export {
-  createBackup,
-  FileHistoryStore,
-  getBackupFileName,
-  parseBackupVersion,
-  restoreBackup,
-  type CreateBackupOptions,
-  type CreateBackupResult,
-  type FileHistoryBackup,
-  type FileHistoryDiffStats,
-  type FileHistorySnapshot,
-  type FileHistorySnapshotRecordedEntry,
-  type FileHistoryState,
-  type FileHistoryStoreOptions,
-  type RestoreBackupOptions,
-  type RestoreBackupResult,
-} from "./filesystem/index.js";

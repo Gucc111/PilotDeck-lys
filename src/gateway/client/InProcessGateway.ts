@@ -119,12 +119,15 @@ const DEFAULT_ABORT_TURN_TIMEOUT_MS = 30_000;
 
 export type InProcessGatewayOptions = {
   prepareTurn?: (input: GatewaySubmitTurnInput) => Promise<{ input: GatewaySubmitTurnInput; metadata?: Record<string, unknown>; isMeta?: boolean; replay?: GatewayEvent[] }>;
+  /** Read-only admission replay while the original execution still owns the session. */
+  replayAcceptedInput?: (input: GatewaySubmitTurnInput) => Promise<GatewayEvent[] | undefined>;
   validateTeamSteer?: (input: GatewaySteerTurnInput) => Promise<void>;
-  abortTeam?: (sessionKey: string) => Promise<void>;
+  abortTeam?: (input: { sessionKey: string; teamActivationId?: string; teamStopVersion?: number }) => Promise<boolean>;
+  onAgentEvent?: (sessionKey: string, event: AgentEvent) => void;
   protectSessionOperation?: (sessionKey: string, operation: string) => Promise<void>;
   afterInputAccepted?: (input: GatewaySubmitTurnInput, metadata?: Record<string, unknown>) => Promise<void>;
   teamCommand?: (input: import("../../team/types.js").TeamCommand) => Promise<import("../../team/types.js").TeamCommandResult>;
-  manageCheckpoints?: (input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest) => Promise<unknown>;
+  repositoryOperation?: (input: import("../../session/repository/operations.js").RepositoryOperationInput) => Promise<unknown>;
   /** Absolute command used by the model to install bundled FunASR assets. */
   funasrInstallCommand?: string;
   /** Maximum time to wait for an aborted turn to finish unwinding. */
@@ -242,15 +245,26 @@ type PendingTurnReplacement = {
 };
 
 export class InProcessGateway implements Gateway {
+  private readonly serverInstanceId = randomUUID();
   private readonly turnAbortControllers = new Map<string, AbortController>();
   async abortSessionExecution(sessionKey: string, reason = "aborted"): Promise<void> {
     this.turnAbortControllers.get(sessionKey)?.abort(reason);
+    this.permissionBus.rejectSession(sessionKey, reason);
+    this.elicitationBus.rejectSession(sessionKey, reason);
+    for (const entry of this.teamPrompts.values()) if (entry.sessionKey === sessionKey) this.clearTeamPrompts(entry.internalSessionKey);
     await this.router.abort(sessionKey, reason);
   }
-  private readonly teamPrompts = new Map<string, { sessionKey: string; internalSessionKey: string; event: GatewayEvent; onAnswered?: () => void }>();
-  registerTeamPrompt(sessionKey: string, internalSessionKey: string, event: GatewayEvent, onAnswered?: () => void): void {
+  /** Resolves only after the executing producer and its cleanup have settled. */
+  async waitForSessionExecution(sessionKey: string): Promise<void> {
+    await this.executionPumps.get(sessionKey);
+    await this.turnCompletions.get(sessionKey);
+  }
+  private readonly submittedTeamTurns = new Map<string, { runId: string; draft: boolean; teamActivationId?: string; teamStopVersion?: number; cleanup?: Promise<boolean> }>();
+  private readonly executionPumps = new Map<string, Promise<void>>();
+  private readonly teamPrompts = new Map<string, { sessionKey: string; internalSessionKey: string; event: GatewayEvent; onAnswered?: () => void; isCurrent?: () => Promise<boolean> }>();
+  registerTeamPrompt(sessionKey: string, internalSessionKey: string, event: GatewayEvent, onAnswered?: () => void, isCurrent?: () => Promise<boolean>): void {
     if ((event.type === "permission_request" || event.type === "elicitation_request")) {
-      this.teamPrompts.set(event.requestId, { sessionKey, internalSessionKey, event, onAnswered });
+      this.teamPrompts.set(event.requestId, { sessionKey, internalSessionKey, event, onAnswered, isCurrent });
     }
   }
   clearTeamPrompts(internalSessionKey: string): void {
@@ -262,9 +276,12 @@ export class InProcessGateway implements Gateway {
     if (!this.options.teamCommand) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team configuration is unavailable on this Gateway.");
     return this.options.teamCommand(input);
   }
-  async manageCheckpoints(input: import("../../session/checkpoints/WorkspaceCheckpoints.js").CheckpointRequest): Promise<unknown> {
-    if (!this.options.manageCheckpoints) throw new Error("File checkpoints are unavailable on this Gateway.");
-    return this.options.manageCheckpoints(input);
+  async manageCheckpoints(_input: import("../../session/checkpoints/removed.js").CheckpointRequest): Promise<never> {
+    throw new DialogGatewayError("CHECKPOINTS_REMOVED", "File checkpoints and restore have been removed. / 文件检查点与恢复功能已移除。");
+  }
+  async repositoryOperation(input: import("../../session/repository/operations.js").RepositoryOperationInput): Promise<unknown> {
+    if (!this.options.repositoryOperation) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Git operations are unavailable on this Gateway.");
+    return this.options.repositoryOperation(input);
   }
   private readonly now: () => Date;
   private readonly uuid: () => string;
@@ -432,6 +449,15 @@ export class InProcessGateway implements Gateway {
     }
     if (!this.router.beginTurn(input.sessionKey, runId)) {
       this.releasePendingTurnReplacementClaim(input.sessionKey, runId);
+      if (input.runId && (input.teamActivationId || input.teamSelection) && this.options.replayAcceptedInput) {
+        try {
+          const replay = await this.options.replayAcceptedInput(input);
+          if (replay) { yield* replay; return; }
+        } catch (error) {
+          yield { type: "error", runId, code: error && typeof error === "object" && "code" in error ? String(error.code) : "TEAM_TRANSCRIPT_UNAVAILABLE", message: error instanceof Error ? error.message : String(error), recoverable: false };
+          return;
+        }
+      }
       const message = `Session ${input.sessionKey} already has an active turn.`;
       const userHint = "Wait for the current turn to finish or stop it before sending another message.";
       yield {
@@ -460,6 +486,8 @@ export class InProcessGateway implements Gateway {
       resolveTurnDone = resolve;
     });
     this.turnCompletions.set(input.sessionKey, turnDone);
+    const teamSubmission: { runId: string; draft: boolean; teamActivationId?: string; teamStopVersion?: number; cleanup?: Promise<boolean> } | undefined = input.teamSelection || input.teamActivationId ? { runId, draft: !!input.teamSelection, teamActivationId: input.teamActivationId ?? undefined, teamStopVersion: input.teamStopVersion } : undefined;
+    if (teamSubmission) this.submittedTeamTurns.set(input.sessionKey, teamSubmission);
     const turnAbort = new AbortController();
     this.turnAbortControllers.set(input.sessionKey, turnAbort);
 
@@ -533,7 +561,18 @@ export class InProcessGateway implements Gateway {
             return;
           }
         }
-        if (turnAbort.signal.aborted) throw new DialogGatewayError("TURN_ABORTED", "The turn was stopped before execution.");
+        if (teamSubmission) {
+          teamSubmission.teamActivationId = input.teamActivationId ?? undefined;
+          teamSubmission.teamStopVersion = input.teamStopVersion;
+        }
+        if (turnAbort.signal.aborted) {
+          if (teamSubmission?.draft && teamSubmission.teamActivationId) {
+            // Do not await from inside the producer: stop waits for this producer.
+            teamSubmission.cleanup = this.options.abortTeam?.({ sessionKey: input.sessionKey, teamActivationId: teamSubmission.teamActivationId, teamStopVersion: teamSubmission.teamStopVersion });
+            void teamSubmission.cleanup?.catch(() => {});
+          }
+          throw new DialogGatewayError("TURN_ABORTED", "The turn was stopped before execution.");
+        }
         if (input.workspaceCwd && this.options.setSessionCwd) this.options.setSessionCwd(input.sessionKey, input.workspaceCwd);
         const session = await this.router.getOrCreate({
           sessionKey: input.sessionKey,
@@ -679,6 +718,7 @@ export class InProcessGateway implements Gateway {
           if (this.turnCompletions.get(input.sessionKey) !== turnDone) {
             break;
           }
+          this.options.onAgentEvent?.(input.sessionKey, event);
           emitSessionTelemetry(this.options.telemetry, event, {
             sessionId: input.sessionKey,
             runId,
@@ -713,6 +753,7 @@ export class InProcessGateway implements Gateway {
             lastEmittedModel = `${event.event.provider}\0${event.event.model}`;
           }
           for (const gatewayEvent of mapAgentEvent(event, runId)) {
+            if (prepared?.isMeta) gatewayEvent.purpose = "team_runtime";
             if (gatewayEvent.type === "assistant_text_delta" && actualRequestModel) gatewayEvent.model = actualRequestModel;
             if (gatewayEvent.type === "input_accepted" && input.modelSelection) {
               gatewayEvent.modelSelection = { ...input.modelSelection };
@@ -777,6 +818,8 @@ export class InProcessGateway implements Gateway {
       }
     })();
 
+    this.executionPumps.set(input.sessionKey, pump);
+    void pump.finally(() => { if (this.executionPumps.get(input.sessionKey) === pump) this.executionPumps.delete(input.sessionKey); }).catch(() => {});
     try {
       for await (const event of queue) {
         yield event;
@@ -813,6 +856,7 @@ export class InProcessGateway implements Gateway {
         this.turnCompletions.delete(input.sessionKey);
       }
       if (this.turnAbortControllers.get(input.sessionKey) === turnAbort) this.turnAbortControllers.delete(input.sessionKey);
+      if (this.submittedTeamTurns.get(input.sessionKey) === teamSubmission) this.submittedTeamTurns.delete(input.sessionKey);
       resolveTurnDone();
       this.releasePendingTurnReplacementClaim(input.sessionKey, runId);
       this.options.afterTurnCompleted?.({
@@ -846,13 +890,18 @@ export class InProcessGateway implements Gateway {
       content: agentInput.type === "text"
         ? [{ type: "text", text: agentInput.text }]
         : agentInput.content,
-      metadata: { purpose: "mid_turn_steer", queueItemId: input.itemId },
+      metadata: { purpose: "mid_turn_steer", queueItemId: input.itemId, ...(input.teamActivationId ? { teamActivationId: input.teamActivationId, teamStopVersion: input.teamStopVersion } : {}) },
     };
+    await this.options.validateTeamSteer?.(input);
     return this.router.steer(input.sessionKey, {
       turnId: input.runId,
       itemId: input.itemId,
       message,
       allowedReadFiles,
+      ...(input.teamActivationId ? { beforeApply: async () => {
+        try { await this.options.validateTeamSteer?.(input); return true; }
+        catch { return false; }
+      } } : {}),
     });
   }
 
@@ -866,8 +915,13 @@ export class InProcessGateway implements Gateway {
     });
   }
 
-  async abortTurn(input: { sessionKey: string; runId?: string; reason?: string }): Promise<void> {
-    await this.options.abortTeam?.(input.sessionKey);
+  async abortTurn(input: { sessionKey: string; runId?: string; reason?: string; teamActivationId?: string; teamStopVersion?: number }): Promise<void> {
+    const submitted = this.submittedTeamTurns.get(input.sessionKey);
+    const captured = input.runId && submitted?.runId === input.runId && submitted.draft ? submitted : undefined;
+    if (input.runId && this.router.activeTurnRunId(input.sessionKey) !== input.runId) return;
+    if (captured && !captured.teamActivationId) {
+      await this.abortSessionExecution(input.sessionKey, "team_stopped");
+    } else if (await this.options.abortTeam?.({ ...input, ...(captured ? { teamActivationId: captured.teamActivationId, teamStopVersion: captured.teamStopVersion } : {}) })) return;
     const reason = input.reason ?? (input.runId ? `aborted:${input.runId}` : "aborted");
     await this.abortSessionExecution(input.sessionKey, reason);
     // Wait for the in-flight `submitTurn` (if any) to fully unwind so
@@ -879,7 +933,7 @@ export class InProcessGateway implements Gateway {
     if (!pending) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const completed = await Promise.race([
-      pending.then(() => true),
+      pending.then(async () => { await captured?.cleanup; return true; }),
       new Promise<false>((resolve) => {
         timer = setTimeout(() => resolve(false), this.abortTurnTimeoutMs);
         timer.unref?.();
@@ -887,6 +941,7 @@ export class InProcessGateway implements Gateway {
     ]);
     if (timer) clearTimeout(timer);
     if (!completed) {
+      if (captured) throw new DialogGatewayError("TEAM_STOPPING", "The Team is still stopping. Execution cleanup has not completed.");
       console.warn(
         `[pilotdeck] abortTurn timed out after ${this.abortTurnTimeoutMs}ms for session ${input.sessionKey}.`,
       );
@@ -942,6 +997,7 @@ export class InProcessGateway implements Gateway {
 
   async describeServer(): Promise<GatewayServerInfo> {
     const capabilities = [
+      ...(this.options.repositoryOperation ? ["repository_operation" as const] : []),
       ...(this.options.teamCommand ? ["team_command" as const] : []),
       ...(this.options.listProjects ? ["project_files_list" as const] : []),
       ...(this.options.commandsList ? ["commands_list" as const] : []),
@@ -955,6 +1011,7 @@ export class InProcessGateway implements Gateway {
       sessionCount: this.router.sessionCount(),
       ...this.options.serverInfo,
       capabilities,
+      serverInstanceId: this.serverInstanceId,
     };
   }
 
@@ -1072,7 +1129,18 @@ export class InProcessGateway implements Gateway {
 
   async respondElicitation(input: GatewayElicitationResponseInput): Promise<{ delivered: boolean }> {
     const prompt = this.teamPrompts.get(input.requestId);
-    const key = prompt?.sessionKey === input.sessionKey ? prompt.internalSessionKey : input.sessionKey;
+    if (prompt) {
+      if (prompt.sessionKey !== input.sessionKey || prompt.event.type !== "elicitation_request") return { delivered: false };
+      const current = prompt.isCurrent ? await prompt.isCurrent().catch(() => false) : true;
+      // Validation can yield while a stop or another response consumes this prompt.
+      if (this.teamPrompts.get(input.requestId) !== prompt) return { delivered: false };
+      if (!current) {
+        this.teamPrompts.delete(input.requestId);
+        this.elicitationBus.consume(prompt.internalSessionKey, input.requestId)?.reject(new Error("team_generation_expired"));
+        return { delivered: false };
+      }
+    }
+    const key = prompt?.internalSessionKey ?? input.sessionKey;
     const entry = this.elicitationBus.consume(key, input.requestId);
     if (!entry) return { delivered: false };
     this.teamPrompts.delete(input.requestId);
@@ -1084,7 +1152,17 @@ export class InProcessGateway implements Gateway {
 
   async permissionDecide(input: GatewayPermissionDecisionInput): Promise<{ delivered: boolean }> {
     const prompt = this.teamPrompts.get(input.requestId);
-    const key = prompt?.sessionKey === input.sessionKey ? prompt.internalSessionKey : input.sessionKey;
+    if (prompt) {
+      if (prompt.sessionKey !== input.sessionKey || prompt.event.type !== "permission_request") return { delivered: false };
+      const current = prompt.isCurrent ? await prompt.isCurrent().catch(() => false) : true;
+      if (this.teamPrompts.get(input.requestId) !== prompt) return { delivered: false };
+      if (!current) {
+        this.teamPrompts.delete(input.requestId);
+        this.permissionBus.consume(prompt.internalSessionKey, input.requestId)?.reject(new Error("team_generation_expired"));
+        return { delivered: false };
+      }
+    }
+    const key = prompt?.internalSessionKey ?? input.sessionKey;
     const entry = this.permissionBus.consume(key, input.requestId);
     if (!entry) return { delivered: false };
     this.teamPrompts.delete(input.requestId);
@@ -2001,10 +2079,11 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
       return [{ type: "input_accepted", runId }];
     case "steer_applied":
       return [{ type: "steer_applied", itemId: event.itemId, message: event.message,
+        ...(event.message.metadata?.purpose === "team_runtime" ? { purpose: "team_runtime" as const } : {}),
         ...(event.message.content.find(block => block.timeline)?.timeline ? { timeline: event.message.content.find(block => block.timeline)!.timeline } : {}),
       }];
     case "steer_unapplied":
-      return [{ type: "steer_unapplied", itemId: event.itemId, reason: event.reason }];
+      return [{ type: "steer_unapplied", itemId: event.itemId, reason: event.reason, ...(event.itemId.startsWith("team-event:") ? { purpose: "team_runtime" as const } : {}) }];
     case "model_request_started":
       return [{ type: "model_request_started", model: event.model, provider: event.provider }];
     case "model_event":
