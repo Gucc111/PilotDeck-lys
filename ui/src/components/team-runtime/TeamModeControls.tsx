@@ -66,7 +66,6 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
     </div>}
     {choice && <TeamDialog title={t('teamMode.enter', { name: choice.team.config.displayName })} onClose={mode.cancelChoice}>
       <div className="team-mode-body">
-        <p>{t('teamMode.enterHelp')}</p>
         <label className="team-mode-label">{t('teamMode.workspace')}
           <select value={choice.projectKey} disabled={mode.projectIsFixed || mode.changing} onChange={event => mode.changeChoiceProject(event.target.value)}>
             <option value="">{t('teamMode.chooseWorkspace')}</option>
@@ -85,7 +84,6 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
     </TeamDialog>}
     {mode.panelOpen && panelTeam && <TeamDialog title={panelTeam.config.displayName} onClose={closePanel} side>
       <div className="team-mode-body">
-        <p>{t('teamMode.panelHelp')}</p>
         {panelVersions.length > 1 || (!mode.selectedTeam && panelVersions.length) ? <label className="team-mode-label">{t('teamMode.history')}<select value={activation?.id || ''} onChange={event => setViewedActivationId(event.target.value)}>{panelVersions.map(item => <option key={item.id} value={item.id}>{item.team.config.displayName} · {new Date(item.createdAt).toLocaleString()} · {item.id === mode.activation?.id ? t('teamMode.current') : t('teamMode.previous')}</option>)}</select></label> : null}
         <div className="team-mode-inline"><span>{t('teamMode.revision', { revision: panelTeam.revision })}</span><button type="button" onClick={() => void mode.refresh()} aria-label={t('teamMode.refresh')}><RefreshCw size={15}/></button></div>
         <h3>{t('teamMode.members')}</h3>
@@ -100,7 +98,6 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
         {!activation?.messages.length && <p className="team-mode-muted">{t('teamMode.noMessages')}</p>}
         {activation?.messages.map(message => <article className="team-mode-card" key={message.id}><strong>{memberName(message.senderId)} → {memberName(message.recipientId)}</strong>{message.intendedRecipientId !== message.recipientId && <span className="team-mode-muted">{t(activation.messages.some(relay => relay.relayOf === message.id) ? 'teamMode.relayed' : 'teamMode.awaitingRelay', { name: memberName(message.intendedRecipientId) })}</span>}<span className="team-mode-muted">{workStatus(message.status)}</span><p className="team-mode-text">{message.text}</p></article>)}
         {activation?.status === 'stopping' && <div role="status" className="team-mode-warning"><p>{t('teamMode.stoppingHelp')}</p>{activation.cleanup?.pending.map(key => { const target = cleanupTarget(activation, key); return <p key={key} className="team-mode-text">{target.label || t(target.translationKey!)}</p>; })}{activation.cleanup?.error && <p className="team-mode-error">{activation.cleanup.error}</p>}{activation.cleanup?.timedOut && <p>{t('teamMode.stopTimeout')}</p>}</div>}
-        {activation?.status === 'stopped' && <p className="team-mode-warning">{t('teamMode.stopHelp')}</p>}
       </div>
     </TeamDialog>}
   </>;

@@ -41,7 +41,7 @@ export function TeamEditor({ draft, library, projects, busy, error, onChange, on
   return <>
     <Dialog title={draft.id ? t('edit') + ' Team' : t('newTeam')} busy={busy} onClose={onClose} footer={<>{draft.submitted && <button className="team-button" type="button" disabled={busy} onClick={() => onChange({ ...draft, submitted: false, requestToken: newRequestToken() })}>{t('newAttempt')}</button>}<button className="team-button" type="button" disabled={busy} onClick={onClose}>{t('discard')}</button><button className="team-button primary" type="submit" form="team-definition-form" disabled={busy}>{busy ? t('saving') : draft.submitted ? t('retry') : t('save')}</button></>}>
       <form id="team-definition-form" className="team-fields" onSubmit={e => { e.preventDefault(); onSave(); }}>
-        <p className="team-muted">{t('teamHelp')}</p><ErrorBox error={error}/>
+        <ErrorBox error={error}/>
         <Field label={t('name')}><input className="team-input" required value={config.displayName} maxLength={200} disabled={locked} onChange={e => update({ displayName: e.target.value })}/></Field>
         <Field label={t('description')}><input className="team-input" value={config.description} disabled={locked} onChange={e => update({ description: e.target.value })}/></Field>
         <Field label={t('instructions')} hint={t('instructionsHelp')}><textarea className="team-input" rows={3} value={config.instructions} disabled={locked} onChange={e => update({ instructions: e.target.value })}/></Field>

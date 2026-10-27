@@ -32,7 +32,7 @@ export function ProfileEditor({ draft, projects, models, busy, error, onChange, 
   };
   return <Dialog title={`${draft.id ? t('edit') : t('createInline')} ${draft.role === 'leader' ? 'Leader' : 'Teammate'}`} busy={busy} onClose={onClose} footer={<>{draft.submitted && <button className="team-button" type="button" disabled={busy} onClick={() => onChange({ ...draft, submitted: false, requestToken: newRequestToken() })}>{t('newAttempt')}</button>}<button className="team-button" type="button" disabled={busy} onClick={onClose}>{t('discard')}</button><button className="team-button primary" type="submit" form="team-profile-form" disabled={busy}>{busy ? t('saving') : draft.submitted ? t('retry') : t('save')}</button></>}>
     <form id="team-profile-form" className="team-fields" onSubmit={event => { event.preventDefault(); onSave(); }}>
-      <p className="team-muted">{t('profileHelp')}</p><ErrorBox error={error}/>
+      <ErrorBox error={error}/>
       <Field label={t('name')}><input className="team-input" required maxLength={200} value={config.displayName} disabled={locked} onChange={e => update({ displayName: e.target.value })}/></Field>
       <Field label={t('description')}><input className="team-input" value={config.description} disabled={locked} onChange={e => update({ description: e.target.value })}/></Field>
       <Field label={t('prompt')} hint={t('promptHelp')}><textarea className="team-input" rows={6} required value={config.systemPrompt} disabled={locked} onChange={e => update({ systemPrompt: e.target.value })}/></Field>
