@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { createSessionNotificationRegistry, sessionAttention } from './session-notifications.js';
 import { createSessionActivityRegistry } from './session-activity.js';
-import { buildSystemNotification } from '../shared/notifications.js';
+import { buildSystemNotification, notificationText } from '../shared/notifications.js';
 
 const frame = (kind, fields = {}) => ({ id: 'frame', sessionId: 's1', runId: 'r1', kind, ...fields });
 describe('session notification events', () => {
+  it('orders distinct reminders with tied, missing or backward source timestamps', () => {
+    const registry = createSessionNotificationRegistry();
+    const times = ['2026-10-27T03:00:00Z', '2026-10-27T03:00:00Z', '2026-10-27T02:00:00Z', 'invalid'];
+    const events = times.map((timestamp, index) => registry.receive(1, frame('permission_request', {
+      requestId: `p${index}`, toolName: 'shell', timestamp,
+    })));
+    for (let i = 1; i < events.length; i++) expect(Date.parse(events[i].createdAt)).toBeGreaterThan(Date.parse(events[i - 1].createdAt));
+    const activity = createSessionActivityRegistry();
+    expect(activity.receive(1, frame('permission_request', { requestId: 'p1', timestamp: events[1].createdAt })).attentionAt).toBe(events[1].createdAt);
+  });
   it('uses the final assistant block, includes titles, and deduplicates per user and run', () => {
     const registry = createSessionNotificationRegistry();
     registry.receive(1, frame('text', { role: 'user', content: 'Prepare the report' }));
@@ -52,6 +62,13 @@ describe('session notification events', () => {
     expect(buildSystemNotification(event).body).toContain('Approve to continue');
   });
 });
+
+it.each(['<script', '<b>Visible</b> <img src=x', '<<script>script>alert(1)', '[<script](example)', '&lt;script&gt;', '1 < 2 > 0'])(
+  'keeps notification text free of markup delimiters: %s', value => {
+    expect(notificationText(value)).not.toMatch(/[<>]/);
+    const payload = buildSystemNotification({ id: 'r1', sessionId: 's1', scope: '1', kind: 'completed', sessionName: value, preview: value });
+    expect(payload.title + payload.body).not.toMatch(/[<>]/);
+  });
 
 it('keeps the action ahead of long previews in both languages', () => {
   const event = { id: 'p1', sessionId: 's1', scope: '1', kind: 'question', sessionName: 'Report', preview: 'Long response '.repeat(100) };

@@ -46,9 +46,14 @@ export function createSessionNotificationRegistry() {
             if (seen.size > 4096) seen.delete(seen.keys().next().value);
             const questions = frame.input?.questions || frame.questions;
             const question = Array.isArray(questions) ? questions.map(q => q.question || q.header || '').join(' ') : '';
+            // A read watermark must distinguish separate reminders even when
+            // their source frames share a millisecond or the clock moves back.
+            const timestamp = Date.parse(frame.timestamp);
+            state.attentionAt = new Date(Math.max(Number.isFinite(timestamp) ? timestamp : Date.now(),
+                (Date.parse(previous?.attentionAt) || 0) + 1)).toISOString();
             return {
                 id: attention.id, sessionId: frame.sessionId, scope: String(userId ?? 'local'), kind: attention.kind,
-                sessionName: state.sessionName, createdAt: frame.timestamp || new Date().toISOString(),
+                sessionName: state.sessionName, createdAt: state.attentionAt,
                 preview: attention.kind === 'completed' ? state.preview : attention.kind === 'error'
                     ? notificationText(frame.userHint || frame.content || frame.items?.find(item => item.error)?.error)
                     : notificationText(question || frame.input?.description || frame.toolName || frame.content),

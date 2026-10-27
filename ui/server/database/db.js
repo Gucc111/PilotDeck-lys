@@ -1,3 +1,6 @@
+// Direct consumers (including notification delivery) can load this module before
+// the server entry point. Resolve the user database path before opening SQLite.
+import '../load-env.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';

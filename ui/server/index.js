@@ -1,11 +1,11 @@
 #!/usr/bin/env node
+// Configure paths before evaluating services with persistent storage.
+import { assertRequiredPilotDeckEnv } from './load-env.js';
 import { createWorkspaceFileUploadHandler, createWorkspaceUploadCheckHandler } from './services/workspaceFileUpload.js';
 import { createBackgroundSessionForwarder, createSessionActivityRegistry } from './session-activity.js';
 import { createSessionNotificationRegistry } from './session-notifications.js';
 import { notifySessionAttention } from './services/notification-orchestrator.js';
 import '../../scripts/check-node-runtime.mjs';
-// Load environment variables before other imports execute
-import { assertRequiredPilotDeckEnv } from './load-env.js';
 // Install global fetch proxy (PILOTDECK_PROXY / HTTPS_PROXY) before any network calls
 import { installGlobalProxy } from './utils/proxy.js';
 installGlobalProxy();
@@ -190,8 +190,8 @@ const connectedClients = new Set();
 const sessionActivityRegistry = createSessionActivityRegistry();
 const sessionNotificationRegistry = createSessionNotificationRegistry();
 function broadcastSessionActivity(frame, userId) {
-    const activity = sessionActivityRegistry.receive(userId, frame);
     const notification = sessionNotificationRegistry.receive(userId, frame);
+    const activity = sessionActivityRegistry.receive(userId, notification ? { ...frame, timestamp: notification.createdAt } : frame);
     if (notification) {
         try { notification.sessionName = sessionNamesDb.getName(notification.sessionId, 'pilotdeck') || notification.sessionName; }
         catch { /* A notification lookup must not interrupt the chat stream. */ }

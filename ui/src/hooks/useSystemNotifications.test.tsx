@@ -7,15 +7,16 @@ import { useSystemNotifications } from './useSystemNotifications';
 const mocks = vi.hoisted(() => ({
   preferences: { enabled: true, sound: true, badge: true, preview: true },
   show: vi.fn(async (_payload: any) => true), badge: vi.fn(async (_count: number) => {}),
+  worker: vi.fn(async (_type: string, _value: any) => undefined),
 }));
 vi.mock('./useNotificationPreferences', () => ({
   useNotificationPreferences: () => ({ preferences: mocks.preferences, status: { permission: 'granted' } }),
   getNotificationPreferences: () => mocks.preferences,
 }));
 vi.mock('./useWebPush', () => ({ syncWebPush: vi.fn(async () => {}) }));
-vi.mock('../lib/systemNotifications', () => ({ showSystemNotification: mocks.show, setSystemBadge: mocks.badge, notificationWorkerMessage: vi.fn(async () => undefined) }));
+vi.mock('../lib/systemNotifications', () => ({ showSystemNotification: mocks.show, setSystemBadge: mocks.badge, notificationWorkerMessage: mocks.worker }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
-afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers(); mocks.show.mockClear(); mocks.badge.mockClear(); mocks.preferences.preview = true; });
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers(); mocks.show.mockClear(); mocks.badge.mockClear(); mocks.worker.mockClear(); mocks.preferences.preview = true; });
 function setup(viewedSessionId: string | null = 's1') {
   let receive: (message: any) => void = () => {};
   const subscribe = (listener: typeof receive) => { receive = listener; return () => {}; };
@@ -27,6 +28,33 @@ function setup(viewedSessionId: string | null = 's1') {
 const event = (sessionId = 's1', id = 'r1') => ({ type: 'session-notification', notification: {
   id, sessionId, scope: '1', kind: 'completed', preview: 'Private summary', createdAt: '2026-10-27T03:00:00Z',
 } });
+it('does not display or count delayed reminders after a newer reminder was read', () => {
+  vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+  const { store, emit } = setup();
+  const newer = event('s2', 'r2');
+  newer.notification.createdAt = '2026-10-27T03:01:00Z';
+  emit(newer);
+  act(() => store.markRead('s2'));
+  expect(mocks.worker).toHaveBeenCalledWith('notification:read', expect.objectContaining({
+    records: [{ sessionId: 's2', id: 'r2', createdAt: newer.notification.createdAt }],
+  }));
+  emit(event('s2', 'r1'));
+  expect(mocks.show).toHaveBeenCalledTimes(1);
+  expect(store.getSnapshot().unreadSessionIds.size).toBe(0);
+  const next = event('s2', 'r3');
+  next.notification.createdAt = '2026-10-27T03:02:00Z';
+  emit(next);
+  expect(mocks.show).toHaveBeenCalledTimes(2);
+  expect(store.unreadRun('s2')).toBe('r3');
+});
+it('does not replay a reminder already read from the activity stream', () => {
+  vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+  const { store, emit } = setup();
+  emit({ type: 'session-activity', activity: { sessionId: 's2', attentionId: 'r1', attentionAt: event().notification.createdAt } });
+  act(() => store.markRead('s2'));
+  emit(event('s2'));
+  expect(mocks.show).not.toHaveBeenCalled();
+});
 it('suppresses foreground notifications, counts distinct background conversations, and deduplicates replays', () => {
   vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   const { store, emit } = setup();

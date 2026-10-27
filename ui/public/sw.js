@@ -107,6 +107,8 @@ function notificationState(update) {
       let result;
       read.onsuccess = () => {
         const state = read.result || { seen: [], pending: {}, scope: null, preferences: null, lastSound: 0 };
+        // Existing v1 databases have no read progress yet.
+        state.readProgress ||= {};
         result = update(state);
         state.seen = state.seen.slice(-2048);
         store.put(state, 'notifications');
@@ -139,20 +141,48 @@ async function isConversationVisible(data) {
     client.postMessage({ type: 'notification:context', data }, [channel.port2]);
   })))).some(Boolean);
 }
-async function showNotificationOnce(payload) {
+function notificationRecord(data) {
+  return { sessionId: data.sessionId, id: data.eventId, createdAt: data.createdAt };
+}
+function atOrBefore(record, progress) {
+  if (!record || !progress) return false;
+  if (record.id === progress.id) return true;
+  const time = Date.parse(record.createdAt);
+  const boundary = Date.parse(progress.createdAt);
+  // An undated legacy event cannot supersede known progress. Never substitute
+  // its receipt time, which would make a delayed old push appear new.
+  return Number.isFinite(boundary) && (!Number.isFinite(time) || time <= boundary);
+}
+async function closeReadNotifications(scope, progress) {
+  const notifications = await self.registration.getNotifications();
+  for (const notification of notifications) {
+    const data = notification.data;
+    if (data?.scope === scope && atOrBefore(notificationRecord(data), progress[data.sessionId])) notification.close();
+  }
+}
+async function showNotificationOnce(payload, forwardToClients = false) {
   const data = payload.data || {};
+  const record = notificationRecord({ ...data, eventId: data.eventId || payload.id,
+    createdAt: data.createdAt || payload.event?.createdAt });
   const visible = await isConversationVisible(data);
+  let accepted = false;
   let show = false;
   let silent = payload.silent === true;
-  await notificationState(state => {
+  const state = await notificationState(state => {
     if (state.scope && data.scope && state.scope !== data.scope) return;
     const key = JSON.stringify([data.scope, data.sessionId, data.eventId || payload.id]);
     if (state.seen.includes(key)) return;
     state.seen.push(key);
-    if (visible) return;
+    if (record.sessionId && record.id) {
+      if (atOrBefore(record, state.readProgress[record.sessionId]) || atOrBefore(record, state.pending[record.sessionId])) return;
+      if (visible) {
+        state.readProgress[record.sessionId] = record;
+        if (atOrBefore(state.pending[record.sessionId], record)) delete state.pending[record.sessionId];
+      } else state.pending[record.sessionId] = record;
+    }
+    accepted = true;
     const preferences = state.preferences || payload.preferences || {};
-    if (data.sessionId && data.eventId) state.pending[data.sessionId] = { id: data.eventId, sessionId: data.sessionId, createdAt: data.createdAt || payload.event?.createdAt || new Date().toISOString() };
-    show = preferences.enabled !== false;
+    show = !visible && preferences.enabled !== false;
     silent = silent || preferences.sound === false || Date.now() - state.lastSound < 2000;
     if (show && !silent) state.lastSound = Date.now();
     // A stale push must not reveal previews after the local preference changed.
@@ -160,7 +190,16 @@ async function showNotificationOnce(payload) {
       payload.body = payload.body.split('\n')[0];
     }
     return state;
-  }).then(state => state && updateNotificationBadge(state));
+  });
+  if (state) {
+    await updateNotificationBadge(state);
+    if (visible) await closeReadNotifications(data.scope, state.readProgress);
+  }
+  // Rejected pushes must not re-enter the page's notification/badge path.
+  if (accepted && forwardToClients && payload.event) {
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of clients) client.postMessage({ type: 'notification:received', notification: payload.event });
+  }
   if (!show) return false;
   await self.registration.showNotification(payload.title || 'PilotDeck', {
     body: payload.body || '', icon: '/logo-256.png', badge: '/logo-128.png', data,
@@ -177,7 +216,7 @@ self.addEventListener('message', event => {
     if (type === 'notification:show') result = await showNotificationOnce(value);
     else if (type === 'notification:preferences') {
       await notificationState(state => {
-        if (value.scope && state.scope && state.scope !== value.scope) { state.pending = {}; state.seen = []; }
+        if (value.scope && state.scope && state.scope !== value.scope) { state.pending = {}; state.seen = []; state.readProgress = {}; }
         state.scope = value.scope || state.scope;
         state.preferences = value.preferences;
         return state;
@@ -186,18 +225,25 @@ self.addEventListener('message', event => {
     } else if (type === 'notification:pending') {
       result = await notificationState(state => value.scope === state.scope ? Object.values(state.pending) : []);
     } else if (type === 'notification:read') {
-      await notificationState(state => {
+      const state = await notificationState(state => {
         if (value.scope !== state.scope) return state;
         for (const record of value.records || []) {
+          if (!record.sessionId || !record.id) continue;
           const key = JSON.stringify([value.scope, record.sessionId, record.id]);
           if (!state.seen.includes(key)) state.seen.push(key);
-          if (state.pending[record.sessionId]?.id === record.id) delete state.pending[record.sessionId];
+          const pending = state.pending[record.sessionId];
+          // Old pages send only the ID. Recover its timestamp when available.
+          const progress = { ...record, createdAt: record.createdAt || (pending?.id === record.id ? pending.createdAt : undefined) };
+          const previous = state.readProgress[record.sessionId];
+          const enrich = previous?.id === progress.id && Number.isFinite(Date.parse(progress.createdAt)) &&
+            (!Number.isFinite(Date.parse(previous.createdAt)) || Date.parse(progress.createdAt) > Date.parse(previous.createdAt));
+          if (enrich || !atOrBefore(progress, previous)) state.readProgress[record.sessionId] = progress;
+          if (atOrBefore(pending, state.readProgress[record.sessionId])) delete state.pending[record.sessionId];
         }
         return state;
-      }).then(updateNotificationBadge);
-      const notifications = await self.registration.getNotifications();
-      for (const notification of notifications) if (notification.data?.scope === value.scope && value.records?.some(record =>
-        notification.data.sessionId === record.sessionId && notification.data.eventId === record.id)) notification.close();
+      });
+      await updateNotificationBadge(state);
+      if (value.scope === state.scope) await closeReadNotifications(value.scope, state.readProgress);
       result = true;
     }
     event.ports[0]?.postMessage(result);
@@ -216,11 +262,7 @@ self.addEventListener('push', event => {
   }
 
   event.waitUntil(serializeNotifications(async () => {
-    await showNotificationOnce(payload);
-    if (payload.event) {
-      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      for (const client of clients) client.postMessage({ type: 'notification:received', notification: payload.event });
-    }
+    await showNotificationOnce(payload, true);
   }));
 });
 

@@ -7,7 +7,7 @@ import { syncWebPush } from './useWebPush';
 
 type IndicatorStore = {
   receive: (message: any) => void; markRead: (id: string | null, expectedId?: string) => void;
-  readRecords: () => Record<string, { runId: string; unread: boolean }>;
+  readRecords: () => Record<string, { runId: string; unread: boolean; attentionAt?: string }>;
   getSnapshot: () => { unreadSessionIds: Set<string>; processingSessions: Set<string> };
   subscribe: (listener: () => void) => () => void;
 };
@@ -49,6 +49,10 @@ export function useSystemNotifications({ store, viewedSessionId, scope, subscrib
       if (!event || typeof event.id !== 'string' || !event.sessionId) return;
       store.receive({ type: 'session-attention', activity: { sessionId: event.sessionId, attentionId: event.id, attentionAt: event.createdAt } });
       const duplicate = remember(event);
+      const record = store.readRecords()[event.sessionId];
+      // The store may reject an out-of-order event or already have read it from
+      // the activity stream. Neither case should display another notification.
+      if (record?.runId !== event.id || !record.unread) return;
       if (viewing(event.sessionId)) { store.markRead(event.sessionId, event.id); return; }
       const prefs = getNotificationPreferences();
       if (!duplicate && prefs.enabled) void showSystemNotification(buildSystemNotification({ ...event, sessionName: namesRef.current?.[event.sessionId] || event.sessionName }, prefs, languageRef.current)).catch(error => console.warn('Notification delivery failed:', error));
@@ -59,7 +63,7 @@ export function useSystemNotifications({ store, viewedSessionId, scope, subscrib
         serverScope.current = message.scope;
         void notificationWorkerMessage('notification:preferences', { preferences: getNotificationPreferences(), scope: message.scope })
           .then(() => notificationWorkerMessage('notification:read', { scope: message.scope,
-            records: Object.entries(store.readRecords()).filter(([, value]) => !value.unread).map(([sessionId, value]) => ({ sessionId, id: value.runId })) }))
+            records: Object.entries(store.readRecords()).filter(([, value]) => !value.unread).map(([sessionId, value]) => ({ sessionId, id: value.runId, createdAt: value.attentionAt })) }))
           .then(() => notificationWorkerMessage('notification:pending', { scope: message.scope }))
           .then(pending => {
             if (Array.isArray(pending)) for (const item of pending) store.receive({ type: 'session-attention', activity: { sessionId: item.sessionId, attentionId: item.id, attentionAt: item.createdAt } });
@@ -89,7 +93,7 @@ export function useSystemNotifications({ store, viewedSessionId, scope, subscrib
       const snapshot = store.getSnapshot();
       void setSystemBadge(snapshot.unreadSessionIds.size, preferences).catch(() => { /* Unsupported shell or browser. */ });
       if (serverScope.current) void notificationWorkerMessage('notification:read', { scope: serverScope.current,
-        records: Object.entries(store.readRecords()).filter(([, value]) => !value.unread).map(([sessionId, value]) => ({ sessionId, id: value.runId })) });
+        records: Object.entries(store.readRecords()).filter(([, value]) => !value.unread).map(([sessionId, value]) => ({ sessionId, id: value.runId, createdAt: value.attentionAt })) });
     };
     sync();
     return store.subscribe(sync);

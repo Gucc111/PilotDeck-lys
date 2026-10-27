@@ -55,7 +55,9 @@ export function createSessionIndicatorStore(storageKey: string, storage: Storage
       }
       const completed = activity.attentionId || activity.completedRunId;
       if (typeof completed === 'string' && records[id]?.runId !== completed) {
-        if (activity.attentionAt && records[id]?.attentionAt && Date.parse(activity.attentionAt) < Date.parse(records[id].attentionAt!)) continue;
+        const previousTime = Date.parse(records[id]?.attentionAt || '');
+        const nextTime = Date.parse(activity.attentionAt || '');
+        if (Number.isFinite(previousTime) && (!Number.isFinite(nextTime) || nextTime <= previousTime)) continue;
         records[id] = {runId: completed, unread: true, attentionAt: activity.attentionAt};
         recordsChanged = changed = true;
       }

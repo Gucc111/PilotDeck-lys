@@ -8,9 +8,18 @@ export function normalizeNotificationPreferences(value) {
 /** Only human-facing text belongs in the OS notification, never reasoning or tool output. */
 export function notificationText(value, limit = 240) {
   if (typeof value !== 'string') return '';
-  return value.replace(/<[^>]*>/g, '').replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+  // Removing a tag can expose another one. Finish stripping complete tags
+  // before formatting Markdown, then discard any incomplete delimiters below.
+  let text = value;
+  let previous;
+  do {
+    previous = text;
+    text = text.replace(/<[^>]*>/g, '');
+  } while (text !== previous);
+  return text.replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[`#*_~]/g, '')
-    .replace(/\s+/g, ' ').trim().slice(0, limit);
+    // Also remove incomplete tags and delimiters exposed by Markdown cleanup.
+    .replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
 export function buildSystemNotification(event, preferences = {}, language = 'en') {
