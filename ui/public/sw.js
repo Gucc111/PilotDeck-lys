@@ -92,7 +92,119 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Push notification event
+// Persist deduplication and pending conversations across service-worker restarts.
+let notificationQueue = Promise.resolve();
+function notificationState(update) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('pilotdeck-notifications', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('state');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction('state', 'readwrite');
+      const store = tx.objectStore('state');
+      const read = store.get('notifications');
+      let result;
+      read.onsuccess = () => {
+        const state = read.result || { seen: [], pending: {}, scope: null, preferences: null, lastSound: 0 };
+        result = update(state);
+        state.seen = state.seen.slice(-2048);
+        store.put(state, 'notifications');
+      };
+      tx.oncomplete = () => { db.close(); resolve(result); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+function serializeNotifications(action) {
+  const result = notificationQueue.catch(() => {}).then(action);
+  notificationQueue = result;
+  return result;
+}
+async function updateNotificationBadge(state) {
+  if (!('setAppBadge' in self.navigator)) return;
+  const count = state.preferences?.badge === false ? 0 : Object.keys(state.pending).length;
+  try {
+    if (count) await self.navigator.setAppBadge(count);
+    else await self.navigator.clearAppBadge();
+  } catch { /* Badging is optional in browsers and desktop environments. */ }
+}
+async function isConversationVisible(data) {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  return (await Promise.all(clients.map(client => new Promise(resolve => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => { channel.port1.close(); resolve(false); }, 250);
+    channel.port1.onmessage = event => { clearTimeout(timer); channel.port1.close(); resolve(event.data?.viewed === true); };
+    client.postMessage({ type: 'notification:context', data }, [channel.port2]);
+  })))).some(Boolean);
+}
+async function showNotificationOnce(payload) {
+  const data = payload.data || {};
+  const visible = await isConversationVisible(data);
+  let show = false;
+  let silent = payload.silent === true;
+  await notificationState(state => {
+    if (state.scope && data.scope && state.scope !== data.scope) return;
+    const key = JSON.stringify([data.scope, data.sessionId, data.eventId || payload.id]);
+    if (state.seen.includes(key)) return;
+    state.seen.push(key);
+    if (visible) return;
+    const preferences = state.preferences || payload.preferences || {};
+    if (data.sessionId && data.eventId) state.pending[data.sessionId] = { id: data.eventId, sessionId: data.sessionId, createdAt: data.createdAt || payload.event?.createdAt || new Date().toISOString() };
+    show = preferences.enabled !== false;
+    silent = silent || preferences.sound === false || Date.now() - state.lastSound < 2000;
+    if (show && !silent) state.lastSound = Date.now();
+    // A stale push must not reveal previews after the local preference changed.
+    if (preferences.preview === false && payload.event) {
+      payload.body = payload.body.split('\n')[0];
+    }
+    return state;
+  }).then(state => state && updateNotificationBadge(state));
+  if (!show) return false;
+  await self.registration.showNotification(payload.title || 'PilotDeck', {
+    body: payload.body || '', icon: '/logo-256.png', badge: '/logo-128.png', data,
+    tag: `${data.scope || ''}:${data.sessionId || 'global'}`, renotify: true, silent,
+  });
+  return true;
+}
+
+self.addEventListener('message', event => {
+  const { type, value } = event.data || {};
+  if (!type?.startsWith('notification:')) return;
+  event.waitUntil(serializeNotifications(async () => {
+    let result;
+    if (type === 'notification:show') result = await showNotificationOnce(value);
+    else if (type === 'notification:preferences') {
+      await notificationState(state => {
+        if (value.scope && state.scope && state.scope !== value.scope) { state.pending = {}; state.seen = []; }
+        state.scope = value.scope || state.scope;
+        state.preferences = value.preferences;
+        return state;
+      }).then(updateNotificationBadge);
+      result = true;
+    } else if (type === 'notification:pending') {
+      result = await notificationState(state => value.scope === state.scope ? Object.values(state.pending) : []);
+    } else if (type === 'notification:read') {
+      await notificationState(state => {
+        if (value.scope !== state.scope) return state;
+        for (const record of value.records || []) {
+          const key = JSON.stringify([value.scope, record.sessionId, record.id]);
+          if (!state.seen.includes(key)) state.seen.push(key);
+          if (state.pending[record.sessionId]?.id === record.id) delete state.pending[record.sessionId];
+        }
+        return state;
+      }).then(updateNotificationBadge);
+      const notifications = await self.registration.getNotifications();
+      for (const notification of notifications) if (notification.data?.scope === value.scope && value.records?.some(record =>
+        notification.data.sessionId === record.sessionId && notification.data.eventId === record.id)) notification.close();
+      result = true;
+    }
+    event.ports[0]?.postMessage(result);
+  }).catch(() => event.ports[0]?.postMessage(false)));
+});
+
+// Both live page events and Web Push go through the same persistent deduplication.
 self.addEventListener('push', event => {
   if (!event.data) return;
 
@@ -103,18 +215,13 @@ self.addEventListener('push', event => {
     payload = { title: 'PilotDeck', body: event.data.text() };
   }
 
-  const options = {
-    body: payload.body || '',
-    icon: '/logo-256.png',
-    badge: '/logo-128.png',
-    data: payload.data || {},
-    tag: payload.data?.tag || `${payload.data?.sessionId || 'global'}:${payload.data?.code || 'default'}`,
-    renotify: true
-  };
-
-  event.waitUntil(
-    self.registration.showNotification(payload.title || 'PilotDeck', options)
-  );
+  event.waitUntil(serializeNotifications(async () => {
+    await showNotificationOnce(payload);
+    if (payload.event) {
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of clients) client.postMessage({ type: 'notification:received', notification: payload.event });
+    }
+  }));
 });
 
 // Notification click event
@@ -123,7 +230,7 @@ self.addEventListener('notificationclick', event => {
 
   const sessionId = event.notification.data?.sessionId;
   const provider = event.notification.data?.provider || null;
-  const urlPath = sessionId ? `/session/${sessionId}` : '/';
+  const urlPath = sessionId ? `/session/${encodeURIComponent(sessionId)}` : '/';
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async clientList => {
@@ -134,6 +241,8 @@ self.addEventListener('notificationclick', event => {
             type: 'notification:navigate',
             sessionId: sessionId || null,
             provider,
+            scope: event.notification.data?.scope,
+            eventId: event.notification.data?.eventId,
             urlPath
           });
           return;

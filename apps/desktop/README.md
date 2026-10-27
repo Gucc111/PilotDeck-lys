@@ -2,6 +2,36 @@
 
 Electron desktop shell for the existing PilotDeck Web UI and local gateway runtime.
 
+## Notifications
+
+**Settings > General > Notifications** controls system notifications, the default
+notification sound, app icon counts, and message previews. Desktop preferences
+are saved on this device. Banners and sounds also follow OS permission and
+Do Not Disturb settings; the settings card links to the native notification
+settings and provides instructions if the desktop environment cannot open them.
+
+Completion, approval requests, questions, and terminal errors generate one
+reminder per event. A conversation contributes at most one to the badge count;
+viewing it clears that reminder without approving an operation or answering a
+question. The visible, focused conversation is quiet. Connection loss lasting
+15 seconds reminds only for running conversations. Automatic model retries and
+user cancellation do not notify.
+
+Desktop notifications rely on the OS application identity icon; no additional
+content image is attached on macOS, Windows or Linux.
+
+macOS uses Dock badges. Windows uses taskbar overlays; Windows and Linux tray
+icons also show counts while the main window is hidden. Linux launcher badges
+depend on the desktop's LauncherEntry support. Clicking a notification restores
+the existing window and opens its conversation.
+
+The web app uses browser notifications on HTTPS/localhost. With browser
+permission and a reachable Web Push service, reminders can also arrive while
+the page is closed. Browser tabs display the count in the title; installed PWAs
+use app badges where supported. Service Worker storage deduplicates live and
+push delivery and preserves pending reminders. Read state is local to each
+browser/device.
+
 ## Development
 
 ```bash

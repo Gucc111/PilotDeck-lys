@@ -152,10 +152,13 @@ export default function AppShellV2() {
   const workspaceUpload = useWorkspaceUpload(selectedProject?.name);
   const workspaceTab = activeTab === 'cron' || activeTab === 'skills' ? 'chat' : activeTab;
   const shellActiveTab = dedicatedTab ?? workspaceTab;
-  const { processingSessions: remoteProcessingSessions, unreadSessionIds, markRead, acknowledge, selectSession: acknowledgeNavigation } = useSessionIndicators({
+  const notificationSessionNames = useMemo(() => Object.fromEntries(sidebarSharedProps.projects.flatMap(project =>
+    (project.sessions ?? []).map(session => [session.id, sessionDisplayTitle(session)]))), [sidebarSharedProps.projects]);
+  const { processingSessions: remoteProcessingSessions, waitingSessions, unreadSessionIds, markRead, acknowledge, selectSession: acknowledgeNavigation } = useSessionIndicators({
     scope: String(user?.id ?? 'local'),
     viewedSessionId: !isSettingsRoute && shellActiveTab === 'chat' && selectedSession?.id === readySessionId ? readySessionId : null,
     subscribe, sendMessage, isConnected,
+    sessionNames: notificationSessionNames,
   });
   // Composer callbacks cover the interval before the server sees a new send.
   const processingSessions = useMemo(() => new Set([...localProcessingSessions, ...remoteProcessingSessions]), [localProcessingSessions, remoteProcessingSessions]);
@@ -318,13 +321,14 @@ export default function AppShellV2() {
   }, [switchProject]);
 
   useEffect(() => {
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    if (typeof navigator === 'undefined') {
       return undefined;
     }
 
     const handleServiceWorkerMessage = (event: MessageEvent) => {
       const message = event.data;
       if (!message || message.type !== 'notification:navigate') return;
+      if (user?.id !== undefined && message.scope && String(user.id) !== message.scope) return;
 
       // Provider hint from notifications is no longer stored; all sessions
       // go through the unified pilotdeck gateway.
@@ -334,17 +338,24 @@ export default function AppShellV2() {
       void refreshProjectsSilently();
 
       if (typeof message.sessionId === 'string' && message.sessionId) {
-        navigate(`/session/${message.sessionId}`);
+        acknowledgeNavigation(message.sessionId);
+        navigate(`/session/${encodeURIComponent(message.sessionId)}`);
         return;
       }
       navigate('/');
     };
 
-    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    const handleNativeNavigation = (data: any) => handleServiceWorkerMessage({ data: { ...data, type: 'notification:navigate' } } as MessageEvent);
+    const handleBrowserNavigation = (event: Event) => handleNativeNavigation((event as CustomEvent).detail);
+    const unsubscribeNative = window.pilotdeckDesktop?.onNotificationNavigate?.(handleNativeNavigation);
+    window.addEventListener('pilotdeck:notification-navigate', handleBrowserNavigation);
+    navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
     return () => {
-      navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      unsubscribeNative?.();
+      window.removeEventListener('pilotdeck:notification-navigate', handleBrowserNavigation);
+      navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [navigate, refreshProjectsSilently, setActiveTab, setSidebarOpen]);
+  }, [navigate, refreshProjectsSilently, setActiveTab, setSidebarOpen, acknowledgeNavigation, user?.id]);
 
   useEffect(() => {
     const isReconnect = isConnected && !wasConnectedRef.current;
@@ -690,6 +701,7 @@ export default function AppShellV2() {
       onRetryLoad={sidebarSharedProps.onRetryLoad}
       isMobile={isMobile}
       processingSessions={processingSessions}
+      waitingSessions={waitingSessions}
       unreadSessionIds={unreadSessionIds}
       onSelectProject={handleSelectProject}
       onSelectSession={handleSelectSession}
@@ -787,6 +799,7 @@ export default function AppShellV2() {
             onSessionNotProcessing={markSessionAsNotProcessing}
             onSessionActivityBump={handleSessionActivityBump}
             processingSessions={processingSessions}
+            waitingSessions={waitingSessions}
             unreadSessionIds={unreadSessionIds}
             onReplaceTemporarySession={handleReplaceTemporarySession}
             onNavigateToSession={(sid: string) => {

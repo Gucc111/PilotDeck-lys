@@ -229,6 +229,7 @@ function MainContent({
   onSessionNotProcessing,
   onSessionActivityBump,
   processingSessions,
+  waitingSessions,
   unreadSessionIds,
   onReplaceTemporarySession,
   onNavigateToSession,
@@ -558,6 +559,7 @@ function MainContent({
           onSessionNotProcessing={onSessionNotProcessing}
           onSessionActivityBump={onSessionActivityBump}
           processingSessions={processingSessions}
+          waitingSessions={waitingSessions}
           unreadSessionIds={unreadSessionIds}
           onReplaceTemporarySession={onReplaceTemporarySession}
           onNavigateToSession={onNavigateToSession}
@@ -650,6 +652,7 @@ type SplitBodyProps = {
     inputId?: string,
   ) => void | (() => void);
   processingSessions: Set<string>;
+  waitingSessions?: Map<string, 'question' | 'approval'>;
   unreadSessionIds: Set<string>;
   onReplaceTemporarySession: any;
   onNavigateToSession: (sessionId: string) => void;
@@ -706,6 +709,7 @@ function SplitBody(props: SplitBodyProps) {
     onSessionNotProcessing,
     onSessionActivityBump,
     processingSessions,
+    waitingSessions,
     unreadSessionIds,
     onReplaceTemporarySession,
     onNavigateToSession,
@@ -1545,6 +1549,7 @@ function SplitBody(props: SplitBodyProps) {
                   project={selectedProject}
                   selectedSession={selectedSession}
                   processingSessions={processingSessions}
+                  waitingSessions={waitingSessions}
                   unreadSessionIds={unreadSessionIds}
                   onSelectSession={(session) => {
                     if (onSelectSession) {

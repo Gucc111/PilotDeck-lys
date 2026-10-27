@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { createWorkspaceFileUploadHandler, createWorkspaceUploadCheckHandler } from './services/workspaceFileUpload.js';
 import { createBackgroundSessionForwarder, createSessionActivityRegistry } from './session-activity.js';
+import { createSessionNotificationRegistry } from './session-notifications.js';
+import { notifySessionAttention } from './services/notification-orchestrator.js';
 import '../../scripts/check-node-runtime.mjs';
 // Load environment variables before other imports execute
 import { assertRequiredPilotDeckEnv } from './load-env.js';
@@ -186,12 +188,26 @@ let projectsWatchers = [];
 let projectUpdateScheduler = null;
 const connectedClients = new Set();
 const sessionActivityRegistry = createSessionActivityRegistry();
+const sessionNotificationRegistry = createSessionNotificationRegistry();
 function broadcastSessionActivity(frame, userId) {
     const activity = sessionActivityRegistry.receive(userId, frame);
-    if (!activity) return;
-    const payload = JSON.stringify({type: 'session-activity', activity});
+    const notification = sessionNotificationRegistry.receive(userId, frame);
+    if (notification) {
+        try { notification.sessionName = sessionNamesDb.getName(notification.sessionId, 'pilotdeck') || notification.sessionName; }
+        catch { /* A notification lookup must not interrupt the chat stream. */ }
+    }
+    if (!activity && !notification) return;
+    const payload = activity ? JSON.stringify({type: 'session-activity', activity}) : null;
+    const reminder = notification ? JSON.stringify({type: 'session-notification', notification}) : null;
     for (const client of connectedClients) {
-        if (client.readyState === WebSocket.OPEN && (client.__pilotdeckUserId ?? null) === userId) client.send(payload);
+        if (client.readyState === WebSocket.OPEN && (client.__pilotdeckUserId ?? null) === userId) {
+            if (payload) client.send(payload);
+            if (reminder) client.send(reminder);
+        }
+    }
+    if (notification) {
+        try { notifySessionAttention(userId, notification); }
+        catch (error) { console.warn('Notification delivery unavailable:', error.message); }
     }
 }
 const sessionWatchRegistry = createSessionWatchRegistry();
@@ -244,6 +260,8 @@ function broadcastChatFrame(frame, originWs, userId) {
 function broadcastToSessionWatchers(sessionId, frame, userId, excludeWs = null) {
     const normalizedSessionId = normalizeSessionId(sessionId);
     if (!normalizedSessionId) return;
+    // Responses also update sidebar state in windows that are not watching this chat.
+    if (frame.kind === 'permission_cancelled' && userId !== undefined) broadcastSessionActivity(frame, userId);
     const payload = JSON.stringify(frame);
     const watchers = sessionWatchRegistry.getWatchers(normalizedSessionId);
     watchers.forEach((client) => {
@@ -946,6 +964,8 @@ app.delete('/api/projects/:projectName/sessions/:sessionId', authenticateToken, 
         });
         sessionNamesDb.deleteName(sessionId, 'pilotdeck');
         const userId = req.user?.id ?? req.user?.userId ?? null;
+        sessionActivityRegistry.remove(userId, sessionId);
+        sessionNotificationRegistry.remove(userId, sessionId);
         const payload = JSON.stringify({ type: 'session-deleted', projectName, sessionId });
         connectedClients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN && (client.__pilotdeckUserId ?? null) === userId) client.send(payload);
@@ -2354,7 +2374,7 @@ function handleChatConnection(ws, request) {
 
             if (data.type === 'ping') return;
             if (data.type === 'get-session-activity') {
-                writer.send({type: 'session-activity-snapshot', activities: sessionActivityRegistry.snapshot(userId)});
+                writer.send({type: 'session-activity-snapshot', scope: String(userId ?? 'local'), activities: sessionActivityRegistry.snapshot(userId)});
                 return;
             }
             const requestSessionId = normalizeSessionId(data.sessionId);

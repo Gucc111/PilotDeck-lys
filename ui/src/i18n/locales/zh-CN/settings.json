@@ -1,4 +1,27 @@
 {
+  "systemNotifications": {
+    "title": "通知",
+    "enabled": "启用系统通知",
+    "description": "在任务完成、需要审批、需要回答问题或任务无法继续时提醒。",
+    "sound": "通知提示音",
+    "soundDescription": "使用系统默认提示音，声音同时受系统设置影响。",
+    "badge": "显示应用图标角标",
+    "badgeDescription": "显示有未查看提醒的对话数量，查看后自动减少。",
+    "preview": "显示消息预览",
+    "previewDescription": "在通知中显示回复或问题摘要。关闭后仍显示对话名称和操作提示。",
+    "systemSettings": "系统通知设置",
+    "openSettings": "前往系统设置",
+    "showHelp": "查看设置方法",
+    "systemControlled": "消息横幅和声音由系统控制，请在系统设置中允许 PilotDeck 发送通知。",
+    "granted": "浏览器已允许通知。横幅和声音仍受系统设置影响。",
+    "denied": "通知权限已关闭，请在系统或浏览器设置中重新允许。",
+    "notGranted": "开启系统通知时，请允许浏览器发送通知。",
+    "unsupported": "当前环境不支持系统通知。网页请使用 HTTPS 或本机地址访问。",
+    "unsupportedDesktop": "当前桌面环境暂不支持系统通知，仍可在对话列表中查看提醒。",
+    "browserHelp": "点击浏览器地址栏左侧的网站设置图标，允许此网站发送通知；如仍未显示，请在系统通知设置中允许当前浏览器。",
+    "desktopHelp": "请打开系统设置中的“通知”，找到 PilotDeck 并允许通知。Linux 的入口因桌面环境而异。",
+    "saveError": "未能保存通知设置，请重试。"
+  },
   "openModelSettings": "打开模型设置",
   "title": "设置",
   "tabs": {

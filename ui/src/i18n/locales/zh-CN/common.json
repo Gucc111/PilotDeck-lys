@@ -730,6 +730,7 @@
     "userGlobal": "用户（全局）",
     "invalidQuestion": "无法显示提问内容。",
     "customAnswer": "（自定义）",
+    "waitingForAnswer": "等待你回答",
     "skipped": "已跳过",
     "noAnswer": "未提供回答",
     "runningTask": "正在执行任务",

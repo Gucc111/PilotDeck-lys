@@ -735,6 +735,7 @@
     "userGlobal": "User (global)",
     "invalidQuestion": "Question payload could not be rendered.",
     "customAnswer": "(custom)",
+    "waitingForAnswer": "Waiting for your answer",
     "skipped": "Skipped",
     "noAnswer": "No answer provided",
     "runningTask": "Running task",
