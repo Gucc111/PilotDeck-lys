@@ -137,7 +137,7 @@ const collectSessionsForProject = (project: Project): FlatSession[] => {
     .sort((a, b) => b.lastActivity - a.lastActivity);
 };
 
-type SessionIndicatorStatus = 'processing' | 'unread' | 'idle';
+type SessionIndicatorStatus = 'processing' | 'unread' | 'idle' | 'question' | 'approval';
 
 export type SidebarV2Props = {
   projects: Project[];
@@ -149,6 +149,7 @@ export type SidebarV2Props = {
   onRetryLoad?: () => void;
   isMobile?: boolean;
   processingSessions?: Set<string>;
+  waitingSessions?: Map<string, 'question' | 'approval'>;
   unreadSessionIds?: Set<string>;
   onSelectProject: (project: Project) => void;
   onSelectSession: (project: Project, sessionId: string) => void;
@@ -268,6 +269,7 @@ export default function SidebarV2({
   onRetryLoad,
   isMobile = false,
   processingSessions,
+  waitingSessions,
   unreadSessionIds,
   onSelectProject,
   onSelectSession,
@@ -766,19 +768,26 @@ export default function SidebarV2({
       const isSessionRenaming = renamingSession === sessionId;
       const isOptimisticRow =
         typeof sessionId === 'string' && sessionId.startsWith('new-session-');
+      const waitingFor = waitingSessions?.get(sessionId);
       const indicatorStatus: SessionIndicatorStatus = isOptimisticRow
         ? 'processing'
-        : processingSessions?.has(sessionId)
-          ? 'processing'
-          : unreadSessionIds?.has(sessionId)
-            ? 'unread'
-            : 'idle';
+        : waitingFor
+          ? waitingFor
+          : processingSessions?.has(sessionId)
+            ? 'processing'
+            : unreadSessionIds?.has(sessionId)
+              ? 'unread'
+              : 'idle';
       const indicatorLabel =
-        indicatorStatus === 'processing'
-          ? t('sidebar:sessions.processing', { defaultValue: 'Agent is running' })
-          : indicatorStatus === 'unread'
-            ? t('sidebar:sessions.unread', { defaultValue: 'Unread messages' })
-            : t('sidebar:sessions.idle', { defaultValue: 'No unread messages' });
+        indicatorStatus === 'question'
+          ? t('sidebar:sessions.waitingForAnswer', { defaultValue: 'Waiting for your answer' })
+          : indicatorStatus === 'approval'
+            ? t('sidebar:sessions.waitingForApproval', { defaultValue: 'Waiting for approval' })
+            : indicatorStatus === 'processing'
+              ? t('sidebar:sessions.processing', { defaultValue: 'Agent is running' })
+              : indicatorStatus === 'unread'
+                ? t('sidebar:sessions.unread', { defaultValue: 'Unread messages' })
+                : t('sidebar:sessions.idle', { defaultValue: 'No unread messages' });
       const parentTitle = session.parentSessionId
         ? sessionTitleById.get(session.parentSessionId)
         : undefined;
@@ -826,7 +835,12 @@ export default function SidebarV2({
               >
                 <span className={cn('session-indicator', options.flat && 'session-indicator-flat')}
                   data-session-indicator={sessionId} data-status={indicatorStatus} aria-label={indicatorLabel} title={indicatorLabel}>
-                  {indicatorStatus === 'processing' ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
+                  {indicatorStatus === 'question' || indicatorStatus === 'approval' ? (
+                    <svg aria-hidden="true" className="h-3.5 w-3.5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.8">
+                      <circle cx="12" cy="12" r="9" />
+                      {indicatorStatus === 'question' ? <path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3v.5" /> : <path d="M12 7v6m0 3v.5" />}
+                    </svg>
+                  ) : indicatorStatus === 'processing' ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
                     : options.flat && indicatorStatus === 'idle' ? (
                       <svg aria-hidden="true" className="icon" fill="none" height="16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24" width="16">
                         <path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" />

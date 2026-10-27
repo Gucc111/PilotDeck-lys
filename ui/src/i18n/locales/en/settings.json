@@ -1,4 +1,27 @@
 {
+  "systemNotifications": {
+    "title": "Notifications",
+    "enabled": "Enable system notifications",
+    "description": "Get notified when a task completes, needs approval or an answer, or cannot continue.",
+    "sound": "Notification sound",
+    "soundDescription": "Use the default notification sound. System sound settings also apply.",
+    "badge": "Show app icon badge",
+    "badgeDescription": "Show the number of conversations with unseen reminders. Viewing a conversation clears its reminder.",
+    "preview": "Show message previews",
+    "previewDescription": "Include reply or question excerpts. When off, show only the conversation name and action needed.",
+    "systemSettings": "System notification settings",
+    "openSettings": "Open system settings",
+    "showHelp": "How to enable notifications",
+    "systemControlled": "Banners and sounds are controlled by your system. Allow notifications for PilotDeck in system settings.",
+    "granted": "Browser notification permission is granted. System banner and sound settings still apply.",
+    "denied": "Notifications are blocked. Allow them in your system or browser settings.",
+    "notGranted": "When enabling notifications, allow the browser to send them.",
+    "unsupported": "System notifications are unavailable. For the web app, use HTTPS or a localhost address.",
+    "unsupportedDesktop": "System notifications are unavailable in this desktop environment. Conversation indicators remain available.",
+    "browserHelp": "Open site settings beside the browser address bar and allow notifications for this site. Also allow the browser in your system notification settings.",
+    "desktopHelp": "Open Notifications in system settings, find PilotDeck, and allow notifications. On Linux, the location depends on your desktop environment.",
+    "saveError": "Could not save notification settings. Please try again."
+  },
   "openModelSettings": "Open model settings",
   "title": "Settings",
   "tabs": {

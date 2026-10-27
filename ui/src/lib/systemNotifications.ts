@@ -1,0 +1,40 @@
+import type { NotificationPreferences, SystemNotification } from '../../shared/notifications';
+
+export async function notificationWorkerMessage(type: string, value: unknown) {
+  if (window.pilotdeckDesktop || !('serviceWorker' in navigator)) return undefined;
+  let registration;
+  try { registration = await navigator.serviceWorker.getRegistration(); } catch { return undefined; }
+  const worker = registration?.active;
+  if (!worker) return undefined;
+  return new Promise<any>(resolve => {
+    const channel = new MessageChannel();
+    const timer = window.setTimeout(() => { channel.port1.close(); resolve(undefined); }, 1500);
+    channel.port1.onmessage = event => { clearTimeout(timer); channel.port1.close(); resolve(event.data); };
+    try { worker.postMessage({ type, value }, [channel.port2]); }
+    catch { clearTimeout(timer); channel.port1.close(); resolve(undefined); }
+  });
+}
+
+export async function showSystemNotification(payload: SystemNotification) {
+  if (window.pilotdeckDesktop?.showNotification) return window.pilotdeckDesktop.showNotification(payload);
+  if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+  const handled = await notificationWorkerMessage('notification:show', payload);
+  if (handled !== undefined) return handled;
+  const notification = new Notification(payload.title, { body: payload.body, silent: payload.silent,
+    tag: `${payload.data.scope}:${payload.data.sessionId}`, data: payload.data });
+  notification.onclick = () => {
+    notification.close(); window.focus();
+    window.dispatchEvent(new CustomEvent('pilotdeck:notification-navigate', { detail: payload.data }));
+  };
+  return true;
+}
+
+const originalTitle = typeof document === 'undefined' ? 'PilotDeck' : document.title;
+export async function setSystemBadge(count: number, preferences: NotificationPreferences) {
+  const value = preferences.badge ? count : 0;
+  if (window.pilotdeckDesktop?.setNotificationBadge) return window.pilotdeckDesktop.setNotificationBadge(value);
+  document.title = value ? `(${value}) ${originalTitle}` : originalTitle;
+  const badge = navigator as Navigator & { setAppBadge?: (count: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
+  if (value) await badge.setAppBadge?.(value);
+  else await badge.clearAppBadge?.();
+}
