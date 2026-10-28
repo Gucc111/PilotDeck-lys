@@ -239,7 +239,7 @@ test('resuming the same member work gives each model turn a distinct tool retry 
   assert.ok(accepted.every(entry => entry.type === 'accepted_input' && entry.metadata?.teamWorkId === 'same-work'));
 });
 
-test('member human permission survives Leader end and refresh, scopes decisions to parent, and resumes work', async t => {
+test('member human permission is delivered directly to the Team interaction channel and resumes work', async t => {
   const f = await fixture(t, ['bash'], 'default'); let delegated = false, requested = false;
   f.setResponse(async function* (request) {
     if (request.model === 'worker') {
@@ -250,28 +250,41 @@ test('member human permission survives Leader end and refresh, scopes decisions 
     yield { type: 'text_delta', text: 'awaiting permission' };
   });
   const { activation } = await f.select(); await f.submit({ runId: 'permission-human', teamActivationId: activation!.id });
-  let prompt: Extract<GatewayEvent, { type: 'permission_request' }> | undefined;
-  for (let i = 0; i < 100 && !prompt; i++) {
-    const snapshot = await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey });
-    prompt = snapshot.events.find((event): event is typeof prompt & {} => event.type === 'permission_request');
-    if (!prompt) await new Promise(resolve => setTimeout(resolve, 20));
+  let interaction: Extract<GatewayEvent, { type: 'team_interaction' }>['interaction'] | undefined;
+  for (let i = 0; i < 100 && !interaction; i++) {
+    interaction = f.broadcasts.find(item => item.name === 'team_runtime_event' && item.payload.sessionKey === f.sessionKey && item.payload.event.type === 'team_interaction')?.payload.event.interaction;
+    if (!interaction) await new Promise(resolve => setTimeout(resolve, 20));
   }
-  assert.ok(prompt, 'root active snapshot retains member permission after Leader exits');
+  assert.ok(interaction, 'Teammate permission is published on the Team interaction channel');
+  const rootSnapshot = await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey });
+  assert.ok(!rootSnapshot.events.some(event => event.type === 'permission_request'), 'Leader chat does not receive Teammate permission prompts');
   let view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
   for (let i = 0; i < 30 && view.activation!.works[0]!.status === 'running'; i++) {
     await new Promise(resolve => setTimeout(resolve, 10));
     view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
   }
   assert.equal(String(view.activation!.works[0]!.status), 'waiting_approval');
-  assert.equal((await f.gateway.permissionDecide({ sessionKey: 'web:other', requestId: prompt.requestId, decision: 'deny' })).delivered, false);
-  assert.equal((await f.gateway.permissionDecide({ sessionKey: f.sessionKey, requestId: prompt.requestId, decision: 'deny' })).delivered, true);
+  assert.equal((await f.gateway.permissionDecide({ sessionKey: 'web:other', requestId: interaction.requestId, decision: 'deny' })).delivered, false);
+  assert.equal((await f.gateway.permissionDecide({ sessionKey: f.sessionKey, requestId: interaction.requestId, decision: 'deny' })).delivered, false, 'ordinary permission endpoint cannot decide for a Teammate');
+  const response = await f.gateway.teamInteractionRespond!({
+    sessionKey: f.sessionKey,
+    activationId: interaction.activationId,
+    stopVersion: interaction.stopVersion,
+    participantId: interaction.participantId,
+    interactionId: interaction.id,
+    requestId: interaction.requestId,
+    kind: interaction.kind,
+    decision: 'deny',
+  });
+  assert.equal(response.delivered, true);
   for (let i = 0; i < 100; i++) {
     view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
     if (view.activation!.works[0]!.status === 'completed') break;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   assert.equal(view.activation!.works[0]!.status, 'completed');
-  assert.ok(!(await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events.some(event => event.type === 'permission_request'));
+  assert.equal((await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.interactions.find(item => item.id === interaction!.id)?.status, 'denied');
+  assert.ok(!((await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events).some(event => event.type === 'permission_request'));
 });
 
 function gate<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
@@ -388,4 +401,176 @@ test('accepted Team input replay while original execution is running returns a r
   const changed = await f.submit({ ...input, message: 'different' });
   assert.ok(changed.some(event => event.type === 'error' && event.code === 'TEAM_INPUT_CONFLICT'));
   release.resolve(); await running;
+});
+
+function interactionOwner(item: import('../../src/team/runtimeTypes.js').TeamHumanInteraction) {
+  return { sessionKey: item.sessionKey, activationId: item.activationId, stopVersion: item.stopVersion, participantId: item.participantId, interactionId: item.id, requestId: item.requestId, kind: item.kind };
+}
+async function startHumanInteraction(f: Awaited<ReturnType<typeof fixture>>, toolName: string, input: Record<string, unknown>) {
+  let requested = false;
+  f.setResponse(async function* (request) {
+    if (request.model === 'worker' && !requested) {
+      requested = true;
+      yield { type: 'tool_call_start', id: 'human-interaction-tool', name: toolName };
+      yield { type: 'tool_call_end', toolCall: { id: 'human-interaction-tool', name: toolName, input } }; return;
+    }
+    yield { type: 'text_delta', text: 'interaction finished' };
+  });
+  const { activation } = await f.select();
+  const runtime = (f.registry as any).teamRuntime as import('../../src/team/TeamRuntime.js').TeamRuntime;
+  await runtime.delegate({ sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion, participantId: f.leader.id }, { participantId: f.worker.id, task: 'request direct human review', requestToken: 'human-review' });
+  await eventually(async () => f.broadcasts.some(item => item.name === 'team_runtime_event' && item.payload.event.type === 'team_interaction'), 'durable human interaction');
+  const interaction = f.broadcasts.find(item => item.name === 'team_runtime_event' && item.payload.event.type === 'team_interaction')!.payload.event.interaction as import('../../src/team/runtimeTypes.js').TeamHumanInteraction;
+  assert.equal(f.requests.filter(request => request.model === 'leader').length, 0, 'pending human request does not wake Leader');
+  assert.ok(!(await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events.some(event => event.type === 'permission_request' || event.type === 'elicitation_request'));
+  return { interaction, runtime, activation: activation! };
+}
+const reviewQuestion = { questions: [{ question: 'Which checks?', header: 'Checks', multiSelect: true, options: [{ label: 'Unit', description: 'Run unit checks' }, { label: 'UI', description: 'Run UI checks' }] }] };
+
+test('real Teammate question validates owners, preserves multiselect annotations and consumes concurrent responses once', async t => {
+  const f = await fixture(t, ['ask_user_question']);
+  const { interaction } = await startHumanInteraction(f, 'ask_user_question', reviewQuestion);
+  const owner = interactionOwner(interaction);
+  for (const change of [{ sessionKey: 'web:wrong' }, { activationId: 'wrong' }, { participantId: f.leader.id }, { stopVersion: owner.stopVersion + 1 }, { requestId: 'wrong' }, { participantId: undefined }]) {
+    await assert.rejects(f.gateway.teamInteractionRespond!({ ...owner, ...change, answer: { 'Which checks?': ['Unit'] } } as any));
+  }
+  for (const invalid of [{ decision: 'allow', answer: { 'Which checks?': ['Unit'] } }, { decision: 'cancel', answer: { 'Which checks?': ['Unit'] } }, { answer: { 'Which checks?': true } }]) await assert.rejects(f.gateway.teamInteractionRespond!({ ...owner, ...invalid } as any));
+  assert.equal((await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.interactions[0]!.status, 'pending');
+  assert.equal((await f.gateway.respondElicitation({ sessionKey: f.sessionKey, requestId: interaction.requestId, answer: { type: 'cancelled' } })).delivered, false, 'Leader channel cannot answer a Teammate');
+  const answer = { type: 'answered' as const, answers: { 'Which checks?': ['Unit', 'UI'] }, annotations: { 'Which checks?': { notes: 'Keep both checks' } } };
+  const results = await Promise.all([
+    f.gateway.teamInteractionRespond!({ ...owner, answer }),
+    f.gateway.teamCommand!({ action: 'runtime_interaction_respond', ...owner, answer }),
+    f.gateway.teamInteractionRespond!({ ...owner, answer }),
+  ]) as Array<{ delivered: boolean; interaction: import('../../src/team/runtimeTypes.js').TeamHumanInteraction }>;
+  assert.equal(results.filter(result => result.delivered).length, 1);
+  assert.ok(results.every(result => result.interaction.status === 'answered'));
+  assert.deepEqual(results[0]!.interaction.resolution, answer);
+  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'question tool completed');
+  const transcript = await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'));
+  assert.match(JSON.stringify(transcript.entries), /Keep both checks/);
+  assert.match(JSON.stringify(transcript.entries), /Unit/);
+  assert.match(JSON.stringify(transcript.entries), /UI/);
+  assert.equal((await f.gateway.teamInteractionRespond!({ ...owner, answer })).interaction?.status, 'answered');
+});
+
+test('real Teammate question cancellation is recorded and unblocks the original tool', async t => {
+  const f = await fixture(t, ['ask_user_question']);
+  const { interaction } = await startHumanInteraction(f, 'ask_user_question', reviewQuestion);
+  const result = await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), answer: { type: 'cancelled', reason: 'Skip this question' } });
+  assert.equal(result.interaction?.status, 'cancelled');
+  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'cancelled question completed');
+  const transcript = await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'));
+  assert.match(JSON.stringify(transcript.entries), /cancelled|declined/i);
+});
+
+for (const decision of ['approve', 'decline'] as const) test(`real Teammate Plan ${decision} resolves the submitted plan with matching execution semantics`, async t => {
+  const f = await fixture(t, ['exit_plan_mode'], 'plan');
+  const planPath = join(f.workspace, '.pilotdeck', 'plans', 'review.md');
+  await mkdir(join(f.workspace, '.pilotdeck', 'plans'), { recursive: true });
+  await writeFile(planPath, '# Review plan\n\nRun targeted checks after approval.');
+  const { interaction } = await startHumanInteraction(f, 'exit_plan_mode', { plan_file_path: planPath });
+  assert.equal(interaction.kind, 'plan_approval');
+  assert.match(JSON.stringify(interaction.request), /Review plan/);
+  await assert.rejects(f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), decision: 'decline', answer: { action: 'execute_plan' } }), /disagree/);
+  const action = decision === 'approve' ? 'execute_plan' : 'continue_planning';
+  const answer = { type: 'answered' as const, answers: { 'What should happen next?': action }, annotations: { 'What should happen next?': { notes: 'Plan review feedback' } } };
+  const result = await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), decision, answer });
+  assert.equal(result.delivered, true);
+  assert.equal(result.interaction?.status, decision === 'approve' ? 'approved' : 'declined');
+  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'plan tool completed');
+  const transcript = JSON.stringify((await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'))).entries);
+  assert.match(transcript, new RegExp(action));
+  assert.match(transcript, decision === 'approve' ? /User has approved your plan/ : /Plan review feedback/);
+});
+
+test('Gateway restart expires a real pending Teammate question and cannot replay its answer', async t => {
+  const f = await fixture(t, ['ask_user_question']);
+  const { interaction } = await startHumanInteraction(f, 'ask_user_question', reviewQuestion);
+  await f.restart();
+  const view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
+  assert.equal(view.activation!.interactions.find(item => item.id === interaction.id)!.status, 'expired');
+  await assert.rejects(f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), answer: { 'Which checks?': ['Unit'] } }), /expired/);
+});
+
+test('ordinary Leader questions remain on the normal conversation elicitation channel', async t => {
+  const f = await fixture(t, ['ask_user_question']); let requested = false;
+  f.setResponse(async function* () {
+    if (!requested) { requested = true; yield { type: 'tool_call_start', id: 'leader-question', name: 'ask_user_question' }; yield { type: 'tool_call_end', toolCall: { id: 'leader-question', name: 'ask_user_question', input: reviewQuestion } }; return; }
+    yield { type: 'text_delta', text: 'Leader received user answer' };
+  });
+  await f.select();
+  const running = f.submit();
+  let request: Extract<GatewayEvent, { type: 'elicitation_request' }> | undefined;
+  await eventually(async () => { request = (await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events.find(event => event.type === 'elicitation_request') as typeof request; return !!request; }, 'Leader question');
+  assert.equal((await f.gateway.respondElicitation({ sessionKey: f.sessionKey, requestId: request!.requestId, answer: { type: 'answered', answers: { 'Which checks?': ['Unit'] } } })).delivered, true);
+  await running;
+  assert.equal((await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.interactions.length, 0);
+  assert.ok(!f.broadcasts.some(item => item.payload.event?.type === 'team_interaction'));
+});
+
+for (const decision of ['allow', 'deny'] as const) test(`real Teammate permission ${decision} controls the underlying tool side effect`, async t => {
+  const f = await fixture(t, ['bash'], 'default');
+  const { interaction } = await startHumanInteraction(f, 'bash', { command: 'printf approved > interaction-side-effect.txt' });
+  const response = await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), decision });
+  assert.equal(response.interaction?.status, decision === 'allow' ? 'allowed' : 'denied');
+  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'permission tool completed');
+  const path = join(f.workspace, 'interaction-side-effect.txt');
+  if (decision === 'allow') assert.ok(await stat(path)); else await assert.rejects(stat(path), { code: 'ENOENT' });
+});
+
+test('ending a member elicitation invalidates its pending ledger while preserving history', async t => {
+  const f = await fixture(t, ['ask_user_question']);
+  const { interaction } = await startHumanInteraction(f, 'ask_user_question', reviewQuestion);
+  const internalKey = `team-internal:${interaction.activationId}:${interaction.participantId}`;
+  (f.gateway as InProcessGateway).clearTeamPrompts(internalKey);
+  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.interactions[0]!.status === 'cancelled', 'ended question invalidated');
+  assert.equal((await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), answer: { 'Which checks?': ['Unit'] } })).delivered, false);
+});
+
+test('real member readonly transcript merges in-flight text, streams dedicated frames and recovers final history after stop', async t => {
+  const f = await fixture(t, []), release = gate();
+  t.after(() => release.resolve());
+  f.setResponse(async function* (request) {
+    if (request.model === 'worker') {
+      yield { type: 'text_delta', text: 'TEAM_PARTIAL' };
+      await release.promise;
+      yield { type: 'text_delta', text: ' TEAM_FINAL' };
+      return;
+    }
+    yield { type: 'text_delta', text: 'Leader summary' };
+  });
+  const { activation } = await f.select();
+  const runtime = (f.registry as any).teamRuntime as import('../../src/team/TeamRuntime.js').TeamRuntime;
+  await runtime.delegate({ sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion, participantId: f.leader.id }, { participantId: f.worker.id, task: 'stream a private member reply', requestToken: 'stream-reply' });
+  const query = { sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion, participantId: f.worker.id };
+  const memberEvents = () => f.broadcasts.filter(item => item.name === 'team_runtime_event' && item.payload.event.type === 'team_participant_message').map(item => item.payload.event as Extract<GatewayEvent, { type: 'team_participant_message' }>);
+  await eventually(async () => memberEvents().some(event => JSON.stringify(event.messages).includes('TEAM_PARTIAL')), 'dedicated member partial output');
+  const partialEvent = memberEvents().find(event => JSON.stringify(event.messages).includes('TEAM_PARTIAL'))!;
+  assert.equal(partialEvent.participantId, f.worker.id); assert.equal(partialEvent.activationId, activation!.id);
+  assert.equal(partialEvent.streaming, true); assert.ok(partialEvent.streamEpoch); assert.ok(partialEvent.revision > 0);
+  const beforeReadCalls = f.requests.length;
+  const live = await f.gateway.teamParticipantMessages!(query);
+  assert.equal(live.streaming, true); assert.equal(live.streamEpoch, partialEvent.streamEpoch); assert.ok(live.revision! >= partialEvent.revision);
+  assert.equal(live.messages.filter(message => JSON.stringify(message.content).includes('TEAM_PARTIAL')).length, 1);
+  assert.ok(live.messages.some(message => message.isStreaming && JSON.stringify(message.content).includes('TEAM_PARTIAL')));
+  assert.equal(f.requests.length, beforeReadCalls, 'readonly access never starts a model');
+  assert.ok(!(await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events.some(event => event.type === 'assistant_text_delta' && event.text.includes('TEAM_PARTIAL')));
+  assert.ok(!f.broadcasts.some(item => item.payload.event?.type === 'assistant_text_delta' && item.payload.event.text?.includes('TEAM_PARTIAL')), 'member text never enters Leader stream');
+  for (const change of [{ sessionKey: 'web:other' }, { activationId: 'other-activation' }, { participantId: f.leader.id }, { participantId: 'missing-member' }, { stopVersion: activation!.stopVersion + 1 }, { participantId: undefined }]) await assert.rejects(f.gateway.teamParticipantMessages!({ ...query, ...change } as any));
+  release.resolve();
+  await eventually(async () => memberEvents().some(event => event.reload && event.streaming === false), 'member terminal reload');
+  const terminal = memberEvents().find(event => event.reload && event.streaming === false)!;
+  assert.equal(terminal.streamEpoch, partialEvent.streamEpoch); assert.ok(terminal.revision > partialEvent.revision);
+  const finished = await f.gateway.teamParticipantMessages!(query);
+  assert.equal(finished.streaming, false);
+  const finalMessages = finished.messages.filter(message => JSON.stringify(message.content).includes('TEAM_PARTIAL'));
+  assert.equal(finalMessages.length, 1, 'live and durable versions share one identity');
+  assert.match(JSON.stringify(finalMessages[0]!.content), /TEAM_PARTIAL TEAM_FINAL/);
+  assert.equal(finalMessages[0]!.isStreaming, false);
+  assert.equal(finalMessages[0]!.id, live.messages.find(message => JSON.stringify(message.content).includes('TEAM_PARTIAL'))!.id);
+  const stopped = await f.gateway.teamCommand!({ action: 'runtime_stop', sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion }) as TeamRuntimeView;
+  const stoppedHistory = await f.gateway.teamParticipantMessages!({ ...query, stopVersion: stopped.activation!.stopVersion });
+  assert.equal(stoppedHistory.streaming, false);
+  assert.equal(stoppedHistory.messages.filter(message => JSON.stringify(message.content).includes('TEAM_PARTIAL TEAM_FINAL')).length, 1);
 });

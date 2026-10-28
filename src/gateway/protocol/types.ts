@@ -240,6 +240,9 @@ export type GatewayEvent = GatewayTurnScopedEventMetadata & (
     }
   | { type: "tool_result_detail_available"; toolCallId: string; resultPath?: string; fullText?: string }
   | { type: "permission_request"; requestId: string; toolName: string; payload: unknown }
+  | { type: "team_interaction"; interaction: import("../../team/runtimeTypes.js").TeamHumanInteraction }
+  | { type: "team_interaction_updated"; interaction: import("../../team/runtimeTypes.js").TeamHumanInteraction; delivered: boolean }
+  | { type: "team_participant_message"; activationId: string; stopVersion: number; participantId: string; streamEpoch: string; revision: number; messages: import("../../team/runtimeTypes.js").TeamParticipantMessage[]; streaming: boolean; reload?: boolean }
   /**
    * B1 elicitation request: a tool (`ask_user_question`) wants the host
    * channel to render a multiple-choice dialog. The host MUST eventually
@@ -340,6 +343,32 @@ export type GatewayPermissionDecisionInput = {
   reason?: string;
 };
 
+export type GatewayTeamInteractionResponseInput = {
+  sessionKey: string;
+  activationId: string;
+  stopVersion: number;
+  participantId: string;
+  interactionId: string;
+  requestId: string;
+  kind: import("../../team/runtimeTypes.js").TeamHumanInteractionKind;
+  decision?: "allow" | "deny" | "approve" | "decline" | "cancel";
+  answer?: unknown;
+  reason?: string;
+};
+export type GatewayTeamInteractionResponseResult = {
+  delivered: boolean;
+  interaction?: import("../../team/runtimeTypes.js").TeamHumanInteraction;
+};
+export type GatewayTeamParticipantMessagesInput = {
+  sessionKey: string;
+  activationId: string;
+  stopVersion: number;
+  participantId: string;
+  cursor?: string;
+  limit?: number;
+};
+export type GatewayTeamParticipantMessagesResult = import("../../team/runtimeTypes.js").TeamRuntimeParticipantMessages;
+
 export type GatewaySessionPermissionGrantInput = {
   sessionKey: string;
   entry: string;
@@ -398,6 +427,8 @@ export type GatewayServerInfo = {
 export type GatewayCapability =
   | "repository_operation"
   | "team_command"
+  | "team_interaction_respond"
+  | "team_participant_messages"
   | "project_files_list"
   | "commands_list"
   | "model_catalog_list"
@@ -581,6 +612,8 @@ export type AlwaysOnRerunPlanResult = {
 export interface Gateway {
   /** Reusable Leader, Teammate, and Team configuration. */
   teamCommand?(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult>;
+  teamInteractionRespond?(input: GatewayTeamInteractionResponseInput): Promise<GatewayTeamInteractionResponseResult>;
+  teamParticipantMessages?(input: GatewayTeamParticipantMessagesInput): Promise<GatewayTeamParticipantMessagesResult>;
   repositoryOperation?(input: import("../../session/repository/operations.js").RepositoryOperationInput): Promise<unknown>;
   manageCheckpoints?(input: import("../../session/checkpoints/removed.js").CheckpointRequest): Promise<unknown>;
   submitTurn(input: GatewaySubmitTurnInput): AsyncIterable<GatewayEvent>;

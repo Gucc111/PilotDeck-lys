@@ -5,13 +5,14 @@ const actions = new Set([
   'library', 'inventory', 'profile_save', 'profile_fork', 'profile_archive',
   'team_save', 'team_fork', 'team_archive', 'project_references',
   'runtime_probe', 'runtime_select', 'runtime_get', 'runtime_stop',
+  'runtime_interaction_respond', 'runtime_participant_messages',
 ]);
 
 export function teamErrorStatus(error) {
   const code = typeof error?.code === 'string' ? error.code : '';
   if (/NOT_FOUND$/.test(code)) return 404;
-  if (/INVALID_INPUT|VALIDATION|ROLE_MISMATCH|PROJECT_REQUIRED/.test(code)) return 400;
-  if (/CONFLICT|REFERENCED|PROTECTED|ARCHIVED|BUSY|MISMATCH|STALE|EXPIRED|STOPPING/.test(code)) return 409;
+  if (/INVALID_INPUT|VALIDATION|ROLE_MISMATCH|PROJECT_REQUIRED|ACTOR_INVALID/.test(code)) return 400;
+  if (/CONFLICT|REFERENCED|PROTECTED|ARCHIVED|BUSY|MISMATCH|STALE|EXPIRED|STOPPING|STOPPED|GENERATION_REQUIRED|ACTIVATION_CHANGED/.test(code)) return 409;
   if (/UNAVAILABLE|CORRUPT/.test(code) || /Gateway WebSocket|ECONNREFUSED|connect timeout|gateway is not connected/i.test(error?.message || '')) return 503;
   return 500;
 }
@@ -31,6 +32,14 @@ export function createTeamLibraryHandler({ getGateway = getPilotDeckGateway, has
       if (!gateway.teamCommand || (typeof gateway.describeServer === 'function'
         && !(await gateway.describeServer()).capabilities?.includes('team_command'))) {
         return res.status(503).json({ error: { code: 'CAPABILITY_UNAVAILABLE', message: 'This Gateway does not support Team configuration.' } });
+      }
+      if (input.action === 'runtime_interaction_respond') {
+        if (!gateway.teamInteractionRespond) throw Object.assign(new Error('This Gateway does not support Team interactions.'), { code: 'CAPABILITY_UNAVAILABLE' });
+        return res.json(await gateway.teamInteractionRespond(input));
+      }
+      if (input.action === 'runtime_participant_messages') {
+        if (!gateway.teamParticipantMessages) throw Object.assign(new Error('This Gateway does not support Teammate transcript reading.'), { code: 'CAPABILITY_UNAVAILABLE' });
+        return res.json(await gateway.teamParticipantMessages(input));
       }
       return res.json(await gateway.teamCommand(input));
     } catch (error) {

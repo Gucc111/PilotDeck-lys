@@ -1,3 +1,5 @@
+import { normalizeTeamInteractionResponse, type NormalizedTeamResponse } from "../../team/humanInteraction.js";
+import { TeamError } from "../../team/validation.js";
 import { ActiveTimeline } from "../stream/ActiveTimeline.js";
 import { normalizeSessionModelSelection } from "../dialog/modelCatalog.js";
 import { randomUUID } from "node:crypto";
@@ -27,6 +29,10 @@ import type {
   GatewayElicitationResponseInput,
   GatewayEvent,
   GatewayPermissionDecisionInput,
+  GatewayTeamInteractionResponseInput,
+  GatewayTeamInteractionResponseResult,
+  GatewayTeamParticipantMessagesInput,
+  GatewayTeamParticipantMessagesResult,
   GatewayRecordAgentStatusMessageInput,
   GatewaySessionPermissionGrantInput,
   GatewayServerInfo,
@@ -127,6 +133,12 @@ export type InProcessGatewayOptions = {
   protectSessionOperation?: (sessionKey: string, operation: string) => Promise<void>;
   afterInputAccepted?: (input: GatewaySubmitTurnInput, metadata?: Record<string, unknown>) => Promise<void>;
   teamCommand?: (input: import("../../team/types.js").TeamCommand) => Promise<import("../../team/types.js").TeamCommandResult>;
+  teamInteractionRespond?: (input: GatewayTeamInteractionResponseInput, deliver: (response: NormalizedTeamResponse) => boolean) => Promise<GatewayTeamInteractionResponseResult>;
+  teamInteractionInvalidate?: (input: { sessionKey: string; activationId: string; participantId: string; stopVersion: number; requestId: string }, reason: string) => Promise<import("../../team/runtimeTypes.js").TeamHumanInteraction | undefined>;
+  /** Read an interaction without consuming it, used for duplicate/reconnect responses. */
+  teamInteractionLookup?: (input: GatewayTeamInteractionResponseInput) => Promise<import("../../team/runtimeTypes.js").TeamHumanInteraction | undefined>;
+  onTeamInteractionUpdated?: (input: GatewayTeamInteractionResponseInput, result: GatewayTeamInteractionResponseResult) => void;
+  teamParticipantMessages?: (input: GatewayTeamParticipantMessagesInput) => Promise<GatewayTeamParticipantMessagesResult>;
   repositoryOperation?: (input: import("../../session/repository/operations.js").RepositoryOperationInput) => Promise<unknown>;
   /** Absolute command used by the model to install bundled FunASR assets. */
   funasrInstallCommand?: string;
@@ -261,20 +273,95 @@ export class InProcessGateway implements Gateway {
   }
   private readonly submittedTeamTurns = new Map<string, { runId: string; draft: boolean; teamActivationId?: string; teamStopVersion?: number; cleanup?: Promise<boolean> }>();
   private readonly executionPumps = new Map<string, Promise<void>>();
-  private readonly teamPrompts = new Map<string, { sessionKey: string; internalSessionKey: string; event: GatewayEvent; onAnswered?: () => void; isCurrent?: () => Promise<boolean> }>();
-  registerTeamPrompt(sessionKey: string, internalSessionKey: string, event: GatewayEvent, onAnswered?: () => void, isCurrent?: () => Promise<boolean>): void {
+  private readonly teamPrompts = new Map<string, { sessionKey: string; internalSessionKey: string; event: GatewayEvent; onAnswered?: () => void; isCurrent?: () => Promise<boolean>; teamOwner?: { activationId: string; participantId: string; stopVersion: number; interactionId?: string; kind: "tool_permission" | "user_question" | "plan_approval" } }>();
+  registerTeamPrompt(sessionKey: string, internalSessionKey: string, event: GatewayEvent, onAnswered?: () => void, isCurrent?: () => Promise<boolean>, teamOwner?: { activationId: string; participantId: string; stopVersion: number; interactionId?: string; kind: "tool_permission" | "user_question" | "plan_approval" }): void {
     if ((event.type === "permission_request" || event.type === "elicitation_request")) {
-      this.teamPrompts.set(event.requestId, { sessionKey, internalSessionKey, event, onAnswered, isCurrent });
+      this.teamPrompts.set(event.requestId, { sessionKey, internalSessionKey, event, onAnswered, isCurrent, teamOwner });
+    }
+  }
+  private readonly teamResponseOperations = new Map<string, Promise<GatewayTeamInteractionResponseResult>>();
+  hasTeamPrompt(requestId: string): boolean {
+    const entry = this.teamPrompts.get(requestId);
+    return !!entry && (entry.event.type === "permission_request" ? this.permissionBus.hasPending(entry.internalSessionKey, requestId) : this.elicitationBus.hasPending(entry.internalSessionKey, requestId));
+  }
+  cancelTeamPrompt(internalSessionKey: string, requestId: string, reason = "team_participant_ended"): void {
+    const entry = this.teamPrompts.get(requestId);
+    if (!entry || entry.internalSessionKey !== internalSessionKey) return;
+    this.teamPrompts.delete(requestId);
+    if (entry.teamOwner && this.options.teamInteractionInvalidate) {
+      void this.options.teamInteractionInvalidate({ sessionKey: entry.sessionKey, ...entry.teamOwner, requestId }, reason).then(interaction => {
+        if (interaction) this.options.onTeamInteractionUpdated?.({ sessionKey: entry.sessionKey, ...entry.teamOwner!, interactionId: interaction.id, requestId }, { delivered: false, interaction });
+      }).catch(error => { if (!(error instanceof TeamError && error.code === "TEAM_RUNTIME_CLOSED")) console.warn("[pilotdeck] failed to invalidate Team interaction:", error); });
     }
   }
   clearTeamPrompts(internalSessionKey: string): void {
-    for (const [id, entry] of this.teamPrompts) if (entry.internalSessionKey === internalSessionKey) this.teamPrompts.delete(id);
+    for (const [id, entry] of this.teamPrompts) if (entry.internalSessionKey === internalSessionKey) this.cancelTeamPrompt(internalSessionKey, id);
     this.permissionBus.rejectSession(internalSessionKey, "team_participant_ended");
     this.elicitationBus.rejectSession(internalSessionKey, "team_participant_ended");
   }
+  /**
+   * Fail one Teammate interaction when its durable ledger write cannot be
+   * completed.  Without this, the model-side permission/elicitation promise
+   * would remain pending even though no UI event can be safely published.
+   */
+  rejectTeamPrompt(requestId: string, reason: string): void {
+    const prompt = this.teamPrompts.get(requestId);
+    if (!prompt?.teamOwner) return;
+    this.teamPrompts.delete(requestId);
+    const pending = prompt.event.type === "permission_request"
+      ? this.permissionBus.consume(prompt.internalSessionKey, requestId)
+      : this.elicitationBus.consume(prompt.internalSessionKey, requestId);
+    pending?.reject(new Error(reason));
+  }
   async teamCommand(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult> {
+    if (input.action === "runtime_interaction_respond") {
+      const { action: _action, ...response } = input;
+      const result = await this.teamInteractionRespond(response);
+      if (!result.interaction) throw new TeamError("TEAM_INTERACTION_NOT_FOUND", "This Team interaction is no longer available.");
+      return { delivered: result.delivered, interaction: result.interaction };
+    }
     if (!this.options.teamCommand) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team configuration is unavailable on this Gateway.");
     return this.options.teamCommand(input);
+  }
+  async teamInteractionRespond(input: GatewayTeamInteractionResponseInput): Promise<GatewayTeamInteractionResponseResult> {
+    if (!this.options.teamInteractionRespond) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team interactions are unavailable on this Gateway.");
+    normalizeTeamInteractionResponse(input);
+    const prompt = this.teamPrompts.get(input.requestId);
+    if (prompt && (!prompt.teamOwner || prompt.sessionKey !== input.sessionKey || prompt.teamOwner.activationId !== input.activationId || prompt.teamOwner.participantId !== input.participantId || prompt.teamOwner.stopVersion !== input.stopVersion || prompt.teamOwner.kind !== input.kind || prompt.teamOwner.interactionId !== input.interactionId)) {
+      throw new TeamError("TEAM_INTERACTION_NOT_FOUND", "This Team interaction does not belong to the supplied owner.");
+    }
+    const key = JSON.stringify([input.sessionKey, input.activationId, input.stopVersion, input.participantId, input.interactionId, input.requestId, input.kind]);
+    const inFlight = this.teamResponseOperations.get(key);
+    if (inFlight) { const result = await inFlight; return { ...result, delivered: false }; }
+    if (!prompt) {
+      const interaction = await this.options.teamInteractionLookup?.(input);
+      return { delivered: false, ...(interaction ? { interaction } : {}) };
+    }
+    const operation = this.options.teamInteractionRespond(input, response => {
+      if (this.teamPrompts.get(input.requestId) !== prompt) return false;
+      if (input.kind === "tool_permission") {
+        const pending = this.permissionBus.consume(prompt.internalSessionKey, input.requestId);
+        if (!pending) return false;
+        pending.resolve({ requestId: input.requestId, decision: input.decision === "allow" ? "allow" : "deny", remember: false, reason: input.reason });
+      } else {
+        const pending = this.elicitationBus.consume(prompt.internalSessionKey, input.requestId);
+        if (!pending) return false;
+        pending.resolve(response.answer!);
+      }
+      return true;
+    });
+    this.teamResponseOperations.set(key, operation);
+    try {
+      const result = await operation;
+      if (result.interaction?.status !== "pending") this.teamPrompts.delete(input.requestId);
+      if (result.delivered) prompt.onAnswered?.();
+      this.options.onTeamInteractionUpdated?.(input, result);
+      return result;
+    } finally { if (this.teamResponseOperations.get(key) === operation) this.teamResponseOperations.delete(key); }
+  }
+  async teamParticipantMessages(input: GatewayTeamParticipantMessagesInput): Promise<GatewayTeamParticipantMessagesResult> {
+    if (!this.options.teamParticipantMessages) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team participant messages are unavailable on this Gateway.");
+    return this.options.teamParticipantMessages(input);
   }
   async manageCheckpoints(_input: import("../../session/checkpoints/removed.js").CheckpointRequest): Promise<never> {
     throw new DialogGatewayError("CHECKPOINTS_REMOVED", "File checkpoints and restore have been removed. / 文件检查点与恢复功能已移除。");
@@ -999,6 +1086,8 @@ export class InProcessGateway implements Gateway {
     const capabilities = [
       ...(this.options.repositoryOperation ? ["repository_operation" as const] : []),
       ...(this.options.teamCommand ? ["team_command" as const] : []),
+      ...(this.options.teamInteractionRespond ? ["team_interaction_respond" as const] : []),
+      ...(this.options.teamParticipantMessages ? ["team_participant_messages" as const] : []),
       ...(this.options.listProjects ? ["project_files_list" as const] : []),
       ...(this.options.commandsList ? ["commands_list" as const] : []),
       ...(this.options.modelCatalogList ? ["model_catalog_list" as const] : []),
@@ -1082,7 +1171,12 @@ export class InProcessGateway implements Gateway {
 
   async getActiveTurnSnapshot(input: GatewayActiveTurnSnapshotInput): Promise<GatewayActiveTurnSnapshot> {
     const replay = this.activeTurnReplays.get(input.sessionKey);
-    const prompts = [...this.teamPrompts.values()].filter(entry => entry.sessionKey === input.sessionKey).map(entry => cloneGatewayEvent(entry.event));
+    // Teammate human interactions have their own Team channel.  Keeping the
+    // internal prompt in this root-session replay would make the ordinary
+    // permission/elicitation banner render it after the Leader turn ends.
+    const prompts = [...this.teamPrompts.values()]
+      .filter(entry => entry.sessionKey === input.sessionKey && !entry.teamOwner)
+      .map(entry => cloneGatewayEvent(entry.event));
     if (!replay) {
       return {
         active: false,
@@ -1129,6 +1223,7 @@ export class InProcessGateway implements Gateway {
 
   async respondElicitation(input: GatewayElicitationResponseInput): Promise<{ delivered: boolean }> {
     const prompt = this.teamPrompts.get(input.requestId);
+    if (prompt?.teamOwner) return { delivered: false };
     if (prompt) {
       if (prompt.sessionKey !== input.sessionKey || prompt.event.type !== "elicitation_request") return { delivered: false };
       const current = prompt.isCurrent ? await prompt.isCurrent().catch(() => false) : true;
@@ -1152,6 +1247,7 @@ export class InProcessGateway implements Gateway {
 
   async permissionDecide(input: GatewayPermissionDecisionInput): Promise<{ delivered: boolean }> {
     const prompt = this.teamPrompts.get(input.requestId);
+    if (prompt?.teamOwner) return { delivered: false };
     if (prompt) {
       if (prompt.sessionKey !== input.sessionKey || prompt.event.type !== "permission_request") return { delivered: false };
       const current = prompt.isCurrent ? await prompt.isCurrent().catch(() => false) : true;

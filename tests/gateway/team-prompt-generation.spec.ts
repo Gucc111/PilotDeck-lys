@@ -87,3 +87,13 @@ for (const kind of ['permission', 'elicitation'] as const) {
     assert.deepEqual(f.resolved, ['ordinary']); assert.deepEqual(f.rejected, []);
   });
 }
+
+test('a missing Team waiter never invokes a ledger mutator, including through teamCommand', async t => {
+  const router = new SessionRouter({ idleSweepIntervalMs: 0, createSession: () => { throw new Error('No model'); } });
+  t.after(() => router.shutdown()); let mutations = 0;
+  const gateway = new InProcessGateway(router, { teamInteractionRespond: async () => { mutations++; return { delivered: true }; } });
+  const input = { sessionKey: 'web:root', activationId: 'activation', participantId: 'member', stopVersion: 0, requestId: 'missing', interactionId: 'interaction', kind: 'tool_permission' as const, decision: 'allow' as const };
+  assert.deepEqual(await gateway.teamInteractionRespond(input), { delivered: false });
+  await assert.rejects(gateway.teamCommand({ action: 'runtime_interaction_respond', ...input }), /no longer available/);
+  assert.equal(mutations, 0);
+});

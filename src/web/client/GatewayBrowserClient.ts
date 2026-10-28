@@ -63,12 +63,19 @@ export class GatewayBrowserClient {
   private hello?: WebHelloOk;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly streams = new Map<string, AsyncEventQueue<WebGatewayEvent>>();
+  private readonly notificationHandlers = new Set<(name: string, payload: unknown) => void>();
   private connectError?: Error;
   private closed = false;
   private helloResolve?: (hello: WebHelloOk) => void;
   private helloReject?: (error: Error) => void;
 
   constructor(private readonly options: GatewayBrowserClientOptions) {}
+
+  /** Server-pushed Team updates have no request id and survive turn boundaries. */
+  onNotification(handler: (name: string, payload: unknown) => void): () => void {
+    this.notificationHandlers.add(handler);
+    return () => this.notificationHandlers.delete(handler);
+  }
 
   /** True after `hello_ok` has been received. */
   get connected(): boolean {
@@ -242,6 +249,32 @@ export class GatewayBrowserClient {
     return this.request<{ delivered: boolean }>("elicitation_respond", input);
   }
 
+  teamInteractionRespond(input: {
+    sessionKey: string;
+    activationId: string;
+    stopVersion: number;
+    participantId: string;
+    interactionId: string;
+    requestId: string;
+    kind: "tool_permission" | "user_question" | "plan_approval";
+    decision?: "allow" | "deny" | "approve" | "decline" | "cancel";
+    answer?: unknown;
+    reason?: string;
+  }) {
+    return this.request<{ delivered: boolean; interaction?: import("../../team/runtimeTypes.js").TeamHumanInteraction }>("team_interaction_respond", input);
+  }
+
+  teamParticipantMessages(input: {
+    sessionKey: string;
+    activationId: string;
+    stopVersion: number;
+    participantId: string;
+    cursor?: string;
+    limit?: number;
+  }) {
+    return this.request<import("../../team/runtimeTypes.js").TeamRuntimeParticipantMessages>("team_participant_messages", input);
+  }
+
   readSessionMessages(
     input: import("./protocol.js").WebReadSessionMessagesInput,
   ) {
@@ -359,6 +392,12 @@ export class GatewayBrowserClient {
     if ((frame as WebHelloOk).type === "hello_ok") {
       this.hello = frame as WebHelloOk;
       this.helloResolve?.(this.hello);
+      return;
+    }
+    if (frame.type === "notification") {
+      for (const handler of this.notificationHandlers) {
+        try { handler(frame.name, frame.payload); } catch { /* One observer cannot block another observer or RPC responses. */ }
+      }
       return;
     }
     if (frame.type === "response") {

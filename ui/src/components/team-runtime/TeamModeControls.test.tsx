@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import TeamModeControls, { cleanupTarget } from './TeamModeControls';
 import type { TeamRuntimeActivation } from '../../../../src/team/runtimeTypes';
@@ -31,4 +31,18 @@ it('shows both members as stopping and uses human names for actual pending execu
   expect(within(dialog).getByText('teamMode.cleanupResources')).toBeTruthy();
   expect(dialog.textContent).not.toContain('activation-uuid');
   expect(dialog.textContent).not.toContain('reviewer-uuid');
+});
+
+it('places Team interaction next to details and restores the panel after returning', () => {
+  sessionStorage.clear();
+  const mode = { activation, interactions: [], history: [], selectedTeam: activation.team, panelOpen: false, setPanelOpen: vi.fn(), refresh: vi.fn() } as unknown as TeamModeState;
+  const view = render(<TeamModeControls mode={mode}/>);
+  const details = screen.getByRole('button', { name: 'teamMode.details' });
+  const interactions = screen.getByRole('button', { name: 'teamInteractions.title' });
+  expect(details.nextElementSibling).toBe(interactions);
+  fireEvent.click(interactions);
+  expect(screen.getByRole('dialog').getAttribute('aria-label')).toBe('teamInteractions.title');
+  view.unmount(); render(<TeamModeControls mode={mode}/>);
+  expect(screen.getByRole('dialog').getAttribute('aria-label')).toBe('teamInteractions.title');
+  sessionStorage.clear();
 });

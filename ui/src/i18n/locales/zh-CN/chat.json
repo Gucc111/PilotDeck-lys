@@ -788,5 +788,54 @@
     "cleanupNotifications": "团队通知交付",
     "cleanupResources": "最终资源清理",
     "cleanupExecution": "执行资源清理"
+  },
+  "teamInteractions": {
+    "title": "团队交互",
+    "titlePending": "团队交互 · {{count}} 项待处理",
+    "viewChat": "查看聊天",
+    "request": "请求内容",
+    "result": "处理结果",
+    "responding": "正在发送回应…",
+    "responseError": "处理失败：{{error}}",
+    "waitingInteraction": "等待用户处理",
+    "noRecords": "暂无记录",
+    "noTeammates": "当前没有 Teammate。",
+    "filterLabel": "交互状态",
+    "filter": {
+      "all": "全部",
+      "pending": "未处理",
+      "handled": "已处理"
+    },
+    "kind": {
+      "tool_permission": "工具调用权限询问",
+      "user_question": "向用户提问",
+      "plan_approval": "Plan 授权执行"
+    },
+    "status": {
+      "pending": "待处理",
+      "allowed": "已允许",
+      "denied": "已拒绝",
+      "answered": "已回答",
+      "approved": "已批准执行",
+      "declined": "已拒绝执行",
+      "cancelled": "已取消",
+      "expired": "已过期",
+      "failed": "处理失败"
+    },
+    "connectionLost": "该交互请求已失去执行连接，请刷新后重试。",
+    "sessionUnavailable": "Team 会话当前不可用。"
+  },
+  "teamInteraction": {
+    "readOnlyChat": {
+      "title": "{{name}} · Teammate 聊天",
+      "back": "返回 Team",
+      "refresh": "刷新",
+      "retry": "重试",
+      "streaming": "流式输出中",
+      "empty": "暂无聊天记录。",
+      "invalidAddress": "Team 成员地址不完整。",
+      "unavailable": "Team 或 Teammate 不存在，或已切换到新的运行代次。",
+      "paginationChanged": "加载时 Team 运行代次发生变化，请刷新重试。"
+    }
   }
 }

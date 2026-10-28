@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { TeamStore, hash } from './store.js';
 import { TeamError, object, text } from './validation.js';
 import { TeamRuntimeStore, type RuntimeState } from './runtimeStore.js';
+import { normalizeTeamInteractionResponse, type NormalizedTeamResponse } from './humanInteraction.js';
 import type { ProfileRef } from './types.js';
-import type { TeamRuntimeActivation, TeamRuntimeCommand, TeamRuntimeCommandResult, TeamRuntimeMessage, TeamRuntimeNotification, TeamRuntimeOptions, TeamRuntimeProbe, TeamRuntimeView, TeamRuntimeWork } from './runtimeTypes.js';
+import type { TeamHumanInteraction, TeamHumanInteractionKind, TeamHumanInteractionStatus, TeamRuntimeActivation, TeamRuntimeCommand, TeamRuntimeCommandResult, TeamRuntimeInteractionResponse, TeamRuntimeMessage, TeamRuntimeNotification, TeamRuntimeOptions, TeamRuntimeParticipantMessages, TeamRuntimeProbe, TeamRuntimeView, TeamRuntimeWork } from './runtimeTypes.js';
 
 export type TeamRuntimeActor = { sessionKey: string; activationId: string; participantId: string; stopVersion: number };
 const now = () => new Date().toISOString();
@@ -22,12 +23,24 @@ export function validateRuntimeCommand(input: TeamRuntimeCommand): TeamRuntimeCo
   const action = (input as { action?: unknown })?.action;
   const allowed = action === 'runtime_probe' ? ['action', 'team', 'sessionKey', 'storageProjectKey', 'projectKey']
     : action === 'runtime_select' ? ['action', 'team', 'sessionKey', 'storageProjectKey', 'projectKey', 'requestToken', 'probeFingerprint']
-      : action === 'runtime_get' ? ['action', 'sessionKey'] : action === 'runtime_stop' ? ['action', 'sessionKey', 'activationId', 'stopVersion'] : [];
+      : action === 'runtime_get' ? ['action', 'sessionKey', 'cursor', 'limit'] : action === 'runtime_stop' ? ['action', 'sessionKey', 'activationId', 'stopVersion']
+        : action === 'runtime_interaction_respond' ? ['action', 'sessionKey', 'activationId', 'stopVersion', 'participantId', 'interactionId', 'requestId', 'kind', 'decision', 'answer', 'reason']
+          : action === 'runtime_participant_messages' ? ['action', 'sessionKey', 'activationId', 'stopVersion', 'participantId', 'cursor', 'limit'] : [];
   if (!allowed.length) fail('TEAM_INVALID_INPUT', 'Unknown Team runtime command.');
   const data = object(input, 'command', allowed);
   for (const key of ['sessionKey', 'storageProjectKey', 'projectKey', 'requestToken', 'probeFingerprint']) if (data[key] !== undefined) text(data[key], key, { max: 500 });
   if (action !== 'runtime_probe' || data.sessionKey !== undefined) text(data.sessionKey, 'sessionKey', { max: 500 });
+  if (action === 'runtime_get') { if (data.cursor !== undefined) text(data.cursor, 'cursor', { max: 100 }); if (data.limit !== undefined && (!Number.isSafeInteger(data.limit) || Number(data.limit) < 1 || Number(data.limit) > 200)) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.'); }
   if (action === 'runtime_stop') { text(data.activationId, 'activationId', { max: 500 }); if (!Number.isSafeInteger(data.stopVersion) || Number(data.stopVersion) < 0) fail('TEAM_INVALID_INPUT', 'stopVersion must be a nonnegative integer.'); }
+  if (action === 'runtime_interaction_respond' || action === 'runtime_participant_messages') {
+    for (const key of ['activationId', 'participantId']) text(data[key], key, { max: 500 });
+    if (data.cursor !== undefined) text(data.cursor, 'cursor', { max: 500 });
+    if (action === 'runtime_interaction_respond') { for (const key of ['interactionId', 'requestId']) text(data[key], key, { max: 500 }); if (data.reason !== undefined) text(data.reason, 'reason', { empty: true }); }
+    if (!Number.isSafeInteger(data.stopVersion) || Number(data.stopVersion) < 0) fail('TEAM_INVALID_INPUT', 'stopVersion must be a nonnegative integer.');
+    if (action === 'runtime_interaction_respond' && !['tool_permission', 'user_question', 'plan_approval'].includes(String(data.kind))) fail('TEAM_INVALID_INPUT', 'kind is invalid.');
+    if (action === 'runtime_interaction_respond' && data.decision !== undefined && !['allow', 'deny', 'approve', 'decline', 'cancel'].includes(String(data.decision))) fail('TEAM_INVALID_INPUT', 'decision is invalid.');
+    if (action === 'runtime_participant_messages' && data.limit !== undefined && (!Number.isSafeInteger(data.limit) || Number(data.limit) < 1 || Number(data.limit) > 200)) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.');
+  }
   if (action === 'runtime_select') text(data.requestToken, 'requestToken', { max: 500 });
   if (action === 'runtime_probe' || (action === 'runtime_select' && data.team !== null)) ref(data.team);
   return clone(input);
@@ -47,6 +60,8 @@ export class TeamRuntime {
   private readonly memberFlushRequested = new Set<string>();
   private readonly stopOperations = new Map<string, Promise<void>>();
   private readonly storageOperations = new Set<Promise<unknown>>();
+  /** A consumed waiter is never replayed, even if its result write temporarily fails. */
+  private readonly interactionReceipts = new Map<string, TeamHumanInteraction>();
   private disposed = false;
 
   constructor(private readonly options: TeamRuntimeOptions) {
@@ -64,8 +79,10 @@ export class TeamRuntime {
     switch (command.action) {
       case 'runtime_probe': return this.probe(command.team, command.projectKey, command);
       case 'runtime_select': return this.select(command);
-      case 'runtime_get': return this.get(command.sessionKey);
+      case 'runtime_get': return this.get(command.sessionKey, command.cursor, command.limit);
       case 'runtime_stop': return this.stop(command.sessionKey, command);
+      case 'runtime_interaction_respond': throw new TeamError('TEAM_INTERACTION_CHANNEL_REQUIRED', 'Respond through the Team human interaction channel.');
+      case 'runtime_participant_messages': return this.participantMessages(command);
     }
   }
   async probe(teamRef: ProfileRef, projectKey?: string, context?: { sessionKey?: string; storageProjectKey?: string }): Promise<TeamRuntimeProbe> {
@@ -76,13 +93,21 @@ export class TeamRuntime {
     const result = await this.options.probe(clone(team), projectKey, context);
     return { team, projectKey: result.projectKey, participants: result.participants, issues: result.issues, compatible: !result.issues.some(issue => issue.severity === 'error'), fingerprint: hash({ team, ...result, storageProjectKey: context?.storageProjectKey }) };
   }
-  async get(sessionKey: string): Promise<TeamRuntimeView> {
+  async get(sessionKey: string, cursor?: string, limit = 200): Promise<TeamRuntimeView> {
     await this.ready;
     const state = await this.store.read();
     const activation = state.sessions[sessionKey] ? state.activations[state.sessions[sessionKey]!] : null;
     const history = Object.values(state.activations).filter(a => a.sessionKey === sessionKey && a.id !== activation?.id).reverse();
     const budgetPaused = activation?.status === 'active' && activation.automaticWakeups >= (this.options.maxAutomaticWakeups ?? 24) && activation.notifications.some(n => !n.deliveredAt && !n.cancelledAt);
-    return { activation: clone(activation ?? null), ...(history.length ? { history: clone(history) } : {}), ...(budgetPaused ? { continuationPaused: 'budget' as const } : {}) };
+    const visible = clone(activation ?? null);
+    let interactionsNextCursor: string | undefined;
+    if (visible) {
+      const offset = cursor ? Math.max(0, Number.parseInt(cursor, 10) || 0) : 0;
+      const all = visible.interactions ?? [];
+      visible.interactions = all.slice(offset, offset + limit);
+      if (offset + visible.interactions.length < all.length) interactionsNextCursor = String(offset + visible.interactions.length);
+    }
+    return { activation: visible, ...(history.length ? { history: clone(history) } : {}), ...(budgetPaused ? { continuationPaused: 'budget' as const } : {}), ...(interactionsNextCursor ? { interactionsNextCursor } : {}) };
   }
   async projectReferences(projectKey: string): Promise<boolean> {
     await this.ready;
@@ -142,7 +167,7 @@ export class TeamRuntime {
       if (current) { current.status = 'closed'; current.updatedAt = now(); }
       let activation: TeamRuntimeActivation | null = null;
       if (probe) {
-        activation = { id: randomUUID(), sessionKey: command.sessionKey, ...(command.storageProjectKey ? { storageProjectKey: command.storageProjectKey } : {}), projectKey: probe.projectKey, team: clone(probe.team), participants: clone(probe.participants), probeFingerprint: probe.fingerprint, status: 'active', createdAt: now(), updatedAt: now(), works: [], messages: [], notifications: [], automaticWakeups: 0, stopVersion: 0, runtimeOwner: { pid: process.pid, instanceId: this.instanceId } };
+        activation = { id: randomUUID(), sessionKey: command.sessionKey, ...(command.storageProjectKey ? { storageProjectKey: command.storageProjectKey } : {}), projectKey: probe.projectKey, team: clone(probe.team), participants: clone(probe.participants), probeFingerprint: probe.fingerprint, status: 'active', createdAt: now(), updatedAt: now(), works: [], messages: [], notifications: [], interactions: [], automaticWakeups: 0, stopVersion: 0, runtimeOwner: { pid: process.pid, instanceId: this.instanceId } };
         if (activation.participants.filter(p => p.role === 'leader').length !== 1 || activation.participants.filter(p => p.role === 'teammate').length < 1 || new Set(activation.participants.map(p => p.id)).size !== activation.participants.length) fail('TEAM_INCOMPATIBLE', 'A Team needs one Leader and distinct Teammates.');
         state.activations[activation.id] = activation;
       }
@@ -194,6 +219,9 @@ export class TeamRuntime {
       delete message.owner;
     }
     for (const notification of activation.notifications) { if (!notification.deliveredAt) notification.cancelledAt ??= now(); delete notification.owner; }
+    for (const interaction of activation.interactions ?? []) {
+      if (interaction.status === 'pending') { interaction.status = status === 'interrupted' ? 'expired' : 'cancelled'; interaction.resolvedAt = now(); interaction.error = status === 'interrupted' ? 'Team execution was interrupted by service restart.' : 'Team execution was stopped.'; }
+    }
   }
   private async finishStop(stopped: TeamRuntimeActivation): Promise<void> {
     const prefix = `${stopped.id}:`;
@@ -231,6 +259,94 @@ export class TeamRuntime {
     await this.ready;
     const state = await this.store.read(), { activation, participant } = this.actor(state, actor, false);
     return clone({ participants: activation.participants.map(p => ({ id: p.id, role: p.role, displayName: p.profile.config.displayName, description: p.profile.config.description })), works: participant.role === 'leader' ? activation.works : activation.works.filter(w => w.participantId === participant.id), messages: activation.messages.filter(m => participant.role === 'leader' || m.senderId === participant.id || m.recipientId === participant.id) });
+  }
+  /** Persist a Teammate request before it is exposed to a host UI. */
+  async createInteraction(input: {
+    sessionKey: string; activationId: string; stopVersion: number; participantId: string;
+    requestId: string; kind: TeamHumanInteractionKind; request: unknown; toolName?: string; toolCallId?: string; workId?: string; turnId?: string;
+  }): Promise<TeamHumanInteraction> {
+    return this.mutate(state => {
+      const activation = this.activation(state, input.sessionKey, input.activationId);
+      if (activation.stopVersion !== input.stopVersion) fail('TEAM_GENERATION_EXPIRED', 'This interaction belongs to an expired Team run.');
+      if (activation.status !== 'active') fail('TEAM_STOPPED', 'This Team run is no longer accepting human interactions.');
+      const participant = activation.participants.find(item => item.id === input.participantId && item.role === 'teammate');
+      if (!participant) fail('TEAM_ACTOR_INVALID', 'This participant does not belong to the Team.');
+      const teammate = participant!;
+      const existing = activation.interactions.find(item => item.requestId === input.requestId && item.stopVersion === input.stopVersion);
+      if (existing) {
+        const existingHash = hash({ participantId: existing.participantId, kind: existing.kind, request: existing.request, toolName: existing.toolName, toolCallId: existing.toolCallId, workId: existing.workId, turnId: existing.turnId });
+        const incomingHash = hash({ participantId: teammate.id, kind: input.kind, request: input.request, toolName: input.toolName, toolCallId: input.toolCallId, workId: input.workId, turnId: input.turnId });
+        if (existingHash !== incomingHash) fail('TEAM_INTERACTION_CONFLICT', 'This interaction request id is already bound to different Team request data.');
+        return clone(existing);
+      }
+      const interaction: TeamHumanInteraction = {
+        id: randomUUID(), requestId: input.requestId, activationId: activation.id, sessionKey: activation.sessionKey,
+        stopVersion: activation.stopVersion, participantId: teammate.id, participantDisplayName: teammate.profile.config.displayName,
+        kind: input.kind, ...(input.toolName ? { toolName: input.toolName } : {}), ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+        request: clone(input.request), ...(input.workId ? { workId: input.workId } : {}), ...(input.turnId ? { turnId: input.turnId } : {}), status: 'pending', createdAt: now(),
+      };
+      activation.interactions.push(interaction); activation.updatedAt = now();
+      return clone(interaction);
+    });
+  }
+  async respondInteraction(input: Extract<TeamRuntimeCommand, { action: 'runtime_interaction_respond' }>, deliver: (response: NormalizedTeamResponse) => boolean): Promise<TeamRuntimeInteractionResponse> {
+    validateRuntimeCommand(input);
+    const response = normalizeTeamInteractionResponse(input);
+    return this.mutate(state => {
+      const activation = this.activation(state, input.sessionKey, input.activationId);
+      if (activation.stopVersion !== input.stopVersion) fail('TEAM_GENERATION_EXPIRED', 'This interaction belongs to an expired Team run.');
+      const item = activation.interactions.find(candidate => candidate.id === input.interactionId && candidate.requestId === input.requestId);
+      if (!item || item.participantId !== input.participantId || item.kind !== input.kind || item.stopVersion !== input.stopVersion) fail('TEAM_INTERACTION_NOT_FOUND', 'This Team interaction is no longer available.');
+      const interaction = item!;
+      if (interaction.status !== 'pending') return { interaction: clone(interaction), delivered: false };
+      if (activation.status !== 'active') fail('TEAM_STOPPED', 'This Team run is no longer accepting responses.');
+      // The callback is synchronous: owner validation, bus consumption and
+      // result mutation cannot interleave with Team stop or another response.
+      if (!deliver(response)) return { interaction: clone(interaction), delivered: false };
+      interaction.status = response.status; interaction.resolvedAt = now(); interaction.resolution = clone(response.resolution);
+      if (input.reason) interaction.error = input.reason;
+      activation.updatedAt = now();
+      this.interactionReceipts.set(interaction.id, clone(interaction));
+      return { interaction: clone(interaction), delivered: true };
+    });
+  }
+  /** A dead in-process waiter remains visible as historical, non-actionable data. */
+  async invalidateInteraction(input: { sessionKey: string; activationId: string; participantId: string; stopVersion: number; requestId: string }, reason: string): Promise<TeamHumanInteraction | undefined> {
+    return this.mutate(state => {
+      const activation = state.activations[input.activationId];
+      if (!activation || activation.sessionKey !== input.sessionKey) return undefined;
+      const interaction = activation.interactions.find(item => item.requestId === input.requestId && item.participantId === input.participantId && item.stopVersion === input.stopVersion);
+      if (!interaction) return undefined;
+      if (interaction.status === 'pending') { interaction.status = 'cancelled'; interaction.resolvedAt = now(); interaction.error = reason; activation.updatedAt = now(); }
+      return clone(interaction);
+    });
+  }
+  /** Read one interaction for idempotent duplicate responses without mutating it. */
+  async getInteraction(input: Extract<TeamRuntimeCommand, { action: 'runtime_interaction_respond' }>): Promise<TeamHumanInteraction | undefined> {
+    validateRuntimeCommand(input);
+    normalizeTeamInteractionResponse(input);
+    await this.ready;
+    const state = await this.store.read();
+    const activation = this.activation(state, input.sessionKey, input.activationId);
+    if (activation.stopVersion !== input.stopVersion) fail('TEAM_GENERATION_EXPIRED', 'This interaction belongs to an expired Team run.');
+    const item = activation.interactions.find(candidate => candidate.id === input.interactionId && candidate.requestId === input.requestId);
+    if (!item || item.participantId !== input.participantId || item.kind !== input.kind || item.stopVersion !== input.stopVersion) fail('TEAM_INTERACTION_NOT_FOUND', 'This Team interaction is no longer available.');
+    return clone(item);
+  }
+  async participantMessages(input: Extract<TeamRuntimeCommand, { action: 'runtime_participant_messages' }>): Promise<TeamRuntimeParticipantMessages> {
+    const activation = await this.assertActivation(input.sessionKey, input.activationId, input.stopVersion);
+    if (!activation) fail('TEAM_ACTIVATION_CHANGED', 'This Team activation is no longer current.');
+    const currentActivation = activation!;
+    const participant = currentActivation.participants.find(item => item.id === input.participantId && item.role === 'teammate');
+    if (!participant) fail('TEAM_ACTOR_INVALID', 'This participant does not belong to the Team.');
+    if (this.options.readParticipantMessages) {
+      return clone(await this.options.readParticipantMessages({ activation: currentActivation, participant: participant!, cursor: input.cursor, limit: input.limit }));
+    }
+    const limit = input.limit ?? 100;
+    const offset = input.cursor ? Math.max(0, Number.parseInt(input.cursor, 10) || 0) : 0;
+    const visible = currentActivation.messages.filter(item => item.senderId === input.participantId || item.recipientId === input.participantId);
+    const messages = visible.slice(offset, offset + limit).map(item => ({ id: item.id, role: item.senderId === input.participantId ? 'assistant' : 'user', text: item.text, createdAt: item.createdAt, type: 'team_message' }));
+    return { sessionKey: input.sessionKey, activationId: input.activationId, participantId: input.participantId, messages, ...(offset + messages.length < visible.length ? { nextCursor: String(offset + messages.length) } : {}) };
   }
   async delegate(actor: TeamRuntimeActor, input: { participantId: string; task: string; context?: string; followupOf?: string; requestToken: string }): Promise<TeamRuntimeWork> {
     text(input.task, 'task'); text(input.requestToken, 'requestToken', { max: 500 });
@@ -341,8 +457,17 @@ export class TeamRuntime {
     const operation = this.store.locked(async () => {
       if (this.disposed) throw new TeamError('TEAM_RUNTIME_CLOSED', 'Team execution is shutting down.');
       const state = await this.store.read(), before = hash(state);
+      // Retry only the durable result write after a consumed bus response.
+      // Never call the tool/elicitation waiter again.
+      for (const receipt of this.interactionReceipts.values()) {
+        const item = state.activations[receipt.activationId]?.interactions.find(value => value.id === receipt.id);
+        if (item?.status === 'pending') Object.assign(item, clone(receipt));
+      }
       const result = await body(state);
-      if (!this.disposed && before !== hash(state)) await this.store.write(state);
+      if (before !== hash(state)) await this.store.write(state);
+      for (const [id, receipt] of this.interactionReceipts) {
+        if (state.activations[receipt.activationId]?.interactions.some(item => item.id === id && item.status !== 'pending')) this.interactionReceipts.delete(id);
+      }
       return result;
     });
     this.storageOperations.add(operation);
@@ -359,6 +484,7 @@ export class TeamRuntime {
       let changed = state.version !== 2;
       for (const activation of Object.values(state.activations)) {
         activation.stopVersion ??= 0;
+        activation.interactions ??= [];
         for (const item of [...activation.works, ...activation.messages, ...activation.notifications]) {
           if (item.stopVersion === undefined) { item.stopVersion = activation.stopVersion; changed = true; }
         }
@@ -443,6 +569,7 @@ export class TeamRuntime {
         isolated.works = isolated.works.filter(w => w.participantId === participantId);
         isolated.messages = isolated.messages.filter(m => m.recipientId === participantId || m.senderId === participantId);
         isolated.notifications = [];
+        isolated.interactions = [];
         return { executionId: owner.executionId, activation: isolated, participant: clone(participant), work: work ? clone(work) : undefined, messages: clone(messages) };
       });
       if (!claim) return;
@@ -518,7 +645,7 @@ export class TeamRuntime {
       for (const message of batch) { message.batchId = batchId; message.owner = { pid: process.pid, instanceId: this.instanceId, executionId }; }
       const isolated = clone(activation);
       isolated.works = isolated.works.filter(w => w.participantId === participantId);
-      isolated.messages = isolated.messages.filter(m => m.senderId === participantId || m.recipientId === participantId); isolated.notifications = [];
+      isolated.messages = isolated.messages.filter(m => m.senderId === participantId || m.recipientId === participantId); isolated.notifications = []; isolated.interactions = [];
       return { activation: isolated, participant: clone(activation.participants.find(p => p.id === participantId)!), messages: clone(batch), executionId };
     });
     if (!claim) return false;

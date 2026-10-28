@@ -19,6 +19,8 @@ export type WsHelloOk = {
 
 export type WsGatewayMethod =
   | "team_command"
+  | "team_interaction_respond"
+  | "team_participant_messages"
   | "submit_turn"
   | "steer_turn"
   | "cancel_steer"

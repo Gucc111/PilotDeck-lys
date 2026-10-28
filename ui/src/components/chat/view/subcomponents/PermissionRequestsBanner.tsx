@@ -20,6 +20,9 @@ interface PermissionRequestsBannerProps {
   ) => void;
   handleGrantToolPermission: (suggestion: { entry: string; toolName: string }) => { success: boolean };
   onPlanExecutionApproved?: () => void;
+  /** Embedded Team requests cannot grant persistent root-session permissions. */
+  hideRemember?: boolean;
+  disabled?: boolean;
 }
 
 export default function PermissionRequestsBanner({
@@ -27,8 +30,13 @@ export default function PermissionRequestsBanner({
   handlePermissionDecision,
   handleGrantToolPermission,
   onPlanExecutionApproved,
+  hideRemember = false,
+  disabled = false,
 }: PermissionRequestsBannerProps) {
   const { t } = useTranslation('chat');
+  const decide: PermissionRequestsBannerProps['handlePermissionDecision'] = (ids, decision) => {
+    if (!disabled) handlePermissionDecision(ids, decision);
+  };
 
   if (!pendingPermissionRequests.length) {
     return null;
@@ -53,15 +61,17 @@ export default function PermissionRequestsBanner({
   }
 
   return (
-    <div className="mb-3 space-y-2">
+    <fieldset disabled={disabled} className="m-0 min-w-0 border-0 p-0 mb-3 space-y-2" aria-busy={disabled} onKeyDownCapture={event => {
+      if (disabled && event.key !== 'Tab' && event.key !== 'Escape') { event.preventDefault(); event.stopPropagation(); }
+    }}>
       {customPanelRequests.map((request) => {
         const CustomPanel = getPermissionPanel(request.toolName)!;
         return (
           <CustomPanel
             key={request.requestId}
             request={request}
-            onDecision={handlePermissionDecision}
-            onPlanExecutionApproved={onPlanExecutionApproved}
+            onDecision={decide}
+            onPlanExecutionApproved={disabled ? undefined : onPlanExecutionApproved}
           />
         );
       })}
@@ -130,31 +140,32 @@ export default function PermissionRequestsBanner({
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => handlePermissionDecision(allIds, { allow: true })}
+                onClick={() => decide(allIds, { allow: true })}
                 className="inline-flex items-center gap-2 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700"
               >
                 {t('permissionBanner.allowOnce')}
               </button>
-              <button
+              {!hideRemember && <button
                 type="button"
                 onClick={() => {
+                  if (disabled) return;
                   if (permissionEntry && !alreadyAllowed) {
                     handleGrantToolPermission({ entry: permissionEntry, toolName: first.toolName });
                   }
-                  handlePermissionDecision(allIds, { allow: true, rememberEntry: permissionEntry });
+                  decide(allIds, { allow: true, rememberEntry: permissionEntry });
                 }}
                 className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                   permissionEntry
                     ? 'border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-100 dark:hover:bg-amber-900/30'
                     : 'cursor-not-allowed border-gray-300 text-gray-400'
                 }`}
-                disabled={!permissionEntry}
+                disabled={disabled || !permissionEntry}
               >
                 {rememberLabel}
-              </button>
+              </button>}
               <button
                 type="button"
-                onClick={() => handlePermissionDecision(allIds, { allow: false, message: 'User denied tool use' })}
+                onClick={() => decide(allIds, { allow: false, message: 'User denied tool use' })}
                 className="inline-flex items-center gap-2 rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-200 dark:hover:bg-red-900/30"
               >
                 {t('permissionBanner.deny')}
@@ -163,6 +174,6 @@ export default function PermissionRequestsBanner({
           </div>
         );
       })}
-    </div>
+    </fieldset>
   );
 }

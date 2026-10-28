@@ -1,8 +1,10 @@
 .team-mode-strip { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 auto 8px; max-width:860px; padding:0 12px; font-size:12px; color:#6b647b; }
 .team-mode-strip-name { min-width:0; max-width:50%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
-.team-mode-strip button,.team-mode-dialog button { cursor:pointer; border:1px solid #dedbe7; border-radius:7px; padding:5px 9px; font-size:12px; background:transparent; }
+.team-mode-strip button,.team-mode-dialog:not(.team-interaction-modal) button,.team-interaction-modal > .team-mode-header button { cursor:pointer; border:1px solid #dedbe7; border-radius:7px; padding:5px 9px; font-size:12px; background:transparent; }
 .team-mode-dialog button:disabled { cursor:not-allowed; opacity:.5; }
 .team-mode-overlay { position:fixed; z-index:150; inset:0; display:flex; align-items:center; justify-content:center; background:#0005; padding:16px; }
+.team-mode-route-page { min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:16px; background:var(--background, #f8f7fb); color:var(--foreground, #302d38); }
+.team-mode-route-page > .team-mode-dialog { width:min(760px,100%); height:min(900px,calc(100dvh - 32px)); }
 .team-mode-dialog { display:flex; flex-direction:column; max-height:calc(100dvh - 32px); width:min(560px,100%); min-width:0; border:1px solid #e2dfea; border-radius:16px; background:#fff; color:#302d38; box-shadow:0 20px 60px #0003; outline:none; }
 .team-mode-header { display:flex; align-items:center; gap:12px; padding:16px 20px; border-bottom:1px solid #eae7ef; }
 .team-mode-header h2 { flex:1; min-width:0; font-size:16px; font-weight:600; overflow-wrap:anywhere; }
@@ -23,12 +25,54 @@
 .team-mode-strip .team-mode-error { width:100%; }
 .team-mode-footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; border-top:1px solid #eae7ef; padding:14px 20px; }
 .team-mode-dialog button.team-mode-primary { background:#6150a8; color:white; border-color:#6150a8; }
+.team-interaction-teammate-card { border:1px solid #e6e1ec; border-radius:10px; margin:0 0 12px; overflow:hidden; }
+.team-interaction-teammate-header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; background:#faf9fc; border-bottom:1px solid #e6e1ec; }
+.team-interaction-teammate-header div { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.team-interaction-teammate-header button { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+.team-interaction-section { border-bottom:1px solid #eeeaf2; }
+.team-interaction-section:last-child { border-bottom:0; }
+.team-interaction-section-title { display:flex; align-items:center; gap:6px; width:100%; border:0 !important; border-radius:0 !important; text-align:left; font-weight:600; }
+.team-interaction-count { margin-left:auto; color:#7c7586; font-size:11px; }
+.team-interaction-section-items { padding:0 10px 8px; }
+.team-interaction-entry { margin:5px 0; border:1px solid #e8e3ed; border-radius:7px; overflow:hidden; }
+.team-interaction-entry.is-pending { border-color:#e2b64e; }
+.team-interaction-entry-button { display:flex; align-items:center; gap:6px; width:100%; border:0 !important; border-radius:0 !important; text-align:left; }
+.team-interaction-entry-kind { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.team-interaction-entry-time,.team-interaction-entry-status { color:#7c7586; font-size:11px; white-space:nowrap; }
+.team-teammate-chat-dialog { width:min(760px,100%); }
+.team-mode-route-page { min-height:100dvh; padding:16px; display:flex; justify-content:center; background:var(--background,#f7f7f8); }
+.team-mode-route-page .team-teammate-chat-dialog { height:calc(100dvh - 32px); max-height:none; width:min(1000px,100%); }
+.team-teammate-message-flow { display:flex; flex:1; min-height:0; flex-direction:column; overflow:hidden; }
+.team-mode-route-page .team-mode-header h2 { min-width:0; overflow-wrap:anywhere; }
+.dark .team-mode-route-page { background:#111115; }
+@media(max-width:600px) { .team-mode-route-page { padding:0; }.team-mode-route-page .team-teammate-chat-dialog { height:100dvh; border-radius:0; } }
+.team-teammate-chat-body { display:flex; flex:1; flex-direction:column; gap:10px; overflow:auto; padding:16px 20px; min-height:240px; }
+.team-teammate-chat-empty { display:flex; justify-content:center; padding:40px; color:#7c7586; }
+.team-teammate-message { max-width:90%; border:1px solid #e6e1ec; border-radius:10px; padding:10px 12px; }
+.team-teammate-message-user { align-self:flex-end; background:#f2effc; }
+.team-teammate-message-assistant,.team-teammate-message-thinking,.team-teammate-message-tool { align-self:flex-start; background:#fafafa; }
+.team-teammate-message-meta { color:#7c7586; font-size:11px; margin-bottom:4px; }
+.team-teammate-message pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
 .team-mode-side { justify-content:flex-end; }
 .team-mode-side .team-mode-dialog { height:100%; width:min(460px,100%); }
 .dark .team-mode-dialog { background:#18171c; border-color:#3d3748; color:#e4deec; }
-.dark .team-mode-header,.dark .team-mode-footer,.dark .team-mode-card,.dark .team-mode-label select,.dark .team-mode-dialog button { border-color:#3d3748; }
+.dark .team-mode-header,.dark .team-mode-footer,.dark .team-mode-card,.dark .team-mode-label select,.dark .team-mode-dialog:not(.team-interaction-modal) button { border-color:#3d3748; }
 .dark .team-mode-label option { background:#18171c; }
 .dark .team-mode-muted,.dark .team-mode-strip { color:#b4a9c1; }
 .dark .team-mode-error { background:#441f28; color:#f5adb2; }
 .dark .team-mode-warning { background:#3b301c; color:#e9c789; }
+.dark .team-interaction-teammate-card,.dark .team-interaction-entry,.dark .team-teammate-message { border-color:#3d3748; }
+.dark .team-interaction-teammate-header { background:#211f27; border-color:#3d3748; }
+.dark .team-interaction-section { border-color:#3d3748; }
+.dark .team-teammate-message-assistant,.dark .team-teammate-message-thinking,.dark .team-teammate-message-tool { background:#211f27; }
+.dark .team-teammate-message-user { background:#302750; }
 @media(max-width:600px) { .team-mode-overlay { padding:8px; }.team-mode-dialog { max-height:calc(100dvh - 16px); }.team-mode-header,.team-mode-body { padding:12px; }.team-mode-strip { padding:0 6px; } }
+
+.team-interaction-modal { width:min(760px,100%); }
+.team-interaction-modal fieldset { min-width:0; }
+.team-interaction-modal fieldset:disabled { opacity:.65; }
+.team-interaction-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+.team-interaction-filters button[aria-pressed="true"] { background:#6150a8; border-color:#6150a8; color:#fff; }
+.team-interaction-history pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; max-width:100%; }
+.team-interaction-history ul { list-style:disc; padding-left:20px; margin:8px 0; }
+.team-interaction-modal .team-mode-body { min-height:0; }

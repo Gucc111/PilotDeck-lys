@@ -43,6 +43,10 @@ export class TeamRuntimeStore {
       };
       for (const [key, activation] of Object.entries(s.activations)) {
         if (!activation || activation.id !== key || typeof activation.sessionKey !== 'string' || !Array.isArray(activation.participants) || !Array.isArray(activation.works) || !Array.isArray(activation.messages) || !Array.isArray(activation.notifications)) throw new Error('invalid activation');
+        // Runtime journals written before human interactions were introduced
+        // remain readable.  The next TeamRuntime mutation upgrades them.
+        activation.interactions ??= [];
+        if (!Array.isArray(activation.interactions)) throw new Error('invalid interactions');
         if (!['active', 'stopping', 'stopped', 'closed'].includes(activation.status) || ((s.version === 2 || activation.stopVersion !== undefined) && (!Number.isSafeInteger(activation.stopVersion) || activation.stopVersion < 0))) throw new Error('invalid activation lifecycle');
         if (!validOwner(activation.runtimeOwner)) throw new Error('invalid runtime owner');
         for (const items of [activation.works, activation.messages, activation.notifications]) {
@@ -55,6 +59,7 @@ export class TeamRuntimeStore {
         if (activation.works.some(work => !['queued', 'running', 'waiting_information', 'waiting_approval', 'completed', 'failed', 'interrupted', 'stopped'].includes(work.status))) throw new Error('invalid work status');
         if (activation.messages.some(message => !['queued', 'delivered', 'interrupted', 'stopped'].includes(message.status))) throw new Error('invalid message status');
         if (activation.notifications.some(notice => !['work_completed', 'work_failed', 'message'].includes(notice.kind))) throw new Error('invalid notification kind');
+        if (activation.interactions.some(item => !item || typeof item.id !== 'string' || !item.id || typeof item.requestId !== 'string' || !item.requestId || typeof item.participantId !== 'string' || !item.participantId || !activation.participants.some(participant => participant.id === item.participantId && participant.role === 'teammate') || !['tool_permission', 'user_question', 'plan_approval'].includes(item.kind) || !['pending', 'allowed', 'denied', 'answered', 'approved', 'declined', 'cancelled', 'expired', 'failed'].includes(item.status) || item.activationId !== activation.id || item.sessionKey !== activation.sessionKey || !Number.isSafeInteger(item.stopVersion) || item.stopVersion < 0 || item.stopVersion > (activation.stopVersion ?? 0))) throw new Error('invalid interaction');
       }
       for (const id of Object.values(s.sessions)) if (id !== null && !s.activations[id]) throw new Error('missing activation');
       return s;

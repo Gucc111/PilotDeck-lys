@@ -20,6 +20,20 @@ Team 由一位 Leader 和至少一位 Teammate 组成。先在侧栏的 **团队
 
 成员是否委派、如何分工以及是否转发，取决于 Leader 的实际决策。创建团队不会把每条用户输入广播给所有成员。
 
+## Team 人类交互面板
+
+Team 的执行者分为 Leader 和 Teammate。Teammate 需要人类决定时，不经过 Leader：
+
+- 工具调用命中询问规则时，权限请求直接进入用户的 **团队交互** 面板。
+- Teammate 调用 `ask_user_question` 时，问题和选项直接进入该面板。
+- Teammate 调用 `exit_plan_mode` 时，计划详情和“批准执行 / 拒绝执行”也直接进入该面板。
+
+输入区附近的 **团队交互** 入口与 **团队详情** 并列，并显示尚未处理的数量。面板按 Teammate 分组，每个成员只显示显示名、角色、当前状态和 **查看聊天** 按钮；模型、工作区、工具、技能和 MCP 等配置继续在团队详情中查看。三类请求分别位于可展开的“工具调用权限询问”“向用户提问”“Plan 授权执行”区域。
+
+列表中的一行只显示通知摘要、时间和状态。点击后打开普通会话使用的交互卡片；处理完成后仍保留在历史中，并标记允许、拒绝、已回答、已取消、已批准、已拒绝、已过期或失败。响应提交失败时仍保持待处理并显示错误；刷新和重连以服务端保存的交互记录为准，不能因为页面刷新而丢失待处理事项。停止 Team 后未处理记录显示“已取消”，Gateway 重启后失效等待显示“已过期”，均保留历史但不能继续执行。
+
+点击 Teammate 的 **查看聊天** 打开该成员的只读聊天视图。视图展示历史和实时流式输出，不显示输入框、模型选择、发送、停止、重命名、分叉或编辑控件，也不会创建新的聊天或调用模型。Team 普通协调消息仍按成员通信规则经过 Leader relay；人类交互请求不走这条 relay 路径。
+
 ## 配置库
 
 | 对象 | 可配置内容 |
@@ -53,41 +67,48 @@ ID 由程序随机生成，修订自动递增。用户不用手写 ID、版本�
 
 成员的模型执行上下文保存在内部运行目录，不是可单独发送消息的聊天。工具能力通过角色专属注册表执行；技能读取和提示列表使用同一允许集合；MCP 只连接选择的服务器。普通 `agent`、共享 `task_*` 和 Always-On 专用工具不作为 Team 基础能力提供。文件及命令仍使用 PilotDeck 的现有审批机制，这些能力设置不是操作系统沙箱。
 
+Teammate 的权限询问、`ask_user_question` 和 `exit_plan_mode` 不属于普通协调消息。它们先写入 Team 运行段的持久化人类交互记录，再通过专用事件送达用户；Leader 不接收、转发或裁决这些请求。交互响应必须绑定原 Team、运行段、Teammate 和请求代次；重复响应只返回已有结果，错误归属不能消费请求。
+
 ## 执行、停止和恢复
 
 `team_delegate` 等待任务登记完成后就返回，不等待成员完成，也不要求 Leader 结束当前回合；`team_collect` 仍只读取保存的任务状态和结果。Leader 自行结束当前回合后，已接纳的成员任务可以继续运行。
 
 Leader 或 Teammate 正在运行时，内部消息先进入现有 steer 邮箱。在 LLM 请求、工具执行等安全边界之后，消息可进入同一回合的下一次模型请求。已发出的模型请求不能追加内容，消息也不会强行打断普通工具。运行中注入需写入 transcript 并产生 `steer_applied` 才确认应用；空闲续作以输入持久化接纳为边界。邮箱入队本身不算交付。内部消息不会显示为用户发送的聊天气泡。
 
-Leader 空闲时，有效通知可以启动后续回合，并将输出发送到同一聊天。只有实际启动后续回合才计入自动续轮上限，中途注入不消耗该额度。新的人工输入重置续轮预算。本次没有增加强制存活、sleep 或成员等待工具，也没有改造模型的轮询决策。
+Leader 空闲时，有效通知可以启动后续回合，并将输出发送到同一聊天。只有实际启动后续回合才计入自动续轮上限，中途注入不消耗该额度。新的人工输入重置续轮预算。没有强制 Leader 保持运行或新增阻塞等待、sleep 工具；已有 `team_wait_for_information` 只声明等待状态，是否及时结束当前回合仍取决于模型。调度器不会替模型决定何时轮询。
 
-**停止**作用于整个 Team，包括 Leader、成员、排队任务、普通消息、通知和自动续作。界面先显示“正在停止”，实际执行和清理结束后才显示“已停止”；等待超过 30 秒仍未退出的对象继续显示为清理中，不允许开始新运行。停止不能撤销已经发生的文件修改或外部副作用。
+**停止**作用于整个 Team，包括 Leader、成员、排队任务、普通消息、通知、自动续作和待发用户输入。界面先显示“正在停止”，实际执行及 MCP 等资源清理结束后才显示“已停止”；等待超过 30 秒仍未退出或清理失败时，保留具体状态和错误，不允许开始新运行。清理失败可重试停止，同一次停止不重复增加运行代次。失效的用户输入保留正文和附件引用，可放回输入框后明确重新发送。停止不能撤销已经发生的文件修改或外部副作用。
 
-**服务重启**使旧运行失效：尚未开始、执行中、等待信息或审批的旧任务均标记中断；尚未消费的消息、催办、回复及自动通知不能再唤醒成员或 Leader。已完成结果和聊天历史保留。Gateway 或 Web bridge 重启后的 Team 用户排队输入也失效，文本与附件引用保留，可以放回输入框后明确重新发送。浏览器刷新或断线不等于服务重启，服务端仍可继续有效运行。
+**Gateway 重启**使旧运行失效：尚未开始、执行中、等待信息或审批的旧任务均标记中断；尚未消费的消息、催办、回复及自动通知不能再唤醒成员或 Leader。已完成结果和聊天历史保留。**Gateway 或 Web bridge 重启**都会使 Team 用户排队输入失效，文本与附件引用保留，可以放回输入框后明确重新发送。仅重启 Web bridge 不代表仍在运行的 Gateway 成员任务已经中断。浏览器刷新或断线不等于服务重启；连接回同一服务是恢复观察，不会重新投递已接纳输入。
 
-只有在没有运行、排队任务和待处理消息时才允许切换 Team 或普通模式；也可以先停止并等待清理完成。`activationId` 标识所选 Team 运行段，`stopVersion` 标识该运行段的代次。任务、消息、通知、用户输入和停止请求绑定原始代次。旧重试、迟到结果、旧审批回复和旧 Abort 都不能进入或停止新运行。停止后新的明确人工发送可以继续，旧队列不会跟随重新激活。
+只有在没有运行、排队任务和待处理消息时才允许切换 Team 或普通模式；也可以先停止并等待清理完成。`activationId` 标识所选 Team 运行段，`stopVersion` 标识该运行段的代次。任务、消息、通知、用户输入和停止请求绑定原始代次。未接纳的过期输入、旧内部工具 token、迟到结果、旧审批回复和旧 Abort 都不能进入或停止新运行。停止后新的明确人工发送读取最新代次并使用新 token，旧队列不会跟随重新激活。
 
-请求 token 支持重试：相同 token 和内容返回已有结果，改变内容则冲突。主会话以磁盘上的 `accepted_input` 为输入接纳边界；重复发送已经接纳的任务只返回收据，不再次调用模型。这保证接纳去重，不保证任意外部工具副作用恰好执行一次。
+请求 token 支持重试：配置操作及同一有效运行代次内的操作，相同 token 和内容返回已有结果，改变内容则冲突；内部任务和消息的旧代次 token 不能用于新运行。主会话以磁盘上的 `accepted_input` 为输入接纳边界。已经接纳的主会话输入即使经历停止或重启，按原始身份和原始内容重试也只返回已有收据，不再次调用模型；未接纳的过期输入则拒绝。这保证接纳去重，不保证任意外部工具副作用恰好执行一次。
 
-包含 Team 执行历史的会话暂不支持普通分叉、删除或改写最后一轮。自动工作区检查点和回滚能力已撤销。项目删除会检查配置及运行快照的引用。聊天、重命名和继续提问保留。
+包含 Team 执行历史的会话暂不支持普通分叉、删除或改写最后一轮。自动工作区检查点、文件备份、回滚能力及整轮工作区锁已撤销；已有备份保留，独立 Git 和文件产物功能继续可用，详见[文件产物与 Git 管理](chat-checkpoints-git.zh.md)。项目删除会检查配置及运行快照的引用。聊天、重命名和继续提问保留。
 
 ## 存储和接口
 
 - `${PILOT_HOME}/team-library/state.json`：角色和 Team 修订、引用、配置操作收据。
-- `${PILOT_HOME}/team-runtime/state.json`：运行段、冻结配置、任务、消息、通知和操作收据。
-- `${PILOT_HOME}/team-runtime/contexts/`：成员内部执行上下文。
+- `${PILOT_HOME}/team-runtime/state.json`：运行段、冻结配置、任务、消息、通知、操作收据和 Team 人类交互 ledger；交互记录带请求快照、Teammate、运行代次、pending/handled 状态和处理结果。
+- `${PILOT_HOME}/team-runtime/contexts/`：成员内部执行上下文和只读聊天 transcript 来源。
 - 原项目聊天 transcript：用户和 Leader 的主会话，含持久化输入接纳元数据。
 
 运行记录与配置库分别保存，使用校验和、原子替换和短期串行锁。锁不覆盖模型或工具执行。
 
-Gateway 的 `team_command` 保留配置管理操作，并新增 `runtime_probe`、`runtime_select`、`runtime_get`、`runtime_stop`。Web `/api/team-library` 使用同一契约。普通 `submit_turn` 携带独立的 `teamSelection`，或者已绑定会话的 `teamActivationId` 与 `teamStopVersion`，不把 Team 伪装成模型名称。已绑定会话的 steer 和停止请求也需要原始运行代次；`runtime_stop` 使用 `activationId` 与 `stopVersion`。运行日志升级为 v2，旧活动及无法证明有效的待处理记录原子失效，损坏记录明确报错，不静默恢复运行。
+Gateway 的 `team_command` 保留配置管理操作，以及 `runtime_probe`、`runtime_select`、`runtime_get`、`runtime_stop`；人类交互和成员 transcript 另提供 `team_interaction_respond`、`team_participant_messages` 专用命令。Web `/api/team-library` 通过 `runtime_interaction_respond`、`runtime_participant_messages` action 调用同一处理逻辑。普通 `submit_turn` 携带独立的 `teamSelection`，或者已绑定会话的 `teamActivationId` 与 `teamStopVersion`，不把 Team 伪装成模型名称。已绑定会话的 steer 和停止请求也需要原始运行代次；`runtime_stop` 使用 `activationId` 与 `stopVersion`。运行日志升级为 v2，旧活动及无法证明有效的待处理记录原子失效，损坏记录明确报错，不静默恢复运行。`runtime_get` 返回交互记录，`team_interaction_respond` 校验 Team/activation/participant/request owner 后定向返回原 Teammate，`team_participant_messages` 只读返回成员 transcript。
 
 旧过渡版本的独立成员聊天不会恢复。旧配置库第一次修改前保留原始备份；旧启动收据和成员聊天绑定不参与当前运行。
 
 ## 验证
 
+2026-10-26 的真实验收中，F060/F063 后经进一步调研和用户确认不属于缺陷；本期明确排除这两项，不做相关修复或验收。此前另有成员审批/问答刷新缺卡、Web 错聊天审批和 plan 只读查询被拒等历史结果。本轮交互通道和界面的实现、自动化结果及未覆盖边界见 [2026-10-28 实现验证报告](testing/reports/2026-10-28-team-human-interactions/README.md)。
+
+实际使用的验收步骤见[端到端验收用例](testing/team-mode-e2e-acceptance.md)。[2026-10-26 实测报告](testing/reports/2026-10-26-team-cases01-20/README.md)记录当时版本的真实模型、Web 页面及持久化证据；通过、失败与未覆盖分支以报告为准，以下自动化覆盖不代替真实使用结论。
+
 - `tests/team/`：配置、运行存储、幂等、消息路由、任务串行、停止与恢复。
 - `tests/gateway/team-runtime*.spec.ts`：真实会话工厂与确定性模型替身，验证角色配置和后台执行。
 - `ui/src/components/team-runtime/` 及 Composer 测试：选择、预检、旧响应隔离、恢复与发送参数。
-- `ui/server/pilotdeck-bridge.sending.test.js`：Team 输入队列、冲突重试、后台 Leader 输出与审批转发。
+- `ui/server/pilotdeck-bridge.sending.test.js`：Team 输入队列、冲突重试、后台 Leader 输出、普通审批路由与 Team 专用交互帧。
 - `ui/e2e/team-runtime.live.smoke.mjs`：真实 Web、Gateway、文件存储流程；模型采用脚本替身，不代表外部模型的协作质量评测。
+- `ui/e2e/team-interactions.spec.mjs`：真实 React 组件＋受控 API/事件的浏览器测试，覆盖交互卡、处理历史、只读路由、订阅与流式恢复、移动端和深浅主题；[本次结果与截图](testing/reports/2026-10-28-team-human-interactions/browser-validation.md)。它不代替真实 Gateway/模型端到端验收。

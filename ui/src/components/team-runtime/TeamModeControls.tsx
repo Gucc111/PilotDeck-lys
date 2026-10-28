@@ -1,11 +1,14 @@
-import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, RefreshCw, Users, X } from 'lucide-react';
+import { UNSAFE_NavigationContext } from 'react-router-dom';
+import { Loader2, RefreshCw, Users } from 'lucide-react';
 import { projectDisplayName } from '../../lib/customNames';
 import { workspaceKey } from '../team-library/api';
 import type { TeamModeState } from './useTeamMode';
 import type { TeamRuntimeActivation } from '../../../../src/team/runtimeTypes';
+import TeamInteractionPanel from './TeamInteractionPanel';
+import { TeamDialog } from './TeamDialog';
+export { TeamDialog } from './TeamDialog';
 import './TeamMode.css';
 
 /** Runtime cleanup keys identify executions, not profile IDs. */
@@ -19,48 +22,67 @@ export function cleanupTarget(activation: TeamRuntimeActivation, key: string) {
   return { translationKey: 'teamMode.cleanupExecution' };
 }
 
-function TeamDialog({ title, onClose, children, side = false }: { title: string; onClose: () => void; children: React.ReactNode; side?: boolean }) {
-  const { t } = useTranslation('chat');
-  const ref = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(onClose); closeRef.current = onClose;
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    ref.current?.focus();
-    const listener = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
-      if (event.key === 'Tab') {
-        const items = ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled),select:not(:disabled),input:not(:disabled),[tabindex="0"]');
-        if (!items?.length) { event.preventDefault(); return; }
-        const first = items[0]; const last = items[items.length - 1];
-        if (event.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }
-    };
-    document.addEventListener('keydown', listener);
-    return () => { document.removeEventListener('keydown', listener); previous?.focus(); };
-  }, []);
-  return createPortal(<div className={`team-mode-overlay ${side ? 'team-mode-side' : ''}`} data-modal-overlay onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className="team-mode-dialog">
-      <div className="team-mode-header"><h2>{title}</h2><button type="button" onClick={onClose} aria-label={t("teamMode.close")}><X size={18}/></button></div>{children}
-    </div>
-  </div>, document.body);
-}
-
 export default function TeamModeControls({ mode, onCreateProject }: { mode: TeamModeState; onCreateProject?: () => void }) {
   const { t } = useTranslation('chat');
+  // TeamModeControls is normally rendered inside the app Router, but keeping
+  // this context optional preserves the standalone component tests and makes
+  // the status strip safe to render in an embedded host.  The browser-history
+  // fallback still exposes a usable URL when no Router is present.
+  const navigation = useContext(UNSAFE_NavigationContext);
   const { choice } = mode;
   const [viewedActivationId, setViewedActivationId] = useState<string | null>(null);
+  const [interactionPanelOpen, setInteractionPanelOpen] = useState(false);
   const activation = mode.history.find(item => item.id === viewedActivationId) || mode.activation || mode.history[0] || null;
   const panelTeam = activation?.team || mode.selectedTeam;
   const panelVersions = [...(mode.activation ? [mode.activation] : []), ...mode.history];
   const closePanel = useCallback(() => mode.setPanelOpen(false), [mode.setPanelOpen]);
   const memberName = (id: string) => activation?.participants.find(participant => participant.id === id)?.profile.config.displayName || id;
   const workStatus = (status: string) => t(`teamMode.status.${status}`, { defaultValue: status });
+  const interactionPanelKey = mode.activation?.id ? `pilotdeck:team-interaction-panel:${mode.activation.id}` : null;
+  useEffect(() => {
+    setInteractionPanelOpen(false);
+    if (!interactionPanelKey || typeof window === 'undefined') return;
+    try {
+      if (window.sessionStorage.getItem(interactionPanelKey) === 'open') setInteractionPanelOpen(true);
+    } catch { /* sessionStorage is optional in embedded hosts */ }
+  }, [interactionPanelKey]);
+  const openInteractionPanel = useCallback(() => {
+    setInteractionPanelOpen(true);
+    if (interactionPanelKey && typeof window !== 'undefined') {
+      try { window.sessionStorage.setItem(interactionPanelKey, 'open'); } catch { /* optional */ }
+    }
+    void mode.refresh();
+  }, [interactionPanelKey, mode.refresh]);
+  const closeInteractionPanel = useCallback(() => {
+    setInteractionPanelOpen(false);
+    if (interactionPanelKey && typeof window !== 'undefined') {
+      try { window.sessionStorage.removeItem(interactionPanelKey); } catch { /* optional */ }
+    }
+    void mode.refresh();
+  }, [interactionPanelKey, mode.refresh]);
+  const openParticipantChat = useCallback((participantId: string) => {
+    const current = mode.activation;
+    if (!current) return;
+    if (interactionPanelKey && typeof window !== 'undefined') {
+      try { window.sessionStorage.setItem(interactionPanelKey, 'open'); } catch { /* optional */ }
+    }
+    const routePath = `/team/${encodeURIComponent(current.sessionKey)}/${encodeURIComponent(current.id)}/teammate/${encodeURIComponent(participantId)}`;
+    if (navigation?.navigator && typeof navigation.navigator.push === 'function') {
+      // `navigator.push` bypasses useNavigate's basename handling, so apply
+      // the Router basename explicitly for desktop/web deployments mounted
+      // below a sub-path.
+      navigation.navigator.push(`${(navigation.basename || '').replace(/\/$/, '')}${routePath}`);
+    } else if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', routePath);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+  }, [mode.activation, navigation, interactionPanelKey]);
   return <>
     {(mode.selectedTeam || mode.history.length > 0 || mode.loading || mode.error) && <div className="team-mode-strip" aria-live="polite">
       <Users size={14}/><span className="team-mode-strip-name">{mode.selectedTeam?.config.displayName || (mode.history.length ? t('teamMode.history') : t('teamMode.loading'))}</span>
       <span>{!mode.selectedTeam && mode.history.length ? '' : mode.loading ? t('teamMode.loading') : mode.activation?.status === 'stopping' ? t('teamMode.stopping') : mode.activation?.stopReason === 'restart' && mode.activation.status === 'stopped' ? t('teamMode.restartInterrupted') : mode.working ? t('teamMode.working') : mode.activation?.status === 'stopped' ? t('teamMode.stopped') : t('teamMode.ready')}</span>
       {(mode.selectedTeam || mode.history.length > 0) && <button type="button" onClick={() => { mode.setPanelOpen(true); void mode.refresh(); }}>{t('teamMode.details')}</button>}
+      {(mode.selectedTeam || mode.history.length > 0) && <button type="button" onClick={openInteractionPanel} aria-label={t('teamInteractions.title')}>{t('teamInteractions.title')}{(mode.interactions || []).filter(item => item.status === 'pending').length ? ` · ${(mode.interactions || []).filter(item => item.status === 'pending').length}` : ''}</button>}
       {mode.continuationPaused && <div role="status" className="team-mode-warning">{t("teamMode.continuationPaused")}</div>}
       {mode.error && <div role="alert" className="team-mode-error">{mode.error}<button type="button" onClick={() => void mode.refresh()}>{t('teamMode.retry')}</button></div>}
     </div>}
@@ -100,5 +122,6 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
         {activation?.status === 'stopping' && <div role="status" className="team-mode-warning"><p>{t('teamMode.stoppingHelp')}</p>{activation.cleanup?.pending.map(key => { const target = cleanupTarget(activation, key); return <p key={key} className="team-mode-text">{target.label || t(target.translationKey!)}</p>; })}{activation.cleanup?.error && <p className="team-mode-error">{activation.cleanup.error}</p>}{activation.cleanup?.timedOut && <p>{t('teamMode.stopTimeout')}</p>}</div>}
       </div>
     </TeamDialog>}
+    {interactionPanelOpen && panelTeam && <TeamInteractionPanel mode={mode} onClose={closeInteractionPanel} onViewChat={openParticipantChat} />}
   </>;
 }

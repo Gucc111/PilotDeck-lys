@@ -7,6 +7,10 @@ import type {
   GatewayElicitationResponseInput,
   GatewayEvent,
   GatewayPermissionDecisionInput,
+  GatewayTeamInteractionResponseInput,
+  GatewayTeamInteractionResponseResult,
+  GatewayTeamParticipantMessagesInput,
+  GatewayTeamParticipantMessagesResult,
   GatewayServerInfo,
   GatewaySubmitTurnInput,
   GatewayCancelSteerInput,
@@ -87,6 +91,12 @@ export class RemoteGateway implements Gateway {
 
   async teamCommand(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult> {
     return await this.client.request("team_command", input) as import("../../team/types.js").TeamCommandResult;
+  }
+  async teamInteractionRespond(input: GatewayTeamInteractionResponseInput): Promise<GatewayTeamInteractionResponseResult> {
+    return await this.client.request("team_interaction_respond", input) as GatewayTeamInteractionResponseResult;
+  }
+  async teamParticipantMessages(input: GatewayTeamParticipantMessagesInput): Promise<GatewayTeamParticipantMessagesResult> {
+    return await this.client.request("team_participant_messages", input) as GatewayTeamParticipantMessagesResult;
   }
 
   onNotification(handler: GatewayWsNotificationHandler): void {

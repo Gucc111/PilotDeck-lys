@@ -88,6 +88,9 @@ export type WebGatewayEvent = WebGatewayEventMetadata & (
       toolName: string;
       payload: unknown;
     }
+  | { type: "team_interaction"; interaction: unknown }
+  | { type: "team_interaction_updated"; interaction: unknown; delivered: boolean }
+  | { type: "team_participant_message"; activationId: string; stopVersion: number; participantId: string; streamEpoch: string; revision: number; messages: import("../../team/runtimeTypes.js").TeamParticipantMessage[]; streaming: boolean; reload?: boolean }
   | {
       type: "elicitation_request";
       requestId: string;
@@ -147,6 +150,8 @@ export type WebGatewayMethod =
   | "cron_run_now"
   | "elicitation_respond"
   | "permission_decide"
+  | "team_interaction_respond"
+  | "team_participant_messages"
   | "grant_session_permission"
   | "read_session_messages"
   | "read_subagent_messages"
@@ -282,7 +287,7 @@ export type WebHelloOk = {
     protocolVersion?: string;
     projectKey?: string;
     sessionCount?: number;
-    capabilities?: Array<"project_files_list" | "commands_list" | "model_catalog_list" | "session_model_get" | "session_model_set" | "session_model_clear">;
+    capabilities?: Array<"project_files_list" | "commands_list" | "model_catalog_list" | "session_model_get" | "session_model_set" | "session_model_clear" | "team_command" | "team_interaction_respond" | "team_participant_messages">;
   };
 };
 
@@ -313,7 +318,8 @@ export type WebEventFrame = {
 export type WebGatewayFrame =
   | WebHelloOk
   | WebResponseFrame
-  | WebEventFrame;
+  | WebEventFrame
+  | { type: "notification"; name: string; payload?: unknown };
 
 export type WebPermissionDecision = {
   requestId: string;

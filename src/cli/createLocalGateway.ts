@@ -113,6 +113,7 @@ import { createDialogProjectRegistry } from "../gateway/dialog/projectRegistry.j
 import { TeamService } from "../team/TeamService.js";
 import type { TeamInventory, TeamDefinition, ProfileRef } from "../team/types.js";
 import { TeamRuntime } from "../team/TeamRuntime.js";
+import { TeamParticipantStream, projectParticipantTranscript } from "../team/participantStream.js";
 import { TeamMessageDelivery } from "../team/TeamMessageDelivery.js";
 import { validateRuntimeCommand } from "../team/TeamRuntime.js";
 import { object as teamObject } from "../team/validation.js";
@@ -449,6 +450,26 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       for (const participant of input.activation.participants) if (teamHash(checked.participants.find(item => item.id === participant.id)?.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed before member execution. Recheck and select the Team again.");
       return registry.executeTeamParticipant(input);
     },
+    readParticipantMessages: async ({ activation, participant, cursor, limit }) => {
+      const chatDir = joinPath(pilotHome, "team-runtime", "contexts", sanitizeSessionIdForPath(activation.id), sanitizeSessionIdForPath(participant.id));
+      const transcript = await readTranscript(joinPath(chatDir, "context.jsonl"));
+      if (transcript.diagnostics.some(item => item.severity === "error")) throw new DialogGatewayError("TEAM_TRANSCRIPT_UNAVAILABLE", "Teammate transcript cannot be read safely.");
+      const live = registry.teamParticipantSnapshot(activation.id, participant.id);
+      const merged = new Map(projectParticipantTranscript(transcript.entries).map(message => [message.id, message]));
+      for (const message of live.messages) merged.set(message.id, message);
+      const projected = [...merged.values()];
+      const pageSize = limit ?? 100;
+      const offset = cursor ? Math.max(0, Number.parseInt(cursor, 10) || 0) : 0;
+      const messages = projected.slice(offset, offset + pageSize);
+      return {
+        sessionKey: activation.sessionKey,
+        activationId: activation.id,
+        participantId: participant.id,
+        messages,
+        ...(offset + messages.length < projected.length ? { nextCursor: String(offset + messages.length) } : {}),
+        streaming: live.streaming, stopVersion: activation.stopVersion, streamEpoch: live.streamEpoch, revision: live.revision,
+      };
+    },
     isLeaderBusy: sessionKey => !selectingTeamSessions.has(sessionKey) && router!.hasActiveTurn(sessionKey),
     stopLeader: async sessionKey => {
       const current = (await teamRuntime.get(sessionKey)).activation;
@@ -645,6 +666,16 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       }
       return teamService.execute(input as import("../team/types.js").TeamLibraryCommand);
     },
+    teamInteractionRespond: async (input, deliver) => {
+      const result = await teamRuntime.respondInteraction(validateRuntimeCommand({ action: "runtime_interaction_respond", ...input } as never) as Extract<import("../team/runtimeTypes.js").TeamRuntimeCommand, { action: "runtime_interaction_respond" }>, deliver);
+      return { delivered: result.delivered, interaction: result.interaction };
+    },
+    teamInteractionInvalidate: (input, reason) => teamRuntime.invalidateInteraction(input, reason),
+    teamInteractionLookup: async input => teamRuntime.getInteraction(validateRuntimeCommand({ action: "runtime_interaction_respond", ...input } as never) as Extract<import("../team/runtimeTypes.js").TeamRuntimeCommand, { action: "runtime_interaction_respond" }>),
+    onTeamInteractionUpdated: (input, result) => {
+      if (result.interaction) broadcastTeamEvent(input.sessionKey, undefined, { type: "team_interaction_updated", interaction: result.interaction, delivered: result.delivered });
+    },
+    teamParticipantMessages: async input => teamRuntime.execute(validateRuntimeCommand({ action: "runtime_participant_messages", ...input } as never)) as Promise<import("../team/runtimeTypes.js").TeamRuntimeParticipantMessages>,
     funasrInstallCommand: getPilotDeckInstallCommand(),
     now,
     serverInfo: { mode: "in_process", projectKey: projectRoot },
@@ -1013,10 +1044,16 @@ class ProjectRuntimeRegistry {
   private teamRuntime?: TeamRuntime;
   private readonly teamRoles = new Map<string, { activation: TeamRuntimeActivation; participant: TeamRuntimeParticipant }>();
   private readonly teamMessageDelivery = new TeamMessageDelivery();
-  private readonly activeTeamParticipants = new Map<string, { session: AgentSession; turnId: string; executionId: string; stopVersion: number }>();
+  private readonly activeTeamParticipants = new Map<string, { session: AgentSession; turnId: string; executionId: string; stopVersion: number; stream: TeamParticipantStream; workId?: string }>();
   private readonly teamParticipantStatus = new Map<string, TeamParticipantExecution["updateStatus"]>();
   private teamEvent?: (sessionKey: string, projectKey: string | undefined, event: import("../gateway/protocol/types.js").GatewayEvent) => void;
   setTeamRuntime(runtime: TeamRuntime, emit: NonNullable<ProjectRuntimeRegistry["teamEvent"]>): void { this.teamRuntime = runtime; this.teamEvent = emit; }
+  private readonly teamStreamEpoch = randomUUID();
+  private teamStreamRevision = 0;
+  teamParticipantSnapshot(activationId: string, participantId: string) {
+    const active = this.activeTeamParticipants.get(`team-internal:${activationId}:${participantId}`);
+    return { messages: active?.stream.snapshot() ?? [], streaming: Boolean(active), streamEpoch: this.teamStreamEpoch, revision: this.teamStreamRevision };
+  }
 
   async probeTeam(team: TeamDefinition, projectKey: string, resolveProject: (key: string) => Promise<string>) {
     const issues: TeamRuntimeIssue[] = [];
@@ -1100,9 +1137,16 @@ class ProjectRuntimeRegistry {
       // A waiting task may resume several times. Each model turn gets its own
       // token namespace; the durable work ID remains the result correlation.
       const turnId = randomUUID();
-      this.activeTeamParticipants.set(sessionKey, { session, turnId, executionId: input.executionId, stopVersion: input.activation.stopVersion });
+      const stream = new TeamParticipantStream(this.options.now);
+      this.activeTeamParticipants.set(sessionKey, { session, turnId, executionId: input.executionId, stopVersion: input.activation.stopVersion, stream, workId: input.work?.id });
       for await (const event of session.submit({ type: "text", text: prompt, isMeta: true }, { turnId, metadata: { teamActivationId: input.activation.id, teamStopVersion: input.activation.stopVersion, teamWorkId: input.work?.id, teamEventIds: input.messages?.map(message => message.id) ?? [] }, maxTurns: 25, abortSignal: input.signal })) {
         this.teamMessageDelivery.observe(sessionKey, event);
+        const updates = stream.observe(event);
+        if (updates.length) this.teamEvent?.(input.activation.sessionKey, input.activation.storageProjectKey, {
+          type: "team_participant_message", activationId: input.activation.id, stopVersion: input.activation.stopVersion,
+          participantId: input.participant.id, streamEpoch: this.teamStreamEpoch, revision: ++this.teamStreamRevision,
+          messages: updates, streaming: true,
+        });
         if (event.type === "model_event" && event.event.type === "request_started") void this.teamRuntime!.onExecutionReady(input.activation.sessionKey).catch(() => {});
         if (event.type === "input_accepted") await input.acceptMessages();
         if (event.type === "model_event" && event.event.type === "text_delta") text += event.event.text;
@@ -1119,6 +1163,13 @@ class ProjectRuntimeRegistry {
       await this.evictSessionMcp(sessionKey);
       this.teamRoles.delete(sessionKey);
       this.teamParticipantStatus.delete(sessionKey);
+      // Terminal reload observes the completed durable transcript, including
+      // a last message that was persisted after its AgentEvent was yielded.
+      this.teamEvent?.(input.activation.sessionKey, input.activation.storageProjectKey, {
+        type: "team_participant_message", activationId: input.activation.id, stopVersion: input.activation.stopVersion,
+        participantId: input.participant.id, streamEpoch: this.teamStreamEpoch, revision: ++this.teamStreamRevision,
+        messages: [], streaming: false, reload: true,
+      });
     }
   }
 
@@ -1770,13 +1821,53 @@ class ProjectRuntimeRegistry {
         gw.registerTeamPrompt(teamRole.activation.sessionKey, context.sessionKey, event, () => { void updateStatus?.("running").catch(() => {}); }, async () => {
           const current = await this.teamRuntime!.assertActivation(teamRole.activation.sessionKey, teamRole.activation.id, teamRole.activation.stopVersion);
           return current?.status === "active";
-        });
+        }, teamRole.participant.role === "teammate" ? {
+          activationId: teamRole.activation.id,
+          participantId: teamRole.participant.id,
+          stopVersion: teamRole.activation.stopVersion,
+          kind: event.type === "permission_request" ? "tool_permission" : event.type === "elicitation_request" && event.toolName === "exit_plan_mode" ? "plan_approval" : "user_question",
+        } : undefined);
       }
       if (teamRole?.participant.role === "teammate" && gw) {
+        if (event.type === "elicitation_cancelled") gw.cancelTeamPrompt(context.sessionKey, event.requestId, "elicitation_cancelled");
         const updateStatus = this.teamParticipantStatus.get(context.sessionKey);
         if (event.type === "permission_request" || event.type === "elicitation_request") void updateStatus?.("waiting_approval").catch(() => {});
-        if (event.type === "permission_request") event = { ...event, payload: { participant: teamRole.participant.profile.config.displayName, input: event.payload } };
-        this.teamEvent?.(teamRole.activation.sessionKey, teamRole.activation.storageProjectKey, event);
+        if (event.type === "permission_request" || event.type === "elicitation_request") {
+          const kind = event.type === "permission_request" ? "tool_permission" as const : event.toolName === "exit_plan_mode" ? "plan_approval" as const : "user_question" as const;
+          void this.teamRuntime!.createInteraction({
+            sessionKey: teamRole.activation.sessionKey,
+            activationId: teamRole.activation.id,
+            stopVersion: teamRole.activation.stopVersion,
+            participantId: teamRole.participant.id,
+            requestId: event.requestId,
+            kind,
+            request: event,
+            toolName: event.toolName,
+            toolCallId: event.type === "permission_request" ? undefined : event.toolCallId,
+            workId: this.activeTeamParticipants.get(context.sessionKey)?.workId,
+            turnId: this.activeTeamParticipants.get(context.sessionKey)?.turnId,
+          }).then(async interaction => {
+            if (!gw.hasTeamPrompt(event.requestId)) {
+              const cancelled = await this.teamRuntime!.invalidateInteraction({ sessionKey: teamRole.activation.sessionKey, activationId: teamRole.activation.id, stopVersion: teamRole.activation.stopVersion, participantId: teamRole.participant.id, requestId: event.requestId }, "team_participant_ended");
+              if (cancelled) this.teamEvent?.(teamRole.activation.sessionKey, teamRole.activation.storageProjectKey, { type: "team_interaction_updated", interaction: cancelled, delivered: false });
+              return;
+            }
+            // Replace the provisional prompt owner with the durable
+            // interaction id before the browser can answer it.
+            gw.registerTeamPrompt(teamRole.activation.sessionKey, context.sessionKey, event, () => { void updateStatus?.("running").catch(() => {}); }, async () => {
+              const current = await this.teamRuntime!.assertActivation(teamRole.activation.sessionKey, teamRole.activation.id, teamRole.activation.stopVersion);
+              return current?.status === "active";
+            }, { activationId: teamRole.activation.id, participantId: teamRole.participant.id, stopVersion: teamRole.activation.stopVersion, interactionId: interaction.id, kind });
+            this.teamEvent?.(teamRole.activation.sessionKey, teamRole.activation.storageProjectKey, { type: "team_interaction", interaction });
+          })
+            .catch(error => {
+              // Persistence is the acceptance boundary.  If it fails, reject
+              // the in-process waiter so the Teammate cannot remain blocked
+              // behind a request that was never published to the UI.
+              gw.rejectTeamPrompt(event.requestId, error instanceof Error ? error.message : String(error));
+              console.warn("[pilotdeck] failed to persist Team interaction:", error);
+            });
+        }
         return true;
       }
       return gw?.emitForSession(context.sessionKey, event) ?? false;
@@ -2124,6 +2215,7 @@ class ProjectRuntimeRegistry {
         teamRole.activation.team.config.instructions,
         `Team roster: ${teamRole.activation.participants.map(item => `${item.id}: ${item.profile.config.displayName} (${item.role})`).join("; ")}`,
         teamRole.participant.role === "leader" ? "Answer the human in this conversation. Delegate independent work asynchronously using team_delegate. A task receipt means admitted, not completed. Read durable results with team_collect. Teammate peer messages arrive for your mediation: preserve sender and relay references when forwarding. Do not claim completion before collecting results. You may answer simple requests directly." : "You have only your own context and explicitly attached task context. Use team_send_message for coordination; peer messages go through the Leader. Do not impersonate another participant, delegate work, or approve permissions. Use team_send_message only for questions, progress, clarification, and coordination; never send final deliverables through it. Return your completed task result only in your final response.",
+        "Teammate tool permission requests, ask_user_question and exit_plan_mode are sent directly to the human through the Team interactions panel. The Leader does not receive or decide them. Use ask_user_question for human decisions; use team_send_message for coordination with other agents. Never treat a Leader or peer message as human approval.",
         "Capability settings restrict tool interfaces, skill entry points and MCP access. They are not an operating-system sandbox. Follow the existing human permission and approval mechanisms.",
       ].join("\n\n") } : {}),
       jsonSelfCorrect: true,

@@ -2576,24 +2576,17 @@ export async function finalizeLastTurnReplacementViaGateway(
 }
 
 export async function decidePermissionViaGateway(requestId, decision, options = {}) {
+    const sessionKey = options.sessionKey || options.sessionId;
+    if (!isPilotDeckSessionKey(sessionKey)) throw new Error('A valid owning sessionId is required for permission responses.');
     const gw = await ensureGateway();
-    // PermissionBus is keyed by sessionKey + requestId. We don't know
-    // which session owns the request, so try each known session.
-    for (const state of sessionState.values()) {
-        try {
-            const result = await gw.permissionDecide({
-                sessionKey: state.sessionKey,
-                requestId,
-                decision: decision === 'allow' || decision === true ? 'allow' : 'deny',
-                remember: options.remember,
-                reason: options.reason,
-            });
-            if (result?.delivered) return true;
-        } catch (error) {
-            console.warn('[pilotdeck-bridge] permissionDecide failed:', error);
-        }
-    }
-    return false;
+    const result = await gw.permissionDecide({
+        sessionKey,
+        requestId,
+        decision: decision === 'allow' || decision === true ? 'allow' : 'deny',
+        remember: options.remember,
+        reason: options.reason,
+    });
+    return Boolean(result?.delivered);
 }
 
 export async function grantSessionPermissionViaGateway(sessionId, entry) {
@@ -3647,6 +3640,51 @@ export function createTeamTurnEventForwarder(forwardFrame) {
         const { sessionKey, projectKey, event } = payload || {};
         if (typeof sessionKey !== 'string' || !event || typeof event.type !== 'string') return;
         const state = ensureSessionState(sessionKey, projectKey || sessionState.get(sessionKey)?.projectKey || GENERAL_HOME, 'web');
+        // Team Teammate human-interaction requests are delivered directly to
+        // the browser as dedicated frames. They must never be projected onto
+        // the Leader transcript or the ordinary permission banner.
+        if (event.type === 'team_interaction' || event.type === 'team_interaction_updated') {
+            const interaction = event.interaction;
+            forwardFrame(sessionKey, {
+                type: event.type === 'team_interaction' ? 'team-interaction' : 'team-interaction-updated',
+                sessionId: sessionKey,
+                sessionKey,
+                provider: 'pilotdeck',
+                // Keep the durable snapshot nested for the UI, while also
+                // exposing the owner identity on the frame itself.  This
+                // lets clients discard stale generations before rendering
+                // without trusting a mutable chat/session lookup.
+                ...(interaction ? {
+                    activationId: interaction.activationId,
+                    stopVersion: interaction.stopVersion,
+                    participantId: interaction.participantId,
+                    participantDisplayName: interaction.participantDisplayName,
+                    interactionId: interaction.id,
+                    requestId: interaction.requestId,
+                    kind: interaction.kind,
+                    status: interaction.status,
+                } : {}),
+                interaction,
+                ...(event.type === 'team_interaction_updated' ? { delivered: event.delivered } : {}),
+            });
+            return;
+        }
+        if (event.type === 'team_participant_message') {
+            forwardFrame(sessionKey, {
+                type: 'team-participant-message',
+                sessionId: sessionKey,
+                provider: 'pilotdeck',
+                activationId: event.activationId,
+                stopVersion: event.stopVersion,
+                participantId: event.participantId,
+                streamEpoch: event.streamEpoch,
+                revision: event.revision,
+                messages: event.messages,
+                streaming: event.streaming,
+                reload: event.reload,
+            });
+            return;
+        }
         if (event.type === 'turn_started') setLocalActiveRun(state, event.runId);
         // The Leader model belongs to the Team; it is never a global model preference.
         if (event.type !== 'input_accepted' && event.type !== 'model_selection_changed') {
@@ -3707,19 +3745,9 @@ export function registerAlwaysOnNotificationForwarding(clients, forwardToSession
     });
 }
 
-export async function elicitationRespondViaGateway(requestId, answer) {
+export async function elicitationRespondViaGateway(requestId, answer, sessionKey) {
+    if (!isPilotDeckSessionKey(sessionKey)) throw new Error('A valid owning sessionId is required for elicitation responses.');
     const gw = await ensureGateway();
-    for (const state of sessionState.values()) {
-        try {
-            const result = await gw.respondElicitation({
-                sessionKey: state.sessionKey,
-                requestId,
-                answer,
-            });
-            if (result?.delivered) return true;
-        } catch (error) {
-            console.warn('[pilotdeck-bridge] respondElicitation failed:', error);
-        }
-    }
-    return false;
+    const result = await gw.respondElicitation({ sessionKey, requestId, answer });
+    return Boolean(result?.delivered);
 }

@@ -9,7 +9,7 @@ const mock = await vi.hoisted(async () => {
     return { gateway: null, home, previousHome };
 });
 vi.mock('./services/gatewayConnectionCache.js', () => ({ createGatewayConnectionCache: () => ({ get: async () => mock.gateway, invalidate: () => {} }) }));
-import { enqueueInputViaGateway, getInputQueueStateViaGateway, serializeQueuedInputForStorage, runChatViaGateway, createTeamTurnEventForwarder } from './pilotdeck-bridge.js';
+import { decidePermissionViaGateway, elicitationRespondViaGateway, enqueueInputViaGateway, getInputQueueStateViaGateway, serializeQueuedInputForStorage, runChatViaGateway, createTeamTurnEventForwarder } from './pilotdeck-bridge.js';
 import { rm } from 'node:fs/promises';
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const item = id => ({ id, runId: id, command: 'fixture', displayText: id, options: { projectPath: '/tmp/sending-project' } });
@@ -152,6 +152,52 @@ it('forwards Gateway-owned Leader output and human approval requests to the same
     expect(frames.some(({ frame }) => frame.kind === 'session_created')).toBe(false);
 });
 
+it('forwards Teammate human interactions as dedicated Team frames instead of Leader permission cards', () => {
+    const frames = [];
+    const forward = createTeamTurnEventForwarder((sessionId, frame) => frames.push({ sessionId, frame }));
+    const payload = { sessionKey: 'web:s_background_team_interaction', projectKey: '/tmp/sending-project' };
+    const interaction = {
+        id: 'interaction-1', requestId: 'request-1', activationId: 'activation-1',
+        sessionKey: payload.sessionKey, stopVersion: 0,
+        participantId: 'teammate-1', participantDisplayName: 'Reviewer',
+        kind: 'tool_permission', toolName: 'write_file', request: { path: 'out/report.md' }, status: 'pending',
+    };
+    forward('team_runtime_event', { ...payload, event: { type: 'team_interaction', interaction } });
+    expect(frames).toHaveLength(1);
+    expect(frames[0].sessionId).toBe(payload.sessionKey);
+    expect(frames[0].frame).toMatchObject({ type: 'team-interaction', sessionId: payload.sessionKey, interaction });
+    expect(frames[0].frame.kind).not.toBe('permission_request');
+});
+
+it('forwards Team interaction updates without losing handled status', () => {
+    const frames = [];
+    const forward = createTeamTurnEventForwarder((sessionId, frame) => frames.push({ sessionId, frame }));
+    const payload = { sessionKey: 'web:s_background_team_interaction_update', projectKey: '/tmp/sending-project' };
+    const interaction = {
+        id: 'interaction-2', requestId: 'request-2', activationId: 'activation-2',
+        sessionKey: payload.sessionKey, stopVersion: 1,
+        participantId: 'teammate-2', participantDisplayName: 'Tester',
+        kind: 'user_question', request: { questions: [{ question: 'Use staging?' }] }, status: 'answered',
+        resolvedAt: '2026-10-27T00:00:00.000Z', resolution: { staging: true },
+    };
+    forward('team_runtime_event', { ...payload, event: { type: 'team_interaction_updated', interaction, delivered: true } });
+    expect(frames).toHaveLength(1);
+    expect(frames[0].frame).toMatchObject({ type: 'team-interaction-updated', sessionId: payload.sessionKey, interaction, delivered: true });
+});
+
+it('keeps member stream blocks on a dedicated frame, including the final durable reload', () => {
+    const frames = [];
+    const forward = createTeamTurnEventForwarder((sessionId, frame) => frames.push({ sessionId, frame }));
+    const owner = { activationId: 'activation', stopVersion: 2, participantId: 'member', streamEpoch: 'process' };
+    const messages = [{ id: 'turn:block', role: 'assistant', content: [{ type: 'text', text: 'partial' }], isStreaming: true }];
+    forward('team_runtime_event', { sessionKey: 'web:member-stream', event: { type: 'team_participant_message', ...owner, revision: 7, messages, streaming: true } });
+    forward('team_runtime_event', { sessionKey: 'web:member-stream', event: { type: 'team_participant_message', ...owner, revision: 8, messages: [], streaming: false, reload: true } });
+    expect(frames).toHaveLength(2);
+    expect(frames.every(({ sessionId, frame }) => sessionId === 'web:member-stream' && frame.type === 'team-participant-message' && !frame.kind)).toBe(true);
+    expect(frames[0].frame).toMatchObject({ ...owner, revision: 7, messages, streaming: true });
+    expect(frames[1].frame).toMatchObject({ ...owner, revision: 8, streaming: false, reload: true });
+});
+
 it('invalidates Team inputs on Abort without changing ordinary queued inputs and fences stale Abort', async () => {
     const bridge = await import('./pilotdeck-bridge.js');
     mock.gateway = {
@@ -258,4 +304,17 @@ it('invalidates same-selection draft followups when Abort arrives before activat
     await bridge.abortViaGateway(sid, 'pilotdeck', { runId: 'draft-first' });
     await run;
     expect((await bridge.getInputQueueStateViaGateway(sid)).items[0]).toMatchObject({ status: 'invalidated', invalidationReason: 'abort' });
+});
+
+
+it('ordinary human responses require the owning session and never search other sessions', async () => {
+    mock.gateway = { permissionDecide: vi.fn(async () => ({ delivered: true })), respondElicitation: vi.fn(async () => ({ delivered: true })) };
+    await expect(decidePermissionViaGateway('same-request', 'allow')).rejects.toThrow('sessionId');
+    await expect(elicitationRespondViaGateway('same-request', { type: 'cancelled' })).rejects.toThrow('sessionId');
+    expect(mock.gateway.permissionDecide).not.toHaveBeenCalled();
+    expect(mock.gateway.respondElicitation).not.toHaveBeenCalled();
+    await expect(decidePermissionViaGateway('same-request', 'allow', { sessionId: 'web:owner' })).resolves.toBe(true);
+    await expect(elicitationRespondViaGateway('same-request', { type: 'cancelled' }, 'web:owner')).resolves.toBe(true);
+    expect(mock.gateway.permissionDecide).toHaveBeenCalledExactlyOnceWith({ sessionKey: 'web:owner', requestId: 'same-request', decision: 'allow', remember: undefined, reason: undefined });
+    expect(mock.gateway.respondElicitation).toHaveBeenCalledExactlyOnceWith({ sessionKey: 'web:owner', requestId: 'same-request', answer: { type: 'cancelled' } });
 });

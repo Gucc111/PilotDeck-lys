@@ -38,6 +38,10 @@ export const useWebSocket = () => {
   return context;
 };
 
+/** Optional variant used by secondary Team panels that also render in tests or
+ * isolated embeds outside the application WebSocket provider. */
+export const useOptionalWebSocket = () => useContext(WebSocketContext);
+
 const buildWebSocketUrl = (token: string | null) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   if (IS_PLATFORM || !token) return `${protocol}//${window.location.host}/ws`;

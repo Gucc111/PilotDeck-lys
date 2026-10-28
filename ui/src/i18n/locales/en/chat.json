@@ -806,5 +806,54 @@
     "cleanupNotifications": "Team notification delivery",
     "cleanupResources": "Final resource cleanup",
     "cleanupExecution": "Execution cleanup"
+  },
+  "teamInteractions": {
+    "title": "Team interactions",
+    "titlePending": "Team interactions · {{count}} pending",
+    "viewChat": "View chat",
+    "request": "Request",
+    "result": "Result",
+    "responding": "Sending response…",
+    "responseError": "Response failed: {{error}}",
+    "waitingInteraction": "Waiting for your response",
+    "noRecords": "No records",
+    "noTeammates": "No Teammates in this Team.",
+    "filterLabel": "Interaction status",
+    "filter": {
+      "all": "All",
+      "pending": "Pending",
+      "handled": "Handled"
+    },
+    "kind": {
+      "tool_permission": "Tool permission requests",
+      "user_question": "Questions for you",
+      "plan_approval": "Plan execution approval"
+    },
+    "status": {
+      "pending": "Pending",
+      "allowed": "Allowed",
+      "denied": "Denied",
+      "answered": "Answered",
+      "approved": "Execution approved",
+      "declined": "Execution declined",
+      "cancelled": "Cancelled",
+      "expired": "Expired",
+      "failed": "Failed"
+    },
+    "connectionLost": "The request no longer has an execution connection. Refresh and try again.",
+    "sessionUnavailable": "The Team session is unavailable."
+  },
+  "teamInteraction": {
+    "readOnlyChat": {
+      "title": "{{name}} · Teammate chat",
+      "back": "Back to Team",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "streaming": "Streaming",
+      "empty": "No messages yet.",
+      "invalidAddress": "The Team member address is incomplete.",
+      "unavailable": "This Team or Teammate is unavailable, or the run has changed.",
+      "paginationChanged": "The Team run changed while loading. Refresh to try again."
+    }
   }
 }

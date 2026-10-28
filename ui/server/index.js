@@ -2516,14 +2516,16 @@ function handleChatConnection(ws, request) {
                     : createNormalizedMessage({ kind: 'error', code: 'abort_unconfirmed', terminal: false, content: 'Stopping is not yet confirmed. Execution may still be cleaning up; check the current status before sending again.', runId: data.runId, sessionId: data.sessionId, provider }));
             } else if (data.type === 'permission-response') {
                 if (data.requestId) {
-                    await decidePermissionViaGateway(
+                    const delivered = await decidePermissionViaGateway(
                         data.requestId,
                         data.allow ? 'allow' : 'deny',
                         {
+                            sessionId: data.sessionId,
                             remember: Boolean(data.rememberEntry),
                             reason: data.message,
                         },
                     );
+                    if (!delivered) throw new Error('The permission request is no longer pending in this session.');
                     const resolvedSessionId = normalizeSessionId(data.sessionId);
                     if (resolvedSessionId) {
                         broadcastToSessionWatchers(
@@ -2550,7 +2552,8 @@ function handleChatConnection(ws, request) {
                 }));
             } else if (data.type === 'elicitation-response') {
                 if (data.requestId) {
-                    await elicitationRespondViaGateway(data.requestId, data.answer);
+                    const delivered = await elicitationRespondViaGateway(data.requestId, data.answer, data.sessionId);
+                    if (!delivered) throw new Error('The question is no longer pending in this session.');
                     const resolvedSessionId = normalizeSessionId(data.sessionId);
                     if (resolvedSessionId) {
                         broadcastToSessionWatchers(

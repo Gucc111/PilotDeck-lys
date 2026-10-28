@@ -56,6 +56,22 @@ test('selection freezes configuration, is idempotent, calls no models, and enfor
   assert.notEqual(second.activation.id, activation.id);
 });
 
+test('Teammate human interactions are durable, owner-scoped, idempotent, and expire on stop', async t => {
+  const f = await fixture(t); const activation = await f.activate();
+  const created = await f.runtime.createInteraction({ sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.a.id, requestId: 'perm-1', kind: 'tool_permission', request: { toolName: 'write_file' }, toolName: 'write_file' });
+  assert.equal(created.status, 'pending');
+  const view = await f.runtime.get(activation.sessionKey); assert.equal(view.activation!.interactions[0]!.requestId, 'perm-1');
+  await assert.rejects(f.runtime.respondInteraction({ action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.b.id, interactionId: created.id, requestId: created.requestId, kind: 'tool_permission', decision: 'deny' }, () => true), /no longer available/);
+  const responded = await f.runtime.respondInteraction({ action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.a.id, interactionId: created.id, requestId: created.requestId, kind: 'tool_permission', decision: 'deny' }, () => true) as { delivered: boolean; interaction: { status: string } };
+  assert.equal(responded.delivered, true); assert.equal(responded.interaction.status, 'denied');
+  const duplicate = await f.runtime.respondInteraction({ action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.a.id, interactionId: created.id, requestId: created.requestId, kind: 'tool_permission', decision: 'allow' }, () => true) as { delivered: boolean; interaction: { status: string } };
+  assert.equal(duplicate.delivered, false); assert.equal(duplicate.interaction.status, 'denied');
+  const pending = await f.runtime.createInteraction({ sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.a.id, requestId: 'question-1', kind: 'user_question', request: { question: 'ready?' } });
+  await f.runtime.stop(activation.sessionKey, { activationId: activation.id, stopVersion: activation.stopVersion });
+  const stopped = (await f.runtime.get(activation.sessionKey)).activation!;
+  assert.equal(stopped.interactions.find(item => item.id === pending.id)!.status, 'cancelled');
+});
+
 test('missing mandatory requirements block selection; optional acceptance is bound to fresh probe', async t => {
   const f = await fixture(t); let environmentFingerprint = 'v1'; let warning = true;
   f.options.probe = async () => ({ projectKey: 'project', participants: f.participants, environmentFingerprint, issues: [{ severity: warning ? 'warning' : 'error', code: 'MISSING', message: 'Search server unavailable' }] });
@@ -127,6 +143,83 @@ test('waiting for information resumes the same work when a message arrives', asy
   await f.runtime.send(actor, { recipientId: f.a.id, text: 'Use staging', requestToken: 'answer' });
   await until(async () => (await f.runtime.collect(actor, work.id)).status === 'completed');
   assert.equal(invocations, 2);
+});
+
+test('Teammate human interactions are durable, owner-bound, and idempotent', async t => {
+  const f = await fixture(t);
+  const activation = await f.activate();
+  const permission = await f.runtime.createInteraction({
+    sessionKey: activation.sessionKey,
+    activationId: activation.id,
+    stopVersion: activation.stopVersion,
+    participantId: f.a.id,
+    requestId: 'permission-1',
+    kind: 'tool_permission',
+    toolName: 'write_file',
+    request: { path: 'out/report.md' },
+  });
+  const duplicate = await f.runtime.createInteraction({
+    sessionKey: activation.sessionKey,
+    activationId: activation.id,
+    stopVersion: activation.stopVersion,
+    participantId: f.a.id,
+    requestId: 'permission-1',
+    kind: 'tool_permission',
+    toolName: 'write_file',
+    request: { path: 'out/report.md' },
+  });
+  assert.equal(duplicate.id, permission.id);
+  await assert.rejects(f.runtime.respondInteraction({
+    action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id,
+    stopVersion: activation.stopVersion, participantId: f.b.id, interactionId: permission.id,
+    requestId: permission.requestId, kind: 'tool_permission', decision: 'allow',
+  }, () => true), /no longer available|participant/);
+  const allowed = await f.runtime.respondInteraction({
+    action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id,
+    stopVersion: activation.stopVersion, participantId: f.a.id, interactionId: permission.id,
+    requestId: permission.requestId, kind: 'tool_permission', decision: 'allow',
+  }, () => true) as { interaction: { status: string }; delivered: boolean };
+  assert.equal(allowed.interaction.status, 'allowed');
+  assert.equal(allowed.delivered, true);
+  const replay = await f.runtime.respondInteraction({
+    action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id,
+    stopVersion: activation.stopVersion, participantId: f.a.id, interactionId: permission.id,
+    requestId: permission.requestId, kind: 'tool_permission', decision: 'deny',
+  }, () => true) as { interaction: { status: string }; delivered: boolean };
+  assert.equal(replay.interaction.status, 'allowed');
+  assert.equal(replay.delivered, false);
+  const question = await f.runtime.createInteraction({
+    sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion,
+    participantId: f.b.id, requestId: 'question-1', kind: 'user_question',
+    request: { questions: [{ question: 'Use staging?' }] },
+  });
+  const answered = await f.runtime.respondInteraction({
+    action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id,
+    stopVersion: activation.stopVersion, participantId: f.b.id, interactionId: question.id,
+    requestId: question.requestId, kind: 'user_question', answer: { staging: 'yes' },
+  }, () => true) as { interaction: { status: string; resolution: unknown }; delivered: boolean };
+  assert.equal(answered.interaction.status, 'answered');
+  assert.deepEqual(answered.interaction.resolution, { type: 'answered', answers: { staging: 'yes' } });
+  const persisted = await f.runtime.get(activation.sessionKey);
+  assert.deepEqual(persisted.activation?.interactions.map(item => item.status), ['allowed', 'answered']);
+});
+
+test('pending Teammate interactions become unusable when the Team run stops', async t => {
+  const f = await fixture(t);
+  const activation = await f.activate();
+  const pending = await f.runtime.createInteraction({
+    sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion,
+    participantId: f.a.id, requestId: 'plan-1', kind: 'plan_approval',
+    request: { plan: 'Run the release checks' },
+  });
+  await f.runtime.execute({ action: 'runtime_stop', sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion });
+  const afterStop = await f.runtime.get(activation.sessionKey);
+  assert.equal(afterStop.activation?.interactions.find(item => item.id === pending.id)?.status, 'cancelled');
+  await assert.rejects(f.runtime.respondInteraction({
+    action: 'runtime_interaction_respond', sessionKey: activation.sessionKey, activationId: activation.id,
+    stopVersion: activation.stopVersion, participantId: f.a.id, interactionId: pending.id,
+    requestId: pending.requestId, kind: 'plan_approval', decision: 'approve',
+  }, () => true), /expired|stopped|generation/);
 });
 
 test('whole-team stop cancels queued and running work; late results cannot wake Leader or switch mode', async t => {
@@ -560,4 +653,19 @@ test('member ready boundary survives prior delivery owner cleanup before its pro
   releasePrevious.resolve();
   await until(async () => (await f.runtime.get('web:main')).activation!.messages[0]!.status === 'delivered');
   assert.equal(attempts, 2); execution.resolve({ text: 'done' });
+});
+
+test('response receipt survives a failed result write without consuming the waiter twice', async t => {
+  const f = await fixture(t); const activation = await f.activate();
+  const interaction = await f.runtime.createInteraction({ sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.a.id, requestId: 'write-failure', kind: 'tool_permission', request: { toolName: 'write_file' } });
+  const input = { action: 'runtime_interaction_respond' as const, sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: f.a.id, interactionId: interaction.id, requestId: interaction.requestId, kind: 'tool_permission' as const, decision: 'allow' as const };
+  await assert.rejects(f.runtime.execute(input), /human interaction channel/);
+  const store = (f.runtime as any).store as TeamRuntimeStore;
+  const write = store.write.bind(store); let failed = false, consumed = 0;
+  store.write = async state => { if (!failed) { failed = true; throw new Error('simulated disk write failure'); } await write(state); };
+  await assert.rejects(f.runtime.respondInteraction(input, () => { consumed++; return true; }), /disk write failure/);
+  assert.equal((await f.runtime.get(activation.sessionKey)).activation!.interactions[0]!.status, 'pending');
+  const replay = await f.runtime.respondInteraction(input, () => { consumed++; return true; });
+  assert.equal(replay.delivered, false); assert.equal(replay.interaction.status, 'allowed'); assert.equal(consumed, 1);
+  assert.equal((await f.runtime.get(activation.sessionKey)).activation!.interactions[0]!.status, 'allowed');
 });

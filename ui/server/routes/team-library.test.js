@@ -6,6 +6,39 @@ import { createTeamLibraryHandler } from './team-library.js';
 const response = () => ({ statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; return this; } });
 
 describe('Team library HTTP boundary', () => {
+  it('routes interaction responses to the dedicated consumer and preserves a pending failure', async () => {
+    const input = { action: 'runtime_interaction_respond', sessionKey: 'web:team', activationId: 'a', stopVersion: 3, participantId: 'mate', interactionId: 'i', requestId: 'r', kind: 'user_question', answer: { type: 'answered', answers: { checks: ['unit', 'browser'] } } };
+    const result = { delivered: false, interaction: { ...input, id: 'i', status: 'pending' } };
+    const teamCommand = vi.fn();
+    const teamInteractionRespond = vi.fn(async () => result);
+    const res = response();
+    await createTeamLibraryHandler({ getGateway: async () => ({ teamCommand, teamInteractionRespond }) })({ body: input }, res);
+    expect(teamInteractionRespond).toHaveBeenCalledExactlyOnceWith(input);
+    expect(teamCommand).not.toHaveBeenCalled();
+    expect(res.body).toEqual(result);
+  });
+
+  it('reads only the specified member and preserves transcript pagination and streaming identity', async () => {
+    const input = { action: 'runtime_participant_messages', sessionKey: 'web:team', activationId: 'a', stopVersion: 3, participantId: 'mate', cursor: '200', limit: 100 };
+    const result = { sessionKey: input.sessionKey, activationId: 'a', participantId: 'mate', stopVersion: 3, messages: [{ id: 'block', text: 'partial' }], nextCursor: '300', streamEpoch: 'epoch', revision: 9, streaming: true };
+    const teamCommand = vi.fn();
+    const teamParticipantMessages = vi.fn(async () => result);
+    const res = response();
+    await createTeamLibraryHandler({ getGateway: async () => ({ teamCommand, teamParticipantMessages }) })({ body: input }, res);
+    expect(teamParticipantMessages).toHaveBeenCalledExactlyOnceWith(input);
+    expect(teamCommand).not.toHaveBeenCalled();
+    expect(res.body).toEqual(result);
+  });
+
+  it.each(['runtime_interaction_respond', 'runtime_participant_messages'])('does not fall back to generic commands when %s is unavailable', async action => {
+    const teamCommand = vi.fn();
+    const res = response();
+    await createTeamLibraryHandler({ getGateway: async () => ({ teamCommand }) })({ body: { action } }, res);
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('CAPABILITY_UNAVAILABLE');
+    expect(teamCommand).not.toHaveBeenCalled();
+  });
+
   it('forwards the exact command and returns the domain result', async () => {
     const result = { profiles: [], teams: [] };
     const teamCommand = vi.fn(async () => result);

@@ -13,6 +13,7 @@ import AppShellV2 from './components/app-shell/AppShellV2';
 import ZoomIndicator from './components/desktop/ZoomIndicator';
 import { ConfirmProvider } from './components/ui/ConfirmDialog';
 import i18n from './i18n/config.js';
+import TeamTeammateRouteView from './components/team-runtime/TeamTeammateRouteView';
 
 function DesktopAppearanceSync() {
   const { i18n } = useTranslation();
@@ -49,6 +50,7 @@ export default function App() {
                       <Router basename={window.__ROUTER_BASENAME__ || ''}>
                         <ProtectedRoute>
                           <Routes>
+                            <Route path="/team/:rootSessionKey/:activationId/teammate/:participantId" element={<TeamTeammateRouteView />} />
                             <Route path="*" element={<AppShellV2 />} />
                           </Routes>
                         </ProtectedRoute>

@@ -282,11 +282,16 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setSessionRuntimeState).toHaveBeenCalledWith('inactive');
   });
 
-  it('keeps subagents running and synchronizes status for a non-terminal session-busy error', () => {
+  it.each([
+    { code: 'session_busy', terminal: false },
+    { code: 'abort_unconfirmed', terminal: false },
+    { code: 'gateway_submit_failed', terminal: undefined },
+  ])('keeps active state and synchronizes status for an unconfirmed $code error', ({ code, terminal }) => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
     const setIsLoading = vi.fn();
     const setCanAbortSession = vi.fn();
+    const setIsAborting = vi.fn();
     const onSessionInactive = vi.fn();
     renderHook(() => useChatRealtimeHandlers({
       provider,
@@ -299,7 +304,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
       activeRunId: null,
       setActiveRunId: noop,
       setCanAbortSession,
-      setIsAborting: noop,
+      setIsAborting,
       setClaudeStatus: noop,
       setPilotDeckStatus: noop,
       setTokenBudget: noop,
@@ -313,9 +318,9 @@ describe('useChatRealtimeHandlers terminal errors', () => {
       mocks.listener?.({
         kind: 'error',
         sessionId: 'cron:task-1',
-        code: 'session_busy',
-        content: 'This session already has an active turn.',
-        terminal: false,
+        code,
+        content: 'The server has not confirmed that execution ended.',
+        terminal,
       });
     });
 
@@ -325,6 +330,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(onSessionInactive).not.toHaveBeenCalled();
     expect(setIsLoading).not.toHaveBeenCalled();
     expect(setCanAbortSession).not.toHaveBeenCalled();
+    expect(setIsAborting).not.toHaveBeenCalled();
     expect(setSessionRuntimeState).toHaveBeenCalledWith('synchronizing');
     expect(mocks.sendMessage).toHaveBeenCalledWith({
       type: 'check-session-status',
@@ -336,22 +342,25 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     });
   });
 
-  it('cancels running subagents when the parent turn completes', () => {
+  it.each([undefined, false, true])('clears running and stopping state on current-run completion (aborted: %s)', (aborted) => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
     const setActiveRunId = vi.fn();
+    const setIsLoading = vi.fn();
+    const setCanAbortSession = vi.fn();
+    const setIsAborting = vi.fn();
     renderHook(() => useChatRealtimeHandlers({
       provider,
       selectedProject: { name: 'project', fullPath: '/tmp/project' } as unknown as Project,
       selectedSession: { id: 'cron:task-1' } as unknown as ProjectSession,
       currentSessionId: 'cron:task-1',
       setCurrentSessionId: noop,
-      setIsLoading: noop,
+      setIsLoading,
       setSessionRuntimeState,
       activeRunId: 'run-current',
       setActiveRunId,
-      setCanAbortSession: noop,
-      setIsAborting: noop,
+      setCanAbortSession,
+      setIsAborting,
       setClaudeStatus: noop,
       setPilotDeckStatus: noop,
       setTokenBudget: noop,
@@ -366,18 +375,23 @@ describe('useChatRealtimeHandlers terminal errors', () => {
         sessionId: 'cron:task-1',
         runId: 'run-current',
         exitCode: 1,
+        aborted,
       });
     });
 
     expect(sessionStore.cancelRunningActivities).toHaveBeenCalledWith('cron:task-1');
     expect(setSessionRuntimeState).toHaveBeenCalledWith('inactive');
     expect(setActiveRunId).toHaveBeenCalledWith(null);
+    expect(setIsLoading).toHaveBeenCalledWith(false);
+    expect(setCanAbortSession).toHaveBeenCalledWith(false);
+    expect(setIsAborting).toHaveBeenCalledWith(false);
   });
 
-  it('does not let terminal frames from an older run stop the active run', () => {
+  it.each([false, true])('ignores older-run completion and errors, including abort acknowledgements (aborted: %s)', (aborted) => {
     const sessionStore = createSessionStore();
     const setSessionRuntimeState = vi.fn();
     const setActiveRunId = vi.fn();
+    const setIsAborting = vi.fn();
     const onSessionInactive = vi.fn();
     renderHook(() => useChatRealtimeHandlers({
       provider,
@@ -390,7 +404,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
       activeRunId: null,
       setActiveRunId,
       setCanAbortSession: noop,
-      setIsAborting: noop,
+      setIsAborting,
       setClaudeStatus: noop,
       setPilotDeckStatus: noop,
       setTokenBudget: noop,
@@ -412,6 +426,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
         sessionId: 'cron:task-1',
         runId: 'run-old',
         exitCode: 0,
+        aborted,
       });
       mocks.listener?.({
         kind: 'error',
@@ -426,6 +441,7 @@ describe('useChatRealtimeHandlers terminal errors', () => {
     expect(setActiveRunId).not.toHaveBeenCalledWith(null);
     expect(sessionStore.cancelRunningActivities).not.toHaveBeenCalled();
     expect(setSessionRuntimeState).not.toHaveBeenCalledWith('inactive');
+    expect(setIsAborting).not.toHaveBeenCalled();
     expect(onSessionInactive).not.toHaveBeenCalled();
     expect(sessionStore.refreshFromServer).not.toHaveBeenCalled();
   });
@@ -547,6 +563,14 @@ describe('useChatRealtimeHandlers terminal errors', () => {
       includeActiveTurnMessages: true,
       statusRequestId: 1,
     });
+
+    // Elapsed time is not confirmation that the execution stopped. The old
+    // ten-second abort fallback must not silently unlock an unknown run.
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(setSessionRuntimeState).not.toHaveBeenCalledWith('inactive');
+    expect(setIsLoading).not.toHaveBeenCalled();
+    expect(setCanAbortSession).not.toHaveBeenCalled();
+    expect(onSessionInactive).not.toHaveBeenCalled();
 
     unmount();
     vi.useRealTimers();
