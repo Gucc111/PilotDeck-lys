@@ -53,6 +53,7 @@ textarea.team-input { resize: vertical; line-height: 1.6; }
 .team-check input { accent-color: #777; width: 15px; height: 15px; flex-shrink: 0; }
 .team-capability { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--team-border); }
 .team-capability:last-child { border-bottom: 0; }
+.team-capability-child { margin-left: 23px; }
 .team-capability-label { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .team-capability-label p { margin: 3px 0 0 23px; font-size: 12px; }
 .team-member-row { border: 1px solid var(--team-border); padding: 10px; border-radius: 7px; margin-top: 8px; }

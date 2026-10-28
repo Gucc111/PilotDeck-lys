@@ -37,6 +37,7 @@ export default function TeamLibraryPage({ projects: rawProjects, onCreateProject
   const saveProfile = async () => {
     const draft = drafts.profile; if (!draft || busy) return;
     if (!draft.config.displayName.trim() || !draft.config.systemPrompt.trim()) { setEditorError(t(!draft.config.displayName.trim() ? 'nameRequired' : 'promptRequired')); return; }
+    if (draft.config.model.mode !== 'model' || !draft.config.model.provider.trim() || !draft.config.model.model.trim()) { setEditorError(t('modelRequired')); return; }
     setBusy(true); setEditorError(null); setDrafts(value => ({ ...value, profile: { ...draft, submitted: true } }));
     try { const profile = await teamCommand<AgentProfile>({ action: 'profile_save', role: draft.role, config: draft.config, ...(draft.id ? { id: draft.id, expectedRevision: draft.expectedRevision } : {}), requestToken: draft.requestToken }); upsertProfile(profile);
       setDrafts(value => { let team = value.team; if (draft.addToTeam && team) { const config = { ...team.config }; if (profile.role === 'leader') config.leader = refOf(profile); else config.teammates = [...config.teammates.filter(ref => ref.id !== profile.id && ref.id !== draft.replaceProfileId), refOf(profile)]; team = { ...team, config }; } return { ...value, profile: undefined, team }; }); setNotice(t(draft.addToTeam ? 'profileCreated' : 'saved'));

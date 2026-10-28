@@ -8,7 +8,7 @@ import { TeamService } from '../../src/team/TeamService.js';
 import { hash } from '../../src/team/store.js';
 import type { AgentProfile, ProfileConfig, TeamDefinition, TeamInventory, TeamLibrary, TeamServiceOptions } from '../../src/team/types.js';
 
-const profileConfig = (displayName = 'Researcher'): ProfileConfig => ({ displayName, description: 'Reusable profile', systemPrompt: 'Inspect evidence before answering.', model: { mode: 'default' }, workspace: { mode: 'team' }, capabilities: { tools: ['read'], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' });
+const profileConfig = (displayName = 'Researcher'): ProfileConfig => ({ displayName, description: 'Reusable profile', systemPrompt: 'Inspect evidence before answering.', model: { mode: 'model', provider: 'test', model: 'large' }, workspace: { mode: 'team' }, capabilities: { tools: ['read'], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' });
 const inventory: TeamInventory = { tools: [{ name: 'read', description: 'Read files' }, { name: 'bash', description: 'Run commands' }], skills: [{ name: 'research' }], mcpServers: [{ name: 'search' }] };
 
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, overrides: Partial<TeamServiceOptions> = {}) {
@@ -95,6 +95,8 @@ test('strict input validation rejects forged identities, unknown fields, invalid
   const bad = (config: unknown) => f.service.execute({ action: 'profile_save', role: 'leader', config, requestToken: randomUUID() } as never);
   await assert.rejects(bad({ ...leader.config, id: randomUUID() }), /config.id: unsupported/);
   await assert.rejects(bad({ ...leader.config, model: { mode: 'default', provider: 'test' } }), /config.model.provider/);
+  await assert.rejects(bad({ ...leader.config, model: { mode: 'default' } }), /must specify a model/);
+  await assert.rejects(bad({ ...leader.config, permissionMode: 'plan' }), /config.permissionMode/);
   await assert.rejects(bad({ ...leader.config, optionalCapabilities: [{ kind: 'tool', name: 'unselected' }] }), /must reference/);
   await assert.rejects(f.service.execute({ action: 'profile_save', id: randomUUID(), expectedRevision: 1, role: 'leader', config: leader.config, requestToken: randomUUID() }), /not found/);
   await assert.rejects(f.service.execute({ action: 'profile_save', id: '__proto__', expectedRevision: 1, role: 'leader', config: leader.config, requestToken: randomUUID() }), /server-generated UUID/);
@@ -102,6 +104,20 @@ test('strict input validation rejects forged identities, unknown fields, invalid
   await assert.rejects(f.service.execute({ action: 'team_save', config: { ...team.config, leader: { id: teammate.id, revision: 1 } }, requestToken: randomUUID() }), /wrong role/);
   await assert.rejects(f.service.execute({ action: 'team_save', config: { ...team.config, teammates: [team.config.teammates[0]!, team.config.teammates[0]!] }, requestToken: randomUUID() }), /more than once/);
   await assert.rejects(f.service.execute({ action: 'profile_save', id: leader.id, expectedRevision: 1, role: 'teammate', config: leader.config, requestToken: randomUUID() }), /role cannot change/);
+});
+
+test('saving profiles binds tool pairs and requires reading for file writes', async t => {
+  const f = await fixture(t);
+  for (const role of ['leader', 'teammate'] as const) {
+    const config = profileConfig();
+    config.capabilities.tools = ['exit_plan_mode', 'edit_file', 'edit_notebook'];
+    config.optionalCapabilities = [{ kind: 'tool', name: 'edit_file' }, { kind: 'tool', name: 'edit_notebook' }];
+    const saved = await f.createProfile(role, config);
+    assert.deepEqual(new Set(saved.config.capabilities.tools), new Set(['enter_plan_mode', 'exit_plan_mode', 'write_file', 'edit_file', 'edit_notebook', 'read_file']));
+    assert.deepEqual(saved.config.optionalCapabilities, [{ kind: 'tool', name: 'edit_notebook' }]);
+    const readOnly = await f.createProfile(role, { ...config, capabilities: { ...config.capabilities, tools: ['read_file'] }, optionalCapabilities: [] });
+    assert.deepEqual(readOnly.config.capabilities.tools, ['read_file']);
+  }
 });
 
 test('same mutation token returns original result after response loss; changed payload conflicts', async t => {

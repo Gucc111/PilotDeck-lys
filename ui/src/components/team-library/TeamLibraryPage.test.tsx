@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TeamLibraryPage from './TeamLibraryPage';
 import type { AgentProfile, TeamDefinition, TeamLibrary } from './api';
-import { DRAFT_KEY } from './drafts';
+import { DEFAULT_LEADER_PROMPT, DRAFT_KEY, newProfileDraft } from './drafts';
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), command: vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' }, t: (key: string) => key }) }));
 vi.mock('../../utils/api', () => ({ authenticatedFetch: mocks.fetch }));
@@ -13,11 +13,66 @@ const leader = profile('Director', 'leader'), teammate = profile('Researcher', '
 const team: TeamDefinition = { id: 'team-1', revision: 1, archived: false, createdAt: '2026-10-22', updatedAt: '2026-10-22', config: { displayName: 'Reports', description: 'Monthly reports', instructions: '', defaultProjectKey: '/project', leader: { id: leader.id, revision: 1 }, teammates: [{ id: teammate.id, revision: 1 }] }, leader, teammates: [teammate] };
 let library: TeamLibrary;
 const mount = () => render(<TeamLibraryPage projects={[{ name: 'project', displayName: 'Project', fullPath: '/project' }]} onCreateProject={vi.fn()}/>);
-beforeEach(() => { localStorage.clear(); library = { profiles: [leader, teammate], teams: [team] }; mocks.command.mockReset(); mocks.fetch.mockReset(); mocks.fetch.mockResolvedValue({ ok: true, json: async () => ({ items: [] }) }); mocks.command.mockImplementation(async (command: any) => { if (command.action === 'library') return library; if (command.action === 'inventory') return { tools: [{ name: 'read_file', description: 'Read files' }], skills: [], mcpServers: [] }; if (command.action === 'profile_save') return { ...profile(command.id || 'new-profile', command.role), config: command.config }; if (command.action === 'team_save') return { ...team, revision: 2, config: command.config }; throw new Error(`Unexpected ${command.action}`); }); });
+beforeEach(() => { localStorage.clear(); library = { profiles: [leader, teammate], teams: [team] }; mocks.command.mockReset(); mocks.fetch.mockReset(); mocks.fetch.mockResolvedValue({ ok: true, json: async () => ({ items: [{ id: 'test/large', provider: 'test', model: 'large', displayName: 'Large', available: true }] }) }); mocks.command.mockImplementation(async (command: any) => { if (command.action === 'library') return library; if (command.action === 'inventory') return { tools: ['read_file', 'write_file', 'edit_file', 'edit_notebook', 'enter_plan_mode', 'exit_plan_mode'].map(name => ({ name, description: `Description for ${name}` })), skills: [{ name: 'research', description: 'Research skills' }], mcpServers: [] }; if (command.action === 'profile_save') return { ...profile(command.id || 'new-profile', command.role), config: command.config }; if (command.action === 'team_save') return { ...team, revision: 2, config: command.config }; throw new Error(`Unexpected ${command.action}`); }); });
 afterEach(cleanup);
 const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
 const loaded = () => screen.findByRole('heading', { name: 'Reports' });
 describe('team library workflow', () => {
+  it('prefills a fresh Leader prompt through both creation paths and preserves edited drafts', async () => {
+    mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Leaders' })); click('New Leader');
+    expect((screen.getByLabelText('System prompt') as HTMLTextAreaElement).value).toBe(DEFAULT_LEADER_PROMPT);
+    fireEvent.change(screen.getByLabelText('System prompt'), { target: { value: 'Custom leader' } });
+    await waitFor(() => expect(localStorage.getItem(DRAFT_KEY)).toContain('Custom leader'));
+    cleanup(); mount(); await screen.findByRole('dialog');
+    expect((screen.getByLabelText('System prompt') as HTMLTextAreaElement).value).toBe('Custom leader');
+    click('Discard draft'); click('New team'); click('Create new Leader');
+    expect((screen.getByLabelText('System prompt') as HTMLTextAreaElement).value).toBe(DEFAULT_LEADER_PROMPT);
+    expect(newProfileDraft('teammate').config.systemPrompt).toBe('');
+  });
+  it.each(['Leaders', 'Teammates'])('requires an explicit model and omits plan approval for %s', async tab => {
+    mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: tab })); click(tab === 'Leaders' ? 'New Leader' : 'New Teammate');
+    await waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('test/large'));
+    expect(screen.queryByRole('option', { name: 'Use system default' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'Plan mode' })).toBeNull();
+    expect((screen.getByLabelText('Execution approval') as HTMLSelectElement).value).toBe('default');
+  });
+  it('cannot submit a profile when the model catalog has no concrete model', async () => {
+    mocks.fetch.mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
+    mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Leaders' })); click('New Leader');
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Leader' } });
+    fireEvent.submit(document.getElementById('team-profile-form')!);
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Choose a specific model.');
+    expect(mocks.command.mock.calls.some(([arg]) => arg.action === 'profile_save')).toBe(false);
+  });
+  it.each(['Leaders', 'Teammates'])('groups tools and enforces read dependencies for %s', async tab => {
+    mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: tab })); click(tab === 'Leaders' ? 'New Leader' : 'New Teammate');
+    const read = await screen.findByLabelText('read_file') as HTMLInputElement;
+    await waitFor(() => expect(read.disabled).toBe(false));
+    expect(screen.queryByText('Description for read_file')).toBeNull();
+    expect(screen.getByText('Research skills')).toBeTruthy();
+    expect(screen.queryByLabelText('write_file')).toBeNull();
+    const writes = screen.getByLabelText('write_file / edit_file') as HTMLInputElement;
+    const notebook = screen.getByLabelText('edit_notebook') as HTMLInputElement;
+    expect(notebook.disabled).toBe(true);
+    fireEvent.click(read); expect(read.checked).toBe(true); fireEvent.click(read); expect(read.checked).toBe(false);
+    fireEvent.click(writes); expect(read.checked).toBe(true); expect(read.disabled).toBe(true); expect(notebook.checked).toBe(false); expect(notebook.disabled).toBe(false);
+    fireEvent.click(notebook); expect(notebook.checked).toBe(true);
+    fireEvent.click(screen.getByLabelText('enter_plan_mode / exit_plan_mode'));
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Configured' } });
+    fireEvent.change(screen.getByLabelText('System prompt'), { target: { value: 'Work together.' } });
+    click('Save');
+    await waitFor(() => expect(mocks.command).toHaveBeenCalledWith(expect.objectContaining({ action: 'profile_save', config: expect.objectContaining({ capabilities: { tools: ['write_file', 'edit_file', 'read_file', 'edit_notebook', 'enter_plan_mode', 'exit_plan_mode'], skills: [], mcpServers: [] } }) })));
+  });
+  it('removes notebook selection with the write group and allows read to be cleared afterward', async () => {
+    mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Leaders' })); click('New Leader');
+    const writes = await screen.findByLabelText('write_file / edit_file') as HTMLInputElement;
+    await waitFor(() => expect(writes.disabled).toBe(false));
+    fireEvent.click(writes); fireEvent.click(screen.getByLabelText('edit_notebook')); fireEvent.click(writes);
+    expect((screen.getByLabelText('edit_notebook') as HTMLInputElement).checked).toBe(false);
+    const read = screen.getByLabelText('read_file') as HTMLInputElement;
+    expect(read.disabled).toBe(false); expect(read.checked).toBe(true);
+    fireEvent.click(read); expect(read.checked).toBe(false);
+  });
   it('saves a reusable profile without starting work and generates no client identity', async () => {
     mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Leaders' })); click('New Leader');
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Editor' } }); fireEvent.change(screen.getByLabelText('System prompt'), { target: { value: 'Review drafts.' } });

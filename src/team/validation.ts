@@ -1,4 +1,5 @@
 import type { ProfileConfig, ProfileRef, TeamLibraryCommand as TeamCommand, TeamConfig } from './types.js';
+import { normalizeProfileTools } from './profileTools.js';
 
 export class TeamError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'TeamError'; }
@@ -48,12 +49,12 @@ export function profileConfig(value: unknown): ProfileConfig {
   let resolvedModel: ProfileConfig['model'];
   if (model.mode === 'default') {
     object(data.model, 'config.model', ['mode']);
-    resolvedModel = { mode: 'default' };
+    fail('config.model.mode', 'must specify a model');
   } else if (model.mode === 'model') {
     const reasoning = optionalNumber(model.reasoning, 'config.model.reasoning');
     const speed = optionalNumber(model.speed, 'config.model.speed');
     resolvedModel = { mode: 'model', provider: text(model.provider, 'config.model.provider', { max: 500 }), model: text(model.model, 'config.model.model', { max: 500 }), ...(reasoning === undefined ? {} : { reasoning }), ...(speed === undefined ? {} : { speed }) };
-  } else fail('config.model.mode', 'must be default or model');
+  } else fail('config.model.mode', 'must be model');
   const workspace = object(data.workspace, 'config.workspace', ['mode', 'projectKey']);
   let resolvedWorkspace: ProfileConfig['workspace'];
   if (workspace.mode === 'team') {
@@ -75,8 +76,9 @@ export function profileConfig(value: unknown): ProfileConfig {
     return { kind: item.kind as 'tool' | 'skill' | 'mcp', name };
   });
   if (new Set(optionalCapabilities.map(item => `${item.kind}:${item.name}`)).size !== optionalCapabilities.length) fail('config.optionalCapabilities', 'must not contain duplicates');
-  if (data.permissionMode !== 'default' && data.permissionMode !== 'plan' && data.permissionMode !== 'bypassPermissions') fail('config.permissionMode', 'must be default, plan, or bypassPermissions');
-  return { displayName: text(data.displayName, 'config.displayName', { max: 200 }).trim(), description: text(data.description, 'config.description', { empty: true, max: 10_000 }), systemPrompt: text(data.systemPrompt, 'config.systemPrompt'), model: resolvedModel, workspace: resolvedWorkspace, capabilities: resolvedCapabilities, optionalCapabilities, permissionMode: data.permissionMode };
+  if (data.permissionMode !== 'default' && data.permissionMode !== 'bypassPermissions') fail('config.permissionMode', 'must be default or bypassPermissions');
+  const config: ProfileConfig = { displayName: text(data.displayName, 'config.displayName', { max: 200 }).trim(), description: text(data.description, 'config.description', { empty: true, max: 10_000 }), systemPrompt: text(data.systemPrompt, 'config.systemPrompt'), model: resolvedModel, workspace: resolvedWorkspace, capabilities: resolvedCapabilities, optionalCapabilities, permissionMode: data.permissionMode };
+  return { ...config, ...normalizeProfileTools(config) };
 }
 
 export function teamConfig(value: unknown): TeamConfig {
