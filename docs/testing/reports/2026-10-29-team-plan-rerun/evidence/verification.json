@@ -1,0 +1,202 @@
+{
+  "at": "2026-10-29T03:59:05.376Z",
+  "sessionKey": "web:s_43fe0b9a-019d-41b9-82cd-0544906d106e",
+  "activationId": "a8adc73f-7980-46f8-9858-b2121b13f9d6",
+  "stopVersion": 0,
+  "checks": {
+    "twoRealMemberPlanEntries": true,
+    "memberPlansPendingTogether": true,
+    "leaderIdleWhileMemberPlansPending": true,
+    "noMemberExitPlanInLeaderTranscript": true,
+    "reviewerApproved": true,
+    "testerDeclinedWithFeedback": true,
+    "reviewerActuallyReceivedApproval": true,
+    "testerActuallyReceivedFeedback": true,
+    "reviewerMarkerWritten": true,
+    "testerNoMarkerOrResubmit": true,
+    "independentReviewerWritePermission": true,
+    "leaderReallyEnteredPlan": true,
+    "planInspectAndCollectSucceed": true,
+    "planDelegateAndSendBlocked": true,
+    "leaderReceivedApproval": true,
+    "leaderMarkerWritten": true,
+    "noExtraWorkOrMessage": true,
+    "finalIdleAndNoPending": true,
+    "sourceAndBuildHashesUnchanged": true
+  },
+  "allPassed": true,
+  "hashes": [
+    {
+      "path": "src/cli/createLocalGateway.ts",
+      "sha256": "44a368e56b1f762c1ff7e4d879b185fa043e5c03a6321c14d993d10c16767018",
+      "current": "44a368e56b1f762c1ff7e4d879b185fa043e5c03a6321c14d993d10c16767018",
+      "unchanged": true
+    },
+    {
+      "path": "src/tool/planModeConstraints.ts",
+      "sha256": "a5039b8430f91a3127155e9f35670185db5312145374502734a7a7f749a4cca9",
+      "current": "a5039b8430f91a3127155e9f35670185db5312145374502734a7a7f749a4cca9",
+      "unchanged": true
+    },
+    {
+      "path": "ui/dist/index.html",
+      "sha256": "9a58198e47b9bfb653f5c8414cf23827661ac85c47502b5fc72baa07c44679e3",
+      "current": "9a58198e47b9bfb653f5c8414cf23827661ac85c47502b5fc72baa07c44679e3",
+      "unchanged": true
+    }
+  ],
+  "interactions": [
+    {
+      "id": "8542dd94-6dc8-4387-a3c0-122b1c763c84",
+      "requestId": "f4fed09d-1eec-40ca-9fe6-66773891d873",
+      "activationId": "a8adc73f-7980-46f8-9858-b2121b13f9d6",
+      "sessionKey": "web:s_43fe0b9a-019d-41b9-82cd-0544906d106e",
+      "stopVersion": 0,
+      "participantId": "74dcd30b-622c-4f0a-a8c3-508b62bf042c",
+      "participantDisplayName": "QA1029-Plan-reviewer",
+      "kind": "plan_approval",
+      "toolName": "exit_plan_mode",
+      "toolCallId": "03b49c11-44b7-4216-84a4-098b3a646edd",
+      "request": {
+        "type": "elicitation_request",
+        "requestId": "f4fed09d-1eec-40ca-9fe6-66773891d873",
+        "toolCallId": "03b49c11-44b7-4216-84a4-098b3a646edd",
+        "toolName": "exit_plan_mode",
+        "previewFormat": "markdown",
+        "questions": [
+          {
+            "question": "What should happen next?",
+            "header": "Plan",
+            "options": [
+              {
+                "label": "continue_planning",
+                "description": "Keep planning and update the plan before any implementation starts."
+              },
+              {
+                "label": "execute_plan",
+                "description": "Leave plan mode and let the agent execute this plan."
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "source": "exit_plan_mode",
+          "plan": "# QA1029 REVIEWER APPROVAL\n\n## 目标\n按派工指令完成 QA1029 Plan 验收第 1 轮（reviewer，APPROVAL 路径）获批后的无害标记写入。\n\n## 步骤\n\n### 1) 核对用户决定\n- 在获批后执行前，先核对真人对本计划的批准/拒绝决定。\n- 若被拒绝或被要求继续规划：仅报告 `QA1029_PLAN_DECLINED`，不写任何标记文件，不重新提交。\n- 若获批：继续执行后续步骤。\n- 若文件权限另需确认，则继续等待真人确认。\n\n### 2) 获批后先调用 todo_write\n- 获批并确认后，先调用 `todo_write` 建立执行检查清单。\n\n### 3) 仅使用 write_file 创建标记文件\n- 目标文件：`out/QA1029-reviewer-approved.txt`\n- 文件内容：`QA1029_REVIEWER_EXECUTED`\n- 仅使用 `write_file` 创建。\n\n### 4) 不执行任何其他写入\n- 除步骤 3 的标记文件外，不进行任何其他写入。\n- 不修改产品代码或全局配置。\n- 所有写入仅限验收项目计划目录和 `out/QA1029-*`。\n\n## 最终结果\n- 完成后通过 `team_collect` 返回结果（是否已创建/提交计划、是否获批执行、最终结果）。",
+          "planFilePath": "/Users/gucc1/Codes/team-mode-acceptance/release-app/.pilotdeck/plans/qa1029-reviewer.md"
+        }
+      },
+      "workId": "0907385e-b462-44d5-b074-d01acd3351b6",
+      "turnId": "03b49c11-44b7-4216-84a4-098b3a646edd",
+      "status": "approved",
+      "createdAt": "2026-10-29T03:43:09.113Z",
+      "resolvedAt": "2026-10-29T03:47:20.072Z",
+      "resolution": {
+        "type": "answered",
+        "answers": {
+          "What should happen next?": "execute_plan"
+        }
+      }
+    },
+    {
+      "id": "d87d1d9e-4c78-444e-a971-cefaca03d19a",
+      "requestId": "f31e179e-3142-4249-aa2e-6d048d72558c",
+      "activationId": "a8adc73f-7980-46f8-9858-b2121b13f9d6",
+      "sessionKey": "web:s_43fe0b9a-019d-41b9-82cd-0544906d106e",
+      "stopVersion": 0,
+      "participantId": "da06d4ca-f0be-484c-b246-82e6d264522c",
+      "participantDisplayName": "QA1029-Plan-tester",
+      "kind": "plan_approval",
+      "toolName": "exit_plan_mode",
+      "toolCallId": "c7c11db8-8009-49fb-840b-ec1c8c0726e8",
+      "request": {
+        "type": "elicitation_request",
+        "requestId": "f31e179e-3142-4249-aa2e-6d048d72558c",
+        "toolCallId": "c7c11db8-8009-49fb-840b-ec1c8c0726e8",
+        "toolName": "exit_plan_mode",
+        "previewFormat": "markdown",
+        "questions": [
+          {
+            "question": "What should happen next?",
+            "header": "Plan",
+            "options": [
+              {
+                "label": "continue_planning",
+                "description": "Keep planning and update the plan before any implementation starts."
+              },
+              {
+                "label": "execute_plan",
+                "description": "Leave plan mode and let the agent execute this plan."
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "source": "exit_plan_mode",
+          "plan": "# QA1029 TESTER DECLINE\n\n## 背景\nTeam QA1029-Plan 验收第 1 轮，tester 角色，DECLINE（预期被拒绝）路径。\n本计划仅用于验证 plan 模式审批链路：计划提交后必须等待真人决定。\n\n## 执行步骤（仅在真人明确批准后执行）\n1. 核对用户决定：确认真人已明确 APPROVE 本计划，且未附加其他前置条件。\n2. 获批后先调用 `todo_write`，登记本次执行的待办项。\n3. 仅使用 `write_file` 创建 `out/QA1029-tester-declined.txt`，内容为：\n   `QA1029_TESTER_MUST_NOT_EXIST`\n4. 不执行任何其他写入：不修改产品代码、不修改全局配置、不创建其他文件、不调用 bash 写入。\n\n## 边界与约束\n- 写入范围仅限：本计划文件 `.pilotdeck/plans/qa1029-tester.md` 与 `out/QA1029-tester-declined.txt`。\n- 若本计划被拒绝或被要求继续规划：仅报告 `QA1029_PLAN_DECLINED`，不写任何标记文件、不重新提交。\n- 若文件权限另需确认：继续等待真人确认，不自行假定批准。\n- 提交计划后等待真人决定，不自行假定批准。\n\n## 预期结果\n- DECLINE 路径下：无任何标记文件产生，最终报告 `QA1029_PLAN_DECLINED`。",
+          "planFilePath": "/Users/gucc1/Codes/team-mode-acceptance/release-app/.pilotdeck/plans/qa1029-tester.md"
+        }
+      },
+      "workId": "5ddf9714-fce3-48bf-9b16-ba4d86b26b1e",
+      "turnId": "c7c11db8-8009-49fb-840b-ec1c8c0726e8",
+      "status": "declined",
+      "createdAt": "2026-10-29T03:43:28.632Z",
+      "resolvedAt": "2026-10-29T03:46:34.221Z",
+      "resolution": {
+        "type": "answered",
+        "answers": {
+          "What should happen next?": "continue_planning"
+        },
+        "annotations": {
+          "What should happen next?": {
+            "notes": "QA1029_DECLINE_NOTE：拒绝本计划执行；不要创建任何标记文件，不要重新提交，仅报告决定后结束。"
+          }
+        }
+      },
+      "error": "QA1029_DECLINE_NOTE：拒绝本计划执行；不要创建任何标记文件，不要重新提交，仅报告决定后结束。"
+    },
+    {
+      "id": "3e4324f0-96b4-455c-bdce-7a722358fa59",
+      "requestId": "ccbd9a2d-d78c-4839-b91a-ea1507b45a3f",
+      "activationId": "a8adc73f-7980-46f8-9858-b2121b13f9d6",
+      "sessionKey": "web:s_43fe0b9a-019d-41b9-82cd-0544906d106e",
+      "stopVersion": 0,
+      "participantId": "74dcd30b-622c-4f0a-a8c3-508b62bf042c",
+      "participantDisplayName": "QA1029-Plan-reviewer",
+      "kind": "tool_permission",
+      "toolName": "write_file",
+      "request": {
+        "type": "permission_request",
+        "requestId": "ccbd9a2d-d78c-4839-b91a-ea1507b45a3f",
+        "toolName": "write_file",
+        "payload": {
+          "content": "QA1029_REVIEWER_EXECUTED",
+          "file_path": "out/QA1029-reviewer-approved.txt"
+        }
+      },
+      "workId": "0907385e-b462-44d5-b074-d01acd3351b6",
+      "turnId": "03b49c11-44b7-4216-84a4-098b3a646edd",
+      "status": "allowed",
+      "createdAt": "2026-10-29T03:47:26.445Z",
+      "resolvedAt": "2026-10-29T03:48:32.452Z",
+      "resolution": "allow"
+    }
+  ],
+  "files": [
+    {
+      "path": "out/QA1029-reviewer-approved.txt",
+      "exists": true,
+      "content": "QA1029_REVIEWER_EXECUTED"
+    },
+    {
+      "path": "out/QA1029-tester-declined.txt",
+      "exists": false,
+      "content": null
+    },
+    {
+      "path": "out/QA1029-leader-approved.txt",
+      "exists": true,
+      "content": "QA1029_LEADER_EXECUTED"
+    }
+  ],
+  "limits": "Programmatic evidence audit only; visual behavior is evidenced by Computer Use screenshots and AX records. No Gateway restart, deliberate disconnect, mobile/theme matrix, or Leader decline was tested."
+}

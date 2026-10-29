@@ -124,6 +124,7 @@ import { JsonlTranscriptWriter } from "../session/transcript/JsonlTranscriptWrit
 import { createReadSkillTool } from "../tool/builtin/readSkill.js";
 import { TeamRuntimeStore } from "../team/runtimeStore.js";
 import { TEAM_CONFIGURABLE_TOOLS } from "../team/capabilities.js";
+import { PLAN_TOOL_GROUP } from "../team/profileTools.js";
 import type { SessionModelSelection } from "../gateway/protocol/types.js";
 import { listCommands } from "../gateway/dialog/commands.js";
 
@@ -639,7 +640,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       }
       await teamRuntime.assertActivation(input.sessionKey, activation.id, activation.stopVersion);
       const inputHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, activationId: activation.id, stopVersion: activation.stopVersion });
-      return { input: { ...input, teamActivationId: activation.id, teamStopVersion: activation.stopVersion, projectKey: storageProjectKey, workspaceCwd: undefined, modelSelection: undefined, modelOverride: undefined, mode: leader.profile.config.permissionMode, basePermissionMode: leader.profile.config.permissionMode }, isMeta, metadata: { teamActivationId: activation.id, teamInputHash: inputHash, teamRequestHash: requestHash, teamStopVersion: activation.stopVersion, ...(isMeta ? internalTeamTurns.get(input.runId!)?.metadata : {}) } };
+      return { input: { ...input, teamActivationId: activation.id, teamStopVersion: activation.stopVersion, projectKey: storageProjectKey, workspaceCwd: undefined, modelSelection: undefined, modelOverride: undefined, mode: leader.profile.config.permissionMode, basePermissionMode: leader.profile.config.permissionMode, allowPlanModeTools: PLAN_TOOL_GROUP.some(name => leader.capabilities.tools.includes(name)) }, isMeta, metadata: { teamActivationId: activation.id, teamInputHash: inputHash, teamRequestHash: requestHash, teamStopVersion: activation.stopVersion, ...(isMeta ? internalTeamTurns.get(input.runId!)?.metadata : {}) } };
     },
     teamCommand: async input => {
       if (input.action === "inventory") await configStore.reload("team-inventory");
@@ -1139,7 +1140,7 @@ class ProjectRuntimeRegistry {
       const turnId = randomUUID();
       const stream = new TeamParticipantStream(this.options.now);
       this.activeTeamParticipants.set(sessionKey, { session, turnId, executionId: input.executionId, stopVersion: input.activation.stopVersion, stream, workId: input.work?.id });
-      for await (const event of session.submit({ type: "text", text: prompt, isMeta: true }, { turnId, metadata: { teamActivationId: input.activation.id, teamStopVersion: input.activation.stopVersion, teamWorkId: input.work?.id, teamEventIds: input.messages?.map(message => message.id) ?? [] }, maxTurns: 25, abortSignal: input.signal })) {
+      for await (const event of session.submit({ type: "text", text: prompt, isMeta: true }, { turnId, metadata: { teamActivationId: input.activation.id, teamStopVersion: input.activation.stopVersion, teamWorkId: input.work?.id, teamEventIds: input.messages?.map(message => message.id) ?? [] }, allowPlanModeTools: PLAN_TOOL_GROUP.some(name => input.participant.capabilities.tools.includes(name)), maxTurns: 25, abortSignal: input.signal })) {
         this.teamMessageDelivery.observe(sessionKey, event);
         const updates = stream.observe(event);
         if (updates.length) this.teamEvent?.(input.activation.sessionKey, input.activation.storageProjectKey, {

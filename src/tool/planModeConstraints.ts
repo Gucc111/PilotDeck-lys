@@ -25,6 +25,8 @@ export const PLAN_MODE_ALLOWED_TOOLS = new Set([
   "task_list",
   "task_output",
   "task_wait",
+  "team_inspect",
+  "team_collect",
   "write_file",
   "edit_file",
 ]);

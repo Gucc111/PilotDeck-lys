@@ -75,6 +75,83 @@ test('Team binds current conversation with frozen persona/model/capabilities and
   await assert.rejects(f.gateway.closeSession({ sessionKey: f.sessionKey, reason: 'session_deleted' }), /Team execution history/);
 });
 
+for (const configured of [true, false]) test(`Plan tool visibility follows role capabilities for Leader and Teammate (configured=${configured})`, async t => {
+  const f = await fixture(t, configured ? ['enter_plan_mode', 'exit_plan_mode'] : [], 'default');
+  const checkTools = (request: CanonicalModelRequest) => {
+    for (const name of ['enter_plan_mode', 'exit_plan_mode']) {
+      assert.equal(request.tools?.some(tool => tool.name === name), configured, `${request.model}: ${name}`);
+    }
+  };
+  await f.select();
+  // The server derives Team capabilities even if a client supplies the opposite flag.
+  await f.submit({ runId: 'first', allowPlanModeTools: !configured });
+  checkTools(f.requests.at(-1)!);
+  await f.restart();
+  await f.submit({ runId: 'after-restart', allowPlanModeTools: !configured });
+  checkTools(f.requests.at(-1)!);
+  const { activation } = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
+  const input: TeamParticipantExecution = {
+    activation: activation!, participant: activation!.participants.find(item => item.role === 'teammate')!,
+    work: { id: 'plan-capabilities', stopVersion: activation!.stopVersion, participantId: f.worker.id, task: 'inspect tools', status: 'running', createdAt: new Date().toISOString() },
+    signal: new AbortController().signal, executionId: 'plan-capabilities', acceptMessages: async () => {}, updateStatus: async () => {},
+  };
+  await f.executeParticipant(input); checkTools(f.requests.at(-1)!);
+  await f.executeParticipant(input); checkTools(f.requests.at(-1)!);
+  assert.equal(f.requests.filter(request => request.model === 'worker').length, 2);
+  const ordinary = await f.submit({ sessionKey: 'web:ordinary', runId: 'ordinary', teamActivationId: undefined, teamStopVersion: undefined });
+  assert.deepEqual(ordinary.filter(event => event.type === 'error'), []);
+  assert.ok(!f.requests.at(-1)!.tools?.some(tool => ['enter_plan_mode', 'exit_plan_mode'].includes(tool.name)));
+});
+
+test('Leader enters Plan with configured tools, reads Team work and cannot mutate Team state', async t => {
+  const f = await fixture(t, ['enter_plan_mode', 'exit_plan_mode'], 'default');
+  let delegated = false, planning = false, step = 0, workId = '';
+  f.setResponse(async function* (request) {
+    if (request.model === 'leader') {
+      let call: { name: string; input: Record<string, unknown> } | undefined;
+      if (!planning && !delegated) {
+        delegated = true;
+        call = { name: 'team_delegate', input: { participantId: f.worker.id, task: 'seed result', requestToken: 'seed' } };
+      } else if (planning) {
+        call = [
+          { name: 'enter_plan_mode', input: {} },
+          { name: 'team_inspect', input: {} },
+          { name: 'team_collect', input: { workId } },
+          { name: 'team_delegate', input: { participantId: f.worker.id, task: 'blocked' } },
+          { name: 'team_followup', input: { participantId: f.worker.id, workId, task: 'blocked' } },
+          { name: 'team_send_message', input: { recipientId: f.worker.id, text: 'blocked' } },
+          { name: 'team_relay_message', input: { messageId: 'blocked' } },
+        ][step++];
+      }
+      if (call) {
+        const id = planning ? `plan-${step}` : 'seed';
+        yield { type: 'tool_call_start', id, name: call.name };
+        yield { type: 'tool_call_end', toolCall: { id, ...call } }; return;
+      }
+    }
+    yield { type: 'text_delta', text: request.model === 'worker' ? 'SAVED_TEAM_RESULT' : 'done' };
+  });
+  await f.select(); await f.submit({ runId: 'seed-turn' });
+  await eventually(async () => {
+    const view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
+    return view.activation!.works[0]?.status === 'completed' && view.activation!.notifications.every(n => !!n.deliveredAt) && !(f.gateway as any).router.activeTurnRunId(f.sessionKey);
+  }, 'seed work and Leader continuation finish');
+  const before = (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!;
+  workId = before.works[0]!.id; planning = true;
+  const events = await f.submit({ runId: 'plan-turn' });
+  assert.deepEqual(events.filter(event => event.type === 'error'), []);
+  const results = events.filter(event => event.type === 'tool_call_finished');
+  for (const name of ['enter_plan_mode', 'team_inspect', 'team_collect']) {
+    assert.ok(results.some(event => event.toolName === name && event.ok), `${name} succeeds`);
+  }
+  assert.ok(results.some(event => event.toolName === 'team_collect' && event.resultPreview?.includes('SAVED_TEAM_RESULT')));
+  for (const name of ['team_delegate', 'team_followup', 'team_send_message', 'team_relay_message']) {
+    assert.ok(results.some(event => event.toolName === name && !event.ok && event.resultPreview?.includes('PLAN_MODE_VIOLATION')), `${name} stays blocked`);
+  }
+  const after = (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!;
+  assert.deepEqual(after.works, before.works); assert.deepEqual(after.messages, before.messages);
+});
+
 test('forbidden direct, alias and execute_code nested tool calls cannot escape the role registry', async t => {
   const f = await fixture(t, ['execute_code']); let count = 0;
   const forbidden = join(f.workspace, 'forbidden.txt');
@@ -407,8 +484,17 @@ function interactionOwner(item: import('../../src/team/runtimeTypes.js').TeamHum
   return { sessionKey: item.sessionKey, activationId: item.activationId, stopVersion: item.stopVersion, participantId: item.participantId, interactionId: item.id, requestId: item.requestId, kind: item.kind };
 }
 async function startHumanInteraction(f: Awaited<ReturnType<typeof fixture>>, toolName: string, input: Record<string, unknown>) {
-  let requested = false;
+  let requested = false, enteredPlan = false;
   f.setResponse(async function* (request) {
+    if (request.model === 'worker' && toolName === 'exit_plan_mode') {
+      assert.ok(request.tools?.some(tool => tool.name === 'enter_plan_mode'));
+      assert.ok(request.tools?.some(tool => tool.name === 'exit_plan_mode'));
+      if (!enteredPlan) {
+        enteredPlan = true;
+        yield { type: 'tool_call_start', id: 'enter-plan', name: 'enter_plan_mode' };
+        yield { type: 'tool_call_end', toolCall: { id: 'enter-plan', name: 'enter_plan_mode', input: {} } }; return;
+      }
+    }
     if (request.model === 'worker' && !requested) {
       requested = true;
       yield { type: 'tool_call_start', id: 'human-interaction-tool', name: toolName };
@@ -465,7 +551,7 @@ test('real Teammate question cancellation is recorded and unblocks the original 
 });
 
 for (const decision of ['approve', 'decline'] as const) test(`real Teammate Plan ${decision} resolves the submitted plan with matching execution semantics`, async t => {
-  const f = await fixture(t, ['exit_plan_mode'], 'plan');
+  const f = await fixture(t, ['enter_plan_mode', 'exit_plan_mode'], 'default');
   const planPath = join(f.workspace, '.pilotdeck', 'plans', 'review.md');
   await mkdir(join(f.workspace, '.pilotdeck', 'plans'), { recursive: true });
   await writeFile(planPath, '# Review plan\n\nRun targeted checks after approval.');
@@ -480,6 +566,7 @@ for (const decision of ['approve', 'decline'] as const) test(`real Teammate Plan
   assert.equal(result.interaction?.status, decision === 'approve' ? 'approved' : 'declined');
   await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'plan tool completed');
   const transcript = JSON.stringify((await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'))).entries);
+  assert.match(transcript, /Plan mode activated/);
   assert.match(transcript, new RegExp(action));
   assert.match(transcript, decision === 'approve' ? /User has approved your plan/ : /Plan review feedback/);
 });
