@@ -3,7 +3,7 @@ import type { Project } from '../../types/app';
 import { isGeneralProject } from '../app-shell/appShellSelection';
 import { teamCommand, newRequestToken, refOf, workspaceKey, type TeamDefinition, type TeamLibrary } from '../team-library/api';
 import { safeLocalStorage } from '../chat/utils/chatStorage';
-import type { TeamExecutionSelection, TeamRuntimeActivation, TeamRuntimeProbe, TeamRuntimeView, TeamRuntimeInteractionResponse } from '../../../../src/team/runtimeTypes';
+import type { TeamExecutionSelection, TeamRuntimeActivation, TeamRuntimeProbe, TeamRuntimeView, TeamRuntimeInteractionResponse, TeamRuntimeMessage, TeamMessageDeleteResult } from '../../../../src/team/runtimeTypes';
 import type { TeamHumanInteraction } from './teamInteractionTypes';
 import { activationInteractions } from './teamInteractionTypes';
 import { useOptionalWebSocket } from '../../contexts/WebSocketContext';
@@ -22,10 +22,20 @@ function mergeInteractions(snapshot: TeamHumanInteraction[], current: TeamHumanI
 }
 
 export const hasTeamWork = (activation: TeamRuntimeActivation | null) => Boolean(activation?.status === 'active' && (
-  activation.works.some(work => ['queued', 'running', 'waiting_information', 'waiting_approval'].includes(work.status))
-  || activation.messages.some(message => message.status === 'queued')
-  || activation.notifications.some(notification => !notification.deliveredAt && !notification.cancelledAt)
+  activation.turns?.some(turn => ['preparing', 'running', 'waiting_approval'].includes(turn.status))
+  || activation.messages.some(message => ['queued', 'preparing', 'sending'].includes(message.status) && message.stopVersion === activation.stopVersion)
 ));
+
+function mergeMessages(snapshot: TeamRuntimeMessage[], current: TeamRuntimeMessage[]) {
+  const terminal = new Set(['consumed', 'invalidated', 'deleted', 'uncertain']);
+  const previous = new Map(current.map(item => [item.id, item]));
+  const merged = snapshot.map(item => {
+    const old = previous.get(item.id);
+    return old && terminal.has(old.status) && item.status !== 'deleted' ? old : item;
+  });
+  for (const item of current) if (item.status === 'deleted' && !merged.some(next => next.id === item.id)) merged.push(item);
+  return merged;
+}
 
 type TeamDraft = { team: TeamDefinition; selection: TeamExecutionSelection; sessionKey: string };
 const draftKey = (projectKey: string) => `pilotdeck:team-draft:${projectKey}`;
@@ -49,7 +59,6 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
   const interactionsRef = useRef<TeamHumanInteraction[]>([]);
   const interactionVersion = useRef(0);
   const [history, setHistory] = useState<TeamRuntimeActivation[]>([]);
-  const [continuationPaused, setContinuationPaused] = useState<'budget' | undefined>();
   const [draft, setDraft] = useState<TeamDraft | null>(() => !sessionKey ? readDraft(project ? workspaceKey(project) : '') : null);
   const [loading, setLoading] = useState(Boolean(sessionKey));
   const [error, setError] = useState<string | null>(null);
@@ -68,13 +77,13 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
     const same = previous?.id === next?.id;
     const ledger = activationInteractions(next);
     const merged = same ? mergeInteractions(ledger, interactionsRef.current, preserveNewEvents) : ledger;
-    const updated = next ? { ...next, interactions: merged } : null;
+    const updated = next ? { ...next, interactions: merged, messages: same ? mergeMessages(next.messages || [], previous?.messages || []) : next.messages || [] } : null;
     activationRef.current = updated; interactionsRef.current = merged;
     setActivation(updated); setInteractions(merged);
   }, []);
   const catalog = useCallback(async () => {
     setCatalogLoading(true); setCatalogError(null);
-    try { setTeams((await teamCommand<TeamLibrary>({ action: 'library' })).teams.filter(team => !team.archived)); }
+    try { setTeams((await teamCommand<TeamLibrary>({ action: 'library' })).teams); }
     catch (cause) { setCatalogError((cause as Error).message); }
     finally { setCatalogLoading(false); }
   }, []);
@@ -104,11 +113,27 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
         }
         view = { ...view, activation: { ...view.activation, interactions: allInteractions } };
       }
+      if (view.activation) {
+        const messages = [...view.activation.messages];
+        const turns = [...(view.activation.turns || [])];
+        for (const field of ['messages', 'turns'] as const) {
+          let cursor = field === 'messages' ? view.messagesNextCursor : view.turnsNextCursor;
+          while (cursor) {
+            const page = await teamCommand<TeamRuntimeView>({ action: 'runtime_get', sessionKey: key, limit: 200,
+              ...(field === 'messages' ? { messageCursor: cursor } : { turnCursor: cursor }) });
+            if (!page.activation || page.activation.id !== view.activation.id || page.activation.stopVersion !== view.activation.stopVersion) throw new Error(translateRef.current('teamInteraction.readOnlyChat.paginationChanged'));
+            if (field === 'messages') messages.push(...page.activation.messages);
+            else turns.push(...(page.activation.turns || []));
+            cursor = field === 'messages' ? page.messagesNextCursor : page.turnsNextCursor;
+          }
+        }
+        view = { ...view, activation: { ...view.activation, messages, turns } };
+      }
       if (sequence !== requestSequence.current || contextRef.current.sessionKey !== key) return;
       const current = activationRef.current;
       if (current && view.activation?.id === current.id && (view.activation.stopVersion < current.stopVersion || (view.activation.stopVersion === current.stopVersion && view.activation.updatedAt < current.updatedAt))) return;
       publishActivation(view.activation?.status === 'closed' ? null : view.activation, eventVersion !== interactionVersion.current);
-      setHistory(view.history || []); setContinuationPaused(view.continuationPaused);
+      setHistory(view.history || []);
       if (view.activation) { setDraft(null); safeLocalStorage.removeItem(draftKey(contextRef.current.storageProjectKey)); }
       setError(null); setLoading(false);
     } catch (cause) {
@@ -127,7 +152,7 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
     const previous = previousSessionKey.current;
     previousSessionKey.current = sessionKey;
     if (previous && previous !== sessionKey && !previous.startsWith('new-session-')) setDraft(null);
-    publishActivation(null); setHistory([]); setContinuationPaused(undefined);
+    publishActivation(null); setHistory([]);
     if (!sessionKey || sessionKey.startsWith('new-session-')) { setLoading(false); return; }
     setLoading(true); void refresh();
   }, [sessionKey, storageProjectKey, refresh, publishActivation]);
@@ -263,8 +288,21 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
     publishActivation({ ...latest, interactions: [...interactionsRef.current.filter(item => item.id !== resolved.id), resolved] });
     await refresh();
   }, [refresh, publishActivation, t]);
-  return { teams, catalogLoading, catalogError, reloadCatalog: catalog, activation, history, continuationPaused, draft, selectedTeam: activation?.team || draft?.team || null,
-    interactions, respondInteraction,
+  const deleteMessage = useCallback(async (message: TeamRuntimeMessage) => {
+    const key = contextRef.current.sessionKey;
+    const current = activationRef.current;
+    if (!key || !current || !current.messages.some(item => item.id === message.id && item.recipientId === message.recipientId)) throw new Error(t('teamInteractions.sessionUnavailable'));
+    const result = await teamCommand<TeamMessageDeleteResult>({ action: 'runtime_message_delete', sessionKey: key, activationId: current.id,
+      stopVersion: message.stopVersion, participantId: message.recipientId, messageId: message.id });
+    if (!result.deleted) throw new Error(t('teamInteractions.messageDeleteFailed'));
+    const latest = activationRef.current;
+    if (contextRef.current.sessionKey !== key || latest?.id !== current.id) return;
+    requestSequence.current += 1; interactionVersion.current += 1;
+    publishActivation({ ...latest, messages: latest.messages.map(item => item.id === message.id ? { ...item, status: 'deleted', deletedAt: new Date().toISOString() } : item) });
+    await refresh();
+  }, [publishActivation, refresh, t]);
+  return { teams, catalogLoading, catalogError, reloadCatalog: catalog, activation, history, draft, selectedTeam: activation?.team || draft?.team || null,
+    interactions, respondInteraction, deleteMessage,
     teamSelection: draft?.selection, teamDraftSessionId: draft?.sessionKey, teamActivationId: activation?.id ?? null, teamStopVersion: activation?.stopVersion, renewDraftRequest, loading, error, refresh,
     ready: !loading && !error && !changing && !choice && activation?.status !== 'stopping', locked, changing, choice, selectTeam, selectSolo, confirmChoice, cancelChoice,
     changeChoiceProject: (projectKey: string) => { if (choice && !changing) void probe({ ...choice, projectKey, requestToken: newRequestToken() }); },

@@ -1,0 +1,224 @@
+{
+  "model": "deepseek-v4-pro-0813",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are PilotDeck, an AI agent runtime. You execute tasks across CLI, TUI, web, and chat channels by calling structured tools and reasoning over their results.\nOperate decisively: prefer using available tools to gather facts before answering, prefer concise replies, and surface uncertainty when present.\n\nDocumentation lookup policy:\nWhen implementing code against an API, SDK, framework, CLI, config schema, or file format whose usage is not clear, prefer installed types, local source, examples, and project docs. State any remaining uncertainty and proceed conservatively.\n\nParallel delegation policy:\nWhen the agent tool is available and the task contains two or more independent, repetitive, or separable workstreams, prefer launching multiple subagents in the same assistant message instead of waiting for one to finish before starting the next. Good parallel candidates include inspecting multiple files/modules, researching independent APIs, checking several artifacts, or comparing alternatives. Do not parallelize tasks that write to the same files, depend on another subagent's output, require shared ordering, or need user approval between steps. Give each subagent a self-contained prompt, distinct scope, and expected output. After all sibling results return, synthesize them yourself and decide the next step.\n\nReusable script workflow:\nWhen code is more than a tiny one-off command, or you expect to rerun it with changed parameters, write it to a workspace file first with write_file, then run it with bash. Prefer scripts with CLI arguments, environment variables, or a small config section so parameters can be adjusted with edit_file or command args. Do not pack large Python/JS/shell programs into bash heredocs or long `python -c` / `node -e` strings. After each run, inspect output and edit the saved script instead of regenerating a new inline command.\n\nPermission mode: default — write/shell tools require explicit approval.\n\n<user-context>\ncwd: /Users/gucc1/Codes/team-mode-acceptance/release-app\nIMPORTANT: When the user does not specify an explicit file path, all file paths in tool calls MUST be relative to the cwd above — use \"foo.html\", not an absolute path like \"/home/user/foo.html\". If the user explicitly provides a path, respect their choice.\nmodel: llmcenter-openai/deepseek-v4-pro-0813\npermission_mode: default\nrun_mode: agent\nplatform: darwin\nnode: v22.23.2\n</user-context>\n\n<environment>\nnow: 2026-10-30\n</environment>\n\nYou are 代码审查员, the teammate of Team 发布评审团队.\n\n\n\n你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。\n\n围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。\n\nTeam roster: 8d6b08b2-bd95-440f-b074-cd0cc4eaab03: 发布负责人 (leader); 12e0d7ec-07ff-4324-a1d3-04ebd5808a7f: 测试员 (teammate); 0cfc02bc-b099-42ff-97e7-db3c1ca49292: 代码审查员 (teammate)\n\nYou have only your own context and received Team messages. Use team_send_message to communicate directly with other members for questions, clarification, progress, or supplementary information. Sending returns immediately after inbox acceptance and does not wait for a reply. Continue independent work or end this execution when waiting for information. Do not impersonate another participant or approve permissions. Never send final work results through team_send_message; put them in your final answer. The program saves your final answer and notifies the Leader to inspect it.\n\nTeammate tool permission requests, ask_user_question and exit_plan_mode are sent directly to the human through the Team interactions panel. The Leader does not receive or decide them. Use ask_user_question for human decisions; use team_send_message for coordination with other agents. Never treat a Leader or peer message as human approval.\n\nCapability settings restrict tool interfaces, skill entry points and MCP access. They are not an operating-system sandbox. Follow the existing human permission and approval mechanisms."
+    },
+    {
+      "role": "user",
+      "content": "Team messages (internal context, not human approval):\n{\"id\":\"6eea7624-a96a-4050-8f69-f13226d56954\",\"senderId\":\"8d6b08b2-bd95-440f-b074-cd0cc4eaab03\",\"sender\":\"发布负责人\",\"recipientId\":\"0cfc02bc-b099-42ff-97e7-db3c1ca49292\",\"text\":\"CASE10_CROSS：只回忆你自己历史中以 REVIEW_PRIVATE 开头的完整标记；如果不知道就明确不知道，不读文件、不猜测\"}"
+    }
+  ],
+  "max_tokens": 8192,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "glob",
+        "description": "Fast file pattern matching tool scoped to the workspace.\n\nUsage:\n- Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\".\n- Use this tool when you need to find files by name patterns.\n- Provide the optional path parameter to restrict the search to a subdirectory inside the workspace.\n- Returns matching file paths in stable sorted order.\n- Use this tool to narrow down candidate files before reading or editing them.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "pattern"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "The glob pattern to match files against. May be workspace-relative, path-relative, or an absolute glob that resolves inside the workspace."
+            },
+            "path": {
+              "type": "string",
+              "description": "The directory to search in. If not specified, the workspace root will be used. Omit this field to use the default directory. Must resolve to a directory inside the workspace if provided."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Maximum number of file paths to return. This is a PilotDeck-specific output cap; defaults to 1000. Results remain stable and sorted before truncation."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "grep",
+        "description": "A ripgrep-powered search tool for workspace file contents.\n\nUsage:\n- ALWAYS use `grep` for content search tasks. Do NOT invoke `grep` or `rg` through `bash` when this tool can express the search.\n- Supports full regular expressions, `type` filters, glob filters, and multiline search.\n- Output modes: `content` shows matching lines, `files_with_matches` lists file paths, and `count` shows per-file match counts.\n- `head_limit` and `offset` work in every output mode. Pass `head_limit: 0` only when you truly need unlimited results.\n- For open-ended multi-step exploration, prefer the `agent` tool's `explore` subagent instead of repeatedly broadening searches in the parent agent.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "pattern"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "The regular expression pattern to search for in file contents."
+            },
+            "path": {
+              "type": "string",
+              "description": "File or directory to search within. Defaults to the workspace root."
+            },
+            "glob": {
+              "type": "string",
+              "description": "Glob pattern to filter files (for example '*.js' or '*.{ts,tsx}'). Maps to ripgrep's --glob."
+            },
+            "output_mode": {
+              "type": "string",
+              "enum": [
+                "content",
+                "files_with_matches",
+                "count"
+              ],
+              "description": "Output mode: 'content' shows matching lines, 'files_with_matches' lists file paths, and 'count' shows per-file counts. Defaults to 'files_with_matches'."
+            },
+            "-B": {
+              "type": "integer",
+              "description": "Number of lines to show before each match (content mode only)."
+            },
+            "-A": {
+              "type": "integer",
+              "description": "Number of lines to show after each match (content mode only)."
+            },
+            "-C": {
+              "type": "integer",
+              "description": "Alias for context: number of lines to show before and after each match."
+            },
+            "context": {
+              "type": "integer",
+              "description": "Number of lines to show before and after each match (content mode only)."
+            },
+            "-n": {
+              "type": "boolean",
+              "description": "When false, hide line numbers in content mode output. Defaults to true. Ignored in other modes."
+            },
+            "-i": {
+              "type": "boolean",
+              "description": "When true, perform case-insensitive matching."
+            },
+            "type": {
+              "type": "string",
+              "description": "File type to search (for example 'js', 'ts', 'py'). Maps to ripgrep's --type filter."
+            },
+            "head_limit": {
+              "type": "integer",
+              "description": "Maximum number of output entries to return. Applies to all output modes. Defaults to 250; pass 0 for unlimited."
+            },
+            "offset": {
+              "type": "integer",
+              "description": "Skip this many output entries before returning results."
+            },
+            "multiline": {
+              "type": "boolean",
+              "description": "When true, enable multiline mode where . matches newlines and patterns can span lines."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Reads a file from the current workspace. You can access workspace files directly by using this tool.\nIf the User provides a path to a file, assume that path is valid as long as it resolves inside the current workspace. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- The file_path parameter may be a workspace-relative path or an absolute path, but it must resolve inside the current workspace\n- If the user asks you to send or share a file, use send_attachment instead of read_file; do not inspect arbitrary binary files before sending them\n- By default, offset is 1 and the tool reads from the beginning of the file\n- You can optionally specify offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters\n- Results are returned using cat -n format, with line numbers starting at 1\n- For image files, screenshots, extracted video frames, and PDFs, use this tool to inspect the visual/document content directly\n- When the current model supports image input, image files are returned as model-visible image content\n- When the current model supports PDF input, small PDF files are returned as model-visible PDF content. When specific PDF pages are requested, pages are rendered as model-visible images if the model supports image input\n- Do not manually base64-encode local images/PDFs or route them through another vision/document API unless read_file reports that the current model cannot read that content\n- When the current model does not support the required modality, reading the file returns a text notice explaining that the current model cannot read it\n- For large PDFs, provide the pages parameter to validate specific page ranges (e.g., pages: \"1-5\"). Maximum 20 pages per request\n- This tool can read Jupyter notebooks (.ipynb files) and returns a text rendering of notebook cells and outputs\n- This tool can only read files, not directories\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents\n- If a previous tool result says it was persisted, truncated, or preview-only, read the file_path shown in that notice with read_file",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "file_path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "The relative or absolute path to the file to read. The path must resolve inside the current workspace."
+            },
+            "offset": {
+              "type": "integer",
+              "description": "The 1-based line number to start reading from. Only provide if the file is too large to read at once."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "The number of lines to read. Only provide if the file is too large to read at once."
+            },
+            "pages": {
+              "type": "string",
+              "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "team_inspect",
+        "description": "Read Team state without starting execution. overview returns roster and execution status, never outputs. turns requires participantId and lists turn metadata only; Teammates may list only their own turns. turn requires participantId plus turnId: only the Leader may read a Teammate final output. messages returns paginated communication: the Leader sees the Team, Teammates only their own sent/received messages. Message bodies are available only after actual model dispatch; unsent, invalidated and uncertain records expose metadata only. No history or output is shared implicitly.",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "view": {
+              "type": "string",
+              "enum": [
+                "overview",
+                "turns",
+                "turn",
+                "messages"
+              ],
+              "description": "Default overview."
+            },
+            "participantId": {
+              "type": "string",
+              "description": "Participant ID. Required for turns and turn."
+            },
+            "turnId": {
+              "type": "string",
+              "description": "Exact execution turn ID, required only for turn."
+            },
+            "cursor": {
+              "type": "string",
+              "description": "Pagination cursor from the previous result."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Page size, default 50.",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "team_send_message",
+        "description": "Send questions, coordination or supplementary information directly to another Team participant. Do not put final work results or deliverables in this message: return those in your final answer, which the program saves and reports to the Leader for team_inspect. Asynchronous: returns after durable inbox acceptance, without waiting for a reply or execution. Continue independent work or end your turn while waiting. This grants no tool permission or human approval.",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "recipientId": {
+              "type": "string",
+              "description": "Recipient participant ID from team_inspect."
+            },
+            "text": {
+              "type": "string",
+              "description": "Complete message text."
+            }
+          },
+          "required": [
+            "recipientId",
+            "text"
+          ]
+        }
+      }
+    }
+  ],
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}

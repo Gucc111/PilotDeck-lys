@@ -1,0 +1,82 @@
+import { chromium, expect } from '@playwright/test';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+const base = process.env.PILOTDECK_TEAM_FIXTURE;
+if (!base) throw new Error('PILOTDECK_TEAM_FIXTURE is required.');
+const fixture = JSON.parse(await fs.readFile(path.join(base, 'fixture.json'), 'utf8'));
+const url = process.env.PILOTDECK_TEAM_UI_URL || 'http://127.0.0.1:5197';
+const shots = process.env.PILOTDECK_TEAM_SCREENSHOTS || path.join(base, 'screenshots'); await fs.mkdir(shots, { recursive: true });
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+const errors = []; page.on('pageerror', error => errors.push(error.message));
+await page.addInitScript(() => { localStorage.setItem('userLanguage', 'en'); localStorage.setItem('themeMode', 'light'); });
+const command = async input => { const response = await page.request.post(`${url}/api/team-library`, { data: input }); return { ok: response.ok(), status: response.status(), body: await response.json() }; };
+try {
+  let activation;
+  await expect.poll(async () => {
+    const response = await command({ action: 'runtime_get', sessionKey: fixture.sessionKey });
+    activation = response.body.activation;
+    return !!activation?.messages?.some(message => message.status === 'consumed') && activation.turns.every(turn => !['preparing', 'running', 'waiting_approval'].includes(turn.status));
+  }, { timeout: 180000, intervals: [1000, 2000] }).toBe(true);
+  await page.goto(`${url}/session/${encodeURIComponent(fixture.sessionKey)}`);
+  await expect(page.getByRole('button', { name: 'Team interactions', exact: true })).toBeVisible({ timeout: 30000 });
+  const assertLeaderOrder = async () => {
+    const firstLine = activation.turns.filter(turn => turn.participantId === fixture.leaderId && turn.resultType === 'success').at(-1)?.finalMessage?.content.filter(block => block.type === 'text').map(block => block.text).join('\n').split('\n')[0].replaceAll('`', '');
+    expect(firstLine).toBeTruthy();
+    const answer = page.getByText(firstLine, { exact: true });
+    await expect(answer).toBeVisible({ timeout: 30000 });
+    const boundary = page.locator('[data-team-injection="start"]').first();
+    await expect(boundary).toBeVisible();
+    expect(await boundary.evaluate((element, text) => {
+      const paragraph = [...document.querySelectorAll('p')].find(node => node.textContent === text);
+      return !!paragraph && !!(element.compareDocumentPosition(paragraph) & Node.DOCUMENT_POSITION_FOLLOWING);
+    }, firstLine)).toBe(true);
+    await boundary.scrollIntoViewIfNeeded();
+    return true;
+  };
+  const leaderOutputAfterBoundary = await assertLeaderOrder();
+  const boundaryCount = await page.locator('[data-team-injection="start"]').count();
+  await page.screenshot({ path: path.join(shots, 'real-desktop-leader-chat.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Team interactions', exact: true }).click();
+  await expect(page.locator('.team-interaction-teammate-card')).toHaveCount(activation.participants.length);
+  const leader = activation.participants.find(participant => participant.role === 'leader');
+  const leaderCard = page.locator('.team-interaction-teammate-card').filter({ has: page.locator('.team-interaction-teammate-header strong').filter({ hasText: leader.profile.config.displayName }) });
+  await expect(leaderCard.locator('.team-interaction-section')).toHaveCount(1);
+  await expect(leaderCard.locator('.team-received-message')).not.toHaveCount(0);
+  await page.screenshot({ path: path.join(shots, 'real-desktop-leader-inbox.png'), fullPage: true });
+  const consumed = activation.messages.find(message => message.kind === 'member' && message.status === 'consumed');
+  const rejected = consumed ? await command({ action: 'runtime_message_delete', sessionKey: fixture.sessionKey, activationId: activation.id, stopVersion: consumed.stopVersion, participantId: consumed.recipientId, messageId: consumed.id }) : null;
+  if (rejected) { expect(rejected.ok).toBe(false); expect(rejected.body.error.message).toMatch(/sent|无法|发送/i); }
+  await page.setViewportSize({ width: 390, height: 844 }); await page.reload();
+  await expect(page.locator('.team-interaction-teammate-card')).toHaveCount(activation.participants.length);
+  await page.screenshot({ path: path.join(shots, 'real-mobile-leader-inbox.png'), fullPage: true });
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  const leaderOrderAfterReload = await assertLeaderOrder();
+  await page.screenshot({ path: path.join(shots, 'real-mobile-leader-chat.png'), fullPage: true });
+  const finalLine = activation.turns.filter(turn => turn.participantId === fixture.leaderId && turn.resultType === 'success').at(-1)?.finalMessage?.content.filter(block => block.type === 'text').map(block => block.text).join('\n').split('\n')[0].replaceAll('`', '');
+  await page.getByText(finalLine, { exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(shots, 'real-mobile-leader-final.png'), fullPage: true });
+  const teammate = activation.participants.find(participant => participant.role === 'teammate');
+  await page.goto(`${url}/team/${encodeURIComponent(fixture.sessionKey)}/${activation.id}/teammate/${teammate.id}`);
+  await expect(page.locator('.team-teammate-message-flow')).toBeVisible();
+  await expect(page.locator('[data-team-injection="during"]').first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText('Team messages are waiting.', { exact: true })).toHaveCount(0);
+  await page.waitForTimeout(1000);
+  await page.locator('[data-team-injection="during"]').first().locator('div').first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(shots, 'real-mobile-teammate-chat.png'), fullPage: true });
+  const busyInjections = await page.locator('[data-team-injection="during"]').count();
+  await page.locator('[data-stream-scroll-viewport]').first().evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await page.screenshot({ path: path.join(shots, 'real-mobile-teammate-final.png'), fullPage: true });
+  await page.reload(); await expect(page.locator('[data-team-injection="during"]').first()).toBeVisible({ timeout: 30000 });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.waitForTimeout(1000);
+  await page.locator('[data-team-injection="during"]').first().locator('div').first().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(shots, 'real-desktop-teammate-chat.png'), fullPage: true });
+  await fs.writeFile(path.join(base, 'real-browser-inspection.json'), JSON.stringify({ passed: true, root: fixture.sessionKey, activationId: activation.id, boundaryCount, busyInjections, leaderOutputAfterBoundary, leaderOrderAfterReload, consumedDeleteRejection: rejected, errors, screenshots: shots }, null, 2));
+  if (process.env.PILOTDECK_TEAM_SCREENSHOTS) await fs.copyFile(path.join(base, 'real-browser-inspection.json'), path.join(shots, 'real-browser-inspection.json'));
+  expect(errors).toEqual([]);
+  console.log(JSON.stringify({ passed: true, boundaryCount, busyInjections, consumedDeleteRejected: !!rejected && !rejected.ok, screenshots: shots }));
+} finally { await browser.close(); }

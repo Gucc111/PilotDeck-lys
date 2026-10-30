@@ -42,3 +42,15 @@ test('private transcript preserves inputs, tool identity, results and status wit
   assert.equal(persisted[3]?.text, 'Stopped');
   assert.ok(!JSON.stringify(persisted).includes('internal'));
 });
+
+test('internal input is visible only after actual dispatch and keeps its injection metadata', () => {
+  const stream = new TeamParticipantStream(() => new Date(stamp));
+  const message = { role: 'user' as const, content: [{ type: 'text' as const, text: 'Leader: keep the old API' }], metadata: { purpose: 'team_runtime' } };
+  assert.deepEqual(stream.observe({ type: 'input_accepted', sessionId: 'internal', turnId: 'turn', messages: [message] }), []);
+  const consumed = { ...message, metadata: { ...message.metadata, teamConsumed: true, teamInjectionMode: 'during' as const, teamEventIds: ['message-1'], teamRequestId: 'request-1' } };
+  const live = stream.observe({ type: 'steer_applied', sessionId: 'internal', turnId: 'turn', itemId: 'batch-1', message: consumed });
+  const history = projectParticipantTranscript([{ type: 'durable_message', sessionId: 'internal', turnId: 'turn', message: consumed, createdAt: stamp, sequence: 1, entryId: 'durable' }]);
+  assert.equal(live[0]?.metadata?.teamConsumed, true);
+  assert.equal(live[0]?.id, history[0]?.id);
+  assert.deepEqual(live[0]?.metadata, history[0]?.metadata);
+});

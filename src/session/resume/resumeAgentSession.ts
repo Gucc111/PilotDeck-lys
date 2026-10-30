@@ -10,6 +10,7 @@ import {
 } from "../storage/ProjectSessionStorage.js";
 import { readTranscript } from "../transcript/TranscriptReader.js";
 import { replayTranscriptEntries } from "../transcript/TranscriptReplay.js";
+import type { AgentTranscriptEntry } from "../transcript/TranscriptEntry.js";
 
 /**
  * Optional hook fired once the per-session `storage` has been created. Lets
@@ -36,6 +37,8 @@ export type ResumeAgentSessionOptions = Omit<CreateAgentSessionOptions, "transcr
   projectStorage: Omit<AgentProjectSessionStorageOptions, "sessionId" | "now">;
   /** @see `ResumeSessionDependencyExtension`. */
   extendDependencies?: ResumeSessionDependencyExtension;
+  /** Restrict model context while retaining the original visible history. */
+  modelHistoryEntries?: (entries: AgentTranscriptEntry[]) => AgentTranscriptEntry[];
 };
 
 export type ResumeAgentSessionResult = {
@@ -60,6 +63,9 @@ export async function resumeAgentSession(options: ResumeAgentSessionOptions): Pr
   }
 
   const replay = replayTranscriptEntries(readResult.entries);
+  const modelReplay = options.modelHistoryEntries
+    ? replayTranscriptEntries(options.modelHistoryEntries(readResult.entries))
+    : replay;
 
   const extension = options.extendDependencies?.(storage) ?? {};
   const dependencies: typeof options.dependencies = {
@@ -79,7 +85,7 @@ export async function resumeAgentSession(options: ResumeAgentSessionOptions): Pr
     projectStorage: options.projectStorage,
     storage,
     transcript: storage.transcript,
-    initialState: createAgentSessionStateFromReplay(options.sessionId, replay),
+    initialState: createAgentSessionStateFromReplay(options.sessionId, { ...replay, messages: modelReplay.messages }),
     replayEvents: replay.events,
     initialMetadata: replay.metadata,
   });

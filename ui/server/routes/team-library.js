@@ -2,17 +2,17 @@ import express from 'express';
 import { getPilotDeckGateway, hasPendingSessionInputs, invalidateTeamSessionInputs } from '../pilotdeck-bridge.js';
 
 const actions = new Set([
-  'library', 'inventory', 'profile_save', 'profile_fork', 'profile_archive',
-  'team_save', 'team_fork', 'team_archive', 'project_references',
+  'library', 'inventory', 'profile_save', 'profile_fork', 'profile_delete',
+  'team_save', 'team_fork', 'team_delete', 'project_references',
   'runtime_probe', 'runtime_select', 'runtime_get', 'runtime_stop',
-  'runtime_interaction_respond', 'runtime_participant_messages',
+  'runtime_interaction_respond', 'runtime_participant_messages', 'runtime_message_delete',
 ]);
 
 export function teamErrorStatus(error) {
   const code = typeof error?.code === 'string' ? error.code : '';
   if (/NOT_FOUND$/.test(code)) return 404;
   if (/INVALID_INPUT|VALIDATION|ROLE_MISMATCH|PROJECT_REQUIRED|ACTOR_INVALID/.test(code)) return 400;
-  if (/CONFLICT|REFERENCED|PROTECTED|ARCHIVED|BUSY|MISMATCH|STALE|EXPIRED|STOPPING|STOPPED|GENERATION_REQUIRED|ACTIVATION_CHANGED/.test(code)) return 409;
+  if (/CONFLICT|REFERENCED|PROTECTED|ARCHIVED|BUSY|MISMATCH|STALE|EXPIRED|STOPPING|STOPPED|GENERATION_REQUIRED|ACTIVATION_CHANGED|MESSAGE_ALREADY_SENT|MESSAGE_NOT_DELETABLE/.test(code)) return 409;
   if (/UNAVAILABLE|CORRUPT/.test(code) || /Gateway WebSocket|ECONNREFUSED|connect timeout|gateway is not connected/i.test(error?.message || '')) return 503;
   return 500;
 }

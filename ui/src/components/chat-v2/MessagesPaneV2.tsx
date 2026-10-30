@@ -584,7 +584,7 @@ function MessagesPaneV2({
   );
   const lastUserMessageItemKey = useMemo(() => {
     for (let index = keyedMessageItems.length - 1; index >= 0; index -= 1) {
-      if (keyedMessageItems[index].message.type === 'user') return keyedMessageItems[index].itemKey;
+      if (keyedMessageItems[index].message.type === 'user' || keyedMessageItems[index].message.isTeamBoundary) return keyedMessageItems[index].itemKey;
     }
     return null;
   }, [keyedMessageItems]);
@@ -656,7 +656,7 @@ function MessagesPaneV2({
   }, [keyedMessageItems, liveProcessGroups]);
   const latestUserRenderIndex = useMemo(() => {
     for (let index = keyedMessageItems.length - 1; index >= 0; index -= 1) {
-      if (keyedMessageItems[index].message.type === 'user') return index;
+      if (keyedMessageItems[index].message.type === 'user' || keyedMessageItems[index].message.isTeamBoundary) return index;
     }
     return -1;
   }, [keyedMessageItems]);
@@ -699,7 +699,7 @@ function MessagesPaneV2({
   const liveProcessStartedAtMs = useMemo(() => {
     if (!isAssistantWorking || liveProcessHeaderIndex <= 0) return null;
     const anchorMessage = keyedMessageItems[liveProcessHeaderIndex - 1]?.message;
-    if (anchorMessage?.type !== 'user' || anchorMessage.timestamp == null) return null;
+    if ((anchorMessage?.type !== 'user' && !anchorMessage?.isTeamBoundary) || anchorMessage.timestamp == null) return null;
     const parsed = Date.parse(String(anchorMessage.timestamp));
     return Number.isFinite(parsed) ? parsed : null;
   }, [isAssistantWorking, keyedMessageItems, liveProcessHeaderIndex]);
@@ -714,7 +714,7 @@ function MessagesPaneV2({
     ));
   }, [isAssistantWorking, keyedMessageItems, liveProcessHeaderIndex]);
   const currentTurnMessages = useMemo(() => {
-    const userIndex = visibleMessages.reduce((last, message, index) => message.type === 'user' ? index : last, -1);
+    const userIndex = visibleMessages.reduce((last, message, index) => message.type === 'user' || message.isTeamBoundary ? index : last, -1);
     return visibleMessages.slice(Math.max(0, userIndex));
   }, [visibleMessages]);
   const hasPendingToolUse = currentTurnMessages.some(isPendingToolUseMessage);
@@ -765,7 +765,7 @@ function MessagesPaneV2({
       if (isStreamingThinkingMessage(msg) && typeof msg.content === 'string' && msg.content.trim()) {
         return msg;
       }
-      if (msg.type === 'user') break;
+      if (msg.type === 'user' || msg.isTeamBoundary) break;
     }
     return null;
   }, [isAssistantWorking, visibleMessages]);
@@ -1032,7 +1032,7 @@ function MessagesPaneV2({
         if (!candidate) {
           continue;
         }
-        if (candidate.type === 'user') {
+        if (candidate.type === 'user' || candidate.isTeamBoundary) {
           break;
         }
         if (candidate.type === 'error') {

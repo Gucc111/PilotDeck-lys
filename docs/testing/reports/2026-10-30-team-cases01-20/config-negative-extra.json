@@ -1,0 +1,391 @@
+{
+  "at": "2026-10-30T04:12:36.620Z",
+  "evidenceKind": "real Gateway auxiliary replay, not browser E2E",
+  "rows": [
+    {
+      "label": "profile-revision",
+      "input": {
+        "action": "profile_save",
+        "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03",
+        "role": "leader",
+        "config": {
+          "displayName": "发布负责人",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "write_file",
+              "edit_file"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "2ce27ec5-4d18-48c6-bc54-bae2270515de",
+        "revision": 1
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.revision: unsupported field"
+    },
+    {
+      "label": "team-revision",
+      "input": {
+        "action": "team_save",
+        "id": "0833cb94-d5f7-4050-8093-6a3426fae2dd",
+        "config": {
+          "displayName": "发布评审团队",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "ae33a953-b9ff-410e-93b8-a9e12ef85ab3",
+        "revision": 1
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.revision: unsupported field"
+    },
+    {
+      "label": "profile-expectedRevision",
+      "input": {
+        "action": "profile_save",
+        "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03",
+        "role": "leader",
+        "config": {
+          "displayName": "发布负责人",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "write_file",
+              "edit_file"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "b8b1a036-f313-499f-9fdf-140bd1996d7e",
+        "expectedRevision": 1
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.expectedRevision: unsupported field"
+    },
+    {
+      "label": "team-expectedRevision",
+      "input": {
+        "action": "team_save",
+        "id": "0833cb94-d5f7-4050-8093-6a3426fae2dd",
+        "config": {
+          "displayName": "发布评审团队",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "4c21f9b0-a596-4b2d-8dab-5e333c99f5c5",
+        "expectedRevision": 1
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.expectedRevision: unsupported field"
+    },
+    {
+      "label": "profile-archived",
+      "input": {
+        "action": "profile_save",
+        "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03",
+        "role": "leader",
+        "config": {
+          "displayName": "发布负责人",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "write_file",
+              "edit_file"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "63994999-1882-4022-955d-3014ba88cab2",
+        "archived": true
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.archived: unsupported field"
+    },
+    {
+      "label": "team-archived",
+      "input": {
+        "action": "team_save",
+        "id": "0833cb94-d5f7-4050-8093-6a3426fae2dd",
+        "config": {
+          "displayName": "发布评审团队",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "de7d540c-336c-4299-9ee8-ec210902e899",
+        "archived": true
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.archived: unsupported field"
+    },
+    {
+      "label": "profile-unknown",
+      "input": {
+        "action": "profile_save",
+        "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03",
+        "role": "leader",
+        "config": {
+          "displayName": "发布负责人",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "write_file",
+              "edit_file"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "18f08600-60ef-482e-aa72-7807eeabe265",
+        "unknownField": true
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.unknownField: unsupported field"
+    },
+    {
+      "label": "team-unknown",
+      "input": {
+        "action": "team_save",
+        "id": "0833cb94-d5f7-4050-8093-6a3426fae2dd",
+        "config": {
+          "displayName": "发布评审团队",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "75ca3dc3-bd34-4d22-b2b7-99c040112ef9",
+        "unknownField": true
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.unknownField: unsupported field"
+    },
+    {
+      "label": "forged-profile-id",
+      "input": {
+        "action": "profile_save",
+        "id": "95b6ae53-8f18-4557-a10b-bd4113401b9b",
+        "role": "leader",
+        "config": {
+          "displayName": "发布负责人",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "write_file",
+              "edit_file"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "a95b5aef-ac3c-4b18-a7cf-3fa90c7b0695"
+      },
+      "ok": false,
+      "code": "TEAM_PROFILE_NOT_FOUND",
+      "message": "Leader or Teammate was not found."
+    },
+    {
+      "label": "forged-team-id",
+      "input": {
+        "action": "team_save",
+        "id": "ac9437ed-287c-4b0f-beb5-3c44c8309503",
+        "config": {
+          "displayName": "发布评审团队",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "0884c8a5-cf89-4325-8fc0-0b227e090803"
+      },
+      "ok": false,
+      "code": "TEAM_NOT_FOUND",
+      "message": "Team was not found."
+    },
+    {
+      "label": "missing-member",
+      "input": {
+        "action": "team_save",
+        "config": {
+          "displayName": "发布评审团队",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "1698b6a9-eacc-4b93-a21c-08899fbf2f61"
+            }
+          ]
+        },
+        "requestToken": "8abe6b58-cb1e-4c97-af97-4da644396315"
+      },
+      "ok": false,
+      "code": "TEAM_PROFILE_NOT_FOUND",
+      "message": "Leader or Teammate was not found."
+    },
+    {
+      "label": "profile_archive",
+      "input": {
+        "action": "profile_archive",
+        "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03",
+        "requestToken": "74f58b79-8d9a-42f0-969a-d9820c525257"
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.action: unknown action"
+    },
+    {
+      "label": "team_archive",
+      "input": {
+        "action": "team_archive",
+        "id": "0833cb94-d5f7-4050-8093-6a3426fae2dd",
+        "requestToken": "eb55498c-c4e7-40e6-89e5-f44bbd15a551"
+      },
+      "ok": false,
+      "code": "TEAM_INVALID_INPUT",
+      "message": "command.action: unknown action"
+    },
+    {
+      "label": "counts",
+      "before": {
+        "profiles": 12,
+        "teams": 10
+      },
+      "after": {
+        "profiles": 12,
+        "teams": 10
+      }
+    }
+  ]
+}

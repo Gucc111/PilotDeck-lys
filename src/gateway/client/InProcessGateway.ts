@@ -129,7 +129,8 @@ export type InProcessGatewayOptions = {
   replayAcceptedInput?: (input: GatewaySubmitTurnInput) => Promise<GatewayEvent[] | undefined>;
   validateTeamSteer?: (input: GatewaySteerTurnInput) => Promise<void>;
   abortTeam?: (input: { sessionKey: string; teamActivationId?: string; teamStopVersion?: number }) => Promise<boolean>;
-  onAgentEvent?: (sessionKey: string, event: AgentEvent) => void;
+  onAgentEvent?: (sessionKey: string, event: AgentEvent) => void | Promise<void>;
+  onTurnSettled?: (input: { sessionKey: string; runId: string; error?: string }) => Promise<void>;
   protectSessionOperation?: (sessionKey: string, operation: string) => Promise<void>;
   afterInputAccepted?: (input: GatewaySubmitTurnInput, metadata?: Record<string, unknown>) => Promise<void>;
   teamCommand?: (input: import("../../team/types.js").TeamCommand) => Promise<import("../../team/types.js").TeamCommandResult>;
@@ -508,6 +509,7 @@ export class InProcessGateway implements Gateway {
     input = plannedInput;
 
     const runId = input.runId ?? this.uuid();
+    input = { ...input, runId };
     const replacementClaim = this.claimPendingTurnReplacement(input.sessionKey, runId);
     if (replacementClaim === "conflict") {
       const message = "This session is waiting for its edited replacement turn to be accepted.";
@@ -622,6 +624,7 @@ export class InProcessGateway implements Gateway {
       timingPrevious = current;
     };
     let completedEventAt: number | undefined;
+    let executionError: string | undefined;
 
     // Background pump: agent events → queue.
     const pump = (async () => {
@@ -805,7 +808,7 @@ export class InProcessGateway implements Gateway {
           if (this.turnCompletions.get(input.sessionKey) !== turnDone) {
             break;
           }
-          this.options.onAgentEvent?.(input.sessionKey, event);
+          await this.options.onAgentEvent?.(input.sessionKey, event);
           emitSessionTelemetry(this.options.telemetry, event, {
             sessionId: input.sessionKey,
             runId,
@@ -863,6 +866,7 @@ export class InProcessGateway implements Gateway {
           }
         }
       } catch (error) {
+        executionError = error instanceof Error ? error.message : String(error);
         this.options.telemetry?.trackError(error, {
           module: "session",
           ownerModule: telemetryContext.ownerModule,
@@ -897,11 +901,15 @@ export class InProcessGateway implements Gateway {
           queue.enqueue(gatewayEvent);
         }
       } finally {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-          timeoutHandle = undefined;
+        try {
+          await this.options.onTurnSettled?.({ sessionKey: input.sessionKey, runId, error: executionError });
+        } finally {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = undefined;
+          }
+          queue.close();
         }
-        queue.close();
       }
     })();
 
@@ -2174,7 +2182,7 @@ function mapAgentEventForTurn(event: AgentEvent, runId: string): GatewayEvent[] 
     case "input_accepted":
       return [{ type: "input_accepted", runId }];
     case "steer_applied":
-      return [{ type: "steer_applied", itemId: event.itemId, message: event.message,
+      return [{ type: "steer_applied", runId, itemId: event.itemId, message: event.message,
         ...(event.message.metadata?.purpose === "team_runtime" ? { purpose: "team_runtime" as const } : {}),
         ...(event.message.content.find(block => block.timeline)?.timeline ? { timeline: event.message.content.find(block => block.timeline)!.timeline } : {}),
       }];

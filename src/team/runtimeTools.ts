@@ -1,25 +1,22 @@
 import type { PilotDeckToolDefinition, PilotDeckToolRuntimeContext } from '../tool/protocol/types.js';
 import { TeamRuntime, type TeamRuntimeActor } from './TeamRuntime.js';
+import type { TeamInspectInput } from './runtimeTypes.js';
 import { object, text } from './validation.js';
 import { randomUUID } from 'node:crypto';
 
 type Input = Record<string, unknown>;
-const stringProperty = (description: string) => ({ type: 'string' as const, description });
-const optional = (value: unknown, field: string) => value === undefined ? undefined : text(value, field);
-const token = (context: PilotDeckToolRuntimeContext, name: string, input: Input) => optional(input.requestToken, 'requestToken') ?? `${context.turnId}:${context.currentToolCallId ?? randomUUID()}:${name}`;
+type Property = { type: string; description: string; enum?: string[]; minimum?: number; maximum?: number };
+const stringProperty = (description: string): Property => ({ type: 'string', description });
 
-/** Actor identity comes from the session factory, never model-supplied arguments. */
-export function createTeamRuntimeTools(runtime: TeamRuntime, actor: TeamRuntimeActor): PilotDeckToolDefinition[] {
-  const tool = (name: string, description: string, properties: Record<string, ReturnType<typeof stringProperty>>, required: string[], readOnly: boolean, execute: (input: Input, context: PilotDeckToolRuntimeContext) => Promise<unknown>): PilotDeckToolDefinition => ({
+/** Caller identity is captured by the server, never accepted from model arguments. */
+export function createTeamRuntimeTools(runtime: TeamRuntime, actor: TeamRuntimeActor, role: 'leader' | 'teammate' = 'leader'): PilotDeckToolDefinition[] {
+  const tool = (name: string, description: string, properties: Record<string, Property>, required: string[], readOnly: boolean, execute: (input: Input, context: PilotDeckToolRuntimeContext) => Promise<unknown>): PilotDeckToolDefinition => ({
     name, description, kind: 'custom', alwaysLoad: true,
     inputSchema: { type: 'object', additionalProperties: false, properties, required },
     isReadOnly: () => readOnly, isConcurrencySafe: () => true,
     checkPermissions: async (_input, context) => {
-      // Coordination changes only this activation's journal. Files/commands
-      // still pass through each receiving participant's existing approvals.
-      // Tool-level allow precedes mode checks, so preserve plan explicitly.
-      if (!readOnly && context.permissionContext.mode === 'plan') return { type: 'deny', message: 'Plan mode does not start or modify Team work.', reason: { type: 'mode', mode: 'plan', message: 'Plan mode does not start or modify Team work.' } };
-      return { type: 'allow', reason: { type: 'tool', toolName: name, message: 'Team coordination is admitted without granting permission for participant tools.' } };
+      if (!readOnly && context.permissionContext.mode === 'plan') return { type: 'deny', message: 'Plan mode does not start or modify Team execution.', reason: { type: 'mode', mode: 'plan', message: 'Plan mode does not start or modify Team execution.' } };
+      return { type: 'allow', reason: { type: 'tool', toolName: name, message: 'Team communication does not grant permission for recipient tools.' } };
     },
     execute: async (input, context) => {
       const checked = object(input, name, Object.keys(properties));
@@ -28,23 +25,22 @@ export function createTeamRuntimeTools(runtime: TeamRuntime, actor: TeamRuntimeA
     },
   });
   return [
-    tool('team_inspect', 'Read this Team roster, work status, and messages visible to you. Teammates cannot read sibling work or the Leader conversation. Messages intended for a peer must be explicitly relayed by the Leader. This grants no approval or permission authority.', {}, [], true, async () => runtime.inspect(actor)),
-    tool('team_delegate', 'Leader only: asynchronously assign a self-contained task to one configured Teammate. Include any context it needs; it cannot see the Leader conversation. Returns durable admission immediately. Different Teammates run in parallel; each Teammate processes its work serially. Use team_collect when completion is reported.', {
-      participantId: stringProperty('Target Teammate ID from team_inspect.'), task: stringProperty('Complete task description.'), context: stringProperty('Explicit background relevant to this task.'), requestToken: stringProperty('Optional stable retry token. Reusing it with changed content fails.'),
-    }, ['participantId', 'task'], false, async (input, context) => runtime.delegate(actor, { participantId: text(input.participantId, 'participantId'), task: text(input.task, 'task'), context: optional(input.context, 'context'), requestToken: token(context, 'delegate', input) })),
-    tool('team_followup', 'Leader only: admit additional collectible work to the same Teammate using its previous execution context. Distinct from an ordinary coordination message. Does not wait for completion.', {
-      participantId: stringProperty('Target Teammate ID.'), workId: stringProperty('Previous work for this Teammate.'), task: stringProperty('New work to perform.'), context: stringProperty('Additional background.'), requestToken: stringProperty('Optional stable retry token.'),
-    }, ['participantId', 'workId', 'task'], false, async (input, context) => runtime.delegate(actor, { participantId: text(input.participantId, 'participantId'), task: text(input.task, 'task'), context: optional(input.context, 'context'), followupOf: text(input.workId, 'workId'), requestToken: token(context, 'followup', input) })),
-    tool('team_collect', 'Read the durable status and result of admitted work. This is a pure read: it never starts or repeats work. Only the Leader and the assigned Teammate can read it.', { workId: stringProperty('Work ID returned by team_delegate or team_followup.') }, ['workId'], true, async input => runtime.collect(actor, text(input.workId, 'workId'))),
-    tool('team_send_message', 'Send non-blocking questions, progress, supplementary information, or coordination text. Do not send final deliverables here: return the final result from your delegated task; it is stored for the Leader to read with team_collect. Receipt means inbox acceptance, not a reply or completed work. A Teammate message addressed to another Teammate is delivered to the Leader with its intended recipient preserved, awaiting explicit relay. Does not delegate tasks or approve actions.', {
-      recipientId: stringProperty('Recipient participant ID from team_inspect.'), text: stringProperty('Message text.'), replyTo: stringProperty('Message ID being answered.'), workId: stringProperty('Related work ID.'), requestToken: stringProperty('Optional stable retry token.'),
-    }, ['recipientId', 'text'], false, async (input, context) => {
-      const message = await runtime.send(actor, { recipientId: text(input.recipientId, 'recipientId'), text: text(input.text, 'text'), replyTo: optional(input.replyTo, 'replyTo'), workId: optional(input.workId, 'workId'), requestToken: token(context, 'message', input) });
-      return { message, delivery: message.recipientId === message.intendedRecipientId ? 'inbox_accepted' : 'awaiting_leader_relay' };
-    }),
-    tool('team_relay_message', 'Leader only: explicitly relay a received message to its intended Teammate, optionally changing the text or recipient. Preserves the original sender and relay reference. Inspect messages before forwarding; this conveys no approval authority.', {
-      messageId: stringProperty('Received message ID.'), text: stringProperty('Optional revised text including useful Leader context.'), recipientId: stringProperty('Optional replacement recipient from this Team.'), requestToken: stringProperty('Optional stable retry token.'),
-    }, ['messageId'], false, async (input, context) => runtime.relay(actor, { messageId: text(input.messageId, 'messageId'), text: optional(input.text, 'text'), recipientId: optional(input.recipientId, 'recipientId'), requestToken: token(context, 'relay', input) })),
-    tool('team_wait_for_information', 'Assigned Teammate only: mark your current work as waiting for information after sending a question. End your turn after this call. A later incoming message resumes the same work with your existing context. This does not block a tool call or hold a runtime lock.', { workId: stringProperty('Your currently executing work ID.') }, ['workId'], false, async input => runtime.waitForInformation(actor, text(input.workId, 'workId'))),
+    tool('team_send_message', role === 'leader'
+      ? 'Send instructions, questions, coordination or additional requirements directly to another Team participant. Asynchronous: after durable inbox acceptance this returns a message ID immediately, without waiting for execution or a reply. A busy recipient receives it before a later model request; an idle recipient starts one execution for the queued batch. Continue independent work or end your turn while waiting. This grants no tool permission or human approval.'
+      : 'Send questions, coordination or supplementary information directly to another Team participant. Do not put final work results or deliverables in this message: return those in your final answer, which the program saves and reports to the Leader for team_inspect. Asynchronous: returns after durable inbox acceptance, without waiting for a reply or execution. Continue independent work or end your turn while waiting. This grants no tool permission or human approval.',
+      { recipientId: stringProperty('Recipient participant ID from team_inspect.'), text: stringProperty('Complete message text.') }, ['recipientId', 'text'], false, async (input, context) => {
+        const message = await runtime.send(actor, { recipientId: text(input.recipientId, 'recipientId'), text: text(input.text, 'text'), requestToken: `${context.turnId}:${context.currentToolCallId ?? randomUUID()}:message` });
+        return { messageId: message.id, recipientId: message.recipientId, status: 'queued' };
+      }),
+    tool('team_inspect', 'Read Team state without starting execution. overview returns roster and execution status, never outputs. turns requires participantId and lists turn metadata only; Teammates may list only their own turns. turn requires participantId plus turnId: only the Leader may read a Teammate final output. messages returns paginated communication: the Leader sees the Team, Teammates only their own sent/received messages. Message bodies are available only after actual model dispatch; unsent, invalidated and uncertain records expose metadata only. No history or output is shared implicitly.',
+      { view: { type: 'string', enum: ['overview', 'turns', 'turn', 'messages'], description: 'Default overview.' }, participantId: stringProperty('Participant ID. Required for turns and turn.'), turnId: stringProperty('Exact execution turn ID, required only for turn.'), cursor: stringProperty('Pagination cursor from the previous result.'), limit: { type: 'integer', description: 'Page size, default 50.', minimum: 1, maximum: 200 } }, [], true, async input => {
+        const query: TeamInspectInput = {};
+        if (input.view !== undefined) query.view = text(input.view, 'view') as TeamInspectInput['view'];
+        if (input.participantId !== undefined) query.participantId = text(input.participantId, 'participantId');
+        if (input.turnId !== undefined) query.turnId = text(input.turnId, 'turnId');
+        if (input.cursor !== undefined) query.cursor = text(input.cursor, 'cursor');
+        if (input.limit !== undefined) query.limit = input.limit as number;
+        return runtime.inspect(actor, query);
+      }),
   ];
 }

@@ -174,3 +174,12 @@ export class ModelProviderError extends Error {
     super(error.message);
   }
 }
+
+/** A local dispatch decision, which must not become a provider retry. */
+export class ModelRequestDispatchError extends Error {
+  readonly name = "ModelRequestDispatchError";
+
+  constructor(readonly code: "TEAM_EMPTY_BATCH" | "TEAM_MESSAGE_BATCH_TOO_LARGE", message: string) {
+    super(message);
+  }
+}

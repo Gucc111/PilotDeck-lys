@@ -1,0 +1,12 @@
+Browser tab: 1, Title: "PilotDeck", URL: "http://127.0.0.1:3002/teams".
+1 AXWebArea PilotDeck, URL: 127.0.0.1:3002/teams
+	2 container Delete
+		3 heading Delete, Value: 2, ID: :r10:
+			4 text Delete
+		5 button Close
+		6 text This profile is used by a Team. Remove it from every Team before deleting it.
+		7 text Deleting removes this configuration from the library. Profiles used by a Team must be removed from that Team first.
+		8 button Cancel
+		9 button Delete
+
+The focused UI element is 1 AXWebArea PilotDeck, URL: 127.0.0.1:3002/teams

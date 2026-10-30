@@ -5,13 +5,14 @@ import type { TeamParticipantMessage } from './runtimeTypes.js';
 
 /** Stable block identities are shared by the live view and the durable transcript. */
 export function projectParticipantMessage(message: CanonicalMessage, turnId: string, fallback: string, createdAt: string): TeamParticipantMessage[] {
+  if (message.metadata?.purpose === 'team_runtime_wakeup' || (message.metadata?.purpose === 'team_runtime' && !message.metadata.teamConsumed)) return [];
   return message.content.map((block, index) => {
     const identity = block.timeline?.id
       ?? ((block.type === 'text' || block.type === 'thinking') ? block.blockId : undefined)
       ?? (block.type === 'tool_call' ? `tool:${block.id}` : undefined)
       ?? ((block.type === 'tool_result' || block.type === 'tool_result_reference') ? `result:${block.toolCallId}` : undefined)
-      ?? `${message.metadata?.queueItemId ?? fallback}:${index}`;
-    return { id: `${turnId}:${identity}`, turnId, role: message.role, content: [structuredClone(block)], createdAt, isStreaming: false };
+      ?? `${message.metadata?.teamRequestId ?? message.metadata?.queueItemId ?? fallback}:${index}`;
+    return { id: `${turnId}:${identity}`, turnId, role: message.role, content: [structuredClone(block)], createdAt, isStreaming: false, metadata: message.metadata ? structuredClone(message.metadata) : undefined };
   });
 }
 
@@ -20,6 +21,7 @@ export function projectParticipantTranscript(entries: AgentTranscriptEntry[]): T
   for (const entry of entries) {
     let projected: TeamParticipantMessage[] = [];
     if (entry.type === 'accepted_input') {
+      if (entry.metadata?.purpose === 'team_runtime_wakeup') continue;
       projected = entry.messages.flatMap((message, index) => projectParticipantMessage(message, entry.turnId, `input:${index}`, entry.createdAt));
     } else if (entry.type === 'assistant_message' || entry.type === 'tool_result_message' || entry.type === 'durable_message') {
       projected = projectParticipantMessage(entry.message, entry.turnId, entry.entryId ?? String(entry.sequence), entry.createdAt);

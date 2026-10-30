@@ -10,8 +10,8 @@ const socket = vi.hoisted(() => ({ listeners: new Set<(message: unknown) => void
 vi.mock('../../contexts/WebSocketContext', () => ({ useOptionalWebSocket: () => socket }));
 vi.mock('../team-library/api', async () => ({ ...(await vi.importActual('../team-library/api')), teamCommand: command }));
 const config = { displayName: 'Reviewer', description: '', systemPrompt: 'Review carefully', model: { mode: 'default' as const }, workspace: { mode: 'team' as const }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' as const };
-const leader = { id: 'leader', revision: 1, role: 'leader' as const, config, archived: false, createdAt: '', updatedAt: '' };
-export const team: TeamDefinition = { id: 'team-one', revision: 2, config: { displayName: 'Release review', description: '', instructions: '', defaultProjectKey: '/work', leader: { id: 'leader', revision: 1 }, teammates: [{ id: 'reviewer', revision: 1 }] }, leader, teammates: [{ ...leader, id: 'reviewer', role: 'teammate' }], archived: false, createdAt: '', updatedAt: '' };
+const leader = { id: 'leader', role: 'leader' as const, config, createdAt: '', updatedAt: '' };
+export const team: TeamDefinition = { id: 'team-one', config: { displayName: 'Release review', description: '', instructions: '', defaultProjectKey: '/work', leader: { id: 'leader' }, teammates: [{ id: 'reviewer' }] }, leader, teammates: [{ ...leader, id: 'reviewer', role: 'teammate' }], createdAt: '', updatedAt: '' };
 const project = { name: 'work', fullPath: '/work', path: '/work' } as Project;
 const general = { name: 'general', fullPath: '/general', path: '/general', kind: 'general' } as Project;
 const probe: TeamRuntimeProbe = { team, projectKey: '/work', participants: [], issues: [], fingerprint: 'fingerprint', compatible: true };
@@ -45,7 +45,7 @@ describe('Team mode current conversation selection', () => {
     act(() => hook.result.current.selectTeam(team));
     await waitFor(() => expect(hook.result.current.choice?.probe).toEqual(probe));
     await act(() => hook.result.current.confirmChoice());
-    expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: 'runtime_select', sessionKey: 'web:s_one', storageProjectKey: '/general', projectKey: '/work', team: { id: team.id, revision: 2 } }));
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: 'runtime_select', sessionKey: 'web:s_one', storageProjectKey: '/general', projectKey: '/work', team: { id: team.id } }));
     expect(hook.result.current.teamActivationId).toBe('activation-1');
   });
 
@@ -87,7 +87,7 @@ describe('Team mode current conversation selection', () => {
   });
 
   it('prevents mode switches for pending member work and stops the whole activation', async () => {
-    const running = { ...activation, works: [{ id: 'work', stopVersion: 0, participantId: 'reviewer', task: 'Review', status: 'waiting_approval' as const, createdAt: '' }] };
+    const running = { ...activation, turns: [{ turnId: 'turn', stopVersion: 0, participantId: 'reviewer', trigger: 'messages' as const, status: 'waiting_approval' as const, startedAt: '', messageIds: [], requestIds: [] }] };
     command.mockImplementation(async (input) => input.action === 'library' ? { teams: [team], profiles: [] } : { activation: input.action === 'runtime_stop' ? { ...running, status: 'stopped' } : running });
     const hook = renderHook(() => useTeamMode({ ...props, sessionKey: 'web:s_one' }));
     await waitFor(() => expect(hook.result.current.working).toBe(true));
@@ -172,5 +172,24 @@ describe('Team human-interaction state fencing', () => {
     command.mockResolvedValue({ activation: { ...withInteraction, interactions: [{ ...pendingInteraction, status: 'expired' }] } });
     act(() => { for (const listener of socket.listeners) listener({ type: 'websocket-reconnected' }); });
     await waitFor(() => expect(hook.result.current.interactions[0].status).toBe('expired'));
+  });
+  it('hydrates message and turn pages and retains a successful deletion against stale snapshots', async () => {
+    const message = { id: 'message-1', senderId: 'reviewer', recipientId: 'leader', intendedRecipientId: 'leader', text: 'Keep the API?', status: 'invalidated' as const, stopVersion: 0, createdAt: '' };
+    const current = { ...activation, stopVersion: 1, messages: [message] };
+    const second = { ...message, id: 'message-2' };
+    const turn = { turnId: 'turn-1', participantId: 'reviewer', stopVersion: 0, trigger: 'messages' as const, status: 'ended' as const, startedAt: '', messageIds: [], requestIds: [] };
+    command.mockImplementation(async input => input.action === 'library' ? { teams: [team], profiles: [] }
+      : input.action === 'runtime_message_delete' ? { messageId: message.id, deleted: true }
+      : input.messageCursor ? { activation: { ...current, messages: [second] } }
+      : input.turnCursor ? { activation: { ...current, turns: [turn] } }
+      : { activation: current, messagesNextCursor: 'messages-2', turnsNextCursor: 'turns-2' });
+    const hook = renderHook(() => useTeamMode({ ...props, sessionKey: activation.sessionKey }));
+    await waitFor(() => expect(hook.result.current.activation?.messages).toHaveLength(2));
+    expect(hook.result.current.activation?.turns).toHaveLength(1);
+    await act(() => hook.result.current.deleteMessage(message));
+    expect(command).toHaveBeenCalledWith({ action: 'runtime_message_delete', sessionKey: activation.sessionKey, activationId: activation.id, stopVersion: 0, participantId: 'leader', messageId: message.id });
+    expect(hook.result.current.activation?.messages.find(item => item.id === message.id)?.status).toBe('deleted');
+    await act(() => hook.result.current.refresh());
+    expect(hook.result.current.activation?.messages.find(item => item.id === message.id)?.status).toBe('deleted');
   });
 });

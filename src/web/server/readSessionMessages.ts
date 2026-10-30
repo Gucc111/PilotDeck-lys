@@ -496,6 +496,7 @@ type ProjectionContext = {
   index: number;
   sessionKey: string;
   projectKey?: string;
+  turnId?: string;
   now?: () => Date;
   /** Actual transcript entry timestamp — preferred over now(). */
   entryTimestamp?: string;
@@ -523,6 +524,15 @@ export function flattenCanonicalMessage(
   context: ProjectionContext,
 ): WebMessage[] {
   const stamp = context.entryTimestamp ?? (context.now ?? (() => new Date()))().toISOString();
+  if (message.metadata?.purpose === 'team_runtime') {
+    if (!message.metadata.teamConsumed) return [];
+    return [{ id: `team:${String(message.metadata.teamRequestId || message.metadata.queueItemId || context.entryId || context.index)}`,
+      sessionKey: context.sessionKey, projectKey: context.projectKey, createdAt: stamp, provider: 'pilotdeck', role: 'system', kind: 'team_message',
+      text: '', teamInjectionMode: message.metadata.teamInjectionMode === 'start' && message.metadata.teamTurnOrigin !== 'human' ? 'start' : 'during',
+      teamMessageIds: Array.isArray(message.metadata.teamEventIds) ? message.metadata.teamEventIds as string[] : [],
+      ...(context.turnId ? { turnId: context.turnId } : {}),
+      ...(context.entryId ? { entryId: context.entryId } : {}), source: 'history' }];
+  }
   const out: WebMessage[] = [];
   const role: WebMessageRole = message.role === "user" ? "user" : "assistant";
   let textBuffer = "";
@@ -851,7 +861,7 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
             message.content.some((block) => block.type !== "text"),
           );
           for (const message of entry.messages) {
-            if (message.metadata?.synthetic) {
+            if (message.metadata?.synthetic && !(message.metadata.purpose === 'team_runtime' && message.metadata.teamConsumed)) {
               continue;
             }
             if (!shouldShowCompactReplacementInWeb(message)) {
@@ -869,7 +879,7 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
       case "assistant_message":
       case "tool_result_message":
       case "durable_message":
-        if (entry.message.metadata?.synthetic) {
+        if (entry.message.metadata?.synthetic && !(entry.message.metadata.purpose === 'team_runtime' && entry.message.metadata.teamConsumed)) {
           break;
         }
         if (!shouldShowCompactReplacementInWeb(entry.message)) {

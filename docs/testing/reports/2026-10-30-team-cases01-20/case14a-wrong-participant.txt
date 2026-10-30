@@ -1,0 +1,12 @@
+Browser tab: 2, Title: "PilotDeck", URL: "http://127.0.0.1:3002/team/web%3As_278ee90e-a533-4986-b401-7e7722456a60/7610ca21-9e69-4a0e-aa37-1561ed24ff53/teammate/9f9abf7e-f716-4e91-9c6b-ad3e037a636c".
+1 AXWebArea PilotDeck, URL: 127.0.0.1:3002/team/web%3As_278ee90e-a533-4986-b401-7e7722456a60/7610ca21-9e69-4a0e-aa37-1561ed24ff53/teammate/9f9abf7e-f716-4e91-9c6b-ad3e037a636c
+	2 container 9f9abf7e-f716-4e91-9c6b-ad3e037a636c · Teammate chat
+		3 button Back to Team
+		4 heading 9f9abf7e-f716-4e91-9c6b-ad3e037a636c · Teammate chat, Value: 2
+			5 text 9f9abf7e-f716-4e91-9c6b-ad3e037a636c · Teammate chat
+		6 button Refresh
+		7 container
+			8 text This Team or Teammate is unavailable, or the run has changed.
+			9 button Retry
+
+The focused UI element is 1 AXWebArea PilotDeck, URL: 127.0.0.1:3002/team/web%3As_278ee90e-a533-4986-b401-7e7722456a60/7610ca21-9e69-4a0e-aa37-1561ed24ff53/teammate/9f9abf7e-f716-4e91-9c6b-ad3e037a636c

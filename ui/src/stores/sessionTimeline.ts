@@ -204,6 +204,26 @@ export function mergeTimeline(legacy: NormalizedMessage[], rows: NormalizedMessa
     groups.set(turn(row), items);
   }
   for (const items of groups.values()) items.sort((a, b) => a.timeline!.order - b.timeline!.order);
+  const teamTurns = new Set(legacy.filter(message => message.kind === 'team_message').map(turn));
+  const groupedLegacy = new Set<NormalizedMessage>();
+  for (const marker of legacy) {
+    const items = groups.get(turn(marker));
+    const initialUser = marker.kind === 'text' && marker.role === 'user' && !marker.isSteer;
+    if (!items || !teamTurns.has(turn(marker)) || initialUser) continue;
+    // Team dispatch records sit between model requests, outside the model's
+    // block protocol. Keep them inside their turn instead of inserting the
+    // whole turn before its first dispatch marker.
+    const index = items.findIndex(row => {
+      if (marker.teamInjectionMode === 'start') return true;
+      if (row.kind === 'team_message') return false;
+      if (Number.isFinite(marker.sequence) && Number.isFinite(row.sequence)) return marker.sequence! < row.sequence!;
+      const markerTime = Date.parse(String(marker.timestamp));
+      const rowTime = Date.parse(String(row.timestamp));
+      return Number.isFinite(markerTime) && Number.isFinite(rowTime) && markerTime < rowTime;
+    });
+    items.splice(index < 0 ? items.length : index, 0, marker);
+    groupedLegacy.add(marker);
+  }
   const output: NormalizedMessage[] = [];
   const emitted = new Set<string>();
   for (let index = 0; index < legacy.length; index++) {
@@ -218,7 +238,7 @@ export function mergeTimeline(legacy: NormalizedMessage[], rows: NormalizedMessa
       output.push(...group);
       emitted.add(runId);
     }
-    output.push(message);
+    if (!groupedLegacy.has(message)) output.push(message);
     if (group && initialUser && !emitted.has(runId)) {
       output.push(...group);
       emitted.add(runId);

@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalGateway } from '../../src/cli/createLocalGateway.js';
 import { createProjectId } from '../../src/pilot/index.js';
-import { createModelRuntime, type CanonicalModelRequest, type CanonicalModelEvent } from '../../src/model/index.js';
+import { createModelRuntime, type CanonicalModelRequest, type CanonicalModelEvent, type ModelRuntimeOptions } from '../../src/model/index.js';
 import { createAgentProjectSessionStorage, readTranscript } from '../../src/session/index.js';
 import type { AgentProfile, ProfileConfig, TeamDefinition } from '../../src/team/types.js';
-import type { TeamRuntimeView, TeamParticipantExecution } from '../../src/team/runtimeTypes.js';
+import type { TeamRuntimeView } from '../../src/team/runtimeTypes.js';
 import type { GatewayEvent, GatewaySubmitTurnInput } from '../../src/gateway/protocol/types.js';
 import { InProcessGateway } from '../../src/gateway/client/InProcessGateway.js';
 import { SessionRouter } from '../../src/gateway/SessionRouter.js';
@@ -35,7 +35,11 @@ model:
   const requests: CanonicalModelRequest[] = [], broadcasts: Array<{ name: string; payload: any }> = [];
   let respond: (request: CanonicalModelRequest) => AsyncIterable<CanonicalModelEvent> = async function* () { yield { type: 'text_delta', text: 'done' }; };
   const options = { pilotHome: home, projectRoot: workspace, builtinSkillsRoot: join(home, 'skills'), env: { ...process.env, PILOT_HOME: home, PILOT_AGENT_MODEL: undefined, PILOTDECK_CONFIG_PATH: undefined },
-    __testModelFactory: (snapshot: any) => ({ ...createModelRuntime(snapshot.config.model), async *stream(request: CanonicalModelRequest) {
+    __testModelFactory: (snapshot: any) => ({ ...createModelRuntime(snapshot.config.model), async *stream(request: CanonicalModelRequest, runtimeOptions?: ModelRuntimeOptions) {
+      if (runtimeOptions?.dispatchRequest) {
+        const sent = await runtimeOptions.dispatchRequest({ request, start: accepted => Promise.resolve({ accepted }) });
+        request = sent.request;
+      }
       requests.push(request); yield { type: 'request_started' as const, provider: request.provider, model: request.model }; yield { type: 'message_start' as const, role: 'assistant' as const };
       yield* respond(request); yield { type: 'message_end' as const, finishReason: 'stop' as const };
     }, async complete() { return { role: 'assistant' as const, content: [{ type: 'text' as const, text: '' }], finishReason: 'stop' as const }; } }),
@@ -48,13 +52,17 @@ model:
     capabilities: { tools, skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode,
   } }) as Promise<AgentProfile>;
   const leader = await profile('leader', 'leader'), worker = await profile('teammate', 'worker');
-  const team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'team', config: { displayName: 'Release review', description: '', instructions: 'TEAM_MARKER', defaultProjectKey: workspace, leader: { id: leader.id, revision: leader.revision }, teammates: [{ id: worker.id, revision: worker.revision }] } }) as TeamDefinition;
+  const team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'team', config: { displayName: 'Release review', description: '', instructions: 'TEAM_MARKER', defaultProjectKey: workspace, leader: { id: leader.id }, teammates: [{ id: worker.id }] } }) as TeamDefinition;
   const sessionKey = 'web:team-test';
   return { home, workspace, sessionKey, requests, broadcasts, team, leader, worker,
     get gateway() { return local.gateway; }, get registry() { return local.registry; }, setResponse(value: typeof respond) { respond = value; },
-    executeParticipant(input: TeamParticipantExecution) { return local.registry.executeTeamParticipant(input); },
+    async view() { return (await local.gateway.teamCommand!({ action: 'runtime_get', sessionKey }) as TeamRuntimeView).activation!; },
+    async send(text: string, requestToken: string) {
+      const activation = (await local.gateway.teamCommand!({ action: 'runtime_get', sessionKey }) as TeamRuntimeView).activation!;
+      return (local.registry as any).teamRuntime.send({ sessionKey, activationId: activation.id, stopVersion: activation.stopVersion, participantId: leader.id }, { recipientId: worker.id, text, requestToken });
+    },
     async restart() { await local.dispose(); local = createLocalGateway(options); bind(); },
-    async select(storageProjectKey = workspace) { return await local.gateway.teamCommand!({ action: 'runtime_select', sessionKey, storageProjectKey, team: { id: team.id, revision: team.revision }, requestToken: 'select' }) as TeamRuntimeView; },
+    async select(storageProjectKey = workspace) { return await local.gateway.teamCommand!({ action: 'runtime_select', sessionKey, storageProjectKey, team: { id: team.id }, requestToken: 'select' }) as TeamRuntimeView; },
     async submit(extra: Partial<GatewaySubmitTurnInput> = {}) { const events: GatewayEvent[] = []; const view = await local.gateway.teamCommand!({ action: 'runtime_get', sessionKey }).catch(() => ({activation:null})) as TeamRuntimeView; const epoch = view.activation && !extra.teamSelection ? {teamActivationId: view.activation.id, teamStopVersion:view.activation.stopVersion} : {}; for await (const event of local.gateway.submitTurn({ sessionKey, projectKey: workspace, channelKey: 'web', message: 'hello', ...epoch, ...extra })) events.push(event); return events; },
   };
 }
@@ -66,7 +74,8 @@ test('Team binds current conversation with frozen persona/model/capabilities and
   assert.deepEqual(events.filter(event => event.type === 'error'), []);
   const request = f.requests[0]!;
   assert.equal(request.model, 'leader'); assert.match(request.systemPrompt!, /You are PilotDeck/); assert.match(request.systemPrompt!, /ROLE_MARKER_leader/); assert.match(request.systemPrompt!, /TEAM_MARKER/);
-  assert.ok(request.tools?.some(tool => tool.name === 'team_delegate')); assert.ok(request.tools?.some(tool => tool.name === 'get_current_time'));
+  assert.ok(request.tools?.some(tool => tool.name === 'team_send_message')); assert.ok(request.tools?.some(tool => tool.name === 'get_current_time'));
+  assert.deepEqual(request.tools?.filter(tool => tool.name.startsWith('team_')).map(tool => tool.name).sort(), ['team_inspect', 'team_send_message']);
   assert.ok(!request.tools?.some(tool => ['bash', 'agent', 'task_create', 'read_skill'].includes(tool.name)));
   await f.restart(); await f.submit({ runId: 'two' });
   assert.equal(f.requests.at(-1)!.model, 'leader'); assert.match(f.requests.at(-1)!.systemPrompt!, /ROLE_MARKER_leader/);
@@ -89,38 +98,32 @@ for (const configured of [true, false]) test(`Plan tool visibility follows role 
   await f.restart();
   await f.submit({ runId: 'after-restart', allowPlanModeTools: !configured });
   checkTools(f.requests.at(-1)!);
-  const { activation } = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
-  const input: TeamParticipantExecution = {
-    activation: activation!, participant: activation!.participants.find(item => item.role === 'teammate')!,
-    work: { id: 'plan-capabilities', stopVersion: activation!.stopVersion, participantId: f.worker.id, task: 'inspect tools', status: 'running', createdAt: new Date().toISOString() },
-    signal: new AbortController().signal, executionId: 'plan-capabilities', acceptMessages: async () => {}, updateStatus: async () => {},
-  };
-  await f.executeParticipant(input); checkTools(f.requests.at(-1)!);
-  await f.executeParticipant(input); checkTools(f.requests.at(-1)!);
+  for (let round = 0; round < 2; round++) {
+    await f.send('inspect tools', `plan-capabilities-${round}`);
+    await eventually(async () => (await f.view()).turns!.filter(turn => turn.participantId === f.worker.id && turn.status === 'ended').length === round + 1, 'member capabilities turn');
+    checkTools(f.requests.filter(request => request.model === 'worker').at(-1)!);
+  }
   assert.equal(f.requests.filter(request => request.model === 'worker').length, 2);
   const ordinary = await f.submit({ sessionKey: 'web:ordinary', runId: 'ordinary', teamActivationId: undefined, teamStopVersion: undefined });
   assert.deepEqual(ordinary.filter(event => event.type === 'error'), []);
   assert.ok(!f.requests.at(-1)!.tools?.some(tool => ['enter_plan_mode', 'exit_plan_mode'].includes(tool.name)));
 });
 
-test('Leader enters Plan with configured tools, reads Team work and cannot mutate Team state', async t => {
+test('Leader enters Plan with configured tools, reads a member turn and cannot send messages', async t => {
   const f = await fixture(t, ['enter_plan_mode', 'exit_plan_mode'], 'default');
-  let delegated = false, planning = false, step = 0, workId = '';
+  let delegated = false, planning = false, step = 0, turnId = '';
   f.setResponse(async function* (request) {
     if (request.model === 'leader') {
       let call: { name: string; input: Record<string, unknown> } | undefined;
       if (!planning && !delegated) {
         delegated = true;
-        call = { name: 'team_delegate', input: { participantId: f.worker.id, task: 'seed result', requestToken: 'seed' } };
+        call = { name: 'team_send_message', input: { recipientId: f.worker.id, text: 'seed result' } };
       } else if (planning) {
         call = [
           { name: 'enter_plan_mode', input: {} },
           { name: 'team_inspect', input: {} },
-          { name: 'team_collect', input: { workId } },
-          { name: 'team_delegate', input: { participantId: f.worker.id, task: 'blocked' } },
-          { name: 'team_followup', input: { participantId: f.worker.id, workId, task: 'blocked' } },
+          { name: 'team_inspect', input: { view: 'turn', participantId: f.worker.id, turnId } },
           { name: 'team_send_message', input: { recipientId: f.worker.id, text: 'blocked' } },
-          { name: 'team_relay_message', input: { messageId: 'blocked' } },
         ][step++];
       }
       if (call) {
@@ -134,22 +137,22 @@ test('Leader enters Plan with configured tools, reads Team work and cannot mutat
   await f.select(); await f.submit({ runId: 'seed-turn' });
   await eventually(async () => {
     const view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
-    return view.activation!.works[0]?.status === 'completed' && view.activation!.notifications.every(n => !!n.deliveredAt) && !(f.gateway as any).router.activeTurnRunId(f.sessionKey);
+    return !!view.activation!.turns?.some(turn => turn.participantId === f.worker.id && turn.status === 'ended') && view.activation!.messages.every(message => message.status === 'consumed') && !(f.gateway as any).router.activeTurnRunId(f.sessionKey);
   }, 'seed work and Leader continuation finish');
   const before = (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!;
-  workId = before.works[0]!.id; planning = true;
+  turnId = before.turns!.find(turn => turn.participantId === f.worker.id)!.turnId; planning = true;
   const events = await f.submit({ runId: 'plan-turn' });
   assert.deepEqual(events.filter(event => event.type === 'error'), []);
   const results = events.filter(event => event.type === 'tool_call_finished');
-  for (const name of ['enter_plan_mode', 'team_inspect', 'team_collect']) {
+  for (const name of ['enter_plan_mode', 'team_inspect']) {
     assert.ok(results.some(event => event.toolName === name && event.ok), `${name} succeeds`);
   }
-  assert.ok(results.some(event => event.toolName === 'team_collect' && event.resultPreview?.includes('SAVED_TEAM_RESULT')));
-  for (const name of ['team_delegate', 'team_followup', 'team_send_message', 'team_relay_message']) {
+  assert.ok(results.some(event => event.toolName === 'team_inspect' && event.resultPreview?.includes('SAVED_TEAM_RESULT')));
+  for (const name of ['team_send_message']) {
     assert.ok(results.some(event => event.toolName === name && !event.ok && event.resultPreview?.includes('PLAN_MODE_VIOLATION')), `${name} stays blocked`);
   }
   const after = (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!;
-  assert.deepEqual(after.works, before.works); assert.deepEqual(after.messages, before.messages);
+  assert.deepEqual(after.messages.map(({ owner: _owner, ...message }) => message), before.messages.map(({ owner: _owner, ...message }) => message));
 });
 
 test('forbidden direct, alias and execute_code nested tool calls cannot escape the role registry', async t => {
@@ -208,7 +211,7 @@ test('existing conversation storage is authoritative for Team preview, selection
   await mkdir(registration, { recursive: true }); await writeFile(join(registration, '.cwd'), otherProject);
   const existing = await f.submit({ runId: 'ordinary-history', message: 'original project history' });
   assert.deepEqual(existing.filter(event => event.type === 'error'), []);
-  const team = { id: f.team.id, revision: f.team.revision };
+  const team = { id: f.team.id };
   await assert.rejects(f.gateway.teamCommand!({ action: 'runtime_select', sessionKey: f.sessionKey, storageProjectKey: otherProject, projectKey: otherProject, team, requestToken: 'cached-forgery' }), /cannot change.*storage project/);
   await f.restart();
   await assert.rejects(f.gateway.teamCommand!({ action: 'runtime_probe', sessionKey: f.sessionKey, storageProjectKey: otherProject, projectKey: otherProject, team }), /cannot change.*storage project/);
@@ -226,7 +229,7 @@ test('existing conversation storage is authoritative for Team preview, selection
 
 test('General conversation storage cannot be replaced by its selected Team execution project', async t => {
   const f = await fixture(t); await f.submit({ projectKey: f.home, runId: 'general-before-team' }); await f.restart();
-  const team = { id: f.team.id, revision: f.team.revision };
+  const team = { id: f.team.id };
   await assert.rejects(f.gateway.teamCommand!({ action: 'runtime_select', sessionKey: f.sessionKey, storageProjectKey: f.workspace, team, requestToken: 'general-forgery' }), /cannot change.*storage project/);
   const selected = await f.gateway.teamCommand!({ action: 'runtime_select', sessionKey: f.sessionKey, team, requestToken: 'general-inferred' }) as TeamRuntimeView;
   assert.equal(selected.activation!.storageProjectKey, f.home); assert.equal(selected.activation!.projectKey, f.workspace);
@@ -251,7 +254,7 @@ test('stop while async Team preflight is pending prevents session creation and h
 
 test('first input selection is durable and duplicate retry/restart never calls model twice', async t => {
   const f = await fixture(t);
-  const input = { runId: 'stable-input', teamSelection: { team: { id: f.team.id, revision: f.team.revision }, requestToken: 'first-send' } };
+  const input = { runId: 'stable-input', teamSelection: { team: { id: f.team.id }, requestToken: 'first-send' } };
   const first = await f.submit(input); assert.deepEqual(first.filter(event => event.type === 'error'), []); assert.equal(f.requests.length, 1);
   await f.restart(); const retry = await f.submit(input);
   assert.ok(retry.some(event => event.type === 'input_accepted')); assert.equal(f.requests.length, 1);
@@ -270,28 +273,29 @@ test('async teammate execution stays internal and durable results resume Leader 
   const f = await fixture(t, ['get_current_time'], 'default'); let delegated = false;
   f.setResponse(async function* (request) {
     if (request.model === 'worker') { yield { type: 'text_delta', text: 'worker-result' }; return; }
-    if (!delegated) { delegated = true; yield { type: 'tool_call_start', id: 'delegate-1', name: 'team_delegate' }; yield { type: 'tool_call_end', toolCall: { id: 'delegate-1', name: 'team_delegate', input: { participantId: f.worker.id, task: 'inspect release', requestToken: 'work-1' } } }; return; }
+    if (!delegated) { delegated = true; yield { type: 'tool_call_start', id: 'send-1', name: 'team_send_message' }; yield { type: 'tool_call_end', toolCall: { id: 'send-1', name: 'team_send_message', input: { recipientId: f.worker.id, text: 'inspect release' } } }; return; }
     yield { type: 'text_delta', text: 'leader-result' };
   });
   const { activation } = await f.select(); await f.submit({ runId: 'delegate', teamActivationId: activation!.id });
   for (let i = 0; i < 100 && !f.broadcasts.some(item => item.name === 'team_runtime_event' && item.payload.event.type === 'turn_completed'); i++) await new Promise(resolve => setTimeout(resolve, 20));
   const view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
-  assert.equal(view.activation!.works[0]?.status, 'completed'); assert.equal(view.activation!.works[0]?.result, 'worker-result');
+  const turn = view.activation!.turns!.find(turn => turn.participantId === f.worker.id)!;
+  assert.equal(turn.status, 'ended'); assert.match(JSON.stringify(turn.finalMessage), /worker-result/);
   const workerRequest = f.requests.find(request => request.model === 'worker')!; assert.ok(workerRequest); assert.match(workerRequest.systemPrompt!, /ROLE_MARKER_teammate/);
   assert.ok(!JSON.stringify(workerRequest.messages).includes('hello'));
   assert.ok(f.broadcasts.some(item => item.name === 'team_runtime_event' && item.payload.sessionKey === f.sessionKey && item.payload.event.type === 'assistant_text_delta'));
   const listed = await f.gateway.listSessions({ projectKey: f.workspace }); assert.equal(listed.sessions.length, 1);
-  assert.ok(!JSON.stringify(listed.sessions[0]).includes('Team updates (internal background context)'));
+  assert.ok(!JSON.stringify(listed.sessions[0]).includes('Team messages are waiting.'));
   assert.equal(listed.sessions[0]!.firstPrompt, 'hello');
   const visible = await f.gateway.readSessionMessages!({ sessionKey: f.sessionKey, projectKey: f.workspace });
-  assert.ok(!JSON.stringify(visible.messages).includes('Team updates (internal background context)'));
+  assert.ok(!JSON.stringify(visible.messages).includes('Team messages are waiting.'));
   const storage = createAgentProjectSessionStorage({ projectRoot: f.workspace, pilotHome: f.home, sessionId: f.sessionKey });
   const entries = (await readTranscript(storage.transcriptPath)).entries;
   assert.ok(entries.some(entry => entry.type === 'accepted_input' && entry.messages.some(message => message.metadata?.synthetic === true)));
   assert.ok((await readdir(join(f.home, 'team-runtime', 'contexts', activation!.id))).length > 0);
 });
 
-test('resuming the same member work gives each model turn a distinct tool retry namespace', async t => {
+test('separate member message turns give reused tool call IDs distinct retry namespaces', async t => {
   const f = await fixture(t, [], 'default'); let workerRequests = 0;
   f.setResponse(async function* (request) {
     if (request.model === 'worker' && ++workerRequests % 2 === 1) {
@@ -302,18 +306,17 @@ test('resuming the same member work gives each model turn a distinct tool retry 
     yield { type: 'text_delta', text: 'done' };
   });
   const { activation } = await f.select();
-  const input: TeamParticipantExecution = {
-    activation: activation!, participant: activation!.participants.find(item => item.role === 'teammate')!,
-    work: { id: 'same-work', stopVersion: activation!.stopVersion, participantId: f.worker.id, task: 'resume work', status: 'running', createdAt: new Date().toISOString() },
-    signal: new AbortController().signal, executionId: "test-execution", acceptMessages: async () => {}, updateStatus: async () => {},
-  };
-  await f.executeParticipant(input); await f.executeParticipant(input);
+  for (let round = 0; round < 2; round++) {
+    await f.send('resume work', `resume-${round}`);
+    await eventually(async () => (await f.view()).turns!.filter(turn => turn.participantId === f.worker.id && turn.status === 'ended').length === round + 1, 'member continuation turn');
+  }
   const view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
   assert.deepEqual(view.activation!.messages.filter(message => message.senderId === f.worker.id).map(message => message.text), ['first continuation', 'second continuation']);
   const transcript = await readTranscript(join(f.home, 'team-runtime', 'contexts', activation!.id, f.worker.id, 'context.jsonl'));
   const accepted = transcript.entries.filter(entry => entry.type === 'accepted_input');
   assert.equal(accepted.length, 2); assert.notEqual(accepted[0]!.turnId, accepted[1]!.turnId);
-  assert.ok(accepted.every(entry => entry.type === 'accepted_input' && entry.metadata?.teamWorkId === 'same-work'));
+  assert.ok(view.activation!.turns!.filter(turn => turn.participantId === f.worker.id).every(turn => turn.trigger === 'messages'));
+  assert.ok(transcript.entries.filter(entry => entry.type === 'durable_message' && entry.message.metadata?.teamConsumed).every(entry => entry.type === 'durable_message' && entry.message.metadata?.teamTurnOrigin === 'messages'));
 });
 
 test('member human permission is delivered directly to the Team interaction channel and resumes work', async t => {
@@ -323,7 +326,7 @@ test('member human permission is delivered directly to the Team interaction chan
       if (!requested) { requested = true; yield { type: 'tool_call_start', id: 'permission-tool', name: 'bash' }; yield { type: 'tool_call_end', toolCall: { id: 'permission-tool', name: 'bash', input: { command: 'printf team-permission-test > permission-output.txt' } } }; return; }
       yield { type: 'text_delta', text: 'permission-result' }; return;
     }
-    if (!delegated) { delegated = true; yield { type: 'tool_call_start', id: 'delegate-permission', name: 'team_delegate' }; yield { type: 'tool_call_end', toolCall: { id: 'delegate-permission', name: 'team_delegate', input: { participantId: f.worker.id, task: 'check permission', requestToken: 'permission-work' } } }; return; }
+    if (!delegated) { delegated = true; yield { type: 'tool_call_start', id: 'send-permission', name: 'team_send_message' }; yield { type: 'tool_call_end', toolCall: { id: 'send-permission', name: 'team_send_message', input: { recipientId: f.worker.id, text: 'check permission' } } }; return; }
     yield { type: 'text_delta', text: 'awaiting permission' };
   });
   const { activation } = await f.select(); await f.submit({ runId: 'permission-human', teamActivationId: activation!.id });
@@ -336,11 +339,11 @@ test('member human permission is delivered directly to the Team interaction chan
   const rootSnapshot = await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey });
   assert.ok(!rootSnapshot.events.some(event => event.type === 'permission_request'), 'Leader chat does not receive Teammate permission prompts');
   let view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
-  for (let i = 0; i < 30 && view.activation!.works[0]!.status === 'running'; i++) {
+  for (let i = 0; i < 30 && view.activation!.turns!.find(turn => turn.participantId === f.worker.id)!.status === 'running'; i++) {
     await new Promise(resolve => setTimeout(resolve, 10));
     view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
   }
-  assert.equal(String(view.activation!.works[0]!.status), 'waiting_approval');
+  assert.equal(view.activation!.turns!.find(turn => turn.participantId === f.worker.id)!.status, 'waiting_approval');
   assert.equal((await f.gateway.permissionDecide({ sessionKey: 'web:other', requestId: interaction.requestId, decision: 'deny' })).delivered, false);
   assert.equal((await f.gateway.permissionDecide({ sessionKey: f.sessionKey, requestId: interaction.requestId, decision: 'deny' })).delivered, false, 'ordinary permission endpoint cannot decide for a Teammate');
   const response = await f.gateway.teamInteractionRespond!({
@@ -356,10 +359,10 @@ test('member human permission is delivered directly to the Team interaction chan
   assert.equal(response.delivered, true);
   for (let i = 0; i < 100; i++) {
     view = await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView;
-    if (view.activation!.works[0]!.status === 'completed') break;
+    if (view.activation!.turns!.find(turn => turn.participantId === f.worker.id)!.status === 'ended') break;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  assert.equal(view.activation!.works[0]!.status, 'completed');
+  assert.equal(view.activation!.turns!.find(turn => turn.participantId === f.worker.id)!.status, 'ended');
   assert.equal((await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.interactions.find(item => item.id === interaction!.id)?.status, 'denied');
   assert.ok(!((await f.gateway.getActiveTurnSnapshot!({ sessionKey: f.sessionKey })).events).some(event => event.type === 'permission_request'));
 });
@@ -373,58 +376,58 @@ async function eventually(check: () => Promise<boolean>, label: string) {
 
 test('same-workspace member message reaches busy Leader before next LLM without ending its run', async t => {
   const f = await fixture(t, []);
-  const leaderWaiting = gate(), releaseLeader = gate(), messageEnqueued = gate(); let leaderCalls = 0, workerCalls = 0;
-  const router = (f.gateway as any).router;
-  const originalSteer = router.steer.bind(router);
-  router.steer = (sessionKey: string, input: any) => { const result = originalSteer(sessionKey, input); if (sessionKey === f.sessionKey && result.accepted) messageEnqueued.resolve(); return result; };
+  const leaderWaiting = gate(), releaseLeader = gate(); let leaderCalls = 0, workerCalls = 0;
   f.setResponse(async function* (request) {
     if (request.model === 'worker') {
       await leaderWaiting.promise;
       if (++workerCalls === 1) {
         yield { type: 'tool_call_start', id: 'question', name: 'team_send_message' };
-        yield { type: 'tool_call_end', toolCall: { id: 'question', name: 'team_send_message', input: { recipientId: f.leader.id, text: 'COORDINATION_MARKER', requestToken: 'question' } } }; return;
+        yield { type: 'tool_call_end', toolCall: { id: 'question', name: 'team_send_message', input: { recipientId: f.leader.id, text: 'COORDINATION_MARKER' } } }; return;
       }
       yield { type: 'text_delta', text: 'FINAL_WORKER_RESULT_PRIVATE' }; return;
     }
     if (++leaderCalls === 1) {
-      yield { type: 'tool_call_start', id: 'delegate', name: 'team_delegate' };
-      yield { type: 'tool_call_end', toolCall: { id: 'delegate', name: 'team_delegate', input: { participantId: f.worker.id, task: 'inspect', requestToken: 'inspect' } } }; return;
+      yield { type: 'tool_call_start', id: 'send', name: 'team_send_message' };
+      yield { type: 'tool_call_end', toolCall: { id: 'send', name: 'team_send_message', input: { recipientId: f.worker.id, text: 'inspect' } } }; return;
     }
-    if (leaderCalls === 2) { leaderWaiting.resolve(); await releaseLeader.promise; }
+    if (leaderCalls === 2) { leaderWaiting.resolve(); await releaseLeader.promise; yield { type: 'tool_call_start', id: 'overview', name: 'team_inspect' }; yield { type: 'tool_call_end', toolCall: { id: 'overview', name: 'team_inspect', input: {} } }; return; }
     yield { type: 'text_delta', text: 'leader continues' };
   });
   const { activation } = await f.select(); const events: GatewayEvent[] = [];
   const running = (async () => { for await (const event of f.gateway.submitTurn({ sessionKey: f.sessionKey, projectKey: f.workspace, channelKey: 'web', message: 'inspect', runId: 'busy-leader', teamActivationId: activation!.id, teamStopVersion: activation!.stopVersion })) events.push(event); })();
   t.after(() => releaseLeader.resolve());
   await leaderWaiting.promise;
-  await messageEnqueued.promise;
   await eventually(async () => {
     const view = await f.gateway.teamCommand!({ action:'runtime_get', sessionKey:f.sessionKey }) as TeamRuntimeView;
-    return !!view.activation?.notifications.some(n => n.kind === 'message' && n.owner);
-  }, 'message claimed while Leader LLM is in flight');
+    return !!view.activation?.messages.some(message => message.text === 'COORDINATION_MARKER' && message.status === 'queued');
+  }, 'message queued while Leader LLM is in flight');
   assert.ok(f.requests.some(request => request.model === 'worker'), 'member starts while Leader still holds its run');
   releaseLeader.resolve(); await running;
-  await eventually(async () => { const view = await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView; return view.activation!.notifications.every(n => !!n.deliveredAt); }, 'notifications applied');
+  await eventually(async () => { const view = await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView; return view.activation!.messages.every(message => message.status === 'consumed'); }, 'messages actually dispatched');
   const mainStorage = createAgentProjectSessionStorage({projectRoot:f.workspace,pilotHome:f.home,sessionId:f.sessionKey});
   const transcript = await readTranscript(mainStorage.transcriptPath);
   const applied = transcript.entries.filter(entry => entry.type === 'durable_message' && entry.message.metadata?.purpose === 'team_runtime');
   assert.ok(applied.some(entry => entry.turnId === 'busy-leader' && JSON.stringify(entry).includes('COORDINATION_MARKER')));
   assert.ok(events.some(event => event.type === 'steer_applied' && event.purpose === 'team_runtime'));
+  const ledger = await f.view();
+  const delivered = ledger.messages.find(message => message.text === 'COORDINATION_MARKER')!;
+  assert.equal(delivered.turnId, 'busy-leader'); assert.equal(delivered.status, 'consumed');
+  assert.ok(ledger.dispatches!.some(dispatch => dispatch.turnId === 'busy-leader' && dispatch.messageIds.includes(delivered.id)));
   assert.ok(f.requests.filter(request => request.model === 'leader').slice(2).some(request => JSON.stringify(request.messages).includes('COORDINATION_MARKER')));
   assert.ok(!f.requests.filter(request => request.model === 'leader').some(request => JSON.stringify(request.messages).includes('FINAL_WORKER_RESULT_PRIVATE')), 'auto notification omits final member reply');
   await assert.rejects(stat(join(f.home, 'checkpoints')), {code:'ENOENT'});
 });
 
-test('running member receives coordination in its current task turn', async t => {
-  const f = await fixture(t, []); const workerWaiting = gate(), releaseWorker = gate(), allowMessage = gate(), messageEnqueued = gate(); let leaderCalls = 0, workerCalls = 0;
+test('running member receives coordination in its current execution turn', async t => {
+  const f = await fixture(t, []); const workerWaiting = gate(), releaseWorker = gate(), allowMessage = gate(); let leaderCalls = 0, workerCalls = 0;
   f.setResponse(async function* (request) {
     if (request.model === 'worker') {
-      if (++workerCalls === 1) { workerWaiting.resolve(); await releaseWorker.promise; }
+      if (++workerCalls === 1) { workerWaiting.resolve(); await releaseWorker.promise; yield { type: 'tool_call_start', id: 'worker-overview', name: 'team_inspect' }; yield { type: 'tool_call_end', toolCall: { id: 'worker-overview', name: 'team_inspect', input: {} } }; return; }
       yield {type:'text_delta',text:'member final'}; return;
     }
     if (++leaderCalls === 1) {
-      yield {type:'tool_call_start',id:'delegate',name:'team_delegate'};
-      yield {type:'tool_call_end',toolCall:{id:'delegate',name:'team_delegate',input:{participantId:f.worker.id,task:'work'}}}; return;
+      yield {type:'tool_call_start',id:'send',name:'team_send_message'};
+      yield {type:'tool_call_end',toolCall:{id:'send',name:'team_send_message',input:{recipientId:f.worker.id,text:'work'}}}; return;
     }
     if (leaderCalls === 2) {
       await workerWaiting.promise; await allowMessage.promise;
@@ -435,17 +438,18 @@ test('running member receives coordination in its current task turn', async t =>
   });
   const {activation} = await f.select(); const running = f.submit({runId:'member-note'}); t.after(() => releaseWorker.resolve());
   await workerWaiting.promise;
-  const active = (f.registry as any).activeTeamParticipants.get(`team-internal:${activation!.id}:${f.worker.id}`);
-  const originalSteer = active.session.steer.bind(active.session);
-  active.session.steer = (input: any) => { const result=originalSteer(input); if(result.accepted) messageEnqueued.resolve(); return result; };
-  allowMessage.resolve(); await messageEnqueued.promise;
-  await eventually(async () => {const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;return !!view.activation!.messages.find(m=>m.text==='MEMBER_COORDINATION' && m.owner);}, 'member message claimed');
+  allowMessage.resolve();
+  await eventually(async () => {const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;return !!view.activation!.messages.find(m=>m.text==='MEMBER_COORDINATION' && m.status==='queued');}, 'member message queued');
   releaseWorker.resolve(); await running;
-  await eventually(async () => {const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;return view.activation!.works[0]?.status==='completed';}, 'member task completion');
+  await eventually(async () => {const view=await f.gateway.teamCommand!({action:'runtime_get',sessionKey:f.sessionKey}) as TeamRuntimeView;return !!view.activation!.turns!.find(turn=>turn.participantId===f.worker.id && turn.status==='ended');}, 'member execution ended');
   const entries=(await readTranscript(join(f.home,'team-runtime','contexts',activation!.id,f.worker.id,'context.jsonl'))).entries;
   assert.equal(entries.filter(entry=>entry.type==='accepted_input').length,1,'no extra coordination turn');
   assert.ok(entries.some(entry=>entry.type==='durable_message' && JSON.stringify(entry).includes('MEMBER_COORDINATION')));
   assert.equal(workerCalls,2);
+  const ledger = await f.view(), memberTurn = ledger.turns!.find(turn => turn.participantId === f.worker.id)!;
+  const note = ledger.messages.find(message => message.text === 'MEMBER_COORDINATION')!;
+  assert.equal(note.status, 'consumed'); assert.equal(note.turnId, memberTurn.turnId);
+  assert.equal(ledger.turns!.filter(turn => turn.participantId === f.worker.id).length, 1);
 });
 
 test('Abort fences old requests, clears actual execution, and fresh send uses new role tools', async t => {
@@ -504,7 +508,7 @@ async function startHumanInteraction(f: Awaited<ReturnType<typeof fixture>>, too
   });
   const { activation } = await f.select();
   const runtime = (f.registry as any).teamRuntime as import('../../src/team/TeamRuntime.js').TeamRuntime;
-  await runtime.delegate({ sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion, participantId: f.leader.id }, { participantId: f.worker.id, task: 'request direct human review', requestToken: 'human-review' });
+  await f.send('request direct human review', 'human-review');
   await eventually(async () => f.broadcasts.some(item => item.name === 'team_runtime_event' && item.payload.event.type === 'team_interaction'), 'durable human interaction');
   const interaction = f.broadcasts.find(item => item.name === 'team_runtime_event' && item.payload.event.type === 'team_interaction')!.payload.event.interaction as import('../../src/team/runtimeTypes.js').TeamHumanInteraction;
   assert.equal(f.requests.filter(request => request.model === 'leader').length, 0, 'pending human request does not wake Leader');
@@ -532,7 +536,7 @@ test('real Teammate question validates owners, preserves multiselect annotations
   assert.equal(results.filter(result => result.delivered).length, 1);
   assert.ok(results.every(result => result.interaction.status === 'answered'));
   assert.deepEqual(results[0]!.interaction.resolution, answer);
-  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'question tool completed');
+  await eventually(async () => !!(await f.view()).turns?.some(turn => turn.participantId === f.worker.id && turn.status === 'ended'), 'question tool completed');
   const transcript = await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'));
   assert.match(JSON.stringify(transcript.entries), /Keep both checks/);
   assert.match(JSON.stringify(transcript.entries), /Unit/);
@@ -545,7 +549,7 @@ test('real Teammate question cancellation is recorded and unblocks the original 
   const { interaction } = await startHumanInteraction(f, 'ask_user_question', reviewQuestion);
   const result = await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), answer: { type: 'cancelled', reason: 'Skip this question' } });
   assert.equal(result.interaction?.status, 'cancelled');
-  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'cancelled question completed');
+  await eventually(async () => !!(await f.view()).turns?.some(turn => turn.participantId === f.worker.id && turn.status === 'ended'), 'cancelled question completed');
   const transcript = await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'));
   assert.match(JSON.stringify(transcript.entries), /cancelled|declined/i);
 });
@@ -564,7 +568,7 @@ for (const decision of ['approve', 'decline'] as const) test(`real Teammate Plan
   const result = await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), decision, answer });
   assert.equal(result.delivered, true);
   assert.equal(result.interaction?.status, decision === 'approve' ? 'approved' : 'declined');
-  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'plan tool completed');
+  await eventually(async () => !!(await f.view()).turns?.some(turn => turn.participantId === f.worker.id && turn.status === 'ended'), 'plan tool completed');
   const transcript = JSON.stringify((await readTranscript(join(f.home, 'team-runtime', 'contexts', interaction.activationId, f.worker.id, 'context.jsonl'))).entries);
   assert.match(transcript, /Plan mode activated/);
   assert.match(transcript, new RegExp(action));
@@ -601,7 +605,7 @@ for (const decision of ['allow', 'deny'] as const) test(`real Teammate permissio
   const { interaction } = await startHumanInteraction(f, 'bash', { command: 'printf approved > interaction-side-effect.txt' });
   const response = await f.gateway.teamInteractionRespond!({ ...interactionOwner(interaction), decision });
   assert.equal(response.interaction?.status, decision === 'allow' ? 'allowed' : 'denied');
-  await eventually(async () => (await f.gateway.teamCommand!({ action: 'runtime_get', sessionKey: f.sessionKey }) as TeamRuntimeView).activation!.works[0]!.status === 'completed', 'permission tool completed');
+  await eventually(async () => !!(await f.view()).turns?.some(turn => turn.participantId === f.worker.id && turn.status === 'ended'), 'permission tool completed');
   const path = join(f.workspace, 'interaction-side-effect.txt');
   if (decision === 'allow') assert.ok(await stat(path)); else await assert.rejects(stat(path), { code: 'ENOENT' });
 });
@@ -628,8 +632,7 @@ test('real member readonly transcript merges in-flight text, streams dedicated f
     yield { type: 'text_delta', text: 'Leader summary' };
   });
   const { activation } = await f.select();
-  const runtime = (f.registry as any).teamRuntime as import('../../src/team/TeamRuntime.js').TeamRuntime;
-  await runtime.delegate({ sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion, participantId: f.leader.id }, { participantId: f.worker.id, task: 'stream a private member reply', requestToken: 'stream-reply' });
+  await f.send('stream a private member reply', 'stream-reply');
   const query = { sessionKey: f.sessionKey, activationId: activation!.id, stopVersion: activation!.stopVersion, participantId: f.worker.id };
   const memberEvents = () => f.broadcasts.filter(item => item.name === 'team_runtime_event' && item.payload.event.type === 'team_participant_message').map(item => item.payload.event as Extract<GatewayEvent, { type: 'team_participant_message' }>);
   await eventually(async () => memberEvents().some(event => JSON.stringify(event.messages).includes('TEAM_PARTIAL')), 'dedicated member partial output');

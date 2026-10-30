@@ -1,0 +1,153 @@
+{
+  "at": "2026-10-30T03:08:39.763Z",
+  "evidenceKind": "real Gateway auxiliary replay, not browser E2E",
+  "rows": [
+    {
+      "label": "wrong-sessionKey",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_wrong-owner",
+        "activationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "stopVersion": 0,
+        "participantId": "4fdadad6-1e46-4cd7-a20f-802a519b17e9",
+        "interactionId": "d17ff8e6-bc69-4325-bd1c-f6c9daa7bdc3",
+        "requestId": "85929d80-e2d6-4c0c-b178-2dc514e0b295",
+        "kind": "user_question",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction does not belong to the supplied owner."
+    },
+    {
+      "label": "readback-sessionKey",
+      "pending": "pending"
+    },
+    {
+      "label": "wrong-activationId",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "activationId": "62464f50-53b1-4d53-9899-1ed2cc6677dd",
+        "stopVersion": 0,
+        "participantId": "4fdadad6-1e46-4cd7-a20f-802a519b17e9",
+        "interactionId": "d17ff8e6-bc69-4325-bd1c-f6c9daa7bdc3",
+        "requestId": "85929d80-e2d6-4c0c-b178-2dc514e0b295",
+        "kind": "user_question",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction does not belong to the supplied owner."
+    },
+    {
+      "label": "readback-activationId",
+      "pending": "pending"
+    },
+    {
+      "label": "wrong-stopVersion",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "activationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "stopVersion": 1,
+        "participantId": "4fdadad6-1e46-4cd7-a20f-802a519b17e9",
+        "interactionId": "d17ff8e6-bc69-4325-bd1c-f6c9daa7bdc3",
+        "requestId": "85929d80-e2d6-4c0c-b178-2dc514e0b295",
+        "kind": "user_question",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction does not belong to the supplied owner."
+    },
+    {
+      "label": "readback-stopVersion",
+      "pending": "pending"
+    },
+    {
+      "label": "wrong-participantId",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "activationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "stopVersion": 0,
+        "participantId": "e70fbf98-cc4b-4d43-bbea-7fbb711fc402",
+        "interactionId": "d17ff8e6-bc69-4325-bd1c-f6c9daa7bdc3",
+        "requestId": "85929d80-e2d6-4c0c-b178-2dc514e0b295",
+        "kind": "user_question",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction does not belong to the supplied owner."
+    },
+    {
+      "label": "readback-participantId",
+      "pending": "pending"
+    },
+    {
+      "label": "wrong-interactionId",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "activationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "stopVersion": 0,
+        "participantId": "4fdadad6-1e46-4cd7-a20f-802a519b17e9",
+        "interactionId": "bda007f6-2504-40f9-91fe-0ba1d542a6e2",
+        "requestId": "85929d80-e2d6-4c0c-b178-2dc514e0b295",
+        "kind": "user_question",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction does not belong to the supplied owner."
+    },
+    {
+      "label": "readback-interactionId",
+      "pending": "pending"
+    },
+    {
+      "label": "wrong-requestId",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "activationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "stopVersion": 0,
+        "participantId": "4fdadad6-1e46-4cd7-a20f-802a519b17e9",
+        "interactionId": "d17ff8e6-bc69-4325-bd1c-f6c9daa7bdc3",
+        "requestId": "c6687bec-c5f8-4a96-bf4b-8f0dcb8610e0",
+        "kind": "user_question",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction is no longer available."
+    },
+    {
+      "label": "readback-requestId",
+      "pending": "pending"
+    },
+    {
+      "label": "wrong-kind",
+      "input": {
+        "action": "runtime_interaction_respond",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "activationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "stopVersion": 0,
+        "participantId": "4fdadad6-1e46-4cd7-a20f-802a519b17e9",
+        "interactionId": "d17ff8e6-bc69-4325-bd1c-f6c9daa7bdc3",
+        "requestId": "85929d80-e2d6-4c0c-b178-2dc514e0b295",
+        "kind": "plan_approval",
+        "decision": "cancel"
+      },
+      "ok": false,
+      "code": "TEAM_INTERACTION_NOT_FOUND",
+      "message": "This Team interaction does not belong to the supplied owner."
+    },
+    {
+      "label": "readback-kind",
+      "pending": "pending"
+    }
+  ]
+}

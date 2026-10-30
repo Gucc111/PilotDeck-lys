@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageCircle, ShieldCheck, UserRound, ClipboardList, ChevronDown, ChevronRight } from 'lucide-react';
+import { MessageCircle, ShieldCheck, UserRound, ClipboardList, ChevronDown, ChevronRight, Trash2, Loader2 } from 'lucide-react';
+import type { TeamRuntimeMessage } from '../../../../src/team/runtimeTypes';
 import { useTranslation } from 'react-i18next';
 import type { TeamModeState } from './useTeamMode';
 import type { TeamHumanInteraction } from './teamInteractionTypes';
@@ -77,17 +78,45 @@ function InteractionDialog({ item, onClose, onRespond }: { item: TeamHumanIntera
 }
 
 const kinds = ['tool_permission', 'user_question', 'plan_approval'] as const;
-function TeammateCard({ participant, items, status, stateKey, filter, onSelect, onViewChat }: {
+function ReceivedMessage({ message, sender, onDelete }: { message: TeamRuntimeMessage; sender: string; onDelete: (message: TeamRuntimeMessage) => Promise<void> }) {
+  const { t } = useTranslation('chat');
+  const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const system = message.senderId === 'system' || (message.kind && message.kind !== 'member');
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try { await onDelete(message); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  };
+  return <div className="team-received-message" data-message-id={message.id}>
+    <div className="team-received-message-meta"><strong>{system ? t('teamInteractions.system') : sender}</strong><time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
+      {!system && <button type="button" className="team-message-delete" title={t('teamInteractions.deleteMessageHint')} aria-label={t('teamInteractions.deleteMessage')} disabled={busy} onClick={() => void remove()}>{busy ? <Loader2 size={14} className="animate-spin"/> : <Trash2 size={14}/>}</button>}
+    </div>
+    <button type="button" className={`team-message-content ${expanded ? 'is-expanded' : ''}`} onClick={() => setExpanded(value => !value)} aria-expanded={expanded}>{message.text}</button>
+    <span className="team-mode-muted">{t(`teamInteractions.messageStatus.${message.status}`, { defaultValue: message.status })}</span>
+    {message.error && <p className="team-mode-error">{message.error}</p>}
+    {error && <p role="alert" className="team-mode-error">{error}</p>}
+  </div>;
+}
+function ParticipantCard({ participant, items, messages, status, stateKey, filter, onSelect, onViewChat, senderName, onDelete }: {
   participant: { id: string; role: string; profile?: { config?: { displayName?: string } } }; items: TeamHumanInteraction[]; status: string; stateKey: string; filter: Filter;
   onSelect: (id: string) => void; onViewChat: (participantId: string) => void;
+  messages: TeamRuntimeMessage[]; senderName: (id: string) => string; onDelete: (message: TeamRuntimeMessage) => Promise<void>;
 }) {
   const { t } = useTranslation('chat');
-  const [sections, setSections] = useState<Record<string, boolean>>(() => readSavedView(stateKey).sections || { tool_permission: true, user_question: true, plan_approval: true });
+  const [sections, setSections] = useState<Record<string, boolean>>(() => ({ messages: true, tool_permission: true, user_question: true, plan_approval: true, ...readSavedView(stateKey).sections }));
+  const [messageLimit, setMessageLimit] = useState(50);
+  const visibleMessages = messages.slice(-messageLimit);
   useEffect(() => saveView(stateKey, { sections }), [stateKey, sections]);
   const byKind = useMemo(() => Object.fromEntries(kinds.map(kind => [kind, items.filter(item => item.kind === kind && (filter === 'all' || (filter === 'pending' ? item.status === 'pending' : item.status !== 'pending')))])) as Record<typeof kinds[number], TeamHumanInteraction[]>, [items, filter]);
   return <article className="team-interaction-teammate-card">
-    <div className="team-interaction-teammate-header"><div><strong>{participant.profile?.config?.displayName || participant.id}</strong><span className="team-mode-muted">Teammate · {status}</span></div><button type="button" onClick={() => onViewChat(participant.id)}><MessageCircle size={14}/>{t('teamInteractions.viewChat')}</button></div>
-    {kinds.map(kind => <section key={kind} className="team-interaction-section">
+    <div className="team-interaction-teammate-header"><div><strong>{participant.profile?.config?.displayName || participant.id}</strong><span className="team-mode-muted">{participant.role === 'leader' ? 'Leader' : 'Teammate'} · {status}</span></div><button type="button" onClick={() => onViewChat(participant.id)}><MessageCircle size={14}/>{t('teamInteractions.viewChat')}</button></div>
+    <section className="team-interaction-section"><button type="button" className="team-interaction-section-title" aria-expanded={Boolean(sections.messages)} onClick={() => setSections(value => ({ ...value, messages: !value.messages }))}>{sections.messages ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}<MessageCircle size={14}/>{t('teamInteractions.messages')}<span className="team-interaction-count">{messages.length}</span></button>
+      {sections.messages && <div className="team-interaction-section-items">{messages.length > messageLimit && <button type="button" onClick={() => setMessageLimit(value => value + 50)}>{t('teamInteractions.earlierMessages')}</button>}{messages.length ? visibleMessages.map(message => <ReceivedMessage key={message.id} message={message} sender={senderName(message.senderId)} onDelete={onDelete}/>) : <span className="team-mode-muted">{t('teamInteractions.noRecords')}</span>}</div>}
+    </section>
+    {participant.role !== 'leader' && kinds.map(kind => <section key={kind} className="team-interaction-section">
       <button type="button" className="team-interaction-section-title" aria-expanded={Boolean(sections[kind])} onClick={() => setSections(value => ({ ...value, [kind]: !value[kind] }))}>{sections[kind] ? <ChevronDown size={14}/> : <ChevronRight size={14}/>} {kind === 'tool_permission' ? <ShieldCheck size={14}/> : kind === 'user_question' ? <UserRound size={14}/> : <ClipboardList size={14}/>} {t(`teamInteractions.kind.${kind}`)}<span className="team-interaction-count">{byKind[kind].length}</span></button>
       {sections[kind] && <div className="team-interaction-section-items">{byKind[kind].length ? byKind[kind].map(item => <div key={item.id} className={`team-interaction-entry ${item.status === 'pending' ? 'is-pending' : 'is-handled'}`}>
         <button type="button" className="team-interaction-entry-button" onClick={() => onSelect(item.id)} aria-haspopup="dialog"><span className="team-interaction-entry-kind">{item.toolName || t(`teamInteractions.kind.${kind}`)}</span><time className="team-interaction-entry-time" dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleTimeString()}</time><span className="team-interaction-entry-status">{t(`teamInteractions.status.${item.status}`)}</span><ChevronRight size={14}/></button>
@@ -104,14 +133,14 @@ export default function TeamInteractionPanel({ mode, onClose, onViewChat }: { mo
   const [selected, setSelected] = useState<string | null>(saved.selected || null);
   useEffect(() => { setFilter(saved.filter || 'all'); setSelected(saved.selected || null); }, [saved]);
   useEffect(() => saveView(stateKey, { filter, selected }), [stateKey, filter, selected]);
-  const participants = (mode.activation?.participants || []).filter(item => item.role === 'teammate');
+  const participants = [...(mode.activation?.participants || [])].sort((a, b) => Number(b.role === 'leader') - Number(a.role === 'leader'));
   const interactions = mode.interactions || [];
   const pendingCount = interactions.filter(item => item.status === 'pending').length;
   const selectedItem = interactions.find(item => item.id === selected);
   const participantStatus = (participantId: string): string => {
     if (interactions.some(item => item.participantId === participantId && item.status === 'pending')) return t('teamInteractions.waitingInteraction');
-    const work = mode.activation?.works.find(item => item.participantId === participantId && ['queued', 'running', 'waiting_information', 'waiting_approval'].includes(item.status));
-    return work ? t(`teamMode.status.${work.status}`) : t(`teamMode.${mode.activation?.status === 'stopping' ? 'stopping' : mode.activation?.status === 'stopped' ? 'stopped' : 'idle'}`);
+    const turn = mode.activation?.turns?.find(item => item.participantId === participantId && ['preparing', 'running', 'waiting_approval'].includes(item.status));
+    return turn ? t(`teamMode.status.${turn.status}`, { defaultValue: turn.status }) : t(`teamMode.${mode.activation?.status === 'stopping' ? 'stopping' : mode.activation?.status === 'stopped' ? 'stopped' : 'idle'}`);
   };
   return <>
     <TeamDialog title={pendingCount ? t('teamInteractions.titlePending', { count: pendingCount }) : t('teamInteractions.title')} onClose={onClose} side>
@@ -119,7 +148,7 @@ export default function TeamInteractionPanel({ mode, onClose, onViewChat }: { mo
         <div className="team-interaction-filters" role="group" aria-label={t('teamInteractions.filterLabel')}>{(['all', 'pending', 'handled'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{t(`teamInteractions.filter.${value}`)}</button>)}</div>
         {mode.error && <div role="alert" className="team-mode-error">{mode.error}<button type="button" onClick={() => void mode.refresh()}>{t('teamMode.retry')}</button></div>}
         {!participants.length && <p className="team-mode-muted">{t('teamInteractions.noTeammates')}</p>}
-        {participants.map(participant => <TeammateCard key={`${mode.activation?.id}:${participant.id}`} participant={participant} stateKey={`pilotdeck:team-interactions:${mode.activation?.id}:${participant.id}`} filter={filter} items={interactions.filter(item => item.participantId === participant.id)} status={participantStatus(participant.id)} onSelect={setSelected} onViewChat={onViewChat}/>)}
+        {participants.map(participant => <ParticipantCard key={`${mode.activation?.id}:${participant.id}`} participant={participant} stateKey={`pilotdeck:team-interactions:${mode.activation?.id}:${participant.id}`} filter={filter} items={interactions.filter(item => item.participantId === participant.id)} messages={(mode.activation?.messages || []).filter(item => item.recipientId === participant.id && item.status !== 'deleted' && !item.deletedAt && (filter === 'all' || (filter === 'pending' ? ['queued', 'preparing', 'sending'].includes(item.status) : !['queued', 'preparing', 'sending'].includes(item.status))))} senderName={id => participants.find(item => item.id === id)?.profile.config.displayName || id} onDelete={mode.deleteMessage} status={participantStatus(participant.id)} onSelect={setSelected} onViewChat={onViewChat}/>)}
       </div>
     </TeamDialog>
     {selectedItem && <InteractionDialog key={selectedItem.id} item={selectedItem} onClose={() => setSelected(null)} onRespond={response => mode.respondInteraction(selectedItem, response)} />}

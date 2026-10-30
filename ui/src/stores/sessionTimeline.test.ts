@@ -111,6 +111,25 @@ describe('versioned session timeline', () => {
       timeline: { ...child.timeline!, revision: 2, offset: undefined }, isFinal: true };
     expect(computeMerged([persisted], [state.values('child')[0]])).toHaveLength(1);
   });
+
+  it('keeps automatic Team turn output below its start and busy dispatch markers after history or reconnect', () => {
+    const user: NormalizedMessage = { ...frame('human', 0, 0, 'Fix login'), timeline: undefined, role: 'user', kind: 'text', turnId: 'human', runId: 'human', sequence: 1 };
+    const oldFinal = { ...frame('old-final', 0, 1, 'Earlier final', undefined, { kind: 'text', isFinal: true }), turnId: 'human', runId: 'human', timeline: { version: 1 as const, turnId: 'human', id: 'old-final', order: 0, revision: 1 }, sequence: 2 };
+    const start: NormalizedMessage = { ...user, id: 'start', role: 'assistant', kind: 'team_message', turnId: 'auto', runId: 'auto', sequence: 3, teamInjectionMode: 'start', timestamp: '2026-09-16T00:00:02Z' };
+    const busy: NormalizedMessage = { ...start, id: 'busy', sequence: 5, teamInjectionMode: 'during', timestamp: '2026-09-16T00:00:04Z' };
+    const first = frame('auto-tool', 0, 1, 'Inspect result', undefined, { kind: 'tool_use', turnId: 'auto', runId: 'auto', timeline: { version: 1, turnId: 'auto', id: 'auto-tool', order: 0, revision: 1 }, sequence: 4, timestamp: '2026-09-16T00:00:03Z' });
+    const final = frame('auto-final', 1, 2, 'Updated login', undefined, { kind: 'text', isFinal: true, turnId: 'auto', runId: 'auto', timeline: { version: 1, turnId: 'auto', id: 'auto-final', order: 1, revision: 2 }, sequence: 6, timestamp: '2026-09-16T00:00:05Z' });
+    const ids = (messages: NormalizedMessage[]) => messages.map(message => message.kind === 'team_message' ? message.id : message.content);
+    const oldBusy: NormalizedMessage = { ...user, id: 'old-busy', role: 'assistant', kind: 'team_message', sequence: 2.5, teamInjectionMode: 'during' };
+    const oldError: NormalizedMessage = { ...user, id: 'old-error', role: undefined, kind: 'error', content: 'Previous turn reached its limit', sequence: 2.75 };
+    const expected = ['Fix login', 'Earlier final', 'old-busy', 'Previous turn reached its limit', 'start', 'Inspect result', 'busy', 'Updated login'];
+    expect(ids(computeMerged([user, oldFinal, oldBusy, oldError, start, first, busy, final], []))).toEqual(expected);
+    // Live frames have no transcript sequence. Their actual dispatch time
+    // still places a busy injection between the surrounding model blocks.
+    const live = [start, first, busy, final].map(message => ({ ...message, sequence: undefined }));
+    expect(ids(computeMerged([user, oldFinal, oldBusy, oldError], live))).toEqual(expected);
+    expect(ids(computeMerged([user, oldFinal, oldBusy, oldError, start, first, busy, final], live))).toEqual(expected);
+  });
 });
 
 it('restores a terminated child snapshot without reopening it or blocking the parent', () => {

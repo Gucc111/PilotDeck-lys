@@ -82,6 +82,20 @@ export type AgentSubagentTranscriptHooks = {
   };
 };
 
+export type AgentTeamMessageBatch = { messages: CanonicalMessage[]; messageOnly: boolean };
+export type AgentTeamMessages = {
+  prepare(input: { turnId: string }): Promise<AgentTeamMessageBatch>;
+  /** Start returns the in-flight request without waiting for its response. */
+  dispatch<T>(input: {
+    turnId: string;
+    requestId: string;
+    attemptId: string;
+    hasHumanInput?: boolean;
+    messages: CanonicalMessage[];
+    start: (accepted: CanonicalMessage[]) => T;
+  }): Promise<{ value: T; messages: CanonicalMessage[] }>;
+};
+
 export type AgentRuntimeDependencies = {
   router: AgentRouterRuntime;
   tools: {
@@ -90,6 +104,7 @@ export type AgentRuntimeDependencies = {
   };
   context?: AgentContextRuntime;
   tokenAccounting?: TokenAccountingRuntime;
+  teamMessages?: AgentTeamMessages;
   /**
    * Look up a model's context-window size by provider/model id. Used after
    * routing to re-evaluate compaction against the target model's window when

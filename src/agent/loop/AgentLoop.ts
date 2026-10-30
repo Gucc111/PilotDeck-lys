@@ -16,6 +16,7 @@ import {
   type CanonicalMessage,
   type CanonicalModelError,
   ModelProviderError,
+  ModelRequestDispatchError,
   type CanonicalModelRequest,
   type CanonicalToolSchema,
   type CanonicalUsage,
@@ -38,7 +39,7 @@ import { agentError } from "../protocol/errors.js";
 import type { AgentEvent } from "../protocol/events.js";
 import type { AgentPermissionDenial, AgentTurnResult } from "../protocol/result.js";
 import type { AgentRuntimeConfig } from "../runtime/AgentRuntimeConfig.js";
-import type { AgentRuntimeDependencies } from "../runtime/AgentRuntimeDependencies.js";
+import type { AgentRuntimeDependencies, AgentTeamMessageBatch } from "../runtime/AgentRuntimeDependencies.js";
 import type { LifecycleDispatchResult } from "../../lifecycle/index.js";
 import type { PilotDeckHookEvent } from "../../extension/hooks/protocol/events.js";
 import { NullContextRuntime } from "../../context/NullContextRuntime.js";
@@ -69,6 +70,8 @@ import {
 } from "../../tool/askModeConstraints.js";
 import { buildAskModeAgentToolSchema } from "../../tool/builtin/agent.js";
 import { requestFingerprint } from "../../model/streaming/requestFingerprint.js";
+import type { ModelRequestDispatch } from "../../model/streaming/streamModel.js";
+import { TokenBudgetManager } from "../../context/budget/TokenBudgetManager.js";
 import {
   createAgentStatusDetail,
   createVisibleErrorStatusDetail,
@@ -91,6 +94,19 @@ const PLAN_MODE_REMINDER_MESSAGE = [
   "Do not make implementation changes while planning.",
   "When the plan is ready for user review, call `exit_plan_mode` with the plan file path.",
 ].join("\n");
+
+function replaceTeamMessageBatch(request: CanonicalModelRequest, pending: CanonicalMessage[], accepted: CanonicalMessage[]): CanonicalModelRequest {
+  const pendingIds = new Set(pending.flatMap(message => message.metadata?.teamEventIds ?? []));
+  const firstPending = request.messages.findIndex(message => (message.metadata?.teamEventIds ?? []).some(id => pendingIds.has(id)));
+  const messages = request.messages.filter(message => !(message.metadata?.teamEventIds ?? []).some(id => pendingIds.has(id)));
+  messages.splice(firstPending < 0 ? messages.length : firstPending, 0, ...accepted);
+  return {
+    ...request,
+    messages,
+    cacheBreakpoints: undefined,
+    cachePlan: undefined,
+  };
+}
 
 function logAutoCompactFailure(
   stage: string,
@@ -228,12 +244,20 @@ export class AgentLoop {
       this.allowedReadFiles.add(filePath);
     }
     const startedAt = this.now().toISOString();
-    let messages = [...input.messages];
+    let messages = input.messages.filter(message => message.metadata?.purpose !== "team_runtime_wakeup"
+      && !(message.metadata?.purpose === "team_runtime" && !message.metadata.teamConsumed));
     let turnCount = 1;
     let usage: CanonicalUsage = {};
     let permissionDenials: AgentPermissionDenial[] = [];
     let structuredOutput: unknown;
     let finalMessage: CanonicalMessage | undefined;
+    let hasTeamModelRequest = false;
+    let hasHumanInput = false;
+    const teamDispatchEvents: AgentEvent[] = [];
+    const prepareTeamMessages = async (): Promise<AgentTeamMessageBatch | undefined> => {
+      try { return await this.dependencies.teamMessages?.prepare({ turnId: input.turnId }); }
+      catch (error) { if (!input.abortSignal?.aborted) throw error; return undefined; }
+    };
     const toAgentStatusEvent = (status: AgentStatusMessage): AgentEvent => ({
       type: "agent_status",
       sessionId: input.sessionId,
@@ -265,6 +289,7 @@ export class AgentLoop {
           allowedReadFiles.add(filePath);
         }
         messages.push(steer.message);
+        if (steer.message.role === "user" && !steer.message.metadata?.synthetic && steer.message.metadata?.purpose !== "team_runtime") hasHumanInput = true;
         input.onSteerApplied?.(steer.itemId);
         yield {
           type: "steer_applied",
@@ -475,12 +500,24 @@ export class AgentLoop {
         yield event;
       }
 
+      const teamBatch = await prepareTeamMessages();
+      if (input.abortSignal?.aborted) continue;
+      const pendingTeamMessages = teamBatch?.messages ?? [];
+      if (teamBatch?.messageOnly && !hasTeamModelRequest && !hasHumanInput && !pendingTeamMessages.length) {
+        for await (const event of applySteerMessages(input.drainSteerMessages?.() ?? [])) yield event;
+        if (!hasHumanInput) {
+          const result = this.createTurnResult(input, { type: "success", stopReason: "completed", usage, permissionDenials, turns: 0, startedAt });
+          yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+          return { result, messages };
+        }
+      }
+      const teamReservedTokens = new TokenBudgetManager().estimateMessagesTokens(pendingTeamMessages);
       let pendingContextBudget: TokenBudgetSnapshot | undefined;
       const ctx = this.dependencies.context;
       const preRoutingMaxContextTokens = this.preRoutingMaxContextTokens();
       if (ctx?.tryAutoCompact) {
         try {
-          const reservedOutputTokens = this.getReservedOutputTokens();
+          const reservedOutputTokens = this.getReservedOutputTokens() + teamReservedTokens;
           const compact = yield* this.awaitCompactionWithEvents(ctx.tryAutoCompact({
             sessionId: input.sessionId,
             turnId: input.turnId,
@@ -502,7 +539,7 @@ export class AgentLoop {
               turnId: input.turnId,
               reason: "auto_compact",
             };
-            if (compact.error) {
+            if (compact.error && !pendingTeamMessages.length) {
               const failure = await contextOverflowAfterEmergency(compact);
               yield { type: "stop_failure", sessionId: input.sessionId, turnId: input.turnId, error: failure.error.message };
               yield await emitStatus(createModelRequestFailedStatus({ error: failure.error }));
@@ -584,7 +621,7 @@ export class AgentLoop {
         const currentBudgetMaxCtx = preRoutingMaxContextTokens;
         if (routedMaxCtx !== undefined && routedMaxCtx !== currentBudgetMaxCtx) {
           try {
-            const reservedOutputTokens = this.getReservedOutputTokens(decision.provider, decision.model);
+            const reservedOutputTokens = this.getReservedOutputTokens(decision.provider, decision.model) + teamReservedTokens;
             const recompact = yield* this.awaitCompactionWithEvents(ctx.tryAutoCompact({
               sessionId: input.sessionId,
               turnId: input.turnId,
@@ -611,7 +648,7 @@ export class AgentLoop {
                 turnId: input.turnId,
                 reason: "auto_compact",
               };
-              if (recompact.error) {
+              if (recompact.error && !pendingTeamMessages.length) {
                 yield {
                   type: "context_budget",
                   sessionId: input.sessionId,
@@ -641,6 +678,9 @@ export class AgentLoop {
         }
       }
       request = this.applyTokenCapsToRequest(request, decision.provider, decision.model);
+      if (pendingTeamMessages.length) {
+        request = { ...request, messages: [...request.messages, ...pendingTeamMessages], cacheBreakpoints: undefined, cachePlan: undefined };
+      }
       this.clearAttemptOutputTokenCap(decision.provider, decision.model);
       if (pendingContextBudget && !emittedContextBudget) {
         yield {
@@ -658,31 +698,92 @@ export class AgentLoop {
       const calibrationRequestFingerprint = requestFingerprint(calibrationRequest);
       const assembler = createModelMessageAssemblerState(randomUUID());
       let executedRequest: { provider: string; model: string; fingerprint?: string } | undefined;
+      const requestId = randomUUID();
+      let dispatchedMessages: CanonicalMessage[] | undefined;
+      let lateHumanMessages: CanonicalMessage[] | undefined;
+      const dispatchRequest: ModelRequestDispatch | undefined = this.dependencies.teamMessages ? async ({ request: wireRequest, start }) => {
+        if (!lateHumanMessages) {
+          const beforeSteers = messages.length;
+          for await (const event of applySteerMessages(input.drainSteerMessages?.() ?? [])) teamDispatchEvents.push(event);
+          lateHumanMessages = messages.slice(beforeSteers);
+        }
+        if (lateHumanMessages.length) {
+          const lateItems = new Set(lateHumanMessages.map(message => message.metadata?.queueItemId).filter(Boolean));
+          wireRequest = { ...wireRequest, messages: wireRequest.messages.filter(message => !lateHumanMessages!.includes(message) && !lateItems.has(message.metadata?.queueItemId)).concat(lateHumanMessages), cacheBreakpoints: undefined, cachePlan: undefined };
+        }
+        const attemptId = randomUUID();
+        const selected = dispatchedMessages ?? pendingTeamMessages;
+        let acceptedRequest = wireRequest;
+        const dispatched = await this.dependencies.teamMessages!.dispatch({ turnId: input.turnId, requestId, attemptId, hasHumanInput, messages: selected, start: accepted => {
+          if (teamBatch?.messageOnly && !hasTeamModelRequest && !hasHumanInput && !accepted.length) throw new ModelRequestDispatchError("TEAM_EMPTY_BATCH", "Team message batch was removed before dispatch.");
+          acceptedRequest = replaceTeamMessageBatch(wireRequest, pendingTeamMessages, accepted);
+          if (accepted.length || lateHumanMessages!.length) {
+            const maximum = this.currentMaxContextTokens(acceptedRequest.provider, acceptedRequest.model);
+            const budget = new TokenBudgetManager();
+            const tokens = this.dependencies.tokenAccounting?.estimateRequestInput?.(acceptedRequest)
+              ?? budget.estimateMessagesTokens(acceptedRequest.messages) + budget.estimateTextTokens(acceptedRequest.systemPrompt ?? "");
+            if (maximum && tokens + this.getReservedOutputTokens(acceptedRequest.provider, acceptedRequest.model) > maximum) {
+              throw new ModelRequestDispatchError("TEAM_MESSAGE_BATCH_TOO_LARGE", "The complete pending Team message batch does not fit the selected model context.");
+            }
+          }
+          return start(acceptedRequest);
+        } });
+        if (!dispatchedMessages) {
+          dispatchedMessages = dispatched.messages;
+          for (const message of dispatched.messages) {
+            const durable = { ...message, metadata: { ...message.metadata, teamConsumed: true, teamRequestId: attemptId, teamLogicalRequestId: requestId, teamInjectionMode: message.metadata?.teamInjectionMode ?? (hasTeamModelRequest ? "during" : "start") } };
+            messages.push(durable);
+            await input.onDurableMessage?.(durable);
+            teamDispatchEvents.push({ type: "steer_applied", sessionId: input.sessionId, turnId: input.turnId, itemId: `team-request:${requestId}:${teamDispatchEvents.length}`, message: durable });
+          }
+        }
+        hasTeamModelRequest = true;
+        return { request: acceptedRequest, value: dispatched.value };
+      } : undefined;
       try {
-        for await (const event of this.dependencies.router.execute(decision, request, {
+        const modelEvents = this.dependencies.router.execute(decision, request, {
           sessionId: input.sessionId,
           turnId: input.turnId,
           projectPath: this.config.cwd,
           abortSignal: input.abortSignal,
-        })) {
-          if (event.type === "request_started") {
-            executedRequest = {
-              provider: event.provider,
-              model: event.model,
-              fingerprint: event.requestFingerprint,
-            };
+          dispatchRequest,
+        })[Symbol.asyncIterator]();
+        try {
+          while (true) {
+            const next = dispatchRequest ? yield* this.awaitCompactionWithEvents(modelEvents.next(), teamDispatchEvents) : await modelEvents.next();
+            if (next.done) break;
+            const event = next.value;
+            if (event.type === "request_started") {
+              executedRequest = {
+                provider: event.provider,
+                model: event.model,
+                fingerprint: event.requestFingerprint,
+              };
+            }
+            const blockId = event.type === 'text_delta' || event.type === 'thinking_delta'
+              ? getModelStreamBlockId(assembler, event.type === 'text_delta' ? 'text' : 'thinking') : undefined;
+            yield { type: "model_event", sessionId: input.sessionId, turnId: input.turnId, event,
+              ...(blockId ? { blockId } : {}) };
+            applyModelEventToAssembler(assembler, event);
+            if (event.type === "error") break;
           }
-          const blockId = event.type === 'text_delta' || event.type === 'thinking_delta'
-            ? getModelStreamBlockId(assembler, event.type === 'text_delta' ? 'text' : 'thinking') : undefined;
-          yield { type: "model_event", sessionId: input.sessionId, turnId: input.turnId, event,
-            ...(blockId ? { blockId } : {}) };
-          applyModelEventToAssembler(assembler, event);
-          if (event.type === "error") {
-            break;
-          }
+        } finally {
+          await modelEvents.return?.();
         }
         if (!stickyInfo?.orchestrating) previousTier = undefined;
       } catch (error) {
+        if (!input.abortSignal?.aborted && (error as { code?: string }).code === "TEAM_MESSAGE_BATCH_TOO_LARGE") {
+          const failure = agentError("TEAM_MESSAGE_BATCH_TOO_LARGE", error instanceof Error ? error.message : String(error));
+          const result = this.createTurnResult(input, { type: "error", stopReason: "prompt_too_long", usage, permissionDenials, turns: turnCount, startedAt, errors: [failure] });
+          yield { type: "turn_failed", sessionId: input.sessionId, turnId: input.turnId, error: failure };
+          yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+          return { result, messages };
+        }
+        if (!input.abortSignal?.aborted && (error as { code?: string }).code === "TEAM_EMPTY_BATCH") {
+          const result = this.createTurnResult(input, { type: "success", stopReason: "completed", usage, permissionDenials, turns: 0, startedAt });
+          yield { type: "turn_completed", sessionId: input.sessionId, turnId: input.turnId, result };
+          return { result, messages };
+        }
         if (input.abortSignal?.aborted) {
           const partialAssembled = assembleAssistantMessage(assembler);
           const safePartialMessage = safeFinalTextMessage(
@@ -1608,6 +1709,12 @@ export class AgentLoop {
         // mailbox when the budget is exhausted; TurnRunner will report it as
         // unapplied and the host can keep it queued for a later turn.
         const canContinueForSteer = !input.maxTurns || turnCount < input.maxTurns;
+        if (canContinueForSteer && (await prepareTeamMessages())?.messages.length) {
+          turnCount += 1;
+          yield { type: "turn_continued", sessionId: input.sessionId, turnId: input.turnId, reason: "user_steer" };
+          continue;
+        }
+        if (input.abortSignal?.aborted) continue;
         const terminalSteers = canContinueForSteer
           ? input.drainOrCloseSteerMailbox?.()
           : undefined;
@@ -2588,17 +2695,19 @@ export class AgentLoop {
   }
 
   /** Keep compaction progress live while its summary model request is pending. */
-  private async *awaitCompactionWithEvents<T>(operation: Promise<T>): AsyncGenerator<AgentEvent, T, unknown> {
+  private async *awaitCompactionWithEvents<T>(operation: Promise<T>, pendingEvents: AgentEvent[] = []): AsyncGenerator<AgentEvent, T, unknown> {
     let settled = false;
     const completion = operation.then(
       value => ({ ok: true as const, value }),
       error => ({ ok: false as const, error }),
     ).finally(() => { settled = true; });
     while (!settled) {
+      yield* pendingEvents.splice(0);
       yield* this.drainEventBuffer();
       await Promise.race([completion, sleep(TOOL_EVENT_PUMP_INTERVAL_MS)]);
     }
     yield* this.drainEventBuffer();
+    yield* pendingEvents.splice(0);
     const result = await completion;
     if (!result.ok) throw result.error;
     return result.value;

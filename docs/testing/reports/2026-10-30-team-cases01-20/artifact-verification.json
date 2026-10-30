@@ -1,0 +1,119 @@
+{
+  "at": "2026-10-30T04:57:45.366Z",
+  "kind": "artifact and cleanup verification, not product E2E",
+  "results": [
+    {
+      "name": "JSON and JSONL parse",
+      "passed": true,
+      "detail": {
+        "json": 229,
+        "jsonl": 566,
+        "rows": 24488
+      }
+    },
+    {
+      "name": "no server token or common credential patterns in evidence",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "report local links resolve",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "acceptance scripts syntax",
+      "passed": true,
+      "detail": [
+        {
+          "name": "team-acceptance-audit-20261030.mjs",
+          "status": 0
+        },
+        {
+          "name": "team-acceptance-fault-proxy-20261030.mjs",
+          "status": 0
+        },
+        {
+          "name": "team-acceptance-observe-20261030.mjs",
+          "status": 0
+        },
+        {
+          "name": "team-acceptance-reset-20261030.mjs",
+          "status": 0
+        },
+        {
+          "name": "team-acceptance-rpc-20261030.mjs",
+          "status": 0
+        },
+        {
+          "name": "team-acceptance-verify-20261030.mjs",
+          "status": 0
+        }
+      ]
+    },
+    {
+      "name": "no execution caused by final read-only browser checks",
+      "passed": true,
+      "detail": {
+        "final": {
+          "activations": 11,
+          "turns": 87,
+          "messages": 64,
+          "dispatches": 239,
+          "live": [],
+          "pending": [],
+          "queued": []
+        },
+        "current": {
+          "activations": 11,
+          "turns": 87,
+          "messages": 64,
+          "dispatches": 239,
+          "live": [],
+          "pending": [],
+          "queued": []
+        }
+      }
+    },
+    {
+      "name": "no live Team loop or pending internal work",
+      "passed": true,
+      "detail": {
+        "activations": 11,
+        "turns": 87,
+        "messages": 64,
+        "dispatches": 239,
+        "live": [],
+        "pending": [],
+        "queued": []
+      }
+    },
+    {
+      "name": "fault switch absent",
+      "passed": true
+    },
+    {
+      "name": "normal services available; fault proxy stopped",
+      "passed": true,
+      "detail": [
+        {
+          "port": 3002,
+          "listening": true
+        },
+        {
+          "port": 18789,
+          "listening": true
+        },
+        {
+          "port": 3003,
+          "listening": false
+        }
+      ]
+    },
+    {
+      "name": "scoped git diff whitespace check",
+      "passed": true,
+      "detail": "clean"
+    }
+  ]
+}

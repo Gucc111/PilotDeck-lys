@@ -7,7 +7,7 @@ import type { TeamModeState } from './useTeamMode';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 afterEach(cleanup);
 const profile = { config: { displayName: 'Release reviewer', model: { mode: 'default' }, capabilities: { tools: [], skills: [], mcpServers: [] } } };
-const activation = { id: 'activation-uuid', stopVersion: 4, status: 'stopping', team: { revision: 1, config: { displayName: 'Review team' } }, participants: [
+const activation = { id: 'activation-uuid', stopVersion: 4, status: 'stopping', team: { id: 'team', createdAt: '', updatedAt: '', config: { displayName: 'Review team' }, leader: profile as any, teammates: [] }, participants: [
   { id: 'leader-uuid', role: 'leader', profile: { config: { ...profile.config, displayName: 'Release lead' } }, model: profile.config.model, capabilities: profile.config.capabilities },
   { id: 'reviewer-uuid', role: 'teammate', profile, model: profile.config.model, capabilities: profile.config.capabilities },
 ], works: [], messages: [], cleanup: { startedAt: '', pending: ['activation-uuid:reviewer-uuid:3:messages', 'leader', 'activation-uuid:notifications', 'final resource cleanup'], timedOut: true } } as unknown as TeamRuntimeActivation;

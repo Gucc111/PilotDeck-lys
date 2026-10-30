@@ -147,6 +147,13 @@ export type CanonicalMessageMetadata = {
   teamActivationId?: string;
   teamStopVersion?: number;
   teamEventIds?: string[];
+  teamMessages?: Array<{ id: string; senderId: string; sender: string; text: string }>;
+  /** Set only after the request containing the message entered the transport. */
+  teamConsumed?: boolean;
+  teamRequestId?: string;
+  teamLogicalRequestId?: string;
+  teamTurnOrigin?: "human" | "messages";
+  teamInjectionMode?: "start" | "during";
   /** Actual model that generated this assistant message. */
   model?: string;
   /** True for messages injected by the system (e.g. JSON self-correct prompts). */

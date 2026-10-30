@@ -2,6 +2,12 @@ import type { CanonicalContentBlock } from '../../../../src/model/protocol/canon
 import type { TeamParticipantMessage } from '../../../../src/team/runtimeTypes';
 import type { ChatMessage, ToolResult } from '../chat/types/types';
 
+function teamDisplayText(message: TeamParticipantMessage, fallback: string): string {
+  const records = message.metadata?.teamMessages;
+  if (!Array.isArray(records)) return fallback;
+  return records.filter(record => record && typeof record === 'object').map(record => `${String(record.sender || record.senderId || 'System')}: ${String(record.text || '')}`).join('\n\n');
+}
+
 /** Project the private member transcript into the existing read-only renderer.
  * Results attach to their own call; none of these messages are interactive. */
 export function participantChatMessages(messages: TeamParticipantMessage[]): ChatMessage[] {
@@ -14,7 +20,10 @@ export function participantChatMessages(messages: TeamParticipantMessage[]): Cha
       const base = { id: blocks.length === 1 ? message.id : `${message.id}:${index}`, turnId: message.turnId,
         timestamp: message.createdAt ?? message.timestamp ?? '', type: message.role === 'user' ? 'user' : 'assistant', isStreaming: message.isStreaming === true };
       if (block.type === 'text' || block.type === 'thinking') {
-        result.push({ ...base, content: block.text, isThinking: block.type === 'thinking' });
+        const internal = message.metadata?.purpose === 'team_runtime' && message.metadata?.teamConsumed === true;
+        const start = message.metadata?.teamInjectionMode === 'start';
+        result.push({ ...base, ...(internal ? { type: start ? 'user' : 'system', isTeamInjection: !start } : {}), content: internal ? teamDisplayText(message, block.text) : block.text, isThinking: block.type === 'thinking',
+          ...(internal && Array.isArray(message.metadata?.teamEventIds) ? { teamMessageIds: message.metadata.teamEventIds as string[] } : {}) });
       } else if (block.type === 'tool_call') {
         const row: ChatMessage = { ...base, type: 'assistant', content: '', isToolUse: true, toolId: block.id, toolCallId: block.id, toolName: block.name, toolInput: JSON.stringify(block.input, null, 2), toolResult: null };
         tools.set(block.id, row); result.push(row);

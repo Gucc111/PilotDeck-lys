@@ -255,6 +255,20 @@ it('never renders internal Team steer events as user messages', async () => {
     ]) expect(gatewayEventToFrames(event, 'session', 'pilotdeck')).toEqual([]);
 });
 
+it('renders actual Team dispatches as stable system markers without private message text', async () => {
+    const { gatewayEventToFrames } = await import('./pilotdeck-bridge.js');
+    const [row] = gatewayEventToFrames({ type: 'steer_applied', runId: 'turn-2', purpose: 'team_runtime', itemId: 'batch-1', message: {
+        metadata: { purpose: 'team_runtime', teamConsumed: true, teamRequestId: 'request-1', teamInjectionMode: 'start', teamEventIds: ['message-1'] },
+        content: [{ type: 'text', text: 'private member message' }],
+    } }, 'session', 'pilotdeck');
+    expect(row).toMatchObject({ id: 'team:request-1', kind: 'team_message', turnId: 'turn-2', content: '', teamInjectionMode: 'start', teamMessageIds: ['message-1'] });
+    expect(JSON.stringify(row)).not.toContain('private member message');
+    const [humanTurn] = gatewayEventToFrames({ type: 'steer_applied', runId: 'turn-2', itemId: 'batch-2', message: {
+        metadata: { purpose: 'team_runtime', teamConsumed: true, teamRequestId: 'request-human', teamInjectionMode: 'start', teamTurnOrigin: 'human', teamEventIds: ['message-2'] }, content: [],
+    } }, 'session', 'pilotdeck');
+    expect(humanTurn.teamInjectionMode).toBe('during');
+});
+
 it('invalidates a queued bound input when Gateway advances its generation without waiting for a push event', async () => {
     let version = 4;
     const bridge = await import('./pilotdeck-bridge.js');

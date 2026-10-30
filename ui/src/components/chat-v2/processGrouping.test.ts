@@ -604,6 +604,20 @@ describe('completed turn folding', () => {
     messages, buildRenderableMessageItems(messages, { isAssistantWorking: working }), working,
   );
 
+  it('preserves an automatic Team turn divider outside the previous completed answer', () => {
+    const marker: ChatMessage = { id: 'team:new', type: 'system', content: '', timestamp: timestamp(1500), isTeamBoundary: true, isTeamInjection: true, turnId: 'second' };
+    const items = fold([user('human'), assistant('first-final', 'First answer'), marker, thinking('new-thinking'), assistant('second-final', 'Follow-up answer')]);
+    const ids = items.map(item => item.message.id);
+    expect(ids.indexOf('first-final')).toBeLessThan(ids.indexOf('team:new'));
+    expect(ids.indexOf('team:new')).toBeLessThan(ids.indexOf('second-final'));
+    expect(items.flatMap(item => item.turnTrace?.items || []).some(item => item.message.id === 'team:new')).toBe(false);
+  });
+  it('keeps busy Team injection at its actual position in the same turn', () => {
+    const marker: ChatMessage = { id: 'team:during', type: 'system', content: 'Reviewer: keep the API', timestamp: timestamp(1500), isTeamInjection: true, turnId: 'current' };
+    const items = fold([user('human'), assistant('before', 'Checking'), marker, assistant('after', 'Done')]);
+    expect(items.map(item => item.message.id)).toEqual(['human', 'before', 'team:during', 'after']);
+  });
+
   it.each(['thinking', 'prose'])('keeps mid-turn compaction after preceding %s when the turn completes', (kind) => {
     const preceding = kind === 'thinking' ? thinking('before') : assistant('before', 'Before compact');
     const items = fold([user('u'), preceding, compact('middle'), assistant('final', 'After compact')]);

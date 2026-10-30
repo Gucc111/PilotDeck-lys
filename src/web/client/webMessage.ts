@@ -94,6 +94,7 @@ export type WebMessageKind =
   | "error"
   | "structured_output"
   | "compact_boundary"
+  | "team_message"
   | "file_artifacts";
 
 export type WebMessage = {
@@ -111,6 +112,8 @@ export type WebMessage = {
   timeline?: TimelinePosition;
   /** Stable queued-input identity, used to reconcile recovered in-flight guidance. */
   queueItemId?: string;
+  teamInjectionMode?: 'start' | 'during';
+  teamMessageIds?: string[];
   /** Transcript ordering sequence for deterministic history reconciliation. */
   sequence?: number;
   toolCallId?: string;

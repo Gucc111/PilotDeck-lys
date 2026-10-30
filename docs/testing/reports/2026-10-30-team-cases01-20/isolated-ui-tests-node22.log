@@ -1,0 +1,9 @@
+
+ RUN  v4.1.7 /Users/gucc1/Codes/work/modelbest/PilotDeck-lys/ui
+
+
+ Test Files  6 passed (6)
+      Tests  92 passed (92)
+   Start at  12:53:26
+   Duration  1.62s (transform 1.04s, setup 0ms, import 1.86s, tests 1.83s, environment 2.63s)
+

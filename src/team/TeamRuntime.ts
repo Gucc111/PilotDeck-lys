@@ -4,34 +4,40 @@ import { TeamError, object, text } from './validation.js';
 import { TeamRuntimeStore, type RuntimeState } from './runtimeStore.js';
 import { normalizeTeamInteractionResponse, type NormalizedTeamResponse } from './humanInteraction.js';
 import type { ProfileRef } from './types.js';
-import type { TeamHumanInteraction, TeamHumanInteractionKind, TeamHumanInteractionStatus, TeamRuntimeActivation, TeamRuntimeCommand, TeamRuntimeCommandResult, TeamRuntimeInteractionResponse, TeamRuntimeMessage, TeamRuntimeNotification, TeamRuntimeOptions, TeamRuntimeParticipantMessages, TeamRuntimeProbe, TeamRuntimeView, TeamRuntimeWork } from './runtimeTypes.js';
+import type { AgentTurnResult } from '../agent/protocol/result.js';
+import type { TeamHumanInteraction, TeamHumanInteractionKind, TeamInspectInput, TeamMessageDeleteResult, TeamRuntimeActivation, TeamRuntimeCommand, TeamRuntimeCommandResult, TeamRuntimeInteractionResponse, TeamRuntimeMessage, TeamRuntimeOptions, TeamRuntimeParticipantMessages, TeamRuntimeProbe, TeamRuntimeTurn, TeamRuntimeView, TeamRuntimeWork } from './runtimeTypes.js';
 
 export type TeamRuntimeActor = { sessionKey: string; activationId: string; participantId: string; stopVersion: number };
 const now = () => new Date().toISOString();
 const clone = <T>(value: T): T => structuredClone(value);
 const liveInstances = new Set<string>();
 const pending = (work: TeamRuntimeWork) => ['queued', 'running', 'waiting_information', 'waiting_approval'].includes(work.status);
-const running = (work: TeamRuntimeWork) => ['running', 'waiting_approval', 'waiting_information'].includes(work.status) && !!work.owner;
+const pendingMessage = (message: TeamRuntimeMessage) => message.status === 'queued' || message.status === 'preparing';
+const liveTurn = (turn: TeamRuntimeTurn) => ['preparing', 'running', 'waiting_approval'].includes(turn.status);
 const fail = (code: string, message: string): never => { throw new TeamError(code, message); };
 
 function ref(value: unknown): ProfileRef {
-  const item = object(value, 'team', ['id', 'revision']);
-  if (!Number.isSafeInteger(item.revision) || Number(item.revision) < 1) fail('TEAM_INVALID_INPUT', 'team.revision must be a positive integer.');
-  return { id: text(item.id, 'team.id', { max: 200 }), revision: Number(item.revision) };
+  const item = object(value, 'team', ['id']);
+  return { id: text(item.id, 'team.id', { max: 200 }) };
 }
 export function validateRuntimeCommand(input: TeamRuntimeCommand): TeamRuntimeCommand {
   const action = (input as { action?: unknown })?.action;
   const allowed = action === 'runtime_probe' ? ['action', 'team', 'sessionKey', 'storageProjectKey', 'projectKey']
     : action === 'runtime_select' ? ['action', 'team', 'sessionKey', 'storageProjectKey', 'projectKey', 'requestToken', 'probeFingerprint']
-      : action === 'runtime_get' ? ['action', 'sessionKey', 'cursor', 'limit'] : action === 'runtime_stop' ? ['action', 'sessionKey', 'activationId', 'stopVersion']
+      : action === 'runtime_get' ? ['action', 'sessionKey', 'cursor', 'limit', 'messageCursor', 'turnCursor'] : action === 'runtime_stop' ? ['action', 'sessionKey', 'activationId', 'stopVersion']
         : action === 'runtime_interaction_respond' ? ['action', 'sessionKey', 'activationId', 'stopVersion', 'participantId', 'interactionId', 'requestId', 'kind', 'decision', 'answer', 'reason']
-          : action === 'runtime_participant_messages' ? ['action', 'sessionKey', 'activationId', 'stopVersion', 'participantId', 'cursor', 'limit'] : [];
+          : action === 'runtime_participant_messages' ? ['action', 'sessionKey', 'activationId', 'stopVersion', 'participantId', 'cursor', 'limit']
+            : action === 'runtime_message_delete' ? ['action', 'sessionKey', 'activationId', 'stopVersion', 'participantId', 'messageId'] : [];
   if (!allowed.length) fail('TEAM_INVALID_INPUT', 'Unknown Team runtime command.');
   const data = object(input, 'command', allowed);
   for (const key of ['sessionKey', 'storageProjectKey', 'projectKey', 'requestToken', 'probeFingerprint']) if (data[key] !== undefined) text(data[key], key, { max: 500 });
   if (action !== 'runtime_probe' || data.sessionKey !== undefined) text(data.sessionKey, 'sessionKey', { max: 500 });
-  if (action === 'runtime_get') { if (data.cursor !== undefined) text(data.cursor, 'cursor', { max: 100 }); if (data.limit !== undefined && (!Number.isSafeInteger(data.limit) || Number(data.limit) < 1 || Number(data.limit) > 200)) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.'); }
+  if (action === 'runtime_get') { for (const key of ['cursor', 'messageCursor', 'turnCursor']) if (data[key] !== undefined) text(data[key], key, { max: 100 }); if (data.limit !== undefined && (!Number.isSafeInteger(data.limit) || Number(data.limit) < 1 || Number(data.limit) > 200)) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.'); }
   if (action === 'runtime_stop') { text(data.activationId, 'activationId', { max: 500 }); if (!Number.isSafeInteger(data.stopVersion) || Number(data.stopVersion) < 0) fail('TEAM_INVALID_INPUT', 'stopVersion must be a nonnegative integer.'); }
+  if (action === 'runtime_message_delete') {
+    for (const key of ['activationId', 'participantId', 'messageId']) text(data[key], key, { max: 500 });
+    if (!Number.isSafeInteger(data.stopVersion) || Number(data.stopVersion) < 0) fail('TEAM_INVALID_INPUT', 'stopVersion must be a nonnegative integer.');
+  }
   if (action === 'runtime_interaction_respond' || action === 'runtime_participant_messages') {
     for (const key of ['activationId', 'participantId']) text(data[key], key, { max: 500 });
     if (data.cursor !== undefined) text(data.cursor, 'cursor', { max: 500 });
@@ -54,10 +60,6 @@ export class TeamRuntime {
   private readonly ready: Promise<void>;
   private readonly controllers = new Map<string, AbortController>();
   private readonly drains = new Map<string, Promise<void>>();
-  private readonly flushes = new Map<string, Promise<void>>();
-  private readonly flushRequested = new Set<string>();
-  private readonly memberFlushes = new Map<string, Promise<void>>();
-  private readonly memberFlushRequested = new Set<string>();
   private readonly stopOperations = new Map<string, Promise<void>>();
   private readonly storageOperations = new Set<Promise<unknown>>();
   /** A consumed waiter is never replayed, even if its result write temporarily fails. */
@@ -79,17 +81,17 @@ export class TeamRuntime {
     switch (command.action) {
       case 'runtime_probe': return this.probe(command.team, command.projectKey, command);
       case 'runtime_select': return this.select(command);
-      case 'runtime_get': return this.get(command.sessionKey, command.cursor, command.limit);
+      case 'runtime_get': return this.getPage(command);
       case 'runtime_stop': return this.stop(command.sessionKey, command);
       case 'runtime_interaction_respond': throw new TeamError('TEAM_INTERACTION_CHANNEL_REQUIRED', 'Respond through the Team human interaction channel.');
       case 'runtime_participant_messages': return this.participantMessages(command);
+      case 'runtime_message_delete': return this.deleteMessage(command);
     }
   }
   async probe(teamRef: ProfileRef, projectKey?: string, context?: { sessionKey?: string; storageProjectKey?: string }): Promise<TeamRuntimeProbe> {
     ref(teamRef);
     if (projectKey !== undefined) text(projectKey, 'projectKey', { max: 500 });
     const team = await this.options.resolveTeam(teamRef);
-    if (team.archived) fail('TEAM_ARCHIVED', 'Restore this Team before selecting it.');
     const result = await this.options.probe(clone(team), projectKey, context);
     return { team, projectKey: result.projectKey, participants: result.participants, issues: result.issues, compatible: !result.issues.some(issue => issue.severity === 'error'), fingerprint: hash({ team, ...result, storageProjectKey: context?.storageProjectKey }) };
   }
@@ -98,7 +100,6 @@ export class TeamRuntime {
     const state = await this.store.read();
     const activation = state.sessions[sessionKey] ? state.activations[state.sessions[sessionKey]!] : null;
     const history = Object.values(state.activations).filter(a => a.sessionKey === sessionKey && a.id !== activation?.id).reverse();
-    const budgetPaused = activation?.status === 'active' && activation.automaticWakeups >= (this.options.maxAutomaticWakeups ?? 24) && activation.notifications.some(n => !n.deliveredAt && !n.cancelledAt);
     const visible = clone(activation ?? null);
     let interactionsNextCursor: string | undefined;
     if (visible) {
@@ -107,7 +108,21 @@ export class TeamRuntime {
       visible.interactions = all.slice(offset, offset + limit);
       if (offset + visible.interactions.length < all.length) interactionsNextCursor = String(offset + visible.interactions.length);
     }
-    return { activation: visible, ...(history.length ? { history: clone(history) } : {}), ...(budgetPaused ? { continuationPaused: 'budget' as const } : {}), ...(interactionsNextCursor ? { interactionsNextCursor } : {}) };
+    return { activation: visible, ...(history.length ? { history: clone(history) } : {}), ...(interactionsNextCursor ? { interactionsNextCursor } : {}) };
+  }
+  private async getPage(command: Extract<TeamRuntimeCommand, { action: 'runtime_get' }>): Promise<TeamRuntimeView> {
+    const view = await this.get(command.sessionKey, command.cursor, command.limit);
+    if (!view.activation) return view;
+    const limit = command.limit ?? 200;
+    for (const [field, cursor, next] of [['messages', command.messageCursor, 'messagesNextCursor'], ['turns', command.turnCursor, 'turnsNextCursor']] as const) {
+      const offset = cursor === undefined ? 0 : Number(cursor);
+      if (!Number.isSafeInteger(offset) || offset < 0) fail('TEAM_INVALID_INPUT', `${field} cursor is invalid.`);
+      const items = view.activation[field] ?? [];
+      if (offset + limit < items.length) view[next] = String(offset + limit);
+      if (field === 'messages') view.activation.messages = (items as TeamRuntimeMessage[]).slice(offset, offset + limit).filter(message => message.status !== 'deleted');
+      else view.activation.turns = view.activation.turns?.slice(offset, offset + limit);
+    }
+    return view;
   }
   async projectReferences(projectKey: string): Promise<boolean> {
     await this.ready;
@@ -121,7 +136,22 @@ export class TeamRuntime {
     if (activation?.status === 'stopping') fail('TEAM_STOPPING', 'The Team is still stopping. Wait for execution cleanup before continuing.');
     return activation;
   }
-  /** Called only after a human input is accepted. A fresh human request renews the continuation budget. */
+  /** Refresh configuration before constructing a resumed session, without
+   * activating or reviving anything from the stopped generation. */
+  async refreshStoppedActivation(sessionKey: string, activationId: string, expectedStopVersion: number): Promise<TeamRuntimeActivation> {
+    const current = await this.assertActivation(sessionKey, activationId, expectedStopVersion);
+    if (!current) fail('TEAM_ACTIVATION_CHANGED', 'This Team activation is no longer current.');
+    if (current!.status !== 'stopped' || !this.options.refreshActivation) return current!;
+    const refreshed = await this.options.refreshActivation(clone(current!));
+    return this.mutate(state => {
+      const activation = this.activation(state, sessionKey, activationId);
+      if (activation.stopVersion !== expectedStopVersion) fail('TEAM_GENERATION_EXPIRED', 'This Team input belongs to an expired run. Send it again explicitly.');
+      if (activation.status !== 'stopped') fail('TEAM_ACTIVATION_CHANGED', 'The Team changed while its configuration was being refreshed. Retry this input.');
+      activation.team = clone(refreshed.team); activation.participants = clone(refreshed.participants); activation.probeFingerprint = refreshed.probeFingerprint; activation.updatedAt = now();
+      return clone(activation);
+    });
+  }
+  /** Called only after a human input is accepted, using the current stop generation. */
   async onHumanTurn(sessionKey: string, activationId: string, expectedStopVersion: number): Promise<void> {
     await this.mutate(state => {
       const activation = this.activation(state, sessionKey, activationId);
@@ -134,14 +164,30 @@ export class TeamRuntime {
   }
   async onLeaderIdle(sessionKey: string): Promise<void> {
     await this.onExecutionReady(sessionKey);
+    await this.refreshIfIdle(sessionKey);
+  }
+  private async refreshIfIdle(sessionKey: string): Promise<void> {
+    if (this.disposed || !this.options.refreshActivation) return;
+    if (this.options.isLeaderBusy?.(sessionKey)) return;
+    const current = (await this.get(sessionKey)).activation;
+    if (!current || current.status !== 'active' || current.turns?.some(liveTurn) || current.messages.some(pendingMessage)) return;
+    if (this.disposed) return;
+    let refreshed: Awaited<ReturnType<NonNullable<TeamRuntimeOptions['refreshActivation']>>>;
+    try { refreshed = await this.options.refreshActivation(current); }
+    catch (error) { if (this.disposed) return; throw error; }
+    if (this.disposed) return;
+    await this.mutate(state => {
+      const activation = state.activations[current.id];
+      if (!activation || activation.status !== 'active' || activation.stopVersion !== current.stopVersion || activation.turns?.some(liveTurn) || activation.messages.some(pendingMessage)) return;
+      activation.team = clone(refreshed.team); activation.participants = clone(refreshed.participants); activation.probeFingerprint = refreshed.probeFingerprint; activation.updatedAt = now();
+    });
   }
   /** Recheck pending delivery when an execution reaches its mailbox-ready boundary. */
   async onExecutionReady(sessionKey: string): Promise<void> {
     if (this.disposed) return;
     const { activation } = await this.get(sessionKey);
     if (activation && !this.disposed) {
-      this.requestMemberDelivery(activation.id);
-      if (activation.notifications.some(n => !n.deliveredAt && !n.cancelledAt)) void this.flush(activation.id);
+      this.schedule(activation.id);
     }
   }
 
@@ -163,11 +209,11 @@ export class TeamRuntime {
       if (existing !== undefined) return this.selectionReceipt(state, command.sessionKey, existing);
       const currentId = state.sessions[command.sessionKey];
       const current = currentId ? state.activations[currentId] : undefined;
-      if (current?.status === 'stopping' || this.options.isLeaderBusy?.(command.sessionKey) || current?.works.some(pending) || current?.messages.some(m => m.status === 'queued') || current?.notifications.some(n => !n.deliveredAt && !n.cancelledAt)) fail('TEAM_BUSY', 'Wait for Team work to finish or stop it before changing mode.');
+      if (current?.status === 'stopping' || this.options.isLeaderBusy?.(command.sessionKey) || current?.turns?.some(liveTurn) || current?.messages.some(pendingMessage)) fail('TEAM_BUSY', 'Wait for Team work to finish or stop it before changing mode.');
       if (current) { current.status = 'closed'; current.updatedAt = now(); }
       let activation: TeamRuntimeActivation | null = null;
       if (probe) {
-        activation = { id: randomUUID(), sessionKey: command.sessionKey, ...(command.storageProjectKey ? { storageProjectKey: command.storageProjectKey } : {}), projectKey: probe.projectKey, team: clone(probe.team), participants: clone(probe.participants), probeFingerprint: probe.fingerprint, status: 'active', createdAt: now(), updatedAt: now(), works: [], messages: [], notifications: [], interactions: [], automaticWakeups: 0, stopVersion: 0, runtimeOwner: { pid: process.pid, instanceId: this.instanceId } };
+        activation = { id: randomUUID(), sessionKey: command.sessionKey, ...(command.storageProjectKey ? { storageProjectKey: command.storageProjectKey } : {}), projectKey: probe.projectKey, team: clone(probe.team), participants: clone(probe.participants), probeFingerprint: probe.fingerprint, status: 'active', createdAt: now(), updatedAt: now(), works: [], messages: [], notifications: [], interactions: [], turns: [], dispatches: [], automaticWakeups: 0, stopVersion: 0, runtimeOwner: { pid: process.pid, instanceId: this.instanceId } };
         if (activation.participants.filter(p => p.role === 'leader').length !== 1 || activation.participants.filter(p => p.role === 'teammate').length < 1 || new Set(activation.participants.map(p => p.id)).size !== activation.participants.length) fail('TEAM_INCOMPATIBLE', 'A Team needs one Leader and distinct Teammates.');
         state.activations[activation.id] = activation;
       }
@@ -215,9 +261,12 @@ export class TeamRuntime {
       delete work.owner;
     }
     for (const message of activation.messages) {
-      if (message.status === 'queued') { message.status = status; message.invalidatedAt = now(); }
+      if (pendingMessage(message)) { message.status = 'invalidated'; message.invalidatedAt = now(); }
+      else if (message.status === 'sending') { message.status = 'uncertain'; message.error = 'Execution ended while the model request was being dispatched.'; }
       delete message.owner;
     }
+    for (const turn of activation.turns ?? []) if (liveTurn(turn)) { turn.status = status; turn.stopReason = status === 'stopped' ? 'aborted_streaming' : 'service_restart'; turn.endedAt = now(); delete turn.owner; }
+    for (const dispatch of activation.dispatches ?? []) if (dispatch.status === 'sending') dispatch.status = 'uncertain';
     for (const notification of activation.notifications) { if (!notification.deliveredAt) notification.cancelledAt ??= now(); delete notification.owner; }
     for (const interaction of activation.interactions ?? []) {
       if (interaction.status === 'pending') { interaction.status = status === 'interrupted' ? 'expired' : 'cancelled'; interaction.resolvedAt = now(); interaction.error = status === 'interrupted' ? 'Team execution was interrupted by service restart.' : 'Team execution was stopped.'; }
@@ -227,8 +276,6 @@ export class TeamRuntime {
     const prefix = `${stopped.id}:`;
     const jobs: Array<[string, Promise<unknown>]> = [
       ...[...this.drains].filter(([key]) => key.startsWith(prefix)),
-      ...[...this.memberFlushes].filter(([key]) => key.startsWith(prefix)),
-      ...[...this.flushes].filter(([key]) => key === stopped.id).map(([key, promise]) => [`${key}:notifications`, promise] as [string, Promise<void>]),
       ['leader', Promise.resolve().then(() => this.options.stopLeader?.(stopped.sessionKey))],
     ];
     // Attach rejection handlers before the journal awaits below; cleanup may
@@ -255,10 +302,48 @@ export class TeamRuntime {
     } catch (error) { await update(error instanceof Error ? error.message : String(error)); }
   }
 
-  async inspect(actor: TeamRuntimeActor): Promise<{ participants: Array<{ id: string; role: 'leader' | 'teammate'; displayName: string; description: string }>; works: TeamRuntimeWork[]; messages: TeamRuntimeMessage[] }> {
+  async inspect(actor: TeamRuntimeActor, input: TeamInspectInput = {}): Promise<Record<string, unknown>> {
     await this.ready;
-    const state = await this.store.read(), { activation, participant } = this.actor(state, actor, false);
-    return clone({ participants: activation.participants.map(p => ({ id: p.id, role: p.role, displayName: p.profile.config.displayName, description: p.profile.config.description })), works: participant.role === 'leader' ? activation.works : activation.works.filter(w => w.participantId === participant.id), messages: activation.messages.filter(m => participant.role === 'leader' || m.senderId === participant.id || m.recipientId === participant.id) });
+    const { activation, participant } = this.actor(await this.store.read(), actor, false);
+    const view = input.view ?? 'overview';
+    if (!['overview', 'turns', 'turn', 'messages'].includes(view)) fail('TEAM_INVALID_INPUT', 'Choose overview, turns, turn or messages.');
+    if (input.turnId && view !== 'turn') fail('TEAM_INVALID_INPUT', 'turnId is only accepted for the turn view.');
+    const limit = input.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.');
+    const offset = input.cursor ? Number(input.cursor) : 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) fail('TEAM_INVALID_INPUT', 'cursor is invalid.');
+    const target = input.participantId ? activation.participants.find(p => p.id === input.participantId) : undefined;
+    if (input.participantId && !target) fail('TEAM_RECIPIENT_INVALID', 'Choose a participant from this Team.');
+    const page = <T>(items: T[]) => ({ items: clone(items.slice(offset, offset + limit)), ...(offset + limit < items.length ? { nextCursor: String(offset + limit) } : {}) });
+    if (view === 'overview') {
+      if (input.turnId) fail('TEAM_INVALID_INPUT', 'Overview does not return execution output.');
+      return { view, participants: activation.participants.filter(p => !target || p.id === target.id).map(p => {
+        const turns = (activation.turns ?? []).filter(turn => turn.participantId === p.id);
+        const active = turns.find(liveTurn);
+        return { id: p.id, role: p.role, displayName: p.profile.config.displayName, description: p.profile.config.description, status: activation.status !== 'active' ? activation.status : active?.status ?? 'idle', latestTurnId: turns.at(-1)?.turnId, turnCount: turns.length, pendingMessageCount: activation.messages.filter(m => m.recipientId === p.id && pendingMessage(m)).length };
+      }) };
+    }
+    if (view === 'messages') {
+      const result = page(activation.messages.filter(message => (participant.role === 'leader' || message.senderId === participant.id || message.recipientId === participant.id) && (!target || message.senderId === target.id || message.recipientId === target.id)));
+      const items = result.items.filter(message => message.status !== 'deleted').map(message => {
+        const { text: body, error: _error, owner: _owner, ...metadata } = message;
+        return message.status === 'consumed'
+          ? { ...metadata, text: body, bodyAvailable: true }
+          : { ...metadata, bodyAvailable: false, bodyUnavailableReason: 'Message body is available only after actual model dispatch.' };
+      });
+      return { view, ...result, items };
+    }
+    if (!target) fail('TEAM_INVALID_INPUT', 'participantId is required to query execution turns.');
+    if (view === 'turns') {
+      if (participant.role !== 'leader' && target!.id !== participant.id) fail('TEAM_INSPECT_FORBIDDEN', 'A Teammate can list only its own execution turns.');
+      return { view, participantId: target!.id, ...page((activation.turns ?? []).filter(turn => turn.participantId === target!.id).map(({ finalMessage: _output, error: _error, owner: _owner, ...summary }) => summary)) };
+    }
+    if (participant.role !== 'leader' || target!.role !== 'teammate') fail('TEAM_INSPECT_FORBIDDEN', 'Only the Leader can read a Teammate execution result.');
+    if (!input.turnId) fail('TEAM_INVALID_INPUT', 'turnId is required to read an execution result.');
+    const turn = activation.turns?.find(item => item.participantId === target!.id && item.turnId === input.turnId);
+    if (!turn) fail('TEAM_TURN_NOT_FOUND', 'This execution turn is not available.');
+    const { owner: _owner, ...result } = turn!;
+    return clone({ view, turn: result, finalResultAvailable: !liveTurn(turn!) && !!turn!.finalMessage });
   }
   /** Persist a Teammate request before it is exposed to a host UI. */
   async createInteraction(input: {
@@ -348,79 +433,183 @@ export class TeamRuntime {
     const messages = visible.slice(offset, offset + limit).map(item => ({ id: item.id, role: item.senderId === input.participantId ? 'assistant' : 'user', text: item.text, createdAt: item.createdAt, type: 'team_message' }));
     return { sessionKey: input.sessionKey, activationId: input.activationId, participantId: input.participantId, messages, ...(offset + messages.length < visible.length ? { nextCursor: String(offset + messages.length) } : {}) };
   }
-  async delegate(actor: TeamRuntimeActor, input: { participantId: string; task: string; context?: string; followupOf?: string; requestToken: string }): Promise<TeamRuntimeWork> {
-    text(input.task, 'task'); text(input.requestToken, 'requestToken', { max: 500 });
-    if (input.context !== undefined) text(input.context, 'context', { empty: true });
-    const result = await this.mutate(state => {
-      const { activation, participant } = this.actor(state, actor);
-      if (participant.role !== 'leader') fail('TEAM_LEADER_REQUIRED', 'Only the Leader can delegate work.');
-      const target = activation.participants.find(p => p.id === input.participantId && p.role === 'teammate');
-      if (!target) fail('TEAM_RECIPIENT_INVALID', 'Choose a Teammate from this activation.');
-      if (input.followupOf && !activation.works.some(w => w.id === input.followupOf && w.participantId === input.participantId)) fail('TEAM_WORK_NOT_FOUND', 'The previous work does not belong to this Teammate.');
-      const requestHash = hash(input), scope = `delegate:${activation.id}:${participant.id}`;
-      const existing = this.receipt(state, scope, input.requestToken, requestHash);
-      if (existing !== undefined) {
-        if ((existing as TeamRuntimeWork).stopVersion !== activation.stopVersion) fail('TEAM_GENERATION_EXPIRED', 'This task token belongs to an expired Team run. Use a new token for explicit follow-up.');
-        return clone(existing as TeamRuntimeWork);
-      }
-      const work: TeamRuntimeWork = { id: randomUUID(), stopVersion: activation.stopVersion, participantId: input.participantId, task: input.task, ...(input.context ? { context: input.context } : {}), ...(input.followupOf ? { followupOf: input.followupOf } : {}), status: 'queued', createdAt: now() };
-      activation.works.push(work); activation.updatedAt = now();
-      this.saveReceipt(state, scope, input.requestToken, requestHash, work);
-      return clone(work);
-    });
-    this.schedule(actor.activationId);
-    return result;
-  }
-  async collect(actor: TeamRuntimeActor, workId: string): Promise<TeamRuntimeWork> {
-    await this.ready;
-    const { activation, participant } = this.actor(await this.store.read(), actor, false);
-    const work = activation.works.find(w => w.id === workId);
-    if (!work || (participant.role !== 'leader' && work.participantId !== participant.id)) fail('TEAM_WORK_NOT_FOUND', 'This work is not available to this participant.');
-    return clone(work!);
-  }
-  async waitForInformation(actor: TeamRuntimeActor, workId: string): Promise<TeamRuntimeWork> {
-    return this.mutate(state => {
-      const { activation, participant } = this.actor(state, actor);
-      const work = activation.works.find(w => w.id === workId && w.participantId === participant.id);
-      if (!work || !running(work)) fail('TEAM_WORK_NOT_RUNNING', 'Only the executing Teammate can wait for information on its current work.');
-      work!.status = 'waiting_information';
-      return clone(work!);
-    });
-  }
-  async send(actor: TeamRuntimeActor, input: { recipientId: string; text: string; replyTo?: string; workId?: string; requestToken: string }): Promise<TeamRuntimeMessage> {
-    return this.sendOrRelay(actor, input);
-  }
-  async relay(actor: TeamRuntimeActor, input: { messageId: string; text?: string; recipientId?: string; requestToken: string }): Promise<TeamRuntimeMessage> {
-    return this.sendOrRelay(actor, input);
-  }
-  private async sendOrRelay(actor: TeamRuntimeActor, input: { recipientId?: string; text?: string; replyTo?: string; workId?: string; messageId?: string; requestToken: string }): Promise<TeamRuntimeMessage> {
+  async send(actor: TeamRuntimeActor, input: { recipientId: string; text: string; requestToken: string }): Promise<TeamRuntimeMessage> {
     text(input.requestToken, 'requestToken', { max: 500 });
-    if (input.text !== undefined) text(input.text, 'text');
+    text(input.text, 'text');
     const result = await this.mutate(state => {
       const { activation, participant } = this.actor(state, actor);
-      const source = input.messageId ? activation.messages.find(m => m.id === input.messageId && m.stopVersion === activation.stopVersion) : undefined;
-      if (input.messageId && (participant.role !== 'leader' || !source || source.recipientId !== participant.id)) fail('TEAM_RELAY_FORBIDDEN', 'Only the receiving Leader can relay a message.');
-      const intendedId = input.recipientId ?? source?.intendedRecipientId;
-      const intended = activation.participants.find(p => p.id === intendedId);
-      if (!intended || intended.id === participant.id) throw new TeamError('TEAM_RECIPIENT_INVALID', 'Choose another participant from this activation.');
-      const leader = activation.participants.find(p => p.role === 'leader')!;
-      const recipient = participant.role === 'teammate' && intended.role === 'teammate' ? leader : intended;
-      if (input.replyTo && !activation.messages.some(m => m.id === input.replyTo && m.stopVersion === activation.stopVersion && (m.senderId === participant.id || m.recipientId === participant.id))) fail('TEAM_MESSAGE_NOT_FOUND', 'The reply target is not available to this participant.');
-      if (input.workId && !activation.works.some(w => w.id === input.workId && w.stopVersion === activation.stopVersion && (participant.role === 'leader' || w.participantId === participant.id))) fail('TEAM_WORK_NOT_FOUND', 'This work is not available to this participant.');
+      const recipient = activation.participants.find(p => p.id === input.recipientId);
+      if (!recipient || recipient.id === participant.id) fail('TEAM_RECIPIENT_INVALID', 'Choose another participant from this activation.');
       const requestHash = hash(input), scope = `message:${activation.id}:${participant.id}`;
       const existing = this.receipt(state, scope, input.requestToken, requestHash);
       if (existing !== undefined) {
         if ((existing as TeamRuntimeMessage).stopVersion !== activation.stopVersion) fail('TEAM_GENERATION_EXPIRED', 'This message token belongs to an expired Team run. Send a new message explicitly.');
         return clone(existing as TeamRuntimeMessage);
       }
-      const message: TeamRuntimeMessage = { id: randomUUID(), stopVersion: activation.stopVersion, senderId: source?.senderId ?? participant.id, recipientId: recipient.id, intendedRecipientId: intended.id, text: text(input.text ?? source?.text, 'text'), ...(input.replyTo ? { replyTo: input.replyTo } : {}), ...(source ? { relayOf: source.id } : {}), ...((input.workId ?? source?.workId) ? { workId: input.workId ?? source?.workId } : {}), createdAt: now(), status: 'queued' };
+      const message: TeamRuntimeMessage = { id: randomUUID(), stopVersion: activation.stopVersion, kind: 'member', senderId: participant.id, recipientId: recipient!.id, intendedRecipientId: recipient!.id, text: input.text, createdAt: now(), status: 'queued' };
       activation.messages.push(message); activation.updatedAt = now();
-      if (recipient.role === 'leader') activation.notifications.push({ id: randomUUID(), stopVersion: activation.stopVersion, kind: 'message', messageId: message.id, participantId: participant.id, summary: recipient.id === intended.id ? 'New message for the Leader.' : 'Peer message awaiting explicit Leader relay.', createdAt: now() });
+      for (const pending of activation.messages) if (pending.recipientId === recipient!.id && pendingMessage(pending)) delete pending.error;
       this.saveReceipt(state, scope, input.requestToken, requestHash, message);
       return clone(message);
     });
     this.schedule(actor.activationId);
     return result;
+  }
+
+  async pendingMessages(actor: TeamRuntimeActor, turnId?: string): Promise<TeamRuntimeMessage[]> {
+    await this.ready;
+    if (turnId) return this.mutate(state => {
+      const { activation } = this.actor(state, actor);
+      const pending = activation.messages.filter(message => message.recipientId === actor.participantId && message.stopVersion === actor.stopVersion && pendingMessage(message));
+      const turn = activation.turns?.find(turn => turn.turnId === turnId && turn.participantId === actor.participantId && liveTurn(turn));
+      if (!turn) fail('TEAM_TURN_NOT_RUNNING', 'This execution is no longer active.');
+      turn!.pendingMessageIds = pending.map(message => message.id);
+      return clone(pending);
+    });
+    const { activation } = this.actor(await this.store.read(), actor);
+    return clone(activation.messages.filter(message => message.recipientId === actor.participantId && message.stopVersion === actor.stopVersion && pendingMessage(message)));
+  }
+
+  async deleteMessage(input: Extract<TeamRuntimeCommand, { action: 'runtime_message_delete' }>): Promise<TeamMessageDeleteResult> {
+    validateRuntimeCommand(input);
+    let queueChanged = false;
+    const result = await this.mutate(state => {
+      const activation = this.activation(state, input.sessionKey, input.activationId);
+      const message = activation.messages.find(item => item.id === input.messageId && item.recipientId === input.participantId && item.stopVersion === input.stopVersion);
+      if (!message) fail('TEAM_MESSAGE_NOT_FOUND', 'This message is not available.');
+      if (message!.kind && message!.kind !== 'member') fail('TEAM_SYSTEM_MESSAGE', 'System notifications cannot be deleted.');
+      if (message!.status === 'deleted') return { messageId: message!.id, deleted: true };
+      if (['sending', 'uncertain', 'legacy_unknown', 'delivered'].includes(message!.status)) fail('TEAM_MESSAGE_SEND_UNCERTAIN', 'This message may already have been sent; its sending status is uncertain and it cannot be deleted.');
+      if (message!.status === 'consumed') fail('TEAM_MESSAGE_ALREADY_SENT', 'This message has already been sent to a model request and cannot be deleted.');
+      const notify = activation.status === 'active' && message!.stopVersion === activation.stopVersion && pendingMessage(message!);
+      message!.status = 'deleted'; message!.deletedAt = now(); delete message!.owner;
+      if (notify) {
+        queueChanged = true;
+        for (const queued of activation.messages) if (queued.recipientId === input.participantId && pendingMessage(queued)) delete queued.error;
+      }
+      if (notify && activation.participants.some(p => p.id === message!.senderId)) {
+        const name = activation.participants.find(p => p.id === message!.recipientId)?.profile.config.displayName ?? message!.recipientId;
+        this.systemMessage(activation, message!.senderId, 'message_deleted', `用户删除了你发给「${name}」的消息，对方没有收到。请更换思路，或尽快结束当前执行并给出最终回复。`, { sourceMessageId: message!.id });
+      }
+      activation.updatedAt = now();
+      return { messageId: message!.id, deleted: true };
+    });
+    if (queueChanged) this.schedule(input.activationId);
+    return result;
+  }
+
+  async beginTurn(actor: TeamRuntimeActor, input: { turnId: string; trigger: 'human' | 'messages' }): Promise<TeamRuntimeTurn> {
+    text(input.turnId, 'turnId', { max: 500 });
+    while (true) {
+      const claimed = await this.mutate(state => {
+        const { activation } = this.actor(state, actor);
+        const existing = activation.turns?.find(turn => turn.turnId === input.turnId && turn.participantId === actor.participantId);
+        if (existing) return { turn: clone(existing) };
+        const live = activation.turns?.find(turn => turn.participantId === actor.participantId && liveTurn(turn));
+        if (live) {
+          const key = `${actor.activationId}:${actor.participantId}:${actor.stopVersion}`;
+          if (input.trigger === 'human' && live.trigger === 'messages' && live.status === 'preparing' && this.drains.has(key)) return { wait: key };
+          fail('TEAM_PARTICIPANT_BUSY', 'This participant already has an active execution.');
+        }
+        const turn: TeamRuntimeTurn = { turnId: input.turnId, participantId: actor.participantId, stopVersion: actor.stopVersion, trigger: input.trigger, status: 'preparing', startedAt: now(), messageIds: [], requestIds: [], owner: { pid: process.pid, instanceId: this.instanceId, executionId: input.turnId } };
+        (activation.turns ??= []).push(turn); activation.updatedAt = now();
+        return { turn: clone(turn) };
+      });
+      if (claimed.turn) return claimed.turn;
+      // The router has already accepted this human input. Let the auto-start
+      // attempt observe that busy router and release its preparation claim.
+      await this.drains.get(claimed.wait!);
+    }
+  }
+
+  async endTurn(actor: TeamRuntimeActor, turnId: string, result?: AgentTurnResult, error?: string, options: { retry?: boolean } = {}): Promise<void> {
+    await this.mutate(state => {
+      const activation = state.activations[actor.activationId];
+      const turn = activation?.turns?.find(item => item.turnId === turnId && item.participantId === actor.participantId && item.stopVersion === actor.stopVersion);
+      if (!activation || !turn || !liveTurn(turn)) return;
+      const active = activation.status === 'active' && activation.stopVersion === actor.stopVersion;
+      turn.status = active ? 'ended' : 'stopped'; turn.endedAt = result?.completedAt ?? now(); delete turn.owner;
+      turn.resultType = result?.type ?? (error ? 'error' : 'success'); turn.stopReason = result?.stopReason ?? (error ? 'model_error' : options.retry ? 'execution_busy' : 'completed');
+      if (result?.finalMessage) turn.finalMessage = clone(result.finalMessage);
+      if (error || result?.errors?.length) turn.error = error ?? result!.errors!.map(item => item.message).join('\n');
+      if (turn.error && !options.retry) {
+        const pending = activation.messages.filter(message => message.stopVersion === actor.stopVersion && message.recipientId === actor.participantId && pendingMessage(message));
+        if (hash(pending.map(message => message.id)) === hash(turn.pendingMessageIds ?? [])) for (const message of pending) message.error = turn.error;
+      }
+      const participant = activation.participants.find(item => item.id === actor.participantId);
+      const emptyCancelled = !turn.requestIds.length && !turn.error && (!result || result.type === 'success');
+      if (active && !options.retry && !emptyCancelled && participant?.role === 'teammate') {
+        const leader = activation.participants.find(item => item.role === 'leader')!;
+        this.systemMessage(activation, leader.id, 'turn_ended', `${participant.profile.config.displayName} 的执行轮次 ${turnId} 已结束，原因：${turn.stopReason}。请调用 team_inspect，指定 view=turn、participantId=${participant.id}、turnId=${turnId} 查看工作结果。`, { sourceTurnId: turnId });
+      }
+      activation.updatedAt = now();
+    });
+    this.schedule(actor.activationId);
+  }
+
+  async updateTurnStatus(actor: TeamRuntimeActor, turnId: string, status: 'running' | 'waiting_approval'): Promise<void> {
+    await this.mutate(state => {
+      const { activation } = this.actor(state, actor);
+      const turn = activation.turns?.find(item => item.turnId === turnId && item.participantId === actor.participantId && liveTurn(item));
+      if (turn) turn.status = status;
+    });
+  }
+
+  async dispatchMessages<T>(actor: TeamRuntimeActor, input: { turnId: string; requestId: string; attemptId?: string; messageIds: string[]; hasHumanInput?: boolean }, start: (messages: TeamRuntimeMessage[]) => T): Promise<{ value: T; messages: TeamRuntimeMessage[]; attemptId: string }> {
+    let value!: T;
+    const attemptId = input.attemptId ?? randomUUID();
+    const messages = await this.mutate(async state => {
+      const { activation } = this.actor(state, actor);
+      const attempts = activation.dispatches?.filter(dispatch => dispatch.requestId === input.requestId && dispatch.participantId === actor.participantId) ?? [];
+      const existing = attempts.find(dispatch => dispatch.status === 'consumed') ?? attempts.at(-1);
+      if (existing && (existing.turnId !== input.turnId || existing.stopVersion !== actor.stopVersion)) fail('TEAM_REQUEST_CONFLICT', 'This request identity is already bound to another execution.');
+      if (attempts.some(dispatch => dispatch.status !== 'consumed')) fail('TEAM_REQUEST_UNCERTAIN', 'This request may already have been sent and cannot be replayed automatically.');
+      if (activation.dispatches?.some(dispatch => dispatch.attemptId === attemptId)) fail('TEAM_ATTEMPT_DUPLICATE', 'An actual send attempt cannot be invoked twice.');
+      const batchIds = existing?.messageIds ?? input.messageIds;
+      const accepted = activation.messages.filter(message => message.recipientId === actor.participantId && message.stopVersion === actor.stopVersion && batchIds.includes(message.id) && (existing ? message.status === 'consumed' : pendingMessage(message)));
+      const turn = activation.turns?.find(item => item.turnId === input.turnId && item.participantId === actor.participantId);
+      if (!turn || !liveTurn(turn)) fail('TEAM_TURN_NOT_RUNNING', 'This execution is no longer active.');
+      if (!accepted.length && turn!.trigger === 'messages' && !turn!.requestIds.length && !input.hasHumanInput) fail('TEAM_EMPTY_BATCH', 'The pending messages were removed before this execution could start.');
+      turn!.pendingMessageIds = accepted.filter(pendingMessage).map(message => message.id);
+      const dispatch = { requestId: input.requestId, attemptId, participantId: actor.participantId, turnId: input.turnId, stopVersion: actor.stopVersion, messageIds: accepted.map(message => message.id), status: 'sending' as const, startedAt: now() };
+      (activation.dispatches ??= []).push(dispatch);
+      const originalStatuses = new Map(accepted.map(message => [message.id, message.status]));
+      for (const message of accepted) if (pendingMessage(message)) message.status = 'sending';
+      await this.store.write(state);
+      try {
+        if (this.disposed) throw Object.assign(new TeamError('TEAM_RUNTIME_CLOSED', 'Team execution is shutting down.'), { requestDispatched: false });
+        value = start(clone(accepted)); void Promise.resolve(value).catch(() => {});
+      }
+      catch (caught) {
+        if ((caught as { requestDispatched?: boolean }).requestDispatched === false || ['TEAM_EMPTY_BATCH', 'TEAM_MESSAGE_BATCH_TOO_LARGE'].includes((caught as { code?: string }).code ?? '')) {
+          for (const message of accepted) if (message.status === 'sending') message.status = originalStatuses.get(message.id)!;
+          activation.dispatches = activation.dispatches!.filter(item => item !== dispatch);
+          await this.store.write(state);
+          throw caught;
+        }
+        for (const message of accepted) if (message.status === 'sending') { message.status = 'uncertain'; message.error = caught instanceof Error ? caught.message : String(caught); }
+        Object.assign(dispatch, { status: 'uncertain', error: caught instanceof Error ? caught.message : String(caught) });
+        await this.store.write(state);
+        throw caught;
+      }
+      const dispatchedAt = now();
+      Object.assign(dispatch, { status: 'consumed', dispatchedAt });
+      turn!.status = 'running';
+      if (!turn!.requestIds.includes(input.requestId)) turn!.requestIds.push(input.requestId);
+      (turn!.attemptIds ??= []).push(attemptId);
+      for (const message of accepted) {
+        message.status = 'consumed'; message.consumedAt ??= dispatchedAt; message.deliveredAt ??= dispatchedAt; message.requestId ??= input.requestId; message.attemptId ??= attemptId; message.turnId ??= input.turnId; delete message.error;
+        if (!turn!.messageIds.includes(message.id)) turn!.messageIds.push(message.id);
+      }
+      activation.updatedAt = dispatchedAt;
+      return clone(accepted);
+    });
+    return { value, messages, attemptId };
+  }
+
+  private systemMessage(activation: TeamRuntimeActivation, recipientId: string, kind: 'turn_ended' | 'message_deleted', messageText: string, source: { sourceTurnId?: string; sourceMessageId?: string }): void {
+    if (activation.messages.some(message => message.kind === kind && message.stopVersion === activation.stopVersion && message.sourceTurnId === source.sourceTurnId && message.sourceMessageId === source.sourceMessageId)) return;
+    activation.messages.push({ id: randomUUID(), stopVersion: activation.stopVersion, senderId: 'system', recipientId, intendedRecipientId: recipientId, kind, text: messageText, status: 'queued', createdAt: now(), ...source });
   }
 
   private actor(state: RuntimeState, actor: TeamRuntimeActor, requireActive = true) {
@@ -481,253 +670,109 @@ export class TeamRuntime {
   private async recover(): Promise<void> {
     await this.store.locked(async () => {
       const state = await this.store.read();
-      let changed = state.version !== 2;
+      let changed = state.version !== 3;
       for (const activation of Object.values(state.activations)) {
         activation.stopVersion ??= 0;
         activation.interactions ??= [];
+        activation.turns ??= [];
+        activation.dispatches ??= [];
+        if (state.version !== 3) {
+          if (this.options.readLegacyTurns) {
+            const restored = await this.options.readLegacyTurns(clone(activation));
+            for (const turn of restored) if (!activation.turns.some(existing => existing.participantId === turn.participantId && existing.turnId === turn.turnId)) activation.turns.push(clone(turn));
+          }
+          for (const message of activation.messages) {
+            message.kind ??= 'member';
+            if (message.status === 'delivered') message.status = 'legacy_unknown';
+            else if (pendingMessage(message) || message.status === 'stopped' || message.status === 'interrupted') { message.status = 'invalidated'; message.invalidatedAt ??= now(); }
+          }
+          for (const work of activation.works) if (pending(work)) { work.status = 'interrupted'; work.error = 'Legacy task execution is no longer resumed.'; work.endedAt = now(); delete work.owner; }
+          for (const notification of activation.notifications) notification.cancelledAt ??= now();
+        }
         for (const item of [...activation.works, ...activation.messages, ...activation.notifications]) {
           if (item.stopVersion === undefined) { item.stopVersion = activation.stopVersion; changed = true; }
         }
         if (this.ownerAlive(activation.runtimeOwner)) continue;
         for (const item of [...activation.works, ...activation.messages, ...activation.notifications]) if (item.owner) { delete item.owner; changed = true; }
-        if (activation.status === 'active' || activation.status === 'stopping' || activation.works.some(pending) || activation.messages.some(m => m.status === 'queued') || activation.notifications.some(n => !n.deliveredAt && !n.cancelledAt)) {
+        if (activation.status === 'active' || activation.status === 'stopping' || activation.turns.some(liveTurn) || activation.messages.some(pendingMessage) || activation.messages.some(message => message.status === 'sending')) {
           activation.stopFromVersion = activation.stopVersion;
           activation.stopVersion++; activation.status = activation.status === 'closed' ? 'closed' : 'stopped'; activation.stopReason = 'restart'; activation.updatedAt = now();
           this.invalidate(activation, 'interrupted'); delete activation.cleanup; delete activation.runtimeOwner; changed = true;
         }
       }
-      state.version = 2;
+      state.version = 3;
       if (changed && !this.disposed) await this.store.write(state);
     });
   }
-  private schedule(activationId: string) {
+  private schedule(activationId: string): void {
     if (this.disposed) return;
     void this.ready.then(async () => {
-      if (this.disposed) return;
       const activation = (await this.store.read()).activations[activationId];
       if (this.disposed || !activation || activation.status !== 'active') return;
-      for (const participant of activation.participants.filter(p => p.role === 'teammate')) {
+      for (const participant of activation.participants) {
         const key = `${activationId}:${participant.id}:${activation.stopVersion}`;
-        const hasPending = activation.works.some(w => w.stopVersion === activation.stopVersion && w.participantId === participant.id && w.status === 'queued') || activation.messages.some(m => m.stopVersion === activation.stopVersion && m.recipientId === participant.id && m.status === 'queued' && !m.owner);
-        const alreadyRunning = activation.works.some(w => w.participantId === participant.id && running(w)) || activation.messages.some(m => m.recipientId === participant.id && m.owner);
-        if (hasPending && !alreadyRunning && !this.drains.has(key)) {
-          const drain = this.drain(activationId, participant.id, activation.stopVersion).catch(() => { /* Durable records remain available for recovery. */ }).finally(() => { if (this.drains.get(key) === drain) this.drains.delete(key); this.schedule(activationId); });
-          this.drains.set(key, drain);
-        } else if (alreadyRunning && this.options.deliverParticipantMessages && activation.messages.some(m => m.stopVersion === activation.stopVersion && m.recipientId === participant.id && m.status === 'queued' && !m.owner)) {
-          void this.flushParticipant(activationId, participant.id, activation.stopVersion);
-        }
+        const queued = activation.messages.filter(message => message.stopVersion === activation.stopVersion && message.recipientId === participant.id && pendingMessage(message));
+        if (!queued.length || queued.every(message => !!message.error) || this.drains.has(key) || activation.turns?.some(turn => turn.participantId === participant.id && liveTurn(turn))) continue;
+        if (participant.role === 'leader' && this.options.isLeaderBusy?.(activation.sessionKey)) continue;
+        const operation = this.drain(activationId, participant.id, activation.stopVersion).catch(() => {}).finally(() => {
+          if (this.drains.get(key) === operation) this.drains.delete(key);
+          this.schedule(activationId);
+        });
+        this.drains.set(key, operation);
       }
-      if (activation.notifications.some(n => !n.deliveredAt && !n.cancelledAt)) void this.flush(activationId);
-    }).catch(() => { /* Read errors surface through runtime_get and subsequent commands. */ });
+    }).catch(() => {});
   }
+
   private async drain(activationId: string, participantId: string, stopVersion: number): Promise<void> {
-    while (!this.disposed) {
-      const claim = await this.mutate(state => {
-        const activation = state.activations[activationId];
-        if (!activation || activation.status !== 'active' || activation.stopVersion !== stopVersion || state.sessions[activation.sessionKey] !== activationId) return null;
-        if (activation.works.some(w => w.participantId === participantId && running(w)) || activation.messages.some(m => m.recipientId === participantId && m.owner)) return null;
-        const incoming = activation.messages.filter(m => m.stopVersion === stopVersion && m.recipientId === participantId && m.status === 'queued' && !m.owner);
-        const waiting = activation.works.filter(w => w.stopVersion === stopVersion && w.participantId === participantId && w.status === 'waiting_information');
-        const recipientWork = (workId: string | undefined) => activation.works.find(w => w.id === workId && w.participantId === participantId);
-        // A peer message may carry its sender's work ID. Only a work owned by
-        // this recipient routes execution; replies can recover that association
-        // from the original question, including through an explicit relay.
-        const relatedWorkId = (message: TeamRuntimeMessage, seen = new Set<string>()): string | undefined => {
-          if (seen.has(message.id)) return undefined;
-          seen.add(message.id);
-          const direct = recipientWork(message.workId);
-          if (direct) return direct.id;
-          for (const reference of [message.replyTo, message.relayOf]) {
-            const previous = activation.messages.find(m => m.id === reference);
-            const related = previous ? relatedWorkId(previous, seen) : undefined;
-            if (related) return related;
-          }
-          return undefined;
-        };
-        const routing = incoming.map(message => ({ message, workId: relatedWorkId(message) }));
-        // With one waiting task, an unlabelled answer is unambiguous. With
-        // several, deliver it as ordinary coordination and let the participant
-        // ask for clarification instead of consuming another task's answer.
-        const route = (item: (typeof routing)[number]) => item.workId ?? (waiting.length === 1 ? waiting[0]!.id : undefined);
-        const selectedWorkId = routing.length ? route(routing[0]!) : undefined;
-        const candidate = recipientWork(selectedWorkId);
-        const work = incoming.length
-          ? candidate && ['waiting_information', 'queued'].includes(candidate.status) ? candidate : undefined
-          : activation.works.find(w => w.stopVersion === stopVersion && w.participantId === participantId && w.status === 'queued');
-        const routed = routing.filter(item => route(item) === selectedWorkId).slice(0, 20).map(item => item.message);
-        const existingBatch = routed.find(message => message.batchId)?.batchId;
-        const messages = existingBatch ? routed.filter(message => message.batchId === existingBatch) : routed;
-        const batchId = existingBatch ?? randomUUID();
-        for (const message of messages) message.batchId = batchId;
-        if (!work && !messages.length) return null;
-        const owner = { pid: process.pid, instanceId: this.instanceId, executionId: randomUUID() };
-        if (work) { work.status = 'running'; work.startedAt ??= now(); work.owner = owner; }
-        for (const message of messages) message.owner = owner;
-        const participant = activation.participants.find(p => p.id === participantId)!;
-        // A participant does not receive sibling work/results or the Leader transcript.
-        const isolated = clone(activation);
-        isolated.works = isolated.works.filter(w => w.participantId === participantId);
-        isolated.messages = isolated.messages.filter(m => m.recipientId === participantId || m.senderId === participantId);
-        isolated.notifications = [];
-        isolated.interactions = [];
-        return { executionId: owner.executionId, activation: isolated, participant: clone(participant), work: work ? clone(work) : undefined, messages: clone(messages) };
-      });
-      if (!claim) return;
-      const key = `${activationId}:${participantId}:${stopVersion}:execution`, controller = new AbortController(); this.controllers.set(key, controller);
-      let output: { text: string } | undefined, error: unknown;
-      try {
-        const latest = (await this.store.read()).activations[activationId];
-        if (this.disposed || latest?.status !== 'active' || latest.stopVersion !== claim.activation.stopVersion) controller.abort();
-        if (controller.signal.aborted) throw new Error('Team execution stopped before starting.');
-        output = await this.options.executeParticipant({ ...claim, signal: controller.signal, acceptMessages: () => this.acceptParticipantMessages(activationId, stopVersion, claim.executionId, claim.messages.map(m => m.id)), updateStatus: async status => {
-          await this.mutate(state => { const work = state.activations[activationId]?.works.find(w => w.id === claim.work?.id); if (work?.stopVersion === stopVersion && work.owner?.executionId === claim.executionId && pending(work) && state.activations[activationId]?.status === 'active' && state.activations[activationId]?.stopVersion === stopVersion) work.status = status; });
-        } });
-      } catch (caught) { error = caught; }
-      finally { if (this.controllers.get(key) === controller) this.controllers.delete(key); }
-      await this.mutate(state => {
-        const activation = state.activations[activationId]; if (!activation) return;
-        const work = activation.works.find(w => w.id === claim.work?.id);
-        const active = activation.status === 'active' && activation.stopVersion === stopVersion && state.sessions[activation.sessionKey] === activationId && !controller.signal.aborted;
-        if (work?.owner?.executionId === claim.executionId && work.stopVersion === stopVersion && pending(work)) {
-          work.status = this.disposed && activation.status === 'active' ? 'interrupted' : !active ? 'stopped' : error ? 'failed' : work.status === 'waiting_information' ? 'waiting_information' : 'completed';
-          if (error) work.error = error instanceof Error ? error.message : String(error);
-          else work.result = output?.text ?? '';
-          if (work.status !== 'waiting_information') work.endedAt = now(); delete work.owner;
-          if (active && work.status !== 'waiting_information') activation.notifications.push(this.workNotification(work));
-        }
-        for (const message of activation.messages.filter(m => claim.messages.some(c => c.id === m.id))) if (message.owner?.executionId === claim.executionId && message.stopVersion === stopVersion) {
-          if (message.status === 'queued') { message.status = !active ? 'stopped' : 'interrupted'; message.invalidatedAt = now(); } delete message.owner;
-        }
-        activation.updatedAt = now();
-      });
-      void this.flush(activationId);
-    }
-  }
-  private async acceptParticipantMessages(activationId: string, stopVersion: number, executionId: string, messageIds: string[]): Promise<void> {
-    await this.mutate(state => {
-      const activation = state.activations[activationId];
-      if (!activation || activation.status !== 'active' || activation.stopVersion !== stopVersion) fail('TEAM_GENERATION_EXPIRED', 'Message acceptance belongs to an expired Team run.');
-      for (const message of activation.messages) if (messageIds.includes(message.id) && message.stopVersion === stopVersion && message.owner?.executionId === executionId && message.status === 'queued') {
-        message.status = 'delivered'; message.deliveredAt = now();
-      }
-    });
-    // Acceptance and actual mailbox readiness share the same retry fence.
-    this.requestMemberDelivery(activationId);
-  }
-  private requestMemberDelivery(activationId: string): void {
-    // Preserve an external boundary even while a previous batch still owns
-    // every queued message or is awaiting its final cleanup write.
-    for (const key of this.memberFlushes.keys()) if (key.startsWith(`${activationId}:`)) this.memberFlushRequested.add(key);
-    this.schedule(activationId);
-  }
-  private flushParticipant(activationId: string, participantId: string, stopVersion: number): Promise<void> {
-    const key = `${activationId}:${participantId}:${stopVersion}:messages`;
-    const previous = this.memberFlushes.get(key); if (previous) { this.memberFlushRequested.add(key); return previous; }
-    let applied = false;
-    const promise = this.deliverToParticipant(activationId, participantId, stopVersion, key).then(result => { applied = result; }).catch(() => {}).finally(async () => {
-      if (this.memberFlushes.get(key) === promise) this.memberFlushes.delete(key);
-      if (this.memberFlushRequested.delete(key) && !this.disposed) void this.flushParticipant(activationId, participantId, stopVersion);
-      const a = (await this.store.read()).activations[activationId];
-      if (applied || !a?.works.some(w => w.participantId === participantId && running(w))) this.schedule(activationId);
-    }).catch(() => { /* Persisted errors surface on the next runtime command. */ });
-    this.memberFlushes.set(key, promise); return promise;
-  }
-  private async deliverToParticipant(activationId: string, participantId: string, stopVersion: number, key: string): Promise<boolean> {
     const claim = await this.mutate(state => {
       const activation = state.activations[activationId];
       if (!activation || activation.status !== 'active' || activation.stopVersion !== stopVersion || state.sessions[activation.sessionKey] !== activationId) return null;
-      const messages = activation.messages.filter(m => m.stopVersion === stopVersion && m.recipientId === participantId && m.status === 'queued' && !m.owner).slice(0, 20);
-      if (!messages.length) return null;
-      const existingBatch = messages.find(m => m.batchId)?.batchId;
-      const batchId = existingBatch ?? randomUUID();
-      const batch = existingBatch ? messages.filter(m => m.batchId === existingBatch) : messages;
-      const executionId = randomUUID();
-      for (const message of batch) { message.batchId = batchId; message.owner = { pid: process.pid, instanceId: this.instanceId, executionId }; }
+      const participant = activation.participants.find(item => item.id === participantId);
+      if (!participant || activation.turns?.some(turn => turn.participantId === participantId && liveTurn(turn)) || participant.role === 'leader' && this.options.isLeaderBusy?.(activation.sessionKey)) return null;
+      const messages = activation.messages.filter(message => message.stopVersion === stopVersion && message.recipientId === participantId && pendingMessage(message));
+      if (!messages.length || messages.every(message => !!message.error)) return null;
+      const turnId = randomUUID();
+      const owner = { pid: process.pid, instanceId: this.instanceId, executionId: turnId };
+      for (const message of messages) { message.status = 'preparing'; message.owner = owner; }
+      (activation.turns ??= []).push({ turnId, participantId, stopVersion, trigger: 'messages', status: 'preparing', startedAt: now(), messageIds: [], requestIds: [], pendingMessageIds: messages.map(message => message.id), owner });
       const isolated = clone(activation);
-      isolated.works = isolated.works.filter(w => w.participantId === participantId);
-      isolated.messages = isolated.messages.filter(m => m.senderId === participantId || m.recipientId === participantId); isolated.notifications = []; isolated.interactions = [];
-      return { activation: isolated, participant: clone(activation.participants.find(p => p.id === participantId)!), messages: clone(batch), executionId };
+      if (participant.role !== 'leader') {
+        isolated.works = isolated.works.filter(work => work.participantId === participantId);
+        isolated.messages = isolated.messages.filter(message => message.senderId === participantId || message.recipientId === participantId);
+        isolated.turns = isolated.turns?.filter(turn => turn.participantId === participantId);
+        isolated.dispatches = isolated.dispatches?.filter(dispatch => dispatch.participantId === participantId);
+        isolated.notifications = []; isolated.interactions = [];
+      }
+      return { activation: isolated, participant: clone(participant), messages: clone(messages), executionId: turnId, turnId, trigger: 'messages' as const, messageOnly: true as const };
     });
-    if (!claim) return false;
-    const controller = new AbortController(); this.controllers.set(key, controller);
-    let delivered = false;
+    if (!claim) return;
+    const key = `${activationId}:${participantId}:${stopVersion}:execution`;
+    const controller = new AbortController();
+    this.controllers.set(key, controller);
+    const actor = { sessionKey: claim.activation.sessionKey, activationId, participantId, stopVersion };
+    let output: Awaited<ReturnType<TeamRuntimeOptions['executeParticipant']>> | undefined, error: unknown;
     try {
-      const current = (await this.store.read()).activations[activationId];
-      if (this.disposed || current?.status !== 'active' || current.stopVersion !== stopVersion) controller.abort();
-      if (!controller.signal.aborted) delivered = await this.options.deliverParticipantMessages!({ ...claim, signal: controller.signal });
-      if (delivered && !controller.signal.aborted) await this.acceptParticipantMessages(activationId, stopVersion, claim.executionId, claim.messages.map(m => m.id));
-      return delivered && !controller.signal.aborted;
-    } finally {
-      if (this.controllers.get(key) === controller) this.controllers.delete(key);
-      await this.mutate(state => {
-        const activation = state.activations[activationId]; if (!activation) return;
-        for (const message of activation.messages) if (message.owner?.executionId === claim.executionId) delete message.owner;
-      });
-    }
-  }
-  private workNotification(work: TeamRuntimeWork): TeamRuntimeNotification {
-    return { id: randomUUID(), stopVersion: work.stopVersion, kind: work.status === 'completed' ? 'work_completed' : 'work_failed', workId: work.id, participantId: work.participantId, summary: `Task ${work.id} ${work.status}. Use team_collect to read the saved task result.`, createdAt: now() };
-  }
-  private flush(activationId: string): Promise<void> {
-    if (this.disposed) return Promise.resolve();
-    const existing = this.flushes.get(activationId); if (existing) { this.flushRequested.add(activationId); return existing; }
-    const promise = this.flushNotifications(activationId).catch(() => { /* Keep the outbox pending for the next safe boundary. */ }).finally(() => {
-      if (this.flushes.get(activationId) === promise) this.flushes.delete(activationId);
-      // An external event arriving during a failed/busy delivery must not be
-      // lost. Retry once for that event, never continuously poll a busy Leader.
-      if (this.flushRequested.delete(activationId)) void this.flush(activationId);
-    });
-    this.flushes.set(activationId, promise); return promise;
-  }
-  private async flushNotifications(activationId: string): Promise<void> {
-    while (!this.disposed) {
-      const snapshot = (await this.store.read()).activations[activationId];
-      if (this.disposed || !snapshot || snapshot.status !== 'active' || !snapshot.notifications.some(n => !n.deliveredAt && !n.cancelledAt)) return;
-      const claim = await this.mutate(state => {
-        const activation = state.activations[activationId];
-        if (!activation || activation.status !== 'active' || state.sessions[activation.sessionKey] !== activationId) return null;
-        // Only this flush owns local outbox delivery. A prior acknowledgement
-        // write may have failed after durable application; reclaim its local
-        // owner and let the transcript-backed adapter deduplicate the batch.
-        if (activation.notifications.some(n => n.owner && n.owner.instanceId !== this.instanceId && this.ownerAlive(n.owner))) return null;
-        for (const notification of activation.notifications) if (notification.owner?.instanceId === this.instanceId || (notification.owner && !this.ownerAlive(notification.owner))) delete notification.owner;
-        const pendingNotifications = activation.notifications.filter(n => n.stopVersion === activation.stopVersion && !n.deliveredAt && !n.cancelledAt);
-        const existingBatch = pendingNotifications.find(n => n.batchId)?.batchId;
-        const notifications = (existingBatch ? pendingNotifications.filter(n => n.batchId === existingBatch) : pendingNotifications).slice(0, 30);
-        if (!notifications.length) return null;
-        const batchId = existingBatch ?? randomUUID();
-        for (const notification of notifications) { notification.owner = { pid: process.pid, instanceId: this.instanceId }; notification.batchId = batchId; }
-        return { activation: clone(activation), notifications: clone(notifications), allowStartTurn: activation.automaticWakeups < (this.options.maxAutomaticWakeups ?? 24) };
-      });
-      if (!claim) return;
-      const controller = new AbortController(), key = `${activationId}:notifications:${claim.activation.stopVersion}`; this.controllers.set(key, controller);
-      let delivered = false, startedTurn = false;
-      try {
-        const latest = (await this.store.read()).activations[activationId];
-        if (this.disposed || latest?.status !== 'active' || latest.stopVersion !== claim.activation.stopVersion) controller.abort();
-        if (!controller.signal.aborted) {
-          const result = await this.options.notifyLeader({ ...claim, signal: controller.signal });
-          delivered = typeof result === 'boolean' ? result : result.delivered;
-          startedTurn = typeof result === 'boolean' ? result : result.startedTurn === true;
+      const latest = (await this.store.read()).activations[activationId];
+      if (this.disposed || latest?.status !== 'active' || latest.stopVersion !== stopVersion) controller.abort();
+      if (controller.signal.aborted) throw new Error('Team execution stopped before starting.');
+      output = await this.options.executeParticipant({ ...claim, signal: controller.signal, updateStatus: status => this.updateTurnStatus(actor, claim.turnId, status) });
+    } catch (caught) { error = caught; }
+    finally { if (this.controllers.get(key) === controller) this.controllers.delete(key); }
+    if (this.disposed) return;
+    const errorText = error instanceof Error ? error.message : error ? String(error) : undefined;
+    await this.endTurn(actor, claim.turnId, output?.result, errorText, { retry: output?.retry });
+    await this.mutate(state => {
+      const activation = state.activations[activationId];
+      if (!activation) return;
+      for (const message of activation.messages) {
+        if (message.owner?.executionId !== claim.executionId) continue;
+        delete message.owner;
+        if (message.status === 'preparing') {
+          message.status = activation.status === 'active' && activation.stopVersion === stopVersion ? 'queued' : 'invalidated';
         }
       }
-      finally {
-        if (this.controllers.get(key) === controller) this.controllers.delete(key);
-        await this.mutate(state => {
-          const activation = state.activations[activationId]; if (!activation) return;
-          for (const notification of activation.notifications.filter(n => claim.notifications.some(c => c.id === n.id))) if (notification.owner?.instanceId === this.instanceId) {
-            delete notification.owner;
-            if (delivered && !controller.signal.aborted && activation.status === 'active' && activation.stopVersion === claim.activation.stopVersion) {
-              notification.deliveredAt = now();
-              const message = activation.messages.find(m => m.id === notification.messageId);
-              if (message?.status === 'queued') { message.status = 'delivered'; message.deliveredAt = now(); }
-            }
-          }
-          if (delivered && startedTurn && !controller.signal.aborted && activation.status === 'active' && activation.stopVersion === claim.activation.stopVersion) activation.automaticWakeups++;
-        });
-      }
-      if (!delivered || controller.signal.aborted) return;
-    }
+    });
+    if (!error) await this.refreshIfIdle(claim.activation.sessionKey);
   }
   /** Shutdown does not claim completion or replay a partially executed task. */
   async dispose(): Promise<void> {

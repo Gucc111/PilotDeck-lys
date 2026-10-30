@@ -61,7 +61,7 @@ describe('useChatComposerState attachment submission', () => {
     const options: Parameters<typeof useChatComposerState>[0] = {
       selectedProject: { name: 'team-draft', displayName: 'Team draft', fullPath: '/work' }, selectedSession: null, currentSessionId: null,
       model: 'browser/last-model', modelSelection: { mode: 'auto' }, teamActivationId: null,
-      teamSelection: { team: { id: 'team-1', revision: 1 }, projectKey: '/work', requestToken: 'create-1', probeFingerprint: 'probe' }, teamDraftSessionId: 'web:s_stable',
+      teamSelection: { team: { id: 'team-1' }, projectKey: '/work', requestToken: 'create-1', probeFingerprint: 'probe' }, teamDraftSessionId: 'web:s_stable',
       permissionMode: 'default', cycleRunMode: vi.fn(), isLoading: false, canAbortSession: false, tokenBudget: null,
       sendMessage, pendingViewSessionRef: { current: null }, scrollToBottom: vi.fn(), addMessage: vi.fn(), clearMessages: vi.fn(), rewindMessages: vi.fn(),
       setIsLoading: vi.fn(), setCanAbortSession: vi.fn(), setIsAborting: vi.fn(), setClaudeStatus: vi.fn(), setPilotDeckStatus: vi.fn(), setIsUserScrolledUp: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),
@@ -84,7 +84,7 @@ describe('useChatComposerState attachment submission', () => {
     const options: Parameters<typeof useChatComposerState>[0] = {
       selectedProject: { name: 'team-rejected', displayName: 'Team rejected', fullPath: '/work' }, selectedSession: null, currentSessionId: null,
       model: 'browser/last-model', teamActivationId: null,
-      teamSelection: { team: { id: 'team-1', revision: 1 }, projectKey: '/work', requestToken: 'create-rejected' }, teamDraftSessionId: 'web:s_rejected',
+      teamSelection: { team: { id: 'team-1' }, projectKey: '/work', requestToken: 'create-rejected' }, teamDraftSessionId: 'web:s_rejected',
       permissionMode: 'default', cycleRunMode: vi.fn(), isLoading: false, canAbortSession: false, tokenBudget: null,
       sendMessage, subscribe: handler => { receive = handler; return () => {}; }, pendingViewSessionRef: { current: null }, scrollToBottom: vi.fn(), addMessage: vi.fn(), clearMessages: vi.fn(), rewindMessages: vi.fn(),
       setIsLoading: vi.fn(), setCanAbortSession: vi.fn(), setIsAborting: vi.fn(), setClaudeStatus: vi.fn(), setPilotDeckStatus: vi.fn(), setIsUserScrolledUp: vi.fn(), pendingPermissionRequests: [], setPendingPermissionRequests: vi.fn(),

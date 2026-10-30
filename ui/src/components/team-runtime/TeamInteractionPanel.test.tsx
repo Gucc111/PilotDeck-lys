@@ -21,7 +21,7 @@ afterEach(cleanup);
 function makeMode(overrides: Partial<TeamModeState> = {}): TeamModeState {
   return {
     activation: { id: 'activation-1', sessionKey: 'web:s_team', projectKey: '/work', team: {} as any, participants: [{ id: 'teammate-1', role: 'teammate', profile: { config: { displayName: 'Reviewer' } } } as any], probeFingerprint: '', status: 'active', createdAt: '', updatedAt: '', works: [], messages: [], notifications: [], interactions: [interaction], automaticWakeups: 0, stopVersion: 0 },
-    interactions: [interaction], respondInteraction: vi.fn().mockResolvedValue(undefined),
+    interactions: [interaction], respondInteraction: vi.fn().mockResolvedValue(undefined), deleteMessage: vi.fn().mockResolvedValue(undefined),
     selectedTeam: { config: { displayName: 'Team' } } as any, history: [], panelOpen: false, setPanelOpen: vi.fn(), refresh: vi.fn(), ...overrides,
   } as unknown as TeamModeState;
 }
@@ -32,6 +32,30 @@ function openRequest(name = /write_file/) { fireEvent.click(screen.getByRole('bu
 function detail() { return within(screen.getAllByRole('dialog').at(-1)!); }
 
 describe('TeamInteractionPanel', () => {
+  it('shows the Leader inbox without approval sections and keeps messages with their recipients', async () => {
+    const mode = makeMode();
+    mode.activation!.participants.unshift({ id: 'leader', role: 'leader', profile: { config: { displayName: 'Leader name' } } } as any);
+    mode.activation!.messages = [
+      { id: 'received', senderId: 'teammate-1', recipientId: 'leader', intendedRecipientId: 'leader', text: 'Should I keep the old API?', status: 'queued', stopVersion: 0, createdAt: '2026-01-01T00:00:00Z' },
+      { id: 'notice', senderId: 'system', recipientId: 'teammate-1', intendedRecipientId: 'teammate-1', text: 'Round ended', kind: 'turn_ended', status: 'invalidated', stopVersion: 0, createdAt: '2026-01-01T00:00:00Z' },
+    ];
+    show(mode);
+    const leaderCard = screen.getByText('Leader name').closest('article')!;
+    expect(within(leaderCard).getByText('Should I keep the old API?')).toBeTruthy();
+    expect(within(leaderCard).queryByRole('button', { name: /工具调用权限询问/ })).toBeNull();
+    expect(within(leaderCard).queryByText('Round ended')).toBeNull();
+    expect(screen.getAllByRole('button', { name: '删除消息' })).toHaveLength(1);
+    expect(screen.getByText('已失效，不会发送')).toBeTruthy();
+    fireEvent.click(within(leaderCard).getByRole('button', { name: '删除消息' }));
+    await waitFor(() => expect(mode.deleteMessage).toHaveBeenCalledWith(mode.activation!.messages[0]));
+  });
+  it('retains a message and reports a failed delete', async () => {
+    const mode = makeMode({ deleteMessage: vi.fn().mockRejectedValue(new Error('Already sent in a model request')) });
+    mode.activation!.messages = [{ id: 'message', senderId: 'leader', recipientId: 'teammate-1', intendedRecipientId: 'teammate-1', text: 'Keep both APIs', status: 'consumed', stopVersion: 0, createdAt: '2026-01-01T00:00:00Z' }];
+    show(mode); fireEvent.click(screen.getByRole('button', { name: '删除消息' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Already sent'));
+    expect(screen.getByText('Keep both APIs')).toBeTruthy();
+  });
   it('projects gateway envelopes into ordinary renderer snapshots', () => {
     expect(interactionRequestInput({ ...interaction, request: { type: 'permission_request', payload: { path: 'report.md' } } })).toEqual({ path: 'report.md' });
     expect(interactionRequestInput(plan)).toEqual({ plan: '# Release checklist\n\nRun the tests.' });

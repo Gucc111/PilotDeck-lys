@@ -11,14 +11,13 @@ export type ProfileConfig = {
   optionalCapabilities: Array<{ kind: "tool" | "skill" | "mcp"; name: string }>;
   permissionMode: "default" | "plan" | "bypassPermissions";
 };
-export type ProfileRef = { id: string; revision: number };
+/** A configuration identity. Profiles and Teams are latest-only records. */
+export type ProfileRef = { id: string };
 export type AgentProfile = ProfileRef & {
   role: ProfileRole;
   config: ProfileConfig;
-  archived: boolean;
   createdAt: string;
   updatedAt: string;
-  forkedFrom?: ProfileRef;
 };
 export type TeamConfig = {
   displayName: string;
@@ -30,14 +29,11 @@ export type TeamConfig = {
 };
 export type TeamDefinition = {
   id: string;
-  revision: number;
   config: TeamConfig;
   leader: AgentProfile;
   teammates: AgentProfile[];
-  archived: boolean;
   createdAt: string;
   updatedAt: string;
-  forkedFrom?: ProfileRef;
 };
 export type TeamInventory = {
   tools: Array<{ name: string; description: string }>;
@@ -48,12 +44,12 @@ export type TeamLibrary = { profiles: AgentProfile[]; teams: TeamDefinition[] };
 export type TeamLibraryCommand =
   | { action: "library" }
   | { action: "inventory"; projectKey?: string }
-  | { action: "profile_save"; id?: string; expectedRevision?: number; role: ProfileRole; config: ProfileConfig; requestToken: string }
+  | { action: "profile_save"; id?: string; role: ProfileRole; config: ProfileConfig; requestToken: string }
   | { action: "profile_fork"; source: ProfileRef; displayName?: string; requestToken: string }
-  | { action: "profile_archive"; id: string; expectedRevision: number; archived: boolean }
-  | { action: "team_save"; id?: string; expectedRevision?: number; config: TeamConfig; requestToken: string }
+  | { action: "profile_delete"; id: string; requestToken: string }
+  | { action: "team_save"; id?: string; config: TeamConfig; requestToken: string }
   | { action: "team_fork"; source: ProfileRef; displayName?: string; requestToken: string }
-  | { action: "team_archive"; id: string; expectedRevision: number; archived: boolean }
+  | { action: "team_delete"; id: string; requestToken: string }
   | { action: "project_references"; projectKey: string };
 export type TeamLibraryCommandResult = TeamLibrary | TeamInventory | AgentProfile | TeamDefinition | { referenced: boolean };
 export type TeamCommand = TeamLibraryCommand | import('./runtimeTypes.js').TeamRuntimeCommand;

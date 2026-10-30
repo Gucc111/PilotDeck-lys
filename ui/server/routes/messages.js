@@ -191,6 +191,9 @@ function mapWebMessageToNormalized(message, sessionId) {
     ...(Number.isFinite(message.sequence) ? { sequence: message.sequence } : {}),
   };
   switch (message.kind) {
+    case 'team_message':
+      return createNormalizedMessage({ ...base, kind: 'team_message', role: 'assistant', content: '',
+        teamInjectionMode: message.teamInjectionMode, teamMessageIds: message.teamMessageIds });
     case 'text': {
       return createNormalizedMessage({
         ...base,

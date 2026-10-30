@@ -12,7 +12,7 @@ import type {
   ModelProtocol,
   ProviderConfig,
 } from "../protocol/canonical.js";
-import { ModelProviderError, parseRetryAfterHeader } from "../protocol/errors.js";
+import { ModelProviderError, ModelRequestDispatchError, parseRetryAfterHeader } from "../protocol/errors.js";
 import { parseModelResponse } from "../response/parseModelResponse.js";
 import { createStreamNormalizerState, normalizeStreamEvent } from "./normalizeStreamEvent.js";
 import { createGoogleStreamState, normalizeGoogleStreamEvent } from "../providers/google/stream.js";
@@ -22,6 +22,9 @@ import { StreamingCheckpointManager } from "./StreamingCheckpoint.js";
 import { buildLiteLLMContinuationRequest } from "./continuationRequest.js";
 import { requestFingerprint } from "./requestFingerprint.js";
 import { NetworkFetchError, networkFetch } from "../../network/fetch.js";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export type ModelTransport = typeof fetch;
 
@@ -31,7 +34,14 @@ export type ModelRuntimeOptions = {
   signal?: AbortSignal;
   streamTimeoutMs?: number;
   onRetryProgress?: (progress: ModelStreamRetryProgress) => void;
+  /** Serializes cancellation with the actual SDK/transport invocation. */
+  dispatchRequest?: ModelRequestDispatch;
 };
+
+export type ModelRequestDispatch = <T>(input: {
+  request: CanonicalModelRequest;
+  start: (request: CanonicalModelRequest) => Promise<T>;
+}) => Promise<{ request: CanonicalModelRequest; value: Promise<T> }>;
 
 export type ModelStreamRetryProgress = {
   reason: "network_error" | "server_error" | "continuation";
@@ -101,7 +111,7 @@ export async function complete(
     const body = buildModelRequest(nonStreamingRequest, config);
     let response: Response;
     try {
-      response = await sendProviderRequest(provider, body, false, options.fetch ?? fetch, options.signal);
+      response = await sendProviderRequest(provider, body, false, options.fetch ?? fetch, options.signal, options, nonStreamingRequest);
     } catch (error) {
       if (attempt < maxRetries && isRetryableRequestError(error)) {
         const delayMs = retryBaseDelay * (attempt + 1);
@@ -167,17 +177,9 @@ export async function* streamModel(
       metadata: currentRequest.metadata,
     };
     const body = buildModelRequest(currentRequest, config);
-    if (process.env.PILOTDECK_DUMP_REQUEST === "1") {
-      const fs = await import("node:fs");
-      const os = await import("node:os");
-      const path = await import("node:path");
-      const dumpPath = path.join(os.tmpdir(), `pilotdeck_request_${Date.now()}.json`);
-      fs.writeFileSync(dumpPath, JSON.stringify(body, null, 2));
-      console.log(`[model-debug] Request dumped to ${dumpPath} (model=${currentRequest.model})`);
-    }
     let response: Response;
     try {
-      response = await sendProviderRequest(provider, body, true, options.fetch ?? fetch, options.signal, options);
+      response = await sendProviderRequest(provider, body, true, options.fetch ?? fetch, options.signal, options, currentRequest);
     } catch (error) {
       if (attempt < maxRetries && isRetryableStreamError(error)) {
         const delayMs = calculateRetryDelay(provider, attempt);
@@ -306,12 +308,22 @@ async function sendGoogleCompleteRequest(
   options: ModelRuntimeOptions,
 ): Promise<unknown> {
   try {
-    const body = withGoogleAbortSignal(buildModelRequest(request, {
-      providers: { [provider.id]: provider },
-    }) as Record<string, unknown>, options.signal);
-    const client = (options.googleClientFactory ?? createGoogleClient)(provider);
-    return await client.models.generateContent(body as unknown as GoogleRequestBody);
+    const clientProvider = options.dispatchRequest ? protectGoogleMessageContent(provider) : provider;
+    const client = (options.googleClientFactory ?? createGoogleClient)(clientProvider);
+    const start = (accepted: CanonicalModelRequest) => {
+      const body = beforeTransport(() => withGoogleAbortSignal(buildModelRequest(accepted, {
+        providers: { [provider.id]: provider },
+      }) as Record<string, unknown>, options.signal));
+      beforeTransport(() => throwIfAborted(options.signal));
+      const pending = client.models.generateContent(body as unknown as GoogleRequestBody);
+      dumpDispatchedRequest(body, accepted.model);
+      return pending;
+    };
+    return options.dispatchRequest
+      ? await (await options.dispatchRequest({ request, start })).value
+      : await start(request);
   } catch (error) {
+    throwIfDispatchCancelled(error);
     throwIfGoogleAbort(error, options.signal);
     throw toProviderError(provider, error);
   }
@@ -340,29 +352,27 @@ async function* streamGoogleProviderRequest(params: {
     const streamAbort = new AbortController();
     const detachAbort = params.options.signal ? forwardAbort(params.options.signal, streamAbort) : undefined;
     try {
-      const body = withGoogleAbortSignal(buildModelRequest(currentRequest, {
-        providers: { [params.provider.id]: params.provider },
-      }) as Record<string, unknown>, streamAbort.signal);
-      if (process.env.PILOTDECK_DUMP_REQUEST === "1") {
-        const fs = await import("node:fs");
-        const os = await import("node:os");
-        const path = await import("node:path");
-        const dumpPath = path.join(os.tmpdir(), `pilotdeck_request_${Date.now()}.json`);
-        fs.writeFileSync(dumpPath, JSON.stringify(body, null, 2));
-        console.log(`[model-debug] Request dumped to ${dumpPath} (model=${currentRequest.model})`);
-      }
 
       // The Google SDK applies HttpOptions.timeout to the entire HTTP request.
       // Streaming uses a per-read idle watchdog below, so do not give the SDK
       // either the idle timeout or the provider's request timeout here.
       const client = (params.options.googleClientFactory ?? createGoogleClient)({
-        ...params.provider,
+        ...(params.options.dispatchRequest ? protectGoogleMessageContent(params.provider) : params.provider),
         timeoutMs: undefined,
       });
       const streamIdleTimeoutMs = resolveStreamIdleTimeout(params.provider, params.options);
       const abortForIdleTimeout = (error: StreamIdleTimeoutError) => streamAbort.abort(error);
+      const startStream = (accepted: CanonicalModelRequest) => {
+        const acceptedBody = beforeTransport(() => withGoogleAbortSignal(buildModelRequest(accepted, { providers: { [params.provider.id]: params.provider } }) as Record<string, unknown>, streamAbort.signal));
+        beforeTransport(() => throwIfAborted(streamAbort.signal));
+        const pending = client.models.generateContentStream(acceptedBody as unknown as GoogleRequestBody);
+        dumpDispatchedRequest(acceptedBody, accepted.model);
+        return pending;
+      };
       const stream = await withIdleTimeout(
-        () => client.models.generateContentStream(body as unknown as GoogleRequestBody),
+        async () => params.options.dispatchRequest
+          ? await (await params.options.dispatchRequest({ request: currentRequest, start: startStream })).value
+          : await startStream(currentRequest),
         streamIdleTimeoutMs,
         params.options.signal,
         abortForIdleTimeout,
@@ -407,6 +417,7 @@ async function* streamGoogleProviderRequest(params: {
       }
       return;
     } catch (error) {
+      throwIfDispatchCancelled(error);
       throwIfGoogleAbort(error, params.options.signal);
       const providerError = toProviderError(params.provider, error);
       const retryable = isRetryableGoogleStreamError(providerError, error);
@@ -677,6 +688,7 @@ async function sendProviderRequest(
   transport: ModelTransport,
   signal?: AbortSignal,
   options?: ModelRuntimeOptions,
+  canonicalRequest?: CanonicalModelRequest,
 ): Promise<Response> {
   const controller = new AbortController();
   const detachAbort = signal ? forwardAbort(signal, controller) : undefined;
@@ -707,8 +719,10 @@ async function sendProviderRequest(
       const { stream_options: _usageOptions, ...fallbackBody } = finalBody;
       usageFallbackBody = JSON.stringify(fallbackBody);
     }
-    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs, usageFallbackBody);
+    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs, usageFallbackBody,
+      options?.dispatchRequest && canonicalRequest ? { request: canonicalRequest, dispatch: options.dispatchRequest } : undefined);
   } catch (error) {
+    throwIfDispatchCancelled(error);
     if (signal?.aborted) {
       throw createAbortError(signal.reason);
     }
@@ -718,6 +732,35 @@ async function sendProviderRequest(
       clearTimeout(timeout);
     }
     detachAbort?.();
+  }
+}
+
+function throwIfDispatchCancelled(error: unknown): void {
+  const code = (error as { code?: string } | null)?.code;
+  if (error instanceof ModelRequestDispatchError || code === "TEAM_EMPTY_BATCH" || code === "TEAM_MESSAGE_BATCH_TOO_LARGE") throw error;
+}
+
+function beforeTransport<T>(prepare: () => T): T {
+  try { return prepare(); }
+  catch (error) {
+    throw Object.assign(error instanceof Error ? error : new Error(String(error)), { requestDispatched: false });
+  }
+}
+
+function protectGoogleMessageContent(provider: ProviderConfig): ProviderConfig {
+  if (!provider.extraBody || !("contents" in provider.extraBody)) return provider;
+  const { contents: _contents, ...extraBody } = provider.extraBody;
+  return { ...provider, extraBody };
+}
+
+function dumpDispatchedRequest(body: unknown, model?: string): void {
+  if (process.env.PILOTDECK_DUMP_REQUEST !== "1") return;
+  try {
+    const dumpPath = join(tmpdir(), `pilotdeck_request_${Date.now()}.json`);
+    writeFileSync(dumpPath, JSON.stringify(body, null, 2));
+    console.log(`[model-debug] Request dumped to ${dumpPath} (model=${model ?? "unknown"})`);
+  } catch {
+    // Debug output must not turn an already started request into a dispatch failure.
   }
 }
 
@@ -747,6 +790,7 @@ async function sendWithEndpointFallback(
   fetchOptions: RequestInit,
   timeoutMs: number,
   usageFallbackBody?: string,
+  dispatch?: { request: CanonicalModelRequest; dispatch: ModelRequestDispatch },
 ): Promise<Response> {
   const endpoints = buildProviderChatEndpointCandidates({ protocol: provider.protocol, baseUrl: provider.url });
   const networkOptions = {
@@ -755,13 +799,40 @@ async function sendWithEndpointFallback(
     timeoutMs,
     retry: { maxRetries: 0, retryOnPost: true },
   };
+  const send = async (endpoint: string, omitUsage = false): Promise<Response> => {
+    const start = (accepted?: CanonicalModelRequest): Promise<Response> => {
+      const { finalBody, body } = beforeTransport(() => {
+        throwIfAborted(networkOptions.signal);
+        const canonicalBody = accepted ? buildModelRequest(accepted, { providers: { [provider.id]: provider } }) : undefined;
+        let finalBody = canonicalBody ? sanitizeProviderBody({ ...canonicalBody, ...provider.extraBody }) : undefined;
+        if (finalBody && dispatch) {
+          // Configuration extras cannot replace the messages whose delivery is recorded.
+          for (const field of ["messages", "input", "contents"] as const) {
+            if (canonicalBody && field in canonicalBody) finalBody[field] = (canonicalBody as unknown as Record<string, unknown>)[field];
+          }
+        }
+        if (omitUsage && finalBody) {
+          const { stream_options: _streamOptions, ...withoutUsage } = finalBody;
+          finalBody = withoutUsage;
+        }
+        return { finalBody, body: finalBody ? JSON.stringify(finalBody) : omitUsage ? usageFallbackBody : fetchOptions.body };
+      });
+      const pending = networkFetch(endpoint, { ...fetchOptions, body }, networkOptions);
+      dumpDispatchedRequest(finalBody ?? JSON.parse(String(body)), accepted?.model);
+      return pending;
+    };
+    if (!dispatch) return start();
+    const accepted = await dispatch.dispatch({ request: dispatch.request, start });
+    dispatch.request = accepted.request;
+    return await accepted.value;
+  };
   let lastResponse: Response | undefined;
   for (const endpoint of endpoints) {
-    let response = await networkFetch(endpoint, fetchOptions, networkOptions);
+    let response = await send(endpoint);
     if (usageFallbackBody !== undefined && await rejectsStreamUsageOption(response)) {
       // Retry an explicit parameter rejection at this endpoint before trying
       // another address, which could otherwise hide the rejection with a 404.
-      response = await networkFetch(endpoint, { ...fetchOptions, body: usageFallbackBody }, networkOptions);
+      response = await send(endpoint, true);
     }
     if (await shouldUseEndpointResponse(provider, response, stream, endpoints.length)) {
       return response;

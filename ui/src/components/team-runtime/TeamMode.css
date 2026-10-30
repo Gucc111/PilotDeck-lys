@@ -76,3 +76,12 @@
 .team-interaction-history pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; max-width:100%; }
 .team-interaction-history ul { list-style:disc; padding-left:20px; margin:8px 0; }
 .team-interaction-modal .team-mode-body { min-height:0; }
+.team-received-message { padding:8px 0; border-bottom:1px solid #e8e3ed; min-width:0; }
+.team-received-message:last-child { border-bottom:0; }
+.team-received-message-meta { display:flex; align-items:center; gap:6px; min-width:0; font-size:11px; }
+.team-received-message-meta strong { flex:1; min-width:0; overflow-wrap:anywhere; }
+.team-received-message-meta time { color:#7c7586; }
+.team-mode-dialog button.team-message-delete { display:flex; align-items:center; justify-content:center; flex-shrink:0; padding:5px; border:0; }
+.team-mode-dialog button.team-message-content { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; border:0; border-radius:0; padding:4px 0; width:100%; text-align:left; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
+.team-mode-dialog button.team-message-content.is-expanded { display:block; }
+.dark .team-received-message { border-color:#3d3748; }

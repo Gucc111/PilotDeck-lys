@@ -1,0 +1,165 @@
+{
+  "at": "2026-10-30T03:49:08.835Z",
+  "evidenceKind": "real Gateway auxiliary replay, not browser E2E",
+  "rows": [
+    {
+      "label": "probe-storage-P2",
+      "input": {
+        "action": "runtime_probe",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-docs",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "team": {
+          "id": "687dac1d-3bd7-4926-aff3-f0d2fe631aa6"
+        }
+      },
+      "ok": false,
+      "code": "TEAM_WORKSPACE_CONFLICT",
+      "message": "Team selection cannot change the existing conversation's storage project."
+    },
+    {
+      "label": "probe-execution-P2",
+      "input": {
+        "action": "runtime_probe",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-docs",
+        "team": {
+          "id": "687dac1d-3bd7-4926-aff3-f0d2fe631aa6"
+        }
+      },
+      "ok": false,
+      "code": "TEAM_WORKSPACE_CONFLICT",
+      "message": "The current conversation's project cannot be replaced by Team selection."
+    },
+    {
+      "label": "select-storage-P2",
+      "input": {
+        "action": "runtime_select",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-docs",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "team": {
+          "id": "687dac1d-3bd7-4926-aff3-f0d2fe631aa6"
+        },
+        "requestToken": "e8e4f352-b377-4cf6-9416-42e936d5b0b0"
+      },
+      "ok": false,
+      "code": "TEAM_WORKSPACE_CONFLICT",
+      "message": "Team selection cannot change the existing conversation's storage project."
+    },
+    {
+      "label": "submit-location-P2",
+      "events": [
+        {
+          "type": "agent_status",
+          "runId": "f47fc4ec-0a52-48c5-84e3-548f74ecbcf1",
+          "event": "gateway_submit_failed",
+          "detail": {
+            "message": "Team selection cannot change the existing conversation's storage project.",
+            "code": "TEAM_WORKSPACE_CONFLICT",
+            "severity": "error",
+            "visible": true,
+            "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
+            "scope": "turn",
+            "source": "gateway"
+          }
+        },
+        {
+          "type": "error",
+          "runId": "f47fc4ec-0a52-48c5-84e3-548f74ecbcf1",
+          "code": "TEAM_WORKSPACE_CONFLICT",
+          "message": "Team selection cannot change the existing conversation's storage project.",
+          "recoverable": false,
+          "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs."
+        }
+      ]
+    },
+    {
+      "label": "probe-storage-P0",
+      "input": {
+        "action": "runtime_probe",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/unregistered",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "team": {
+          "id": "687dac1d-3bd7-4926-aff3-f0d2fe631aa6"
+        }
+      },
+      "ok": false,
+      "code": "PROJECT_NOT_FOUND",
+      "message": "Unknown projectKey: /Users/gucc1/Codes/team-mode-acceptance/unregistered"
+    },
+    {
+      "label": "probe-execution-P0",
+      "input": {
+        "action": "runtime_probe",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/unregistered",
+        "team": {
+          "id": "687dac1d-3bd7-4926-aff3-f0d2fe631aa6"
+        }
+      },
+      "ok": false,
+      "code": "TEAM_WORKSPACE_CONFLICT",
+      "message": "The current conversation's project cannot be replaced by Team selection."
+    },
+    {
+      "label": "select-storage-P0",
+      "input": {
+        "action": "runtime_select",
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/unregistered",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "team": {
+          "id": "687dac1d-3bd7-4926-aff3-f0d2fe631aa6"
+        },
+        "requestToken": "4d036c7d-e7c3-4264-8d51-ce901d3f063c"
+      },
+      "ok": false,
+      "code": "PROJECT_NOT_FOUND",
+      "message": "Unknown projectKey: /Users/gucc1/Codes/team-mode-acceptance/unregistered"
+    },
+    {
+      "label": "submit-location-P0",
+      "events": [
+        {
+          "type": "agent_status",
+          "runId": "2295bd94-c1ea-4048-b510-9b28744d3264",
+          "event": "gateway_submit_failed",
+          "detail": {
+            "message": "Unknown projectKey: /Users/gucc1/Codes/team-mode-acceptance/unregistered",
+            "code": "PROJECT_NOT_FOUND",
+            "severity": "error",
+            "visible": true,
+            "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
+            "scope": "turn",
+            "source": "gateway"
+          }
+        },
+        {
+          "type": "error",
+          "runId": "2295bd94-c1ea-4048-b510-9b28744d3264",
+          "code": "PROJECT_NOT_FOUND",
+          "message": "Unknown projectKey: /Users/gucc1/Codes/team-mode-acceptance/unregistered",
+          "recoverable": false,
+          "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs."
+        }
+      ]
+    },
+    {
+      "label": "before-after",
+      "before": {
+        "turns": 23,
+        "dispatches": 51
+      },
+      "after": {
+        "turns": 23,
+        "dispatches": 51,
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app"
+      }
+    }
+  ]
+}

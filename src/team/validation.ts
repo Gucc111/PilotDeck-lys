@@ -23,10 +23,6 @@ function strings(value: unknown, field: string): string[] {
   if (new Set(result).size !== result.length) fail(field, 'must not contain duplicates');
   return result;
 }
-function positiveInteger(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(field, 'must be a positive integer');
-  return value;
-}
 function identity(value: unknown, field: string): string {
   const id = text(value, field, { max: 200 });
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) fail(field, 'must be a server-generated UUID');
@@ -38,8 +34,8 @@ function optionalNumber(value: unknown, field: string): number | undefined {
   return value;
 }
 export function profileRef(value: unknown, field: string): ProfileRef {
-  const data = object(value, field, ['id', 'revision']);
-  return { id: identity(data.id, `${field}.id`), revision: positiveInteger(data.revision, `${field}.revision`) };
+  const data = object(value, field, ['id']);
+  return { id: identity(data.id, `${field}.id`) };
 }
 
 export function profileConfig(value: unknown): ProfileConfig {
@@ -94,10 +90,10 @@ export function command(value: unknown): TeamCommand {
   if (!value || typeof value !== 'object') fail('command', 'must be an object');
   const action = (value as { action?: unknown }).action;
   const fields: Record<string, string[]> = {
-    library: [], inventory: ['projectKey'], profile_save: ['id', 'expectedRevision', 'role', 'config', 'requestToken'],
-    profile_fork: ['source', 'displayName', 'requestToken'], profile_archive: ['id', 'expectedRevision', 'archived'],
-    team_save: ['id', 'expectedRevision', 'config', 'requestToken'], team_fork: ['source', 'displayName', 'requestToken'],
-    team_archive: ['id', 'expectedRevision', 'archived'], project_references: ['projectKey'],
+    library: [], inventory: ['projectKey'], profile_save: ['id', 'role', 'config', 'requestToken'],
+    profile_fork: ['source', 'displayName', 'requestToken'], profile_delete: ['id', 'requestToken'],
+    team_save: ['id', 'config', 'requestToken'], team_fork: ['source', 'displayName', 'requestToken'],
+    team_delete: ['id', 'requestToken'], project_references: ['projectKey'],
   };
   if (typeof action !== 'string' || !Object.hasOwn(fields, action)) fail('command.action', 'unknown action');
   const data = object(value, 'command', ['action', ...fields[action]!]);
@@ -105,23 +101,14 @@ export function command(value: unknown): TeamCommand {
     if (data[key] !== undefined) text(data[key], `command.${key}`, { max: 500 });
   }
   if (data.id !== undefined) identity(data.id, 'command.id');
-  if (data.expectedRevision !== undefined) positiveInteger(data.expectedRevision, 'command.expectedRevision');
-  if (data.archived !== undefined && typeof data.archived !== 'boolean') fail('command.archived', 'must be boolean');
   if (action.endsWith('_save') || action.endsWith('_fork')) text(data.requestToken, 'command.requestToken', { max: 500 });
-  if (action.endsWith('_save')) {
-    if (data.id === undefined && data.expectedRevision !== undefined) fail('command.expectedRevision', 'requires an existing id');
-    if (data.id !== undefined) positiveInteger(data.expectedRevision, 'command.expectedRevision');
-  }
+  if (action.endsWith('_delete')) text(data.requestToken, 'command.requestToken', { max: 500 });
   if (action === 'profile_save') {
     if (data.role !== 'leader' && data.role !== 'teammate') fail('command.role', 'must be leader or teammate');
     return { ...data, config: profileConfig(data.config) } as TeamCommand;
   }
   if (action === 'team_save') return { ...data, config: teamConfig(data.config) } as TeamCommand;
   if (action.endsWith('_fork')) return { ...data, source: profileRef(data.source, 'command.source'), ...(data.displayName === undefined ? {} : { displayName: text(data.displayName, 'command.displayName', { max: 200 }).trim() }) } as TeamCommand;
-  if (action.endsWith('_archive')) {
-    text(data.id, 'command.id', { max: 200 }); positiveInteger(data.expectedRevision, 'command.expectedRevision');
-    if (typeof data.archived !== 'boolean') fail('command.archived', 'must be boolean');
-  }
   if (action === 'project_references') text(data.projectKey, 'command.projectKey', { max: 500 });
   return { ...data } as TeamCommand;
 }

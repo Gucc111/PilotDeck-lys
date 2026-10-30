@@ -9,5 +9,5 @@ export async function teamCommand<T extends TeamCommandResult>(command: TeamComm
   return data as T;
 }
 export const newRequestToken = () => crypto.randomUUID();
-export const refOf = (profile: { id: string; revision: number }) => ({ id: profile.id, revision: profile.revision });
+export const refOf = (profile: { id: string }) => ({ id: profile.id });
 export const workspaceKey = (project: { fullPath?: string; path?: string }) => project.fullPath || project.path || '';

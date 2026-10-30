@@ -33,6 +33,7 @@ export type MessageKind =
   | 'task_notification'
   | 'interrupted'
   | 'compact_boundary'
+  | 'team_message'
   | 'agent_activity'
   | 'agent_activity_summary'
   | 'file_artifacts';
@@ -68,6 +69,8 @@ export interface NormalizedMessage {
   reasoningContent?: string;
   /** Stable identity of a queued input after it has been applied to a turn. */
   queueItemId?: string;
+  teamInjectionMode?: 'start' | 'during';
+  teamMessageIds?: string[];
   /** True for a user direction injected at a model boundary during a running turn. */
   isSteer?: boolean;
   contentI18n?: { key: string; params?: Record<string, unknown> };

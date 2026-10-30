@@ -1,0 +1,176 @@
+{
+  "at": "2026-10-30T03:26:22.289Z",
+  "evidenceKind": "real Gateway auxiliary replay, not browser E2E",
+  "rows": [
+    {
+      "label": "before",
+      "counts": {
+        "turns": 17,
+        "dispatches": 34,
+        "stopVersion": 2,
+        "messages": 16
+      }
+    },
+    {
+      "label": "accepted-old-generation-replay",
+      "input": {
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "channelKey": "web",
+        "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2",
+        "message": "CASE19_NEW：这是停止清理后的明确新请求。只通知测试员“新代次标记 NEW_CURRENT_83；不要恢复任何旧工作，不读文件不调用工具，用最终回答复述本条新标记即可”。Leader 等结束通知后查本轮结果，不重发旧要求。",
+        "uploadedAttachments": [],
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "teamActivationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "teamStopVersion": 1
+      },
+      "events": [
+        {
+          "type": "input_accepted",
+          "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2"
+        },
+        {
+          "type": "agent_status",
+          "event": "team_input_already_accepted",
+          "detail": {
+            "running": false,
+            "interrupted": false,
+            "message": "This input was already accepted. This receipt does not execute it again."
+          }
+        },
+        {
+          "type": "turn_completed",
+          "usage": {},
+          "finishReason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "accepted-identical-replay-again",
+      "input": {
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "channelKey": "web",
+        "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2",
+        "message": "CASE19_NEW：这是停止清理后的明确新请求。只通知测试员“新代次标记 NEW_CURRENT_83；不要恢复任何旧工作，不读文件不调用工具，用最终回答复述本条新标记即可”。Leader 等结束通知后查本轮结果，不重发旧要求。",
+        "uploadedAttachments": [],
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "teamActivationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "teamStopVersion": 1
+      },
+      "events": [
+        {
+          "type": "input_accepted",
+          "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2"
+        },
+        {
+          "type": "agent_status",
+          "event": "team_input_already_accepted",
+          "detail": {
+            "running": false,
+            "interrupted": false,
+            "message": "This input was already accepted. This receipt does not execute it again."
+          }
+        },
+        {
+          "type": "turn_completed",
+          "usage": {},
+          "finishReason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "accepted-token-changed-text",
+      "input": {
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "channelKey": "web",
+        "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2",
+        "message": "CASE19_NEW：这是停止清理后的明确新请求。只通知测试员“新代次标记 NEW_CURRENT_83；不要恢复任何旧工作，不读文件不调用工具，用最终回答复述本条新标记即可”。Leader 等结束通知后查本轮结果，不重发旧要求。 changed body",
+        "uploadedAttachments": [],
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "teamActivationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "teamStopVersion": 1
+      },
+      "events": [
+        {
+          "type": "agent_status",
+          "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2",
+          "event": "gateway_submit_failed",
+          "detail": {
+            "message": "This input token was already accepted with different contents.",
+            "code": "TEAM_INPUT_CONFLICT",
+            "severity": "error",
+            "visible": true,
+            "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
+            "scope": "turn",
+            "source": "gateway"
+          }
+        },
+        {
+          "type": "error",
+          "runId": "84c062e2-9054-4c6b-9e1b-ae4114b1c1f2",
+          "code": "TEAM_INPUT_CONFLICT",
+          "message": "This input token was already accepted with different contents.",
+          "recoverable": false,
+          "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs."
+        }
+      ]
+    },
+    {
+      "label": "unaccepted-old-generation",
+      "input": {
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "channelKey": "web",
+        "runId": "8b9e1f13-b956-48fd-a858-40938542611d",
+        "message": "Must be rejected before acceptance.",
+        "uploadedAttachments": [],
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "teamActivationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "teamStopVersion": 1
+      },
+      "events": [
+        {
+          "type": "agent_status",
+          "runId": "8b9e1f13-b956-48fd-a858-40938542611d",
+          "event": "gateway_submit_failed",
+          "detail": {
+            "message": "This Team input belongs to an expired run. Send it again explicitly.",
+            "code": "TEAM_GENERATION_EXPIRED",
+            "severity": "error",
+            "visible": true,
+            "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
+            "scope": "turn",
+            "source": "gateway"
+          }
+        },
+        {
+          "type": "error",
+          "runId": "8b9e1f13-b956-48fd-a858-40938542611d",
+          "code": "TEAM_GENERATION_EXPIRED",
+          "message": "This Team input belongs to an expired run. Send it again explicitly.",
+          "recoverable": false,
+          "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs."
+        }
+      ]
+    },
+    {
+      "label": "old-abort-after-current-work",
+      "input": {
+        "sessionKey": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+        "teamActivationId": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+        "teamStopVersion": 1
+      },
+      "ok": false,
+      "code": "TEAM_GENERATION_EXPIRED",
+      "message": "This stop request belongs to an expired Team run."
+    },
+    {
+      "label": "after",
+      "counts": {
+        "turns": 17,
+        "dispatches": 34,
+        "stopVersion": 2,
+        "messages": 16
+      },
+      "acceptedCount": 1
+    }
+  ]
+}

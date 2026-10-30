@@ -42,17 +42,17 @@ router: { enabled: false }
   const config = (displayName: string): ProfileConfig => ({ displayName, description: '', systemPrompt: 'Saved role instructions', model: { mode: 'model', provider: 'test', model: 'default' }, workspace: { mode: 'team' }, capabilities: { tools: ['read_file'], skills: [], mcpServers: ['not-connected'] }, optionalCapabilities: [], permissionMode: 'default' });
   const leader = await command({ action: 'profile_save', role: 'leader', config: config('Leader'), requestToken: 'leader' }) as AgentProfile;
   const teammate = await command({ action: 'profile_save', role: 'teammate', config: config('Teammate'), requestToken: 'teammate' }) as AgentProfile;
-  const saved = { action: 'team_save' as const, config: { displayName: 'Research', description: '', instructions: '', defaultProjectKey: project, leader: { id: leader.id, revision: 1 }, teammates: [{ id: teammate.id, revision: 1 }] }, requestToken: 'team' };
+  const saved = { action: 'team_save' as const, config: { displayName: 'Research', description: '', instructions: '', defaultProjectKey: project, leader: { id: leader.id }, teammates: [{ id: teammate.id }] }, requestToken: 'team' };
   const team = await command(saved) as TeamDefinition;
   assert.equal((await command(saved) as TeamDefinition).id, team.id);
-  const fork = await command({ action: 'team_fork', source: { id: team.id, revision: 1 }, requestToken: 'fork' }) as TeamDefinition;
+  const fork = await command({ action: 'team_fork', source: { id: team.id }, requestToken: 'fork' }) as TeamDefinition;
   assert.notEqual(fork.id, team.id); assert.equal(fork.leader.id, leader.id);
   await command({ action: 'inventory', projectKey: project });
   const library = await command({ action: 'library' }) as TeamLibrary;
   assert.deepEqual(Object.keys(library).sort(), ['profiles', 'teams']);
   const before = await readFile(join(home, 'team-library', 'state.json'), 'utf8');
   for (const action of ['start', 'probe', 'conversation_get']) {
-    await assert.rejects(command({ action, teamId: team.id, revision: 1, requestToken: 'removed' } as unknown as TeamCommand), { code: 'TEAM_INVALID_INPUT' });
+    await assert.rejects(command({ action, teamId: team.id, requestToken: 'removed' } as unknown as TeamCommand), { code: 'TEAM_INVALID_INPUT' });
   }
   assert.equal(await readFile(join(home, 'team-library', 'state.json'), 'utf8'), before);
   assert.deepEqual((await local.gateway.listSessions({ projectKey: project })).sessions, []);

@@ -118,6 +118,9 @@ export interface ChatMessage {
   isAgentActivity?: boolean;
   isAgentActivitySummary?: boolean;
   isCompactBoundary?: boolean;
+  isTeamBoundary?: boolean;
+  isTeamInjection?: boolean;
+  teamMessageIds?: string[];
   activityId?: string;
   runId?: string;
   parentRunId?: string;

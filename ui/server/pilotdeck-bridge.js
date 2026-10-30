@@ -970,7 +970,13 @@ export function gatewayEventToFrames(event, sessionId, provider) {
         case 'steer_unapplied':
             return [];
         case 'steer_applied': {
-            if (event.purpose === 'team_runtime' || event.message?.metadata?.purpose === 'team_runtime') return [];
+            if (event.purpose === 'team_runtime' || event.message?.metadata?.purpose === 'team_runtime') {
+                const metadata = event.message?.metadata || {};
+                if (!metadata.teamConsumed) return [];
+                return [createNormalizedMessage({ ...base, id: `team:${metadata.teamRequestId || event.itemId}`, kind: 'team_message', role: 'assistant',
+                    turnId: event.turnId || event.runId || event.timeline?.turnId, content: '', teamInjectionMode: metadata.teamInjectionMode === 'start' && metadata.teamTurnOrigin !== 'human' ? 'start' : 'during',
+                    teamMessageIds: Array.isArray(metadata.teamEventIds) ? metadata.teamEventIds : [] })];
+            }
             const text = typeof event.displayText === 'string'
                 ? event.displayText
                 : (event.message?.content || [])

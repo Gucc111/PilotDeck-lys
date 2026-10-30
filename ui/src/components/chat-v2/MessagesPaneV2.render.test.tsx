@@ -224,6 +224,20 @@ function SessionPaneHarness({
 }
 
 describe('MessagesPaneV2 render behavior', () => {
+  it('renders a new internal Team turn below the previous final answer without a human bubble', () => {
+    const now = new Date().toISOString();
+    const view = renderPane({ messages: [
+      { id: 'human', turnId: 'first', type: 'user', content: 'Review the release', timestamp: now },
+      { id: 'answer', turnId: 'first', type: 'assistant', content: 'Initial final answer', timestamp: now },
+      { id: 'team:request', turnId: 'second', type: 'system', content: '', timestamp: now, isTeamInjection: true, isTeamBoundary: true, teamMessageIds: ['notice'] },
+      { id: 'continuation', turnId: 'second', type: 'assistant', content: 'Checking the member result', timestamp: now, isStreaming: true },
+    ], isAssistantWorking: true, activeRunId: 'second' });
+    const marker = view.container.querySelector('[data-team-injection="start"]')!;
+    expect(marker).toBeTruthy();
+    expect(Boolean(screen.getByText('Initial final answer').compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(Boolean(marker.compareDocumentPosition(view.container.querySelector('[data-message-key$="message-assistant-continuation"]')!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(marker.closest('.chat-message-user')).toBeNull();
+  });
   it('offers editing only on the latest user message', () => {
     const now = new Date().toISOString();
     renderPane({

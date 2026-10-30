@@ -1,0 +1,3 @@
+Browser tab: 2, Title: "PilotDeck", URL: "http://127.0.0.1:3002/p/general".
+There has been no change in the accessibility tree.
+The focused UI element is 79 container Use Case08 必需技能缺失

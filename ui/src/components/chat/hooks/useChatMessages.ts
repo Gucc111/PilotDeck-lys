@@ -84,6 +84,9 @@ function convertSingleMessage(
     ...(msg.turnId || msg.runId ? { turnId: msg.turnId || msg.runId } : {}),
   };
   switch (msg.kind) {
+    case 'team_message':
+      return { id: msg.id, type: 'system', content: '', timestamp: msg.timestamp, ...turnIdentity,
+        isTeamBoundary: msg.teamInjectionMode === 'start', isTeamInjection: true, teamMessageIds: msg.teamMessageIds };
     case 'text': {
       const parsedUserContent = msg.role === 'user'
         ? parseUserAttachmentNote(msg.content || '')
@@ -245,6 +248,7 @@ function convertSingleMessage(
         type: 'error',
         content: msg.content || 'Unknown error',
         timestamp: msg.timestamp,
+        ...turnIdentity,
         ...(msg.userHint ? { userHint: msg.userHint } : {}),
         ...(msg.contentI18n ? { contentI18n: msg.contentI18n } : {}),
         ...(msg.userHintI18n ? { userHintI18n: msg.userHintI18n } : {}),

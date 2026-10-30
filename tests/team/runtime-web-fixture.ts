@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createLocalGateway } from '../../src/cli/createLocalGateway.js';
 import { startGatewayServer } from '../../src/gateway/server/GatewayServer.js';
 import { createModelRuntime, type CanonicalModelRequest, type CanonicalModelEvent } from '../../src/model/index.js';
+import type { ModelRuntimeOptions } from '../../src/model/streaming/streamModel.js';
 import { createProjectId } from '../../src/pilot/index.js';
 import type { AgentProfile, ProfileConfig, TeamDefinition } from '../../src/team/types.js';
 
@@ -52,35 +53,35 @@ const local = createLocalGateway({
   env: { ...process.env, PILOT_HOME: home, PILOT_AGENT_MODEL: undefined, PILOTDECK_CONFIG_PATH: undefined },
   __testModelFactory: snapshot => ({
     ...createModelRuntime(snapshot.config.model),
-    async *stream(request: CanonicalModelRequest): AsyncIterable<CanonicalModelEvent> {
+    async *stream(request: CanonicalModelRequest, options?: ModelRuntimeOptions): AsyncIterable<CanonicalModelEvent> {
+      if (options?.dispatchRequest) {
+        const dispatched = await options.dispatchRequest({ request, start: accepted => Promise.resolve(accepted) });
+        request = await dispatched.value;
+      }
       await appendFile(join(base, 'model-requests.jsonl'), JSON.stringify({ model: request.model, systemPrompt: request.systemPrompt, messages: request.messages, tools: request.tools?.map(tool => tool.name) }) + '\n');
       yield { type: 'request_started', provider: request.provider, model: request.model };
       yield { type: 'message_start', role: 'assistant' };
       const called = (name: string) => request.messages.some(message => message.content.some(block => block.type === 'tool_call' && block.name === name));
       if (request.model === 'leader') {
-        if (!called('team_delegate')) {
-          yield* call('team_delegate', { participantId: team.teammates[0].id, task: 'Review the release configuration.', requestToken: 'qa-review' });
-          yield* call('team_delegate', { participantId: team.teammates[1].id, task: 'Test the release and ask the reviewer about configuration.', requestToken: 'qa-test' });
+        if (!called('team_send_message')) {
+          yield* call('team_send_message', { recipientId: team.teammates[0].id, text: 'Review the release configuration.' });
+          yield* call('team_send_message', { recipientId: team.teammates[1].id, text: 'Test the release and ask the reviewer about configuration.' });
           yield { type: 'message_end', finishReason: 'tool_call' }; return;
         }
         let state;
         try { state = JSON.parse(await readFile(join(home, 'team-runtime', 'state.json'), 'utf8')).state; } catch { state = { activations: {} }; }
         const activation = Object.values(state.activations).find((value: any) => value.status === 'active') as any;
-        const mediated = activation?.messages.find((message: any) => message.recipientId !== message.intendedRecipientId && !activation.messages.some((item: any) => item.relayOf === message.id));
-        if (mediated) {
-          yield* call('team_relay_message', { messageId: mediated.id, requestToken: 'qa-relay' });
-          yield { type: 'message_end', finishReason: 'tool_call' }; return;
-        }
-        const collected = outputs(request, 'team_collect') as any[];
-        const next = activation?.works.find((work: any) => work.status === 'completed' && !collected.some(result => result.id === work.id));
-        if (next) { yield* call('team_collect', { workId: next.id }); yield { type: 'message_end', finishReason: 'tool_call' }; return; }
-        yield { type: 'text_delta', text: activation?.works.length === 2 && activation.works.every((work: any) => work.status === 'completed') ? 'Release review complete. The reviewer and tester finished; configuration was confirmed through Leader mediation.' : 'The team is reviewing the release. I will collect both results.' };
+        const inspected = outputs(request, 'team_inspect') as Array<{ turn?: { turnId?: string } }>;
+        const ended = activation?.turns?.filter((turn: any) => turn.participantId !== activation.team.leader.id && turn.status === 'ended') ?? [];
+        const next = ended.find((turn: any) => !inspected.some(item => item.turn?.turnId === turn.turnId));
+        if (next) { yield* call('team_inspect', { view: 'turn', participantId: next.participantId, turnId: next.turnId }); yield { type: 'message_end', finishReason: 'tool_call' }; return; }
+        yield { type: 'text_delta', text: team.teammates.every(member => ended.some((turn: any) => turn.participantId === member.id)) ? 'Release review complete. I inspected the reviewer and tester execution results; the specialists communicated directly.' : 'The team is reviewing the release. I will inspect each saved execution result.' };
       } else if (request.model === 'tester') {
         if (!called('team_send_message')) {
-          yield* call('team_send_message', { recipientId: team.teammates[0].id, text: 'Please confirm the release configuration.', requestToken: 'qa-peer' });
+          yield* call('team_send_message', { recipientId: team.teammates[0].id, text: 'Please confirm the release configuration.' });
           yield { type: 'message_end', finishReason: 'tool_call' }; return;
         }
-        yield { type: 'text_delta', text: 'Release tests passed. Configuration question sent via Leader.' };
+        yield { type: 'text_delta', text: 'Release tests passed. Configuration question sent directly to the reviewer.' };
       } else if (request.model === 'reviewer') {
         yield { type: 'text_delta', text: 'The release configuration is valid. Code review passed.' };
       } else yield { type: 'text_delta', text: 'Ordinary conversation response.' };
@@ -96,7 +97,7 @@ if ('teams' in library && library.teams.length) team = library.teams[0];
 else {
   const leader = await local.gateway.teamCommand!({ action: 'profile_save', role: 'leader', config: config('Release lead', 'leader'), requestToken: 'qa-leader' }) as AgentProfile;
   const teammates = await Promise.all(['reviewer', 'tester'].map(model => local.gateway.teamCommand!({ action: 'profile_save', role: 'teammate', config: config(model === 'reviewer' ? 'Code reviewer' : 'Release tester', model), requestToken: `qa-${model}` }) as Promise<AgentProfile>));
-  team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'qa-team', config: { displayName: 'Release review team', description: 'Release review with two specialists.', instructions: 'Review the release with both specialists.', defaultProjectKey: workspace, leader: { id: leader.id, revision: leader.revision }, teammates: teammates.map(({ id, revision }) => ({ id, revision })) } }) as TeamDefinition;
+  team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'qa-team', config: { displayName: 'Release review team', description: 'Release review with two specialists.', instructions: 'Review the release with both specialists.', defaultProjectKey: workspace, leader: { id: leader.id }, teammates: teammates.map(({ id }) => ({ id })) } }) as TeamDefinition;
 }
 const token = 'team-runtime-fixture-only'; await writeFile(join(home, 'server-token'), token, { mode: 0o600 });
 const server = await startGatewayServer({ gateway: local.gateway, token, host: '127.0.0.1', port: Number(process.env.PILOTDECK_TEAM_GATEWAY_PORT || 18974) });

@@ -9,7 +9,8 @@ export type AgentErrorCode =
   | "agent_transcript_error"
   | "agent_invalid_state"
   | "agent_unsupported_feature"
-  | "agent_tool_error_loop";
+  | "agent_tool_error_loop"
+  | "TEAM_MESSAGE_BATCH_TOO_LARGE";
 
 export type AgentError = {
   code: AgentErrorCode;

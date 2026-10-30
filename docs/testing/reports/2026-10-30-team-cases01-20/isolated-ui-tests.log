@@ -1,0 +1,103 @@
+
+> pilotdeck-ui@0.1.0 test
+> vitest run src/components/team-runtime/TeamInteractionPanel.test.tsx src/components/team-runtime/TeamTeammateRouteView.test.tsx src/components/team-runtime/useTeamMode.test.tsx src/components/team-library/TeamLibraryPage.test.tsx src/stores/sessionTimeline.test.ts src/components/chat-v2/processGrouping.test.ts
+
+
+ RUN  v4.1.7 /Users/gucc1/Codes/work/modelbest/PilotDeck-lys/ui
+
+(node:57011) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/components/team-library/TeamLibraryPage.test.tsx (17 tests | 17 failed) 4ms
+     × prefills a fresh Leader prompt through both creation paths and preserves edited drafts 2ms
+     × requires an explicit model and omits plan approval for Leaders 0ms
+     × requires an explicit model and omits plan approval for Teammates 0ms
+     × cannot submit a profile when the model catalog has no concrete model 0ms
+     × groups tools and enforces read dependencies for Leaders 0ms
+     × groups tools and enforces read dependencies for Teammates 0ms
+     × removes notebook selection with the write group and allows read to be cleared afterward 0ms
+     × saves a reusable profile without starting work and generates no client identity 0ms
+     × browses project capabilities without pinning an inherited workspace 0ms
+     × restores unfinished drafts after unmount and refresh 0ms
+     × requires one teammate and keeps team saving separate from conversations 0ms
+     × saves member IDs so the Team follows the latest profile configuration 0ms
+     × forks a team with a new identity and retains selected member references 0ms
+     × creates a teammate inline and returns to the same team draft 0ms
+     × ignores a legacy start attempt and offers only configuration management 0ms
+     × retains a stable creation token after a lost save response 0ms
+     × deletes a team from the library 0ms
+(node:57010) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/components/team-runtime/useTeamMode.test.tsx (13 tests | 13 failed) 4ms
+     × selects a blank Team without starting runtime and preserves the root/token across reload 2ms
+     × binds an existing General conversation in place while execution uses a registered project 0ms
+     × discards an old probe after quickly choosing another Team 0ms
+     × blocks sending when runtime identity cannot be read and allows a successful retry 0ms
+     × keeps earlier Team records inspectable after leaving Team mode 0ms
+     × prevents mode switches for pending member work and stops the whole activation 0ms
+   × keeps the clicked run identity when a stop response races a refresh and blocks sends while cleaning up 0ms
+     × does not let a stale HTTP snapshot or delayed pending event undo a handled event 0ms
+     × rejects events from another owner or generation and clears old caches after leaving Team mode 0ms
+     × never restores an old stop generation after stop completes 0ms
+     × retains pending on response failure and hydrates multiple ledger pages 0ms
+     × hydrates from runtime_get on WebSocket reconnection 0ms
+     × hydrates message and turn pages and retains a successful deletion against stale snapshots 0ms
+(node:57012) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 30 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > prefills a fresh Leader prompt through both creation paths and preserves edited drafts
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > requires an explicit model and omits plan approval for Leaders
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > requires an explicit model and omits plan approval for Teammates
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > cannot submit a profile when the model catalog has no concrete model
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > groups tools and enforces read dependencies for Leaders
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > groups tools and enforces read dependencies for Teammates
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > removes notebook selection with the write group and allows read to be cleared afterward
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > saves a reusable profile without starting work and generates no client identity
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > browses project capabilities without pinning an inherited workspace
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > restores unfinished drafts after unmount and refresh
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > requires one teammate and keeps team saving separate from conversations
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > saves member IDs so the Team follows the latest profile configuration
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > forks a team with a new identity and retains selected member references
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > creates a teammate inline and returns to the same team draft
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > ignores a legacy start attempt and offers only configuration management
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > retains a stable creation token after a lost save response
+ FAIL  src/components/team-library/TeamLibraryPage.test.tsx > team library workflow > deletes a team from the library
+TypeError: localStorage.clear is not a function
+ ❯ src/components/team-library/TeamLibraryPage.test.tsx:16:33
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/30]⎯
+
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team mode current conversation selection > selects a blank Team without starting runtime and preserves the root/token across reload
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team mode current conversation selection > binds an existing General conversation in place while execution uses a registered project
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team mode current conversation selection > discards an old probe after quickly choosing another Team
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team mode current conversation selection > blocks sending when runtime identity cannot be read and allows a successful retry
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team mode current conversation selection > keeps earlier Team records inspectable after leaving Team mode
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team mode current conversation selection > prevents mode switches for pending member work and stops the whole activation
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > keeps the clicked run identity when a stop response races a refresh and blocks sends while cleaning up
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team human-interaction state fencing > does not let a stale HTTP snapshot or delayed pending event undo a handled event
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team human-interaction state fencing > rejects events from another owner or generation and clears old caches after leaving Team mode
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team human-interaction state fencing > never restores an old stop generation after stop completes
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team human-interaction state fencing > retains pending on response failure and hydrates multiple ledger pages
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team human-interaction state fencing > hydrates from runtime_get on WebSocket reconnection
+ FAIL  src/components/team-runtime/useTeamMode.test.tsx > Team human-interaction state fencing > hydrates message and turn pages and retains a successful deletion against stale snapshots
+TypeError: localStorage.clear is not a function
+ ❯ src/components/team-runtime/useTeamMode.test.tsx:20:33
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/30]⎯
+
+
+ Test Files  2 failed | 4 passed (6)
+      Tests  30 failed | 62 passed (92)
+   Start at  12:52:37
+   Duration  2.27s (transform 2.18s, setup 0ms, import 3.23s, tests 455ms, environment 3.97s)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/gucc1/Codes/work/modelbest/PilotDeck-lys/ui
+npm error workspace pilotdeck-ui@0.1.0
+npm error location /Users/gucc1/Codes/work/modelbest/PilotDeck-lys/ui
+npm error command failed
+npm error command sh -c vitest run src/components/team-runtime/TeamInteractionPanel.test.tsx src/components/team-runtime/TeamTeammateRouteView.test.tsx src/components/team-runtime/useTeamMode.test.tsx src/components/team-library/TeamLibraryPage.test.tsx src/stores/sessionTimeline.test.ts src/components/chat-v2/processGrouping.test.ts

@@ -74,6 +74,8 @@ export async function readSessionInfo(
   const lite = await readSessionLite(path);
   if (!lite) return null;
 
+  // The filename is escaped for storage and cannot recover path-based keys.
+  sessionId = transcriptSessionId(`${lite.head}\n${lite.tail}`) ?? sessionId;
   const fastInfo = parseSessionInfoFromLite(sessionId, lite, projectRoot);
   if (fastInfo && lite.size <= SESSION_LITE_READ_BYTES) return fastInfo;
   const tailSnapshot = readLatestTailSnapshot(lite);
@@ -85,11 +87,12 @@ export async function readSessionInfo(
   // Large inline media can make the first JSONL record exceed the 64 KiB
   // preview. Fall back unless the preview includes a complete latest metadata
   // record; an older head title must not hide a newer oversized tail record.
-  const metadata = await readLastSessionMetadata(path);
-  const metadataInfo = metadata
-    ? parseSessionInfoFromMetadata(sessionId, lite, metadata, projectRoot)
+  const recovered = await readSessionMetadataAndIdentity(path);
+  sessionId = recovered?.sessionId ?? sessionId;
+  const metadataInfo = recovered?.metadata
+    ? parseSessionInfoFromMetadata(sessionId, lite, recovered.metadata, projectRoot)
     : null;
-  return mergeSessionInfo(fastInfo, metadataInfo);
+  return mergeSessionInfo(fastInfo ? { ...fastInfo, sessionId } : null, metadataInfo);
 }
 
 function mergeSessionInfo(
@@ -157,7 +160,7 @@ export function parseSessionInfoFromLite(
 
   const firstCreatedAt = firstJsonStringField(lite.head, "createdAt");
   return {
-    sessionId,
+    sessionId: transcriptSessionId(source) ?? sessionId,
     summary,
     lastModified: lite.mtime,
     fileSize: lite.size,
@@ -170,6 +173,20 @@ export function parseSessionInfoFromLite(
     parentSessionId,
     forkedFromTurnId,
   };
+}
+
+function transcriptSessionId(source: string): string | undefined {
+  for (const line of source.split(/\r?\n/)) {
+    try {
+      const entry: unknown = JSON.parse(line);
+      if (isRecord(entry) && typeof entry.type === "string" && typeof entry.sessionId === "string" && entry.sessionId.trim()) {
+        return entry.sessionId;
+      }
+    } catch {
+      // A lite preview may begin or end inside a JSONL record.
+    }
+  }
+  return undefined;
 }
 
 function firstAcceptedInputText(head: string): string | undefined {
@@ -287,12 +304,13 @@ function parseSessionInfoFromMetadata(
  * Scan only for strict session_metadata records while keeping oversized JSONL
  * records (such as base64 image inputs) out of memory.
  */
-async function readLastSessionMetadata(path: string): Promise<SessionMetadataValue | undefined> {
+async function readSessionMetadataAndIdentity(path: string): Promise<{ metadata?: SessionMetadataValue; sessionId?: string } | undefined> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(path, "r");
     const buffer = Buffer.allocUnsafe(SESSION_METADATA_SCAN_CHUNK_BYTES);
     let lastMetadata: SessionMetadataValue | undefined;
+    let sessionId: string | undefined;
     let lineChunks: Buffer[] = [];
     let lineBytes = 0;
     let lineTooLarge = false;
@@ -320,7 +338,9 @@ async function readLastSessionMetadata(path: string): Promise<SessionMetadataVal
 
     const finishLine = (): void => {
       if (!lineTooLarge) {
-        const metadata = parseSessionMetadataLine(Buffer.concat(lineChunks).toString("utf8").replace(/\r$/, ""));
+        const line = Buffer.concat(lineChunks).toString("utf8").replace(/\r$/, "");
+        sessionId ??= transcriptSessionId(line);
+        const metadata = parseSessionMetadataLine(line);
         if (metadata) lastMetadata = mergeMetadata(lastMetadata ?? {}, metadata);
       }
       lineChunks = [];
@@ -344,7 +364,7 @@ async function readLastSessionMetadata(path: string): Promise<SessionMetadataVal
       append(buffer.subarray(start, bytesRead));
     }
     if (lineBytes > 0 || lineChunks.length > 0) finishLine();
-    return lastMetadata;
+    return { metadata: lastMetadata, sessionId };
   } catch {
     return undefined;
   } finally {

@@ -373,7 +373,7 @@ function tryResolveLocalRef(ref: string, defs: SchemaDefs | undefined): unknown 
 }
 
 function decodeJsonPointerSegment(segment: string): string {
-  return segment.replaceAll("~1", "/").replaceAll("~0", "~");
+  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
 }
 
 function copySchemaMeta(from: Record<string, unknown>, to: Record<string, unknown>): void {

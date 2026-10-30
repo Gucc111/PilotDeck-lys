@@ -1,0 +1,55 @@
+Browser tab: 1, Title: "PilotDeck", URL: "http://127.0.0.1:3002/teams".
+The following is a diff from the previous accessibility tree with ~ and + representing changed and added elements, respectively. Removed elements are summarized by ID range.
+Removed element IDs: 13, 18, 78, 80-82
++				87 button (collapsed) release-docs, Secondary Actions: Expand
++				88 button Start a new conversation in release-docs
++				89 button (collapsed) release-app, Secondary Actions: Expand
++				90 button Start a new conversation in release-app
++				91 button (collapsed) linkding, Secondary Actions: Expand
++				92 button Start a new conversation in linkding
++				93 button (collapsed) exp-project, Secondary Actions: Expand
++				94 button Start a new conversation in exp-project
++				95 button (collapsed) Always-On-Research, Secondary Actions: Expand
++				96 button Start a new conversation in Always-On-Research
++				97 button (collapsed) QuantBridge-copy1, Secondary Actions: Expand
++				98 button Start a new conversation in QuantBridge-copy1
++				99 button (collapsed) Always-On, Secondary Actions: Expand
++				100 button Start a new conversation in Always-On
++				101 button (collapsed) proactive-research, Secondary Actions: Expand
++				102 button Start a new conversation in proactive-research
++				103 button (collapsed) 项目甲, Secondary Actions: Expand
++				104 button Start a new conversation in 项目甲
++				105 button (collapsed) vibe-videoing, Secondary Actions: Expand
++				106 button Start a new conversation in vibe-videoing
++				107 button (collapsed) Poker, Secondary Actions: Expand
++				108 button Start a new conversation in Poker
++				109 button Start a general conversation
++				110 button No unread messages 你好！
++					111 container No unread messages
++					112 text 你好！
++				113 button No unread messages [Cron] 打招呼
++					114 container No unread messages
++					115 text [Cron] 打招呼
++				116 button No unread messages [Cron] 打招呼
++					117 container No unread messages
++					118 text [Cron] 打招呼
++				119 button No unread messages [Cron] 向你打招呼
++					120 container No unread messages
++					121 text [Cron] 向你打招呼
++				122 button No unread messages 用户打招呼
++					123 container No unread messages
++					124 text 用户打招呼
++				125 button Show more (32)
+~				75 pop up button (collapsed, settable) Default workspace, Value: release-app · /Users/gucc1/Codes/team-mode-acceptance/release-app, ID: :r4:, Secondary Actions: Expand
++						126 release-docs · /Users/gucc1/Codes/team-mode-acceptance/release-docs
++						127 (selected) release-app · /Users/gucc1/Codes/team-mode-acceptance/release-app
++						128 linkding · /Users/gucc1/Downloads/linkding
++						129 exp-project · /Users/gucc1/Downloads/exp-project
++						130 Always-On-Research · /Users/gucc1/Documents/work/Always-On-Research
++						131 QuantBridge-copy1 · /Users/gucc1/Codes/personal/exp/QuantBridge-copy1
++						132 Always-On · /Users/gucc1/Documents/vault-based-docs/Always-On
++						133 proactive-research · /Users/gucc1/Documents/work/proactive-research
++						134 项目甲 · /Users/gucc1/Downloads/项目甲
++						135 vibe-videoing · /Users/gucc1/Codes/personal/exp/vibe-videoing
++						136 Poker · /Users/gucc1/Codes/personal/exp/Poker
+The focused UI element is 35 container New team

@@ -9,7 +9,7 @@ import { DialogGatewayError } from '../../src/gateway/dialog/errors.js';
 
 function gate() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-const draft: GatewaySubmitTurnInput = { sessionKey: 'leader', channelKey: 'web', message: 'start', runId: 'draft-run', teamSelection: { team: { id: 'team', revision: 1 }, requestToken: 'select-token' } };
+const draft: GatewaySubmitTurnInput = { sessionKey: 'leader', channelKey: 'web', message: 'start', runId: 'draft-run', teamSelection: { team: { id: 'team' }, requestToken: 'select-token' } };
 function fixture(t: test.TestContext, options: InProcessGatewayOptions = {}) {
   const submitted: unknown[] = [], aborted: unknown[] = [], steers: Array<AgentSteerMessage & { turnId: string }> = [];
   let created = 0;

@@ -146,7 +146,7 @@ function createMessageTurns(messages: ChatMessage[]): MessageTurn[] {
 
   const starts: number[] = [];
   messages.forEach((message, index) => {
-    if (message.type === 'user') {
+    if (message.type === 'user' || message.isTeamBoundary) {
       starts.push(index);
     }
   });
@@ -171,7 +171,7 @@ function findTurnIndexByTime(messages: ChatMessage[], turns: MessageTurn[], time
 
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
     const startMessage = messages[turns[turnIndex].start];
-    if (startMessage?.type !== 'user') {
+    if (startMessage?.type !== 'user' && !startMessage?.isTeamBoundary) {
       continue;
     }
 
@@ -340,6 +340,7 @@ function isUserVisibleTool(message: ChatMessage): boolean {
 }
 
 export function isProcessMessage(message: ChatMessage): boolean {
+  if (message.isTeamInjection) return false;
   if (message.isThinking || message.isAgentActivity || message.isAgentActivitySummary) {
     return false;
   }
@@ -926,7 +927,7 @@ export function foldCompletedTurns(
       && !isEmptyAssistantShell(message),
     );
     const finalItem = turnItems.find((item) => item.message === last);
-    const abnormal = raw.some((message) => message.type === 'error' || message.isInterruptedNotice
+    const abnormal = raw.some((message) => message.type === 'error' || message.isInterruptedNotice || (message.isTeamInjection && !message.isTeamBoundary)
       || message.isInteractivePrompt || message.isStreaming
       || (message.isCompactBoundary && message.compactState === 'running')
       || (message.isAgentActivitySummary && message.state && message.state !== 'completed'));
@@ -943,7 +944,7 @@ export function foldCompletedTurns(
     });
     const traceItems: RenderableMessageItem[] = [];
     for (const item of turnItems) {
-      if (item.message.type !== 'user' && item !== finalItem) {
+      if (item.message.type !== 'user' && !item.message.isTeamInjection && item !== finalItem) {
         traceItems.push({ ...item, beforeRunAttachment: null, afterRunAttachment: null });
       } else if (item.beforeProcessAttachments.length || item.afterProcessAttachments.length) {
         // Process summaries may be hosted on either the user or the final answer.
@@ -959,7 +960,7 @@ export function foldCompletedTurns(
       continue;
     }
     const id = `turn-trace-${getStableMessagePart(messages[turn.start], String(turn.start))}`;
-    result.push(...turnItems.filter((item) => item.message.type === 'user').map(clean));
+    result.push(...turnItems.filter((item) => item.message.type === 'user' || item.message.isTeamInjection).map(clean));
     result.push({
       ...clean(finalItem),
       originalIndex: turn.start + 0.01,

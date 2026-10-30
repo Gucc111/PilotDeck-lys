@@ -253,6 +253,13 @@ function MessageRowV2({
     visibleImages.length > 0 ||
     messageAttachments.length > 0;
 
+  if (message.isTeamInjection) {
+    return <div className="min-w-0 w-full py-3" data-team-injection={message.isTeamBoundary ? 'start' : 'during'}>
+      <div className="flex items-center gap-3 text-xs text-muted-foreground"><hr className="min-w-0 flex-1 border-border"/>{!message.isTeamBoundary && <span>{t('teamInteractions.injectedMessages', { count: message.teamMessageIds?.length || 1 })}</span>}<hr className="min-w-0 flex-1 border-border"/></div>
+      {message.content && <div className="mt-2 whitespace-pre-wrap break-words text-sm text-muted-foreground">{message.content}</div>}
+    </div>;
+  }
+
   if (message.isAgentActivitySummary) {
     return (
       <ProcessSummaryRow

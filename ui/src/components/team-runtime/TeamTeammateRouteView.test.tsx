@@ -81,3 +81,14 @@ it('projects thinking and attaches tool results to their call without interactiv
   expect(messages[1].toolResult?.content).toBe('Answered');
   expect(messages.some(message => message.isInteractivePrompt)).toBe(false);
 });
+
+it('shows idle Team batches as user input and busy injections as same-turn markers', () => {
+  const metadata = { purpose: 'team_runtime', teamConsumed: true, teamEventIds: ['message'], teamMessages: [{ id: 'message', senderId: 'leader', sender: 'Leader name', text: 'Keep the old API' }] };
+  const messages = participantChatMessages([
+    { id: 'start', turnId: 'turn', role: 'user', metadata: { ...metadata, teamInjectionMode: 'start' }, text: 'raw provider prompt' },
+    { id: 'during', turnId: 'turn', role: 'user', metadata: { ...metadata, teamInjectionMode: 'during' }, text: 'raw provider prompt' },
+  ]);
+  expect(messages[0]).toMatchObject({ type: 'user', content: 'Leader name: Keep the old API', turnId: 'turn' });
+  expect(messages[1]).toMatchObject({ type: 'system', isTeamInjection: true, content: 'Leader name: Keep the old API', turnId: 'turn' });
+  expect(messages[1].isTeamBoundary).toBeUndefined();
+});

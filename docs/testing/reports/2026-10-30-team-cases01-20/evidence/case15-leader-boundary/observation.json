@@ -1,0 +1,105 @@
+{
+  "at": "2026-10-30T04:01:09.114Z",
+  "activations": [
+    {
+      "id": "60b8477b-7d36-48c2-b228-7f729a698668",
+      "session": "web:s_424c0768-5917-417b-b03c-f14ad3d95ae5",
+      "stopVersion": 1,
+      "status": "stopped",
+      "messages": 0,
+      "turns": 2,
+      "dispatches": 18,
+      "interactions": 0
+    },
+    {
+      "id": "4950802c-3967-4e8f-8556-57d72810ae63",
+      "session": "web:s_cc641cdf-b7c8-4959-8ab2-3a2599f33a11",
+      "stopVersion": 1,
+      "status": "stopped",
+      "messages": 16,
+      "turns": 17,
+      "dispatches": 47,
+      "interactions": 4
+    },
+    {
+      "id": "c36b6fd0-1430-4937-8922-3b05d6c388a1",
+      "session": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+      "stopVersion": 1,
+      "status": "closed",
+      "messages": 11,
+      "turns": 13,
+      "dispatches": 55,
+      "interactions": 6
+    },
+    {
+      "id": "dd2dabb4-dfe9-4237-8ef2-c57d8652c768",
+      "session": "web:s_0fb27fa7-1a53-41d1-bf78-b56a96307279",
+      "stopVersion": 0,
+      "status": "closed",
+      "messages": 0,
+      "turns": 1,
+      "dispatches": 2,
+      "interactions": 0
+    },
+    {
+      "id": "7610ca21-9e69-4a0e-aa37-1561ed24ff53",
+      "session": "web:s_278ee90e-a533-4986-b401-7e7722456a60",
+      "stopVersion": 2,
+      "status": "active",
+      "messages": 22,
+      "turns": 23,
+      "dispatches": 51,
+      "interactions": 8
+    },
+    {
+      "id": "148ffc74-4b97-4a3b-9bcb-667a69c7d4fe",
+      "session": "web:s_a73b5290-6d0c-4ee4-ac5e-1a6ae8137b0c",
+      "stopVersion": 0,
+      "status": "active",
+      "messages": 0,
+      "turns": 1,
+      "dispatches": 1,
+      "interactions": 0
+    },
+    {
+      "id": "93f30c0e-1df9-4ac4-ad36-5ab970abed8a",
+      "session": "web:s_c70562d2-d6aa-4f77-afed-55d43f84a6fa",
+      "stopVersion": 0,
+      "status": "active",
+      "messages": 4,
+      "turns": 6,
+      "dispatches": 16,
+      "interactions": 0
+    },
+    {
+      "id": "51af0dc2-9681-4acb-8e20-57a8d05c2dca",
+      "session": "web:s_16241076-50ef-4c6f-a63f-d2585bd9672d",
+      "stopVersion": 0,
+      "status": "active",
+      "messages": 0,
+      "turns": 2,
+      "dispatches": 8,
+      "interactions": 0
+    },
+    {
+      "id": "ea7f32db-02f4-4902-bf02-42bc6c97c4b5",
+      "session": "web:s_a641935c-a806-4e9e-baa9-8ebc204c5b79",
+      "stopVersion": 0,
+      "status": "active",
+      "messages": 0,
+      "turns": 1,
+      "dispatches": 1,
+      "interactions": 0
+    },
+    {
+      "id": "61d1e033-b545-4906-bfdd-f0f047d4c328",
+      "session": "web:s_0c7a9333-7a79-48ed-aff5-3b2d8a3e4f33",
+      "stopVersion": 0,
+      "status": "active",
+      "messages": 0,
+      "turns": 1,
+      "dispatches": 2,
+      "interactions": 0
+    }
+  ]
+}

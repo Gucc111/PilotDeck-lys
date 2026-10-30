@@ -13,6 +13,14 @@ page.setDefaultTimeout(20000);
 page.on('pageerror', error => console.error('PAGE:', error.message));
 await page.addInitScript(() => { localStorage.setItem('userLanguage', 'en'); if (!localStorage.getItem('themeMode')) localStorage.setItem('themeMode', 'light'); });
 const call = async command => { const response = await page.request.post(`${url}/api/team-library`, { data: command }); const data = await response.json(); expect(response.ok(), JSON.stringify(data)).toBeTruthy(); return data; };
+const finishedMemberTurns = activation => (activation.turns || []).filter(turn => activation.participants.some(participant => participant.id === turn.participantId && participant.role === 'teammate') && turn.status === 'ended');
+function verifyCommunication(activation) {
+  expect(finishedMemberTurns(activation).length).toBeGreaterThanOrEqual(2);
+  const peers = new Set(activation.participants.filter(participant => participant.role === 'teammate').map(participant => participant.id));
+  expect(activation.messages.some(message => peers.has(message.senderId) && peers.has(message.recipientId) && message.recipientId === message.intendedRecipientId && message.status === 'consumed')).toBe(true);
+  expect(activation.messages.some(message => message.kind === 'turn_ended')).toBe(true);
+  expect(activation.messages.some(message => message.relayOf)).toBe(false);
+}
 async function publicTranscripts() {
   const transcripts = [];
   for (const project of await fs.readdir(path.join(base, 'home', 'projects'))) {
@@ -38,28 +46,22 @@ async function reopenAfterRestart() {
   await page.goto(prior.currentUrl);
   await expect(page.getByRole('button', { name: 'Select model or Team' })).toHaveText(/Release review team/);
   expect(page.url()).toBe(prior.currentUrl);
-  await expect(page.getByText('Release review complete. The reviewer and tester finished; configuration was confirmed through Leader mediation.', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Release review complete\./).last()).toBeVisible();
   await expect(page.getByRole('heading', { level: 1 })).not.toContainText('Team updates');
   const view = await call({ action: 'runtime_get', sessionKey: prior.root });
   expect(view.activation.sessionKey).toBe(prior.root);
   expect(view.activation.team.config.displayName).toBe('Release review team');
-  expect(view.activation.works).toHaveLength(2);
-  expect(view.activation.works.every(work => work.status === 'completed')).toBe(true);
-  const peerMessage = view.activation.messages.find(message => message.recipientId !== message.intendedRecipientId);
-  expect(peerMessage).toBeTruthy();
-  expect(view.activation.messages.some(message => message.relayOf === peerMessage.id)).toBe(true);
+  verifyCommunication(view.activation);
 
   await page.getByRole('button', { name: 'Team details' }).click();
   const panel = page.getByRole('dialog');
-  await expect(panel.getByText('Review the release configuration.', { exact: true })).toBeVisible();
-  await expect(panel.getByText('Test the release and ask the reviewer about configuration.', { exact: true })).toBeVisible();
-  await expect(panel.getByText('Completed', { exact: true })).toHaveCount(2);
-  await expect(panel.getByText('Forwarded by Leader to Code reviewer', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('heading', { name: 'Tasks', exact: true })).toHaveCount(0);
+  await expect(panel.getByRole('heading', { name: 'Communication', exact: true })).toHaveCount(0);
   await page.screenshot({ path: path.join(shots, 'restart-team-results.png'), fullPage: true });
   await panel.getByRole('button', { name: 'Close', exact: true }).click();
   await page.reload();
   await expect(page.getByRole('button', { name: 'Select model or Team' })).toHaveText(/Release review team/);
-  await expect(page.getByText('Release review complete. The reviewer and tester finished; configuration was confirmed through Leader mediation.', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Release review complete\./).last()).toBeVisible();
   await page.screenshot({ path: path.join(shots, 'restart-team-chat.png'), fullPage: true });
 
   const afterTranscripts = await publicTranscripts();
@@ -68,12 +70,12 @@ async function reopenAfterRestart() {
   expect(await fs.readFile(requestLogPath, 'utf8')).toBe(beforeRequests);
   await fs.writeFile(path.join(base, 'browser-runtime-restart-result.json'), JSON.stringify({
     passed: true, mode: 'reopen-only', currentUrl: page.url(), root: prior.root,
-    works: view.activation.works.length, messages: view.activation.messages.length,
+    turns: finishedMemberTurns(view.activation).length, messages: view.activation.messages.length,
     chats: afterTranscripts.map(item => item.file), transcriptUnchanged: true,
     modelRequestsBefore: beforeRequests.trim().split('\n').filter(Boolean).length,
     additionalModelRequests: 0, screenshots: shots,
   }));
-  console.log('PASS restart read-only Web: restored Team identity, 2 completed tasks, relay, unchanged public transcript, no model calls');
+  console.log('PASS restart read-only Web: restored Team identity, ended turns, direct messages, unchanged public transcript, no model calls');
 }
 try {
   if (reopenOnly) {
@@ -91,22 +93,19 @@ try {
   const textarea = page.locator('textarea').first();
   await textarea.fill('Review this release with both specialists and confirm the configuration.');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
-  await expect(page.getByText('Release review complete. The reviewer and tester finished; configuration was confirmed through Leader mediation.', { exact: true })).toBeVisible({ timeout: 60000 });
+  await expect(page.getByText(/Release review complete\./).last()).toBeVisible({ timeout: 60000 });
   await expect(selector).toHaveText(/Release review team/);
   await expect(page.getByRole('heading', { level: 1 })).not.toContainText('Team updates');
   const state = JSON.parse(await fs.readFile(path.join(base, 'home', 'team-runtime', 'state.json'), 'utf8')).state;
   const active = Object.values(state.activations).find(item => item.status === 'active');
-  expect(active.works).toHaveLength(2); expect(active.works.every(work => work.status === 'completed')).toBe(true);
-  expect(active.messages.some(message => message.recipientId !== message.intendedRecipientId)).toBe(true);
-  expect(active.messages.some(message => message.relayOf)).toBe(true);
+  verifyCommunication(active);
   const view = await call({ action: 'runtime_get', sessionKey: active.sessionKey });
   expect(view.activation.team.config.displayName).toBe('Release review team');
   await page.getByRole('button', { name: 'Team details' }).click();
   await expect(page.getByRole('dialog').getByText('Code reviewer', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('dialog').getByText('Release tester', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('dialog').getByText('Review the release configuration.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('dialog').getByText('Test the release and ask the reviewer about configuration.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('dialog').getByText('Forwarded by Leader to Code reviewer', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Tasks', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Communication', exact: true })).toHaveCount(0);
   await page.screenshot({ path: path.join(shots, 'desktop-team-results.png'), fullPage: true });
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
   const currentUrl = page.url(); await page.reload(); await expect(selector).toHaveText(/Release review team/); expect(page.url()).toBe(currentUrl);
@@ -125,8 +124,8 @@ try {
     for (const file of await fs.readdir(path.join(base, 'home', 'projects', project, 'chats')).catch(() => [])) if (file.endsWith('.jsonl')) chats.push(file);
   }
   expect(chats).toHaveLength(1);
-  await fs.writeFile(path.join(base, 'browser-runtime-result.json'), JSON.stringify({ passed: true, currentUrl, root: active.sessionKey, works: active.works.length, messages: active.messages.length, chats, screenshots: shots }));
-  console.log('PASS real Web: composer Team selection, no model before send, async delegation, mediated messaging, final Leader answer, one main chat, refresh, mobile themes');
+  await fs.writeFile(path.join(base, 'browser-runtime-result.json'), JSON.stringify({ passed: true, currentUrl, root: active.sessionKey, turns: finishedMemberTurns(active).length, messages: active.messages.length, chats, screenshots: shots }));
+  console.log('PASS controlled-model Web: composer Team selection, no model before send, async messaging, direct peer communication, final Leader answer, one main chat, refresh, mobile themes');
   }
 } catch (error) { await page.screenshot({ path: path.join(shots, reopenOnly ? 'runtime-restart-failure.png' : 'runtime-failure.png'), fullPage: true }); console.error((await page.locator('body').innerText()).slice(-14000)); throw error; }
 finally { await browser.close(); }

@@ -3,128 +3,35 @@ import { TeamStore, hash, type LibraryState, type Receipt } from './store.js';
 import { command as validateCommand, TeamError } from './validation.js';
 import type { AgentProfile, ProfileRef, TeamLibraryCommand as TeamCommand, TeamLibraryCommandResult as TeamCommandResult, TeamDefinition, TeamServiceOptions } from './types.js';
 
-const latest = <T>(items: T[] | undefined): T | undefined => items?.at(-1);
 const timestamp = () => new Date().toISOString();
 const clone = <T>(value: T): T => structuredClone(value);
-const sameRef = (a: ProfileRef, b: ProfileRef) => a.id === b.id && a.revision === b.revision;
 
+/** Configuration is latest-only; runtime activations own their independent snapshots. */
 export class TeamService {
   private readonly store: TeamStore;
   constructor(private readonly options: TeamServiceOptions) { this.store = new TeamStore(options.pilotHome); }
-
-  /** Resolve a pinned configuration for activation; historical runs keep their own snapshot. */
-  async resolveTeam(ref: ProfileRef): Promise<TeamDefinition> {
-    const state = await this.store.read();
-    const team = this.teamVersion(state, ref);
-    if (latest(state.teams[ref.id])?.archived) throw new TeamError('TEAM_ARCHIVED', 'Restore this Team before selecting it for a conversation.');
-    return clone(team);
-  }
-
+  async resolveTeam(ref: ProfileRef): Promise<TeamDefinition> { const state = await this.store.read(); const team = state.teams[ref.id]; if (!team) throw new TeamError('TEAM_NOT_FOUND', 'Team was not found.'); return clone(this.materializeTeam(state, team)); }
   async execute(input: TeamCommand): Promise<TeamCommandResult> {
     const cmd = validateCommand(input);
     if (cmd.action === 'inventory') return this.options.inventory(cmd.projectKey);
-    if (cmd.action === 'library') {
-      const state = await this.store.read();
-      return clone({ profiles: Object.values(state.profiles).map(items => latest(items)!), teams: Object.values(state.teams).map(items => latest(items)!) });
-    }
-    if (cmd.action === 'project_references') {
-      const state = await this.store.read();
-      const fixedProject = (profile: AgentProfile) => profile.config.workspace.mode === 'fixed' && profile.config.workspace.projectKey === cmd.projectKey;
-      const profileReference = Object.values(state.profiles).some(history => { const profile = latest(history)!; return !profile.archived && fixedProject(profile); });
-      const teamReference = Object.values(state.teams).some(history => {
-        const team = latest(history)!;
-        return !team.archived && (team.config.defaultProjectKey === cmd.projectKey || [team.leader, ...team.teammates].some(fixedProject));
-      });
-      return { referenced: profileReference || teamReference };
-    }
+    if (cmd.action === 'library') { const state = await this.store.read(); return clone({ profiles: Object.values(state.profiles), teams: Object.values(state.teams).map(team => this.materializeTeam(state, team)) }); }
+    if (cmd.action === 'project_references') { const state = await this.store.read(); const fixed = (profile: AgentProfile) => profile.config.workspace.mode === 'fixed' && profile.config.workspace.projectKey === cmd.projectKey; const profileReference = Object.values(state.profiles).some(fixed); const teamReference = Object.values(state.teams).some(team => { const current = this.materializeTeam(state, team); return current.config.defaultProjectKey === cmd.projectKey || [current.leader, ...current.teammates].some(fixed); }); return { referenced: profileReference || teamReference }; }
     return this.store.locked(async () => {
-      const state = await this.store.read();
-      const requestHash = hash(cmd);
-      const existingReceipt = 'requestToken' in cmd ? state.receipts.find(item => item.token === cmd.requestToken) : undefined;
-      if (existingReceipt) {
-        if (existingReceipt.hash !== requestHash) throw new TeamError('TEAM_TOKEN_CONFLICT', 'This request token was already used with different parameters. Start a new attempt.');
-        return clone(existingReceipt.result);
-      }
+      const state = await this.store.read(); const requestHash = hash(cmd); const existingReceipt = 'requestToken' in cmd ? state.receipts.find(item => item.token === cmd.requestToken) : undefined;
+      if (existingReceipt) { if (existingReceipt.hash !== requestHash) throw new TeamError('TEAM_TOKEN_CONFLICT', 'This request token was already used with different parameters. Start a new attempt.'); return clone(existingReceipt.result); }
       let result: AgentProfile | TeamDefinition;
       switch (cmd.action) {
-        case 'profile_save': {
-          const previous = cmd.id ? this.currentProfile(state, cmd.id, cmd.expectedRevision!) : undefined;
-          if (previous && previous.role !== cmd.role) throw new TeamError('TEAM_ROLE_IMMUTABLE', 'A profile role cannot change. Create a separate Leader or Teammate.');
-          result = { id: previous?.id ?? randomUUID(), revision: (previous?.revision ?? 0) + 1, role: cmd.role, config: cmd.config, archived: previous?.archived ?? false, createdAt: previous?.createdAt ?? timestamp(), updatedAt: timestamp(), ...(previous?.forkedFrom ? { forkedFrom: previous.forkedFrom } : {}) };
-          (state.profiles[result.id] ??= []).push(result);
-          break;
-        }
-        case 'profile_fork': {
-          const source = this.profileVersion(state, cmd.source);
-          result = { ...clone(source), id: randomUUID(), revision: 1, config: { ...clone(source.config), displayName: cmd.displayName ?? `${source.config.displayName} (copy)` }, archived: false, createdAt: timestamp(), updatedAt: timestamp(), forkedFrom: cmd.source };
-          state.profiles[result.id] = [result];
-          break;
-        }
-        case 'profile_archive': {
-          const previous = this.currentProfile(state, cmd.id, cmd.expectedRevision);
-          if (previous.archived === cmd.archived) return clone(previous);
-          result = { ...clone(previous), revision: previous.revision + 1, archived: cmd.archived, updatedAt: timestamp() };
-          state.profiles[result.id]!.push(result);
-          break;
-        }
-        case 'team_save': {
-          const previous = cmd.id ? this.currentTeam(state, cmd.id, cmd.expectedRevision!) : undefined;
-          const originalRefs = previous ? [previous.config.leader, ...previous.config.teammates] : [];
-          const leader = this.profileForTeam(state, cmd.config.leader, 'leader', originalRefs);
-          const teammates = cmd.config.teammates.map(ref => this.profileForTeam(state, ref, 'teammate', originalRefs));
-          result = { id: previous?.id ?? randomUUID(), revision: (previous?.revision ?? 0) + 1, config: cmd.config, leader: clone(leader), teammates: clone(teammates), archived: previous?.archived ?? false, createdAt: previous?.createdAt ?? timestamp(), updatedAt: timestamp(), ...(previous?.forkedFrom ? { forkedFrom: previous.forkedFrom } : {}) };
-          (state.teams[result.id] ??= []).push(result);
-          break;
-        }
-        case 'team_fork': {
-          const source = this.teamVersion(state, cmd.source);
-          // Forks are new teams: archived profiles must be restored/replaced before reuse.
-          this.profileForTeam(state, source.config.leader, 'leader', []);
-          for (const ref of source.config.teammates) this.profileForTeam(state, ref, 'teammate', []);
-          result = { ...clone(source), id: randomUUID(), revision: 1, config: { ...clone(source.config), displayName: cmd.displayName ?? `${source.config.displayName} (copy)` }, archived: false, createdAt: timestamp(), updatedAt: timestamp(), forkedFrom: cmd.source };
-          state.teams[result.id] = [result];
-          break;
-        }
-        case 'team_archive': {
-          const previous = this.currentTeam(state, cmd.id, cmd.expectedRevision);
-          if (previous.archived === cmd.archived) return clone(previous);
-          result = { ...clone(previous), revision: previous.revision + 1, archived: cmd.archived, updatedAt: timestamp() };
-          state.teams[result.id]!.push(result);
-          break;
-        }
+        case 'profile_save': { const previous = cmd.id ? state.profiles[cmd.id] : undefined; if (cmd.id && !previous) throw new TeamError('TEAM_PROFILE_NOT_FOUND', 'Leader or Teammate was not found.'); if (previous && previous.role !== cmd.role) throw new TeamError('TEAM_ROLE_IMMUTABLE', 'A profile role cannot change. Create a separate Leader or Teammate.'); const profile: AgentProfile = { id: previous?.id ?? randomUUID(), role: cmd.role, config: cmd.config, createdAt: previous?.createdAt ?? timestamp(), updatedAt: timestamp() }; result = profile; state.profiles[profile.id] = profile; for (const team of Object.values(state.teams)) { if (team.config.leader.id === profile.id) team.leader = clone(profile); team.teammates = team.config.teammates.map(ref => ref.id === profile.id ? clone(profile) : (state.profiles[ref.id] ?? team.teammates.find(item => item.id === ref.id)!)).filter((item): item is AgentProfile => Boolean(item)); } break; }
+        case 'profile_fork': { const source = state.profiles[cmd.source.id]; if (!source) throw new TeamError('TEAM_PROFILE_NOT_FOUND', 'Leader or Teammate was not found.'); result = { ...clone(source), id: randomUUID(), config: { ...clone(source.config), displayName: cmd.displayName ?? `${source.config.displayName} (copy)` }, createdAt: timestamp(), updatedAt: timestamp() }; state.profiles[result.id] = result; break; }
+        case 'profile_delete': { const profile = state.profiles[cmd.id]; if (!profile) throw new TeamError('TEAM_PROFILE_NOT_FOUND', 'Leader or Teammate was not found.'); if (Object.values(state.teams).some(team => team.config.leader.id === cmd.id || team.config.teammates.some(ref => ref.id === cmd.id))) throw new TeamError('TEAM_REFERENCED', 'This profile is used by a Team. Remove it from every Team before deleting it.'); delete state.profiles[cmd.id]; result = profile; break; }
+        case 'team_save': { const previous = cmd.id ? state.teams[cmd.id] : undefined; if (cmd.id && !previous) throw new TeamError('TEAM_NOT_FOUND', 'Team was not found.'); const leader = this.profileForTeam(state, cmd.config.leader, 'leader'); const teammates = cmd.config.teammates.map(ref => this.profileForTeam(state, ref, 'teammate')); result = { id: previous?.id ?? randomUUID(), config: { ...cmd.config, leader: { id: leader.id }, teammates: teammates.map(item => ({ id: item.id })) }, leader: clone(leader), teammates: clone(teammates), createdAt: previous?.createdAt ?? timestamp(), updatedAt: timestamp() }; state.teams[result.id] = result; break; }
+        case 'team_fork': { const source = state.teams[cmd.source.id]; if (!source) throw new TeamError('TEAM_NOT_FOUND', 'Team was not found.'); const current = this.materializeTeam(state, source); result = { ...clone(current), id: randomUUID(), config: { ...clone(current.config), displayName: cmd.displayName ?? `${current.config.displayName} (copy)` }, createdAt: timestamp(), updatedAt: timestamp() }; state.teams[result.id] = result; break; }
+        case 'team_delete': { const team = state.teams[cmd.id]; if (!team) throw new TeamError('TEAM_NOT_FOUND', 'Team was not found.'); delete state.teams[cmd.id]; result = team; break; }
+        default: throw new TeamError('TEAM_INVALID_INPUT', 'Unsupported Team configuration action.');
       }
-      if ('requestToken' in cmd) state.receipts.push({ token: cmd.requestToken, hash: requestHash, result: clone(result) } as Receipt);
-      await this.store.write(state);
-      return clone(result);
+      if ('requestToken' in cmd) state.receipts.push({ token: cmd.requestToken, hash: requestHash, result: clone(result) } as Receipt); await this.store.write(state); return clone(result);
     });
   }
-
-  private currentProfile(state: LibraryState, id: string, revision: number): AgentProfile {
-    const profile = latest(state.profiles[id]);
-    if (!profile) throw new TeamError('TEAM_PROFILE_NOT_FOUND', 'Leader or Teammate was not found.');
-    if (profile.revision !== revision) throw new TeamError('TEAM_REVISION_CONFLICT', 'This profile changed. Reload before saving your changes.');
-    return profile;
-  }
-  private profileVersion(state: LibraryState, ref: ProfileRef): AgentProfile {
-    const profile = state.profiles[ref.id]?.find(item => item.revision === ref.revision);
-    if (!profile) throw new TeamError('TEAM_PROFILE_NOT_FOUND', 'The selected profile version was not found.');
-    return profile;
-  }
-  private profileForTeam(state: LibraryState, ref: ProfileRef, role: 'leader' | 'teammate', original: ProfileRef[]): AgentProfile {
-    const profile = this.profileVersion(state, ref);
-    if (profile.role !== role) throw new TeamError('TEAM_ROLE_MISMATCH', `The selected ${role} has the wrong role.`);
-    if (latest(state.profiles[ref.id])!.archived && !original.some(item => sameRef(item, ref))) throw new TeamError('TEAM_PROFILE_ARCHIVED', `${profile.config.displayName} is archived. Restore it or choose another profile.`);
-    return profile;
-  }
-  private teamVersion(state: LibraryState, ref: ProfileRef): TeamDefinition {
-    const team = state.teams[ref.id]?.find(item => item.revision === ref.revision);
-    if (!team) throw new TeamError('TEAM_NOT_FOUND', 'The selected Team version was not found.');
-    return team;
-  }
-  private currentTeam(state: LibraryState, id: string, revision: number): TeamDefinition {
-    const team = latest(state.teams[id]);
-    if (!team) throw new TeamError('TEAM_NOT_FOUND', 'Team was not found.');
-    if (team.revision !== revision) throw new TeamError('TEAM_REVISION_CONFLICT', 'This Team changed. Reload before continuing.');
-    return team;
-  }
+  private profileForTeam(state: LibraryState, ref: ProfileRef, role: 'leader' | 'teammate'): AgentProfile { const profile = state.profiles[ref.id]; if (!profile) throw new TeamError('TEAM_PROFILE_NOT_FOUND', 'Leader or Teammate was not found.'); if (profile.role !== role) throw new TeamError('TEAM_ROLE_MISMATCH', `The selected ${role} has the wrong role.`); return profile; }
+  private materializeTeam(state: LibraryState, team: TeamDefinition): TeamDefinition { const leader = state.profiles[team.config.leader.id] ?? team.leader; const teammates = team.config.teammates.map(ref => state.profiles[ref.id] ?? team.teammates.find(item => item.id === ref.id)).filter((item): item is AgentProfile => Boolean(item)); return { ...clone(team), config: { ...team.config, leader: { id: leader.id }, teammates: teammates.map(item => ({ id: item.id })) }, leader: clone(leader), teammates: clone(teammates) }; }
 }

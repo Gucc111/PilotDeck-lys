@@ -6,7 +6,7 @@ import type { TeamDefinition } from '../team-library/api';
 vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue || key }) }));
 vi.mock('../chat/hooks/useChatComposerState', () => ({ MAX_ATTACHMENTS_ERROR_KEY: 'limit' }));
-const team = { id: 'team', revision: 1, config: { displayName: 'Release review' }, leader: { config: { displayName: 'Lead reviewer' } }, teammates: [{ config: { displayName: 'Tester' } }] } as TeamDefinition;
+const team = { id: 'team', config: { displayName: 'Release review' }, leader: { config: { displayName: 'Lead reviewer' } }, teammates: [{ config: { displayName: 'Tester' } }] } as TeamDefinition;
 function props(overrides: Partial<ComposerV2Props> = {}): ComposerV2Props {
   return { onInputChange: vi.fn(), renderInputWithMentions: () => null, input: '', placeholder: '', textareaRef: { current: null }, inputHighlightRef: { current: null },
     attachedImages: [], documentReferences: [], uploadingImages: new Map(), imageErrors: new Map(), filteredFiles: [], selectedFileMentions: [], selectedSkills: [], selectedCommands: [], filteredCommands: [], frequentCommands: [], pendingPermissionRequests: [],

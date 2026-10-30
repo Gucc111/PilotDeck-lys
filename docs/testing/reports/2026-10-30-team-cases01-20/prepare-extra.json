@@ -1,0 +1,1675 @@
+{
+  "at": "2026-10-30T03:58:54.352Z",
+  "evidenceKind": "real Gateway auxiliary replay, not browser E2E",
+  "rows": [
+    {
+      "label": "fixed-P2-teammate",
+      "input": {
+        "action": "profile_save",
+        "role": "teammate",
+        "config": {
+          "displayName": "Case07 P2测试员",
+          "description": "执行边界测试并报告真实命令结果",
+          "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "deepseek-v4.1-flash"
+          },
+          "workspace": {
+            "mode": "fixed",
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-docs"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "bash"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "ffd5f9b7-3760-48a3-99e9-fd696776e824"
+      },
+      "ok": true,
+      "result": {
+        "id": "9f9abf7e-f716-4e91-9c6b-ad3e037a636c",
+        "role": "teammate",
+        "config": {
+          "displayName": "Case07 P2测试员",
+          "description": "执行边界测试并报告真实命令结果",
+          "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "deepseek-v4.1-flash"
+          },
+          "workspace": {
+            "mode": "fixed",
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-docs"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "bash"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "createdAt": "2026-10-30T03:58:53.934Z",
+        "updatedAt": "2026-10-30T03:58:53.934Z"
+      }
+    },
+    {
+      "label": "fixed-P2-teammate-team",
+      "input": {
+        "action": "team_save",
+        "config": {
+          "displayName": "Case07 成员固定P2",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "9f9abf7e-f716-4e91-9c6b-ad3e037a636c"
+            }
+          ]
+        },
+        "requestToken": "193dc361-e860-49d6-93d8-6fe4d064b5da"
+      },
+      "ok": true,
+      "result": {
+        "id": "8ef95834-ed57-4a19-8f5f-394b5682f9fc",
+        "config": {
+          "displayName": "Case07 成员固定P2",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03"
+          },
+          "teammates": [
+            {
+              "id": "9f9abf7e-f716-4e91-9c6b-ad3e037a636c"
+            }
+          ]
+        },
+        "leader": {
+          "id": "8d6b08b2-bd95-440f-b074-cd0cc4eaab03",
+          "role": "leader",
+          "config": {
+            "displayName": "发布负责人",
+            "description": "发布评审的组织、证据核对与最终报告",
+            "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "workspace": {
+              "mode": "team"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file",
+                "write_file",
+                "edit_file"
+              ],
+              "skills": [],
+              "mcpServers": []
+            },
+            "optionalCapabilities": [],
+            "permissionMode": "default"
+          },
+          "createdAt": "2026-10-30T02:23:58.019Z",
+          "updatedAt": "2026-10-30T02:33:00.406Z"
+        },
+        "teammates": [
+          {
+            "id": "9f9abf7e-f716-4e91-9c6b-ad3e037a636c",
+            "role": "teammate",
+            "config": {
+              "displayName": "Case07 P2测试员",
+              "description": "执行边界测试并报告真实命令结果",
+              "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4.1-flash"
+              },
+              "workspace": {
+                "mode": "fixed",
+                "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-docs"
+              },
+              "capabilities": {
+                "tools": [
+                  "read_file",
+                  "bash"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T03:58:53.934Z",
+            "updatedAt": "2026-10-30T03:58:53.934Z"
+          }
+        ],
+        "createdAt": "2026-10-30T03:58:53.960Z",
+        "updatedAt": "2026-10-30T03:58:53.960Z"
+      }
+    },
+    {
+      "label": "必需技能缺失-profile",
+      "input": {
+        "action": "profile_save",
+        "role": "leader",
+        "config": {
+          "displayName": "Case08 必需技能缺失",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "read_skill"
+            ],
+            "skills": [
+              "case08-required-absent"
+            ],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "ee98216e-5477-450a-beaf-bb81e3cfc809"
+      },
+      "ok": true,
+      "result": {
+        "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe",
+        "role": "leader",
+        "config": {
+          "displayName": "Case08 必需技能缺失",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file",
+              "read_skill"
+            ],
+            "skills": [
+              "case08-required-absent"
+            ],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "createdAt": "2026-10-30T03:58:53.985Z",
+        "updatedAt": "2026-10-30T03:58:53.985Z"
+      }
+    },
+    {
+      "label": "必需技能缺失-team",
+      "input": {
+        "action": "team_save",
+        "config": {
+          "displayName": "Case08 必需技能缺失",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "b4b42c9e-dc23-45f0-a8e1-bf8dd1cb88b8"
+      },
+      "ok": true,
+      "result": {
+        "id": "9725a23f-5928-48c8-b9f9-e18fb1e60600",
+        "config": {
+          "displayName": "Case08 必需技能缺失",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "leader": {
+          "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe",
+          "role": "leader",
+          "config": {
+            "displayName": "Case08 必需技能缺失",
+            "description": "发布评审的组织、证据核对与最终报告",
+            "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "workspace": {
+              "mode": "team"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file",
+                "read_skill"
+              ],
+              "skills": [
+                "case08-required-absent"
+              ],
+              "mcpServers": []
+            },
+            "optionalCapabilities": [],
+            "permissionMode": "default"
+          },
+          "createdAt": "2026-10-30T03:58:53.985Z",
+          "updatedAt": "2026-10-30T03:58:53.985Z"
+        },
+        "teammates": [
+          {
+            "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+            "role": "teammate",
+            "config": {
+              "displayName": "测试员",
+              "description": "执行边界测试并报告真实命令结果",
+              "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4.1-flash"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "read_file",
+                  "bash"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T02:27:50.127Z",
+            "updatedAt": "2026-10-30T02:27:50.127Z"
+          },
+          {
+            "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+            "role": "teammate",
+            "config": {
+              "displayName": "代码审查员",
+              "description": "核对需求、代码位置和边界，不改源码",
+              "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4-pro-0813"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "glob",
+                  "grep",
+                  "read_file"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T02:24:35.325Z",
+            "updatedAt": "2026-10-30T02:24:35.325Z"
+          }
+        ],
+        "createdAt": "2026-10-30T03:58:54.012Z",
+        "updatedAt": "2026-10-30T03:58:54.012Z"
+      }
+    },
+    {
+      "label": "必需技能缺失-probe",
+      "input": {
+        "action": "runtime_probe",
+        "team": {
+          "id": "9725a23f-5928-48c8-b9f9-e18fb1e60600"
+        },
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app"
+      },
+      "ok": true,
+      "result": {
+        "team": {
+          "id": "9725a23f-5928-48c8-b9f9-e18fb1e60600",
+          "config": {
+            "displayName": "Case08 必需技能缺失",
+            "description": "发布需求、代码与测试的联合评审",
+            "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+            "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "leader": {
+              "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe"
+            },
+            "teammates": [
+              {
+                "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+              },
+              {
+                "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+              }
+            ]
+          },
+          "leader": {
+            "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe",
+            "role": "leader",
+            "config": {
+              "displayName": "Case08 必需技能缺失",
+              "description": "发布评审的组织、证据核对与最终报告",
+              "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "gpt-5.6-sol"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "read_file",
+                  "read_skill"
+                ],
+                "skills": [
+                  "case08-required-absent"
+                ],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T03:58:53.985Z",
+            "updatedAt": "2026-10-30T03:58:53.985Z"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+              "role": "teammate",
+              "config": {
+                "displayName": "测试员",
+                "description": "执行边界测试并报告真实命令结果",
+                "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4.1-flash"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "bash"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:27:50.127Z",
+              "updatedAt": "2026-10-30T02:27:50.127Z"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+              "role": "teammate",
+              "config": {
+                "displayName": "代码审查员",
+                "description": "核对需求、代码位置和边界，不改源码",
+                "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4-pro-0813"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "glob",
+                    "grep",
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:24:35.325Z",
+              "updatedAt": "2026-10-30T02:24:35.325Z"
+            }
+          ],
+          "createdAt": "2026-10-30T03:58:54.012Z",
+          "updatedAt": "2026-10-30T03:58:54.012Z"
+        },
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "participants": [
+          {
+            "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe",
+            "role": "leader",
+            "profile": {
+              "id": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe",
+              "role": "leader",
+              "config": {
+                "displayName": "Case08 必需技能缺失",
+                "description": "发布评审的组织、证据核对与最终报告",
+                "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "gpt-5.6-sol"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "read_skill"
+                  ],
+                  "skills": [
+                    "case08-required-absent"
+                  ],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T03:58:53.985Z",
+              "updatedAt": "2026-10-30T03:58:53.985Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file",
+                "read_skill"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          },
+          {
+            "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+            "role": "teammate",
+            "profile": {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+              "role": "teammate",
+              "config": {
+                "displayName": "测试员",
+                "description": "执行边界测试并报告真实命令结果",
+                "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4.1-flash"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "bash"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:27:50.127Z",
+              "updatedAt": "2026-10-30T02:27:50.127Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "deepseek-v4.1-flash"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file",
+                "bash"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          },
+          {
+            "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+            "role": "teammate",
+            "profile": {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+              "role": "teammate",
+              "config": {
+                "displayName": "代码审查员",
+                "description": "核对需求、代码位置和边界，不改源码",
+                "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4-pro-0813"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "glob",
+                    "grep",
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:24:35.325Z",
+              "updatedAt": "2026-10-30T02:24:35.325Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "deepseek-v4-pro-0813"
+            },
+            "capabilities": {
+              "tools": [
+                "glob",
+                "grep",
+                "read_file"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          }
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "code": "TEAM_CAPABILITY_MISSING",
+            "message": "Case08 必需技能缺失: skill case08-required-absent is unavailable.",
+            "participantId": "6a14aa94-4fe8-45d9-924c-0b2a6b506efe"
+          }
+        ],
+        "compatible": false,
+        "fingerprint": "d534824231c757fa3d1954028394404cce64de7bab2c614c91ee5749cabbeb83"
+      }
+    },
+    {
+      "label": "必需技能缺失-direct-select",
+      "input": {
+        "action": "runtime_select",
+        "team": {
+          "id": "9725a23f-5928-48c8-b9f9-e18fb1e60600"
+        },
+        "sessionKey": "web:s_fc8cdd76-30eb-4d08-98e3-95f21f300b71",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "requestToken": "0b70ecb0-db61-4070-a454-7182f4af43f2",
+        "probeFingerprint": "d534824231c757fa3d1954028394404cce64de7bab2c614c91ee5749cabbeb83"
+      },
+      "ok": false,
+      "code": "TEAM_INCOMPATIBLE",
+      "message": "Case08 必需技能缺失: skill case08-required-absent is unavailable."
+    },
+    {
+      "label": "必需MCP缺失-profile",
+      "input": {
+        "action": "profile_save",
+        "role": "leader",
+        "config": {
+          "displayName": "Case08 必需MCP缺失",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file"
+            ],
+            "skills": [],
+            "mcpServers": [
+              "case08-required-absent"
+            ]
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "60d0958b-fa8c-4cd8-9d08-f879ffb7a90f"
+      },
+      "ok": true,
+      "result": {
+        "id": "c42c63f4-2acb-4605-b632-e452da0c2297",
+        "role": "leader",
+        "config": {
+          "displayName": "Case08 必需MCP缺失",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "read_file"
+            ],
+            "skills": [],
+            "mcpServers": [
+              "case08-required-absent"
+            ]
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "createdAt": "2026-10-30T03:58:54.118Z",
+        "updatedAt": "2026-10-30T03:58:54.118Z"
+      }
+    },
+    {
+      "label": "必需MCP缺失-team",
+      "input": {
+        "action": "team_save",
+        "config": {
+          "displayName": "Case08 必需MCP缺失",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "c42c63f4-2acb-4605-b632-e452da0c2297"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "c29f3514-e155-4277-be80-00601d3d7d1d"
+      },
+      "ok": true,
+      "result": {
+        "id": "962f0cae-8040-4f66-ac93-02f5fa3bceed",
+        "config": {
+          "displayName": "Case08 必需MCP缺失",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "c42c63f4-2acb-4605-b632-e452da0c2297"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "leader": {
+          "id": "c42c63f4-2acb-4605-b632-e452da0c2297",
+          "role": "leader",
+          "config": {
+            "displayName": "Case08 必需MCP缺失",
+            "description": "发布评审的组织、证据核对与最终报告",
+            "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "workspace": {
+              "mode": "team"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file"
+              ],
+              "skills": [],
+              "mcpServers": [
+                "case08-required-absent"
+              ]
+            },
+            "optionalCapabilities": [],
+            "permissionMode": "default"
+          },
+          "createdAt": "2026-10-30T03:58:54.118Z",
+          "updatedAt": "2026-10-30T03:58:54.118Z"
+        },
+        "teammates": [
+          {
+            "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+            "role": "teammate",
+            "config": {
+              "displayName": "测试员",
+              "description": "执行边界测试并报告真实命令结果",
+              "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4.1-flash"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "read_file",
+                  "bash"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T02:27:50.127Z",
+            "updatedAt": "2026-10-30T02:27:50.127Z"
+          },
+          {
+            "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+            "role": "teammate",
+            "config": {
+              "displayName": "代码审查员",
+              "description": "核对需求、代码位置和边界，不改源码",
+              "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4-pro-0813"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "glob",
+                  "grep",
+                  "read_file"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T02:24:35.325Z",
+            "updatedAt": "2026-10-30T02:24:35.325Z"
+          }
+        ],
+        "createdAt": "2026-10-30T03:58:54.143Z",
+        "updatedAt": "2026-10-30T03:58:54.143Z"
+      }
+    },
+    {
+      "label": "必需MCP缺失-probe",
+      "input": {
+        "action": "runtime_probe",
+        "team": {
+          "id": "962f0cae-8040-4f66-ac93-02f5fa3bceed"
+        },
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app"
+      },
+      "ok": true,
+      "result": {
+        "team": {
+          "id": "962f0cae-8040-4f66-ac93-02f5fa3bceed",
+          "config": {
+            "displayName": "Case08 必需MCP缺失",
+            "description": "发布需求、代码与测试的联合评审",
+            "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+            "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "leader": {
+              "id": "c42c63f4-2acb-4605-b632-e452da0c2297"
+            },
+            "teammates": [
+              {
+                "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+              },
+              {
+                "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+              }
+            ]
+          },
+          "leader": {
+            "id": "c42c63f4-2acb-4605-b632-e452da0c2297",
+            "role": "leader",
+            "config": {
+              "displayName": "Case08 必需MCP缺失",
+              "description": "发布评审的组织、证据核对与最终报告",
+              "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "gpt-5.6-sol"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "read_file"
+                ],
+                "skills": [],
+                "mcpServers": [
+                  "case08-required-absent"
+                ]
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T03:58:54.118Z",
+            "updatedAt": "2026-10-30T03:58:54.118Z"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+              "role": "teammate",
+              "config": {
+                "displayName": "测试员",
+                "description": "执行边界测试并报告真实命令结果",
+                "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4.1-flash"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "bash"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:27:50.127Z",
+              "updatedAt": "2026-10-30T02:27:50.127Z"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+              "role": "teammate",
+              "config": {
+                "displayName": "代码审查员",
+                "description": "核对需求、代码位置和边界，不改源码",
+                "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4-pro-0813"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "glob",
+                    "grep",
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:24:35.325Z",
+              "updatedAt": "2026-10-30T02:24:35.325Z"
+            }
+          ],
+          "createdAt": "2026-10-30T03:58:54.143Z",
+          "updatedAt": "2026-10-30T03:58:54.143Z"
+        },
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "participants": [
+          {
+            "id": "c42c63f4-2acb-4605-b632-e452da0c2297",
+            "role": "leader",
+            "profile": {
+              "id": "c42c63f4-2acb-4605-b632-e452da0c2297",
+              "role": "leader",
+              "config": {
+                "displayName": "Case08 必需MCP缺失",
+                "description": "发布评审的组织、证据核对与最终报告",
+                "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "gpt-5.6-sol"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": [
+                    "case08-required-absent"
+                  ]
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T03:58:54.118Z",
+              "updatedAt": "2026-10-30T03:58:54.118Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          },
+          {
+            "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+            "role": "teammate",
+            "profile": {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+              "role": "teammate",
+              "config": {
+                "displayName": "测试员",
+                "description": "执行边界测试并报告真实命令结果",
+                "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4.1-flash"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "bash"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:27:50.127Z",
+              "updatedAt": "2026-10-30T02:27:50.127Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "deepseek-v4.1-flash"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file",
+                "bash"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          },
+          {
+            "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+            "role": "teammate",
+            "profile": {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+              "role": "teammate",
+              "config": {
+                "displayName": "代码审查员",
+                "description": "核对需求、代码位置和边界，不改源码",
+                "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4-pro-0813"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "glob",
+                    "grep",
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:24:35.325Z",
+              "updatedAt": "2026-10-30T02:24:35.325Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "deepseek-v4-pro-0813"
+            },
+            "capabilities": {
+              "tools": [
+                "glob",
+                "grep",
+                "read_file"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          }
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "code": "TEAM_CAPABILITY_MISSING",
+            "message": "Case08 必需MCP缺失: mcp case08-required-absent is unavailable.",
+            "participantId": "c42c63f4-2acb-4605-b632-e452da0c2297"
+          }
+        ],
+        "compatible": false,
+        "fingerprint": "04957cb6f3f608760a75b32bcb198fc506dbc7540105b1d1b0dea68bf0950f4c"
+      }
+    },
+    {
+      "label": "必需MCP缺失-direct-select",
+      "input": {
+        "action": "runtime_select",
+        "team": {
+          "id": "962f0cae-8040-4f66-ac93-02f5fa3bceed"
+        },
+        "sessionKey": "web:s_7520b4bb-403d-4d7f-b410-8d0ed1ace1e7",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "requestToken": "c7acf59a-1b59-40db-be24-6f564a49d097",
+        "probeFingerprint": "04957cb6f3f608760a75b32bcb198fc506dbc7540105b1d1b0dea68bf0950f4c"
+      },
+      "ok": false,
+      "code": "TEAM_INCOMPATIBLE",
+      "message": "Case08 必需MCP缺失: mcp case08-required-absent is unavailable."
+    },
+    {
+      "label": "必需工具缺失-profile",
+      "input": {
+        "action": "profile_save",
+        "role": "leader",
+        "config": {
+          "displayName": "Case08 必需工具缺失",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "case08-required-absent"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "requestToken": "cb3a0b44-e8ca-4f85-a74a-f2c5797a58b8"
+      },
+      "ok": true,
+      "result": {
+        "id": "83022267-e7a2-4183-8ff2-86475cf24144",
+        "role": "leader",
+        "config": {
+          "displayName": "Case08 必需工具缺失",
+          "description": "发布评审的组织、证据核对与最终报告",
+          "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+          "model": {
+            "mode": "model",
+            "provider": "llmcenter-openai",
+            "model": "gpt-5.6-sol"
+          },
+          "workspace": {
+            "mode": "team"
+          },
+          "capabilities": {
+            "tools": [
+              "case08-required-absent"
+            ],
+            "skills": [],
+            "mcpServers": []
+          },
+          "optionalCapabilities": [],
+          "permissionMode": "default"
+        },
+        "createdAt": "2026-10-30T03:58:54.251Z",
+        "updatedAt": "2026-10-30T03:58:54.251Z"
+      }
+    },
+    {
+      "label": "必需工具缺失-team",
+      "input": {
+        "action": "team_save",
+        "config": {
+          "displayName": "Case08 必需工具缺失",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "83022267-e7a2-4183-8ff2-86475cf24144"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "requestToken": "c3c1dd2d-bc6f-4e8f-84bf-96c409bef8d7"
+      },
+      "ok": true,
+      "result": {
+        "id": "23744fed-9603-4bd7-898b-a5290e1da790",
+        "config": {
+          "displayName": "Case08 必需工具缺失",
+          "description": "发布需求、代码与测试的联合评审",
+          "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+          "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+          "leader": {
+            "id": "83022267-e7a2-4183-8ff2-86475cf24144"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+            }
+          ]
+        },
+        "leader": {
+          "id": "83022267-e7a2-4183-8ff2-86475cf24144",
+          "role": "leader",
+          "config": {
+            "displayName": "Case08 必需工具缺失",
+            "description": "发布评审的组织、证据核对与最终报告",
+            "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "workspace": {
+              "mode": "team"
+            },
+            "capabilities": {
+              "tools": [
+                "case08-required-absent"
+              ],
+              "skills": [],
+              "mcpServers": []
+            },
+            "optionalCapabilities": [],
+            "permissionMode": "default"
+          },
+          "createdAt": "2026-10-30T03:58:54.251Z",
+          "updatedAt": "2026-10-30T03:58:54.251Z"
+        },
+        "teammates": [
+          {
+            "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+            "role": "teammate",
+            "config": {
+              "displayName": "测试员",
+              "description": "执行边界测试并报告真实命令结果",
+              "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4.1-flash"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "read_file",
+                  "bash"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T02:27:50.127Z",
+            "updatedAt": "2026-10-30T02:27:50.127Z"
+          },
+          {
+            "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+            "role": "teammate",
+            "config": {
+              "displayName": "代码审查员",
+              "description": "核对需求、代码位置和边界，不改源码",
+              "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "deepseek-v4-pro-0813"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "glob",
+                  "grep",
+                  "read_file"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T02:24:35.325Z",
+            "updatedAt": "2026-10-30T02:24:35.325Z"
+          }
+        ],
+        "createdAt": "2026-10-30T03:58:54.274Z",
+        "updatedAt": "2026-10-30T03:58:54.274Z"
+      }
+    },
+    {
+      "label": "必需工具缺失-probe",
+      "input": {
+        "action": "runtime_probe",
+        "team": {
+          "id": "23744fed-9603-4bd7-898b-a5290e1da790"
+        },
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app"
+      },
+      "ok": true,
+      "result": {
+        "team": {
+          "id": "23744fed-9603-4bd7-898b-a5290e1da790",
+          "config": {
+            "displayName": "Case08 必需工具缺失",
+            "description": "发布需求、代码与测试的联合评审",
+            "instructions": "围绕真实需求和工具证据协作。允许成员直接询问，工作结果保存在各自最终回答中，由负责人查询并汇总。不得把轮次结束当作工作完成。",
+            "defaultProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "leader": {
+              "id": "83022267-e7a2-4183-8ff2-86475cf24144"
+            },
+            "teammates": [
+              {
+                "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f"
+              },
+              {
+                "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292"
+              }
+            ]
+          },
+          "leader": {
+            "id": "83022267-e7a2-4183-8ff2-86475cf24144",
+            "role": "leader",
+            "config": {
+              "displayName": "Case08 必需工具缺失",
+              "description": "发布评审的组织、证据核对与最终报告",
+              "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+              "model": {
+                "mode": "model",
+                "provider": "llmcenter-openai",
+                "model": "gpt-5.6-sol"
+              },
+              "workspace": {
+                "mode": "team"
+              },
+              "capabilities": {
+                "tools": [
+                  "case08-required-absent"
+                ],
+                "skills": [],
+                "mcpServers": []
+              },
+              "optionalCapabilities": [],
+              "permissionMode": "default"
+            },
+            "createdAt": "2026-10-30T03:58:54.251Z",
+            "updatedAt": "2026-10-30T03:58:54.251Z"
+          },
+          "teammates": [
+            {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+              "role": "teammate",
+              "config": {
+                "displayName": "测试员",
+                "description": "执行边界测试并报告真实命令结果",
+                "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4.1-flash"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "bash"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:27:50.127Z",
+              "updatedAt": "2026-10-30T02:27:50.127Z"
+            },
+            {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+              "role": "teammate",
+              "config": {
+                "displayName": "代码审查员",
+                "description": "核对需求、代码位置和边界，不改源码",
+                "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4-pro-0813"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "glob",
+                    "grep",
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:24:35.325Z",
+              "updatedAt": "2026-10-30T02:24:35.325Z"
+            }
+          ],
+          "createdAt": "2026-10-30T03:58:54.274Z",
+          "updatedAt": "2026-10-30T03:58:54.274Z"
+        },
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "participants": [
+          {
+            "id": "83022267-e7a2-4183-8ff2-86475cf24144",
+            "role": "leader",
+            "profile": {
+              "id": "83022267-e7a2-4183-8ff2-86475cf24144",
+              "role": "leader",
+              "config": {
+                "displayName": "Case08 必需工具缺失",
+                "description": "发布评审的组织、证据核对与最终报告",
+                "systemPrompt": "你是发布负责人。按用户要求用 team_send_message 给代码审查员和测试员分工，成员可以直接沟通。只发明确范围和验收标准，避免反复确认。收到程序通知后，用 team_inspect 的 turn 视图指定 participantId、turnId 查询正式结果，再汇总真实文件和测试证据。轮次结束不等于工作完成。没有独立工作或等待成员时结束本轮，不轮询。简单请求直接处理。报告区分事实与推断。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "gpt-5.6-sol"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "case08-required-absent"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T03:58:54.251Z",
+              "updatedAt": "2026-10-30T03:58:54.251Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "gpt-5.6-sol"
+            },
+            "capabilities": {
+              "tools": [],
+              "skills": [],
+              "mcpServers": []
+            }
+          },
+          {
+            "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+            "role": "teammate",
+            "profile": {
+              "id": "12e0d7ec-07ff-4324-a1d3-04ebd5808a7f",
+              "role": "teammate",
+              "config": {
+                "displayName": "测试员",
+                "description": "执行边界测试并报告真实命令结果",
+                "systemPrompt": "你是测试员。实际运行用户要求的测试并报告命令、退出码和结果，不修改源码或测试。可通过 team_send_message 直接询问同伴业务问题，不把最终工作成果作为消息正文。正式成果写在最终回答中。等待信息且没有独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4.1-flash"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "read_file",
+                    "bash"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:27:50.127Z",
+              "updatedAt": "2026-10-30T02:27:50.127Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "deepseek-v4.1-flash"
+            },
+            "capabilities": {
+              "tools": [
+                "read_file",
+                "bash"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          },
+          {
+            "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+            "role": "teammate",
+            "profile": {
+              "id": "0cfc02bc-b099-42ff-97e7-db3c1ca49292",
+              "role": "teammate",
+              "config": {
+                "displayName": "代码审查员",
+                "description": "核对需求、代码位置和边界，不改源码",
+                "systemPrompt": "你是代码审查员。实际读取指定需求和源码，指出问题位置和边界。不可修改源码和测试。可直接通过 team_send_message 与同伴沟通业务问题，不把最终成果发消息。正式结果写最终回答。等待信息且无独立工作时结束本轮，不轮询。",
+                "model": {
+                  "mode": "model",
+                  "provider": "llmcenter-openai",
+                  "model": "deepseek-v4-pro-0813"
+                },
+                "workspace": {
+                  "mode": "team"
+                },
+                "capabilities": {
+                  "tools": [
+                    "glob",
+                    "grep",
+                    "read_file"
+                  ],
+                  "skills": [],
+                  "mcpServers": []
+                },
+                "optionalCapabilities": [],
+                "permissionMode": "default"
+              },
+              "createdAt": "2026-10-30T02:24:35.325Z",
+              "updatedAt": "2026-10-30T02:24:35.325Z"
+            },
+            "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "projectPath": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+            "model": {
+              "mode": "model",
+              "provider": "llmcenter-openai",
+              "model": "deepseek-v4-pro-0813"
+            },
+            "capabilities": {
+              "tools": [
+                "glob",
+                "grep",
+                "read_file"
+              ],
+              "skills": [],
+              "mcpServers": []
+            }
+          }
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "code": "TEAM_CAPABILITY_MISSING",
+            "message": "Case08 必需工具缺失: tool case08-required-absent is unavailable.",
+            "participantId": "83022267-e7a2-4183-8ff2-86475cf24144"
+          }
+        ],
+        "compatible": false,
+        "fingerprint": "c62e255d1aa74f908c2b832e079484b5f146468d3f4fa0827e348d051a0fea66"
+      }
+    },
+    {
+      "label": "必需工具缺失-direct-select",
+      "input": {
+        "action": "runtime_select",
+        "team": {
+          "id": "23744fed-9603-4bd7-898b-a5290e1da790"
+        },
+        "sessionKey": "web:s_ba4d78dd-5077-4ec7-9c23-dfa844f57431",
+        "projectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "storageProjectKey": "/Users/gucc1/Codes/team-mode-acceptance/release-app",
+        "requestToken": "8f68832a-e457-4497-9c00-1bbd03045a9f",
+        "probeFingerprint": "c62e255d1aa74f908c2b832e079484b5f146468d3f4fa0827e348d051a0fea66"
+      },
+      "ok": false,
+      "code": "TEAM_INCOMPATIBLE",
+      "message": "Case08 必需工具缺失: tool case08-required-absent is unavailable."
+    }
+  ]
+}

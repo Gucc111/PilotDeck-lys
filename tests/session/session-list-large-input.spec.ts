@@ -6,13 +6,80 @@ import { tmpdir } from "node:os";
 
 import { getPilotProjectChatDir } from "../../src/pilot/paths.js";
 import { searchChatHistory } from "../../src/session/search/searchChatHistory.js";
-import { listProjectSessions, searchSessionsByTitle } from "../../src/session/storage/SessionList.js";
+import { listAllSessions, listProjectSessions, searchSessionsByTitle } from "../../src/session/storage/SessionList.js";
+import { sanitizeSessionIdForPath } from "../../src/session/storage/ProjectSessionStorage.js";
 
 const NOW = "2026-08-16T09:00:00.000Z";
 
 function entry(type: string, sessionId: string, sequence: number, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { type, sessionId, turnId: "turn-1", sequence, createdAt: NOW, ...extra };
 }
+
+test("recovers path-based session identity from transcript instead of its escaped filename", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+    const sessionId = `web:project=${projectRoot}/Quarter 1\\Review:s_identity`;
+    const filenameId = sanitizeSessionIdForPath(sessionId);
+    assert.notEqual(filenameId, sessionId);
+    await writeFile(join(chatDir, `${filenameId}.jsonl`), `${JSON.stringify(entry("accepted_input", sessionId, 1, {
+      messages: [{ role: "user", content: [{ type: "text", text: "Review login compatibility" }] }],
+    }))}\n`);
+
+    const sessions = await listProjectSessions({ projectRoot, pilotHome });
+    assert.equal(sessions[0]?.sessionId, sessionId);
+    assert.equal((await listAllSessions({ pilotHome }))[0]?.sessionId, sessionId);
+    assert.equal((await searchSessionsByTitle({ projectRoot, pilotHome, query: "login" }))[0]?.sessionId, sessionId);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("recovers escaped identity while scanning metadata beyond incomplete lite records", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+    const sessionId = `web:project=${projectRoot}/Login compatibility:s_large-identity`;
+    const input = entry("accepted_input", sessionId, 1, {
+      messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(256 * 1024) }] }],
+    });
+    const metadata = entry("session_metadata", sessionId, 2, {
+      metadata: { title: "Recovered identity", firstPrompt: "p".repeat(130 * 1024) },
+    });
+    const tail = entry("assistant_message", sessionId, 3, {
+      message: { role: "assistant", content: [{ type: "text", text: "y".repeat(160 * 1024) }] },
+    });
+    await writeFile(join(chatDir, `${sanitizeSessionIdForPath(sessionId)}.jsonl`), `${JSON.stringify(input)}\n${JSON.stringify(metadata)}\n${JSON.stringify(tail)}\n`);
+
+    const [session] = await listProjectSessions({ projectRoot, pilotHome });
+    assert.equal(session?.sessionId, sessionId);
+    assert.equal(session?.summary, "Recovered identity");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
+
+test("keeps legacy filename identity when records have no top-level sessionId", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));
+  const pilotHome = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-home-"));
+  try {
+    const chatDir = getPilotProjectChatDir(projectRoot, pilotHome);
+    await mkdir(chatDir, { recursive: true });
+    await writeFile(join(chatDir, "web:s_legacy.jsonl"), `${JSON.stringify({
+      type: "session_metadata", metadata: { title: "Legacy title", sessionId: "nested-decoy" },
+    })}\n`);
+    assert.equal((await listProjectSessions({ projectRoot, pilotHome }))[0]?.sessionId, "web:s_legacy");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(pilotHome, { recursive: true, force: true });
+  }
+});
 
 test("lists historical sessions whose large inline image hides metadata from the lite preview", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "pilotdeck-session-list-project-"));

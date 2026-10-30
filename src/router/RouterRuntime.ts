@@ -4,7 +4,7 @@ import type {
   ModelRuntime,
   ModelProtocol,
 } from "../model/index.js";
-import { cloneMessages, downgradeUnsupportedContent, ModelRequestError } from "../model/index.js";
+import { cloneMessages, downgradeUnsupportedContent, ModelRequestError, ModelRequestDispatchError } from "../model/index.js";
 import type { InputModality } from "../model/index.js";
 import {
   LITELLM_DEFAULT_MAX_RETRIES,
@@ -1146,6 +1146,7 @@ async function* streamAttempt(
   try {
     for await (const event of modelRuntime.stream(request, {
       signal: abortSignal,
+      dispatchRequest: ctx.dispatchRequest,
       onRetryProgress(progress) {
         events.emit({
           type: "pilotdeck_router_retry_progress",
@@ -1171,6 +1172,8 @@ async function* streamAttempt(
       yield { kind: "event", event };
     }
   } catch (error) {
+    const dispatchCode = (error as { code?: string } | null)?.code;
+    if (error instanceof ModelRequestDispatchError || dispatchCode === "TEAM_EMPTY_BATCH" || dispatchCode === "TEAM_MESSAGE_BATCH_TOO_LARGE") throw error;
     if (abortSignal?.aborted) {
       throw error;
     }

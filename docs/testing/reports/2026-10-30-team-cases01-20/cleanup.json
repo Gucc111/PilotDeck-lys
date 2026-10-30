@@ -1,0 +1,518 @@
+{
+  "date": "2026-10-30",
+  "removed": 126,
+  "chats": 87,
+  "oldSessions": 74,
+  "removedPaths": [
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-library",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-runtime",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/teams",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/teammates",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-sets",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/leader.md",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-23-team-cases01-20",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-24-team-cases09-20",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-25-team-runtime-assets",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-25-team-runtime-lifecycle.md",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-26-team-cases01-20",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-28-team-human-interactions",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-28-team-interaction-rerun",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-29-team-communication",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-29-team-communication-controlled-ui",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-29-team-cross-session-card-isolation",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/work/modelbest/PilotDeck-lys/docs/testing/reports/2026-10-29-team-plan-rerun",
+      "directory": true
+    },
+    {
+      "path": "/var/folders/rn/32tp20h116l8xmxd78xwrppm0000gn/T/pilotdeck-team-communication-ZssxY3",
+      "directory": true
+    },
+    {
+      "path": "/var/folders/rn/32tp20h116l8xmxd78xwrppm0000gn/T/pilotdeck-team-communication-phZNlF",
+      "directory": true
+    },
+    {
+      "path": "/var/folders/rn/32tp20h116l8xmxd78xwrppm0000gn/T/pilotdeck-team-communication-q0Y8AQ",
+      "directory": true
+    },
+    {
+      "path": "/var/folders/rn/32tp20h116l8xmxd78xwrppm0000gn/T/pilotdeck-team-communication-su6una",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/evidence",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/empty-home",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/fault-home",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/legacy-home",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/legacy-backup-failure-home",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/release-app/out",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/release-app/qa1028-regression-a.txt",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/release-app/qa1028-regression-b.txt",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/release-docs/out",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-mode-test/mcp-logs",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-mode-test/backups",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-mode-test/case17-19-gate.py",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-mode-test/case20-gate.py",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-mode-test/qa1026-case20-2345a9a0-1264-450b-b274-bf92d2dbc6a8",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/team-mode-test/qa1026-disconnect-a0dd2566-ce5e-4028-82b3-bc5ffbf7b073",
+      "directory": true
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/support/acceptance-before-directory-cleanup.md",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/support/legacy-backup-failure-home-requests.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/Codes/team-mode-acceptance/support/legacy-home-requests.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:2c44920e-2222-4037-b7f0-7e24ec98cb93.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:78670a8b-2fdd-4b73-bd5d-e9a0cb6a26fe.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:baf34562-8992-49e7-ad81-c511992e4130.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:c223d468-fccf-4d5f-a785-6773b13afeb9.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:e3dd0de8-5e17-4fc1-9459-0897995456b9.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:e93c9340-0da2-4dad-a15d-b671150bb9c7.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:project=-Users-gucc1-.pilotdeck:s_d6087ce9-e28c-4db9-b1ef-d430290de1ed.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_023a782d-6449-4ca0-9880-d361222fc6c2.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_02ce52ef-24c4-4545-b268-8676cc11d067.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_090622d6-8959-45b5-9a9d-933ec01ab17c.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_091fc08a-c01e-4638-ad31-7ce66b03176a.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_0ba09f70-1472-4de9-80f7-a51f39118da8.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_0d9804f5-850e-4fcd-83ad-d9b0c10e8509.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_169e2575-c1d4-415e-8f91-5f78ab4e5599.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_2004bcac-3931-47ff-844e-84a0111ce58d.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_2222f92f-7cf2-4e99-a52a-470160bda5db.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_2455e8b8-6dd6-4520-b038-4bf5023537be.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_2512848d-4719-44a1-a788-8186fbec5175.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_26dbed75-458f-4b13-b744-1a1bbe0e07ee.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_2bb68775-3ae8-4ce4-948d-efc68867a808.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_3e1cb8ab-a525-4de9-9e51-4120c8c6415f.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_3fc05a92-6837-4360-8d7f-cc719c7ef695.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_43fe0b9a-019d-41b9-82cd-0544906d106e.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_456dced3-8d02-40bd-8f30-b861bf1a8612.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_47a77408-d1cb-413b-acfa-d29bc3281086.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_4e321164-7f61-468e-880c-6c6a435f3bef.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_563a65e2-0787-4d67-89d4-cd121dea8b30.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_680fa372-8fd9-48d6-8e27-f67b7325c114.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_6b82f4d4-e0c3-4cbb-941e-280db47fbdfb.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_7dab2446-a1ca-4e1b-852c-1ea07dc744fa.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_7f53c3c1-0938-4d73-81a9-bc6817e76120.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_8a207a24-17b7-4797-b3c6-4aa633d4c208.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_8e8304d6-fe39-4829-a769-35fe5a7fdd67.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_961e189f-f7e0-431e-8653-9a4474960381.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_98075749-cfef-4b60-becf-8401e1f6f249.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_9f30f18e-c8d2-4fe9-b015-a72057892967.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_9f3cef4e-9987-44a6-9a68-1ed21ae1304f.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_a06b8795-0cbb-4cf8-8d03-f1ed7ef5cf29.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_a5891b10-286c-4ffe-9f28-09ad92bff6b2.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_a5adb107-b7c2-4562-a0b9-6724e917ad0d.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_a69f0827-21f7-4940-854d-b0a4ee275a98.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_a7351fcc-66d5-4ad3-a176-e4a5fec9b78f.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_afe73734-2161-4276-bb2e-2d16462bd0cd.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_c0c7fcf5-31d3-4edf-99af-8d88d1673b6c.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_c1e1c9a0-3761-4303-81d5-e06bc04464dc.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_d0f34835-ea1f-459f-9b6a-3c142dd7c13c.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_d913e885-cd3a-4a5b-905c-ea54aa3651fa.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_dc1be816-74fa-45e1-8713-b46d12d5256a.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_e61dc7f0-0e55-4ba3-8534-814af252cbc8.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_fbca71ee-ad1f-42a1-ba2a-26acfa29d0ea.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_ffcc2de4-3c50-4346-97c6-63420438f8c5.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/chats/web:s_fff6b990-32ad-4c55-8fdf-ba1227e37543.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/pending-inputs/web:s_0ba09f70-1472-4de9-80f7-a51f39118da8.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/pending-inputs/web:s_2512848d-4719-44a1-a788-8186fbec5175.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/pending-inputs/web:s_43fe0b9a-019d-41b9-82cd-0544906d106e.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/pending-inputs/web:s_8a207a24-17b7-4797-b3c6-4aa633d4c208.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-.pilotdeck/pending-inputs/web:s_9f30f18e-c8d2-4fe9-b015-a72057892967.json",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_0a276034-cde7-4058-bce4-bcd634fae238.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_2dc9b589-1cf3-42c4-9f9a-9207f2dc7807.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_337ac97f-1fa4-4a92-a176-513175c79cf2.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_4fbeea6f-623e-4e73-b637-5b8cb915f142.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_51a3c974-04cd-41a9-8175-91ace83aad32.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_8b6dbdf0-f9b1-424b-b35f-fedd51a2fd04.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_91db5df5-cc85-41eb-9f60-b57860d61d02.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_937bd7bb-bb7c-4612-b9f8-98a95e24d4ba.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_9480fd5f-c7e4-4ed2-818a-f3ec46742ea8.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_ac40f05b-bfcc-4add-9c29-b75536137601.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_acb830c9-4911-4b55-a7db-e2e7b5373efd.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_bfd0b3d0-0c32-44de-8d9d-46de42e9fd16.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_c578a127-e509-4bf6-a4d1-b95d40ea8524.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_c676b332-9428-4571-8192-ff76d4569607.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_c9fc2c78-76b9-4ee5-adaa-3b78cbd4644b.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_cf97fe7d-f34b-4300-a3c4-e3184065d2de.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_d22ccb60-e43e-4e35-a9cd-ccd73060c510.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_d6c9321e-f9f4-4c8d-9b9a-90a8d89d43f8.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_d71e9653-50b8-45be-ba9d-efe5ad5539a1.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_ec68d878-85b0-4c73-9cce-150640902a6d.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_f26feb51-859c-4a80-b4de-b39a6347f172.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_fa64faf2-ca0a-48a1-a7c5-7e688508b9b8.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:project=-Users-gucc1-Codes-team-mode-acceptance-release-app:s_fe1761c8-b59b-43ea-b8dd-f3a74664eae3.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_1cf9081c-9e37-41e6-9997-740ab27e0a8d.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_22715790-404a-45e4-986f-a6af3987db48.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_258eedd4-498c-4017-9e57-182a1a5579f0.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_314a2e13-3344-4b8e-93d9-c90198571ace.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_57d0020d-bcc7-4c3a-8101-c14a09e6f74b.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_93881169-6e44-4d8b-9505-2bd7203b3f4d.jsonl",
+      "directory": false
+    },
+    {
+      "path": "/Users/gucc1/.pilotdeck/projects/Users-gucc1-Codes-team-mode-acceptance-release-app/chats/web:s_e987c1b5-4bd4-4aca-8e65-04ac87fa00ae.jsonl",
+      "directory": false
+    }
+  ],
+  "preserved": [
+    "provider credentials and general configuration",
+    "non-Team chats",
+    "acceptance baseline source files",
+    "MCP test server and skill fixtures"
+  ]
+}

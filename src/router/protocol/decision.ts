@@ -88,4 +88,5 @@ export type RouterExecuteContext = {
   turnId: string;
   projectPath?: string;
   abortSignal?: AbortSignal;
+  dispatchRequest?: import("../../model/streaming/streamModel.js").ModelRequestDispatch;
 };

@@ -21,7 +21,7 @@ vi.mock('./database/db.js', () => ({
     applyCustomSessionNames: vi.fn(),
 }));
 
-import { addProjectManually, deleteSession, getProjects, getProjectsSnapshot } from './projects.js';
+import { addProjectManually, deleteSession, getProjects, getProjectsSnapshot, getSessions } from './projects.js';
 import { createProjectId, sanitizeSessionIdForPath } from './utils/pilotPaths.js';
 
 const originalPilotHome = process.env.PILOT_HOME;
@@ -142,6 +142,23 @@ describe('getProjects', () => {
         const projects = await getProjects();
 
         expect(projects.find((project) => project.name === 'workspace-active')?.lastActivity).toBe(400);
+    });
+
+    it('preserves transcript session keys containing project paths in previews and page results', async () => {
+        const projectKey = '/workspace/Login compatibility';
+        const sessionId = `web:project=${projectKey}:s_team`;
+        gateway.listProjects.mockResolvedValue({ projects: [{ projectKey, fullPath: projectKey, sessionCount: 1 }] });
+        gateway.listSessions.mockImplementation(async ({ projectKey: requested }) => ({
+            sessions: requested === projectKey ? [{ sessionId, summary: 'Login review', lastModified: 500 }] : [],
+        }));
+        gateway.describeProject.mockResolvedValue({ sessionCount: 1 });
+
+        const project = (await getProjects()).find(item => item.fullPath === projectKey);
+        expect(project.sessions).toHaveLength(1);
+        expect(project.sessions[0].id).toBe(sessionId);
+        const page = await getSessions(project.name);
+        expect(page.sessions[0].id).toBe(sessionId);
+        expect(gateway.listSessions).toHaveBeenLastCalledWith({ projectKey, limit: 5, cursor: undefined });
     });
 
     it('does not turn a Gateway transport failure into an empty project list', async () => {

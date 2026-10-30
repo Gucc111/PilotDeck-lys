@@ -15,7 +15,7 @@ test('Team command uses the same contract in process and over authenticated WebS
   const gateway = new InProcessGateway(router(), {
     teamCommand: async (command) => {
       calls.push(command);
-      if (command.action === 'team_archive') {
+      if (command.action === 'team_delete') {
         throw Object.assign(new TeamError('TEAM_REVISION_CONFLICT', 'This Team was edited. Reload the current revision.'), { details: { profileId: 'leader-id' } });
       }
       return { profiles: [], teams: [] };
@@ -29,7 +29,7 @@ test('Team command uses the same contract in process and over authenticated WebS
   const remote = new RemoteGateway(client);
   assert.deepEqual(await remote.teamCommand({ action: 'library' }), await gateway.teamCommand({ action: 'library' }));
   assert.equal(calls.length, 2);
-  await assert.rejects(remote.teamCommand({ action: 'team_archive', id: 'team-id', expectedRevision: 1, archived: true }), (error: unknown) => {
+  await assert.rejects(remote.teamCommand({ action: 'team_delete', id: 'team-id', requestToken: 'delete' }), (error: unknown) => {
     assert.ok(error instanceof GatewayRequestError);
     assert.equal(error.code, 'TEAM_REVISION_CONFLICT');
     assert.deepEqual(error.details, { profileId: 'leader-id' });

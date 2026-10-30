@@ -53,7 +53,7 @@ for (const selection of [false, true]) test(`Team producer keeps consuming after
   const client = new GatewayWsClient({ url: server.wsUrl, token: server.token, clientName: 'test' });
   t.after(async () => { resume.resolve(); client.close(); await server.close(); }); await client.connect();
   const remote = new RemoteGateway(client), disconnected = new Promise<void>(resolve => client.onDisconnect(() => resolve()));
-  const iterator = remote.submitTurn({ sessionKey: 'leader', channelKey: 'web', message: 'go', ...(selection ? { teamSelection: { team: { id: 'team', revision: 1 }, requestToken: 'selection' } } : { teamActivationId: 'activation', teamStopVersion: 0 }) })[Symbol.asyncIterator]();
+  const iterator = remote.submitTurn({ sessionKey: 'leader', channelKey: 'web', message: 'go', ...(selection ? { teamSelection: { team: { id: 'team' }, requestToken: 'selection' } } : { teamActivationId: 'activation', teamStopVersion: 0 }) })[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).value?.type, 'input_accepted'); client.close(); await disconnected;
   assert.equal(aborts, 0); assert.equal(finalized, false); resume.resolve(); await done.promise;
   assert.equal(completed, true); assert.equal(aborts, 0);

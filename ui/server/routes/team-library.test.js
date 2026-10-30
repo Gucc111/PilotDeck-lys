@@ -6,6 +6,14 @@ import { createTeamLibraryHandler } from './team-library.js';
 const response = () => ({ statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; return this; } });
 
 describe('Team library HTTP boundary', () => {
+  it('forwards message deletion with the original recipient and generation', async () => {
+    const input = { action: 'runtime_message_delete', sessionKey: 'web:team', activationId: 'a', stopVersion: 2, participantId: 'leader', messageId: 'message-1' };
+    const teamCommand = vi.fn(async () => ({ messageId: 'message-1', deleted: true }));
+    const res = response();
+    await createTeamLibraryHandler({ getGateway: async () => ({ teamCommand }) })({ body: input }, res);
+    expect(teamCommand).toHaveBeenCalledExactlyOnceWith(input);
+    expect(res.body).toEqual({ messageId: 'message-1', deleted: true });
+  });
   it('routes interaction responses to the dedicated consumer and preserves a pending failure', async () => {
     const input = { action: 'runtime_interaction_respond', sessionKey: 'web:team', activationId: 'a', stopVersion: 3, participantId: 'mate', interactionId: 'i', requestId: 'r', kind: 'user_question', answer: { type: 'answered', answers: { checks: ['unit', 'browser'] } } };
     const result = { delivered: false, interaction: { ...input, id: 'i', status: 'pending' } };

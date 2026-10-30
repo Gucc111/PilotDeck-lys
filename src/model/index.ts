@@ -113,6 +113,7 @@ export {
   ModelConfigError,
   ModelProviderError,
   ModelRequestError,
+  ModelRequestDispatchError,
   PROMPT_TOO_LONG_ANTHROPIC_PATTERN,
   PROMPT_TOO_LONG_OPENAI_PATTERN,
   REQUEST_TOO_LARGE_PATTERN,
