@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 // Actual product React components, HTTP and WebSocket test doubles. These
 // checks do not claim Gateway persistence, tool effects, or real-model E2E.
-const report = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../docs/testing/reports/2026-10-29-team-communication-controlled-ui');
+const report = process.env.PILOTDECK_TEAM_UI_REPORT_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../docs/testing/reports/2026-10-29-team-communication-controlled-ui');
 const root = 'web:fixture-root', activationId = 'fixture-activation', stopVersion = 2;
 const profile = (id, role, displayName) => ({ id, revision: 1, role, config: { displayName, model: { mode: 'model', provider: 'fixture-provider', model: 'fixture-model' }, workspace: { mode: 'team' }, capabilities: { tools: ['write_file'], skills: [], mcpServers: [] } } });
 const leader = profile('leader', 'leader', 'Release leader');
@@ -35,7 +35,7 @@ async function mockApi(page, { failResponse = false, shared } = {}) {
     { id: 'leader-question', senderId: 'reviewer', recipientId: 'leader', text: 'Should the release keep the old API? ' + 'Long question detail. '.repeat(20), status: 'queued' },
     { id: 'already-sent', senderId: 'tester', recipientId: 'leader', text: 'Which release target should I use?', status: 'consumed' },
     { id: 'expired-message', senderId: 'leader', recipientId: 'tester', text: 'Old instruction after Abort', status: 'invalidated' },
-    { id: 'ended-notice', senderId: 'system', recipientId: 'leader', text: 'Code reviewer execution turn reviewer-1 ended. Inspect this turn for the result.', status: 'consumed', kind: 'turn_ended' },
+    { id: 'ended-notice', senderId: 'system', recipientId: 'leader', text: 'Code reviewer execution turn reviewer-1 ended. Inspect this turn for the result.', status: 'queued', kind: 'turn_ended' },
   ].map(message => ({ ...message, kind: message.kind || 'member', stopVersion, intendedRecipientId: message.recipientId, createdAt }));
   const activation = shared || { id: activationId, sessionKey: root, team, projectKey: '/fixture/project', participants, stopVersion, status: 'active', createdAt, updatedAt: createdAt, interactions: ledger, works: [], turns: [], messages: inbox, notifications: [] };
   const messages = [{ id: 'assistant-history', role: 'assistant', turnId: 'turn-1', createdAt, content: [{ type: 'text', text: 'Saved teammate history.' }] }];
@@ -83,32 +83,44 @@ const card = (page, name) => page.locator('.team-interaction-teammate-card').fil
 async function openRow(page, name, tool) { await card(page, name).locator('.team-interaction-entry-button').filter({ hasText: tool }).first().click(); return page.locator('.team-interaction-modal'); }
 async function closeInteraction(page) { await page.locator('.team-interaction-modal').getByRole('button', { name: 'Close', exact: true }).click(); }
 
-test('Leader inbox deletion, send rejection and invalidation stay consistent across two browser contexts and reload', async ({ browser }) => {
+test('pending Leader messages share the composer tray and disappear after deletion or dispatch', async ({ browser }) => {
   const first = await browser.newContext(), second = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await first.newPage(), peer = await second.newPage();
   try {
     await setup(page); const state = await mockApi(page);
     await setup(peer, 'en', false, 390); await mockApi(peer, { shared: state.activation });
-    for (const target of [page, peer]) { await target.goto('/e2e/fixtures/team-interactions.html'); await openPanel(target); }
+    for (const target of [page, peer]) await target.goto('/e2e/fixtures/team-interactions.html');
     const message = page.locator('[data-message-id="leader-question"]');
-    await expect(message.locator('.team-message-content')).toHaveCSS('-webkit-line-clamp', '2');
-    await message.locator('.team-message-content').click(); await expect(message.locator('.team-message-content')).toHaveClass(/is-expanded/);
-    await expect(page.locator('[data-message-id="ended-notice"] button.team-message-delete')).toHaveCount(0);
-    await page.locator('[data-message-id="already-sent"]').getByRole('button', { name: 'Delete message' }).click();
-    await expect(page.locator('[data-message-id="already-sent"]').getByRole('alert')).toContainText('Already sent');
-    await message.getByRole('button', { name: 'Delete message' }).click(); await expect(message).toHaveCount(0);
+    await expect(message).toBeVisible();
+    await expect(message).not.toContainText('Should the release keep the old API?');
+    await message.getByRole('button', { name: /Teammate · Code reviewer/ }).click();
+    await expect(message).toContainText('Should the release keep the old API?');
+    const notice = page.locator('[data-message-id="ended-notice"]');
+    await expect(notice).toContainText('Handled at the next model request');
+    await expect(notice).not.toContainText('Code reviewer execution turn');
+    await notice.getByRole('button', { name: /System notification/ }).click();
+    await expect(notice).toContainText('Code reviewer execution turn');
+    await expect(notice.getByRole('button', { name: 'Delete queued message' })).toHaveCount(0);
+    await expect(page.locator('[data-message-id="already-sent"]')).toHaveCount(0);
+    await expect(page.getByText('Expired user request')).toHaveCount(0);
+    await expect(page.getByText('Treated as the next user message')).toBeVisible();
+    await page.getByRole('button', { name: 'Adjust direction' }).click();
+    await expect(page.getByText('Treated as the next user message')).toHaveCount(0);
+    await expect(page.getByText('Handled at the next model request', { exact: true })).toHaveCount(3);
+    await screenshot(page, 'desktop-pending-leader-messages.png');
+    await screenshot(peer, 'mobile-pending-leader-messages.png');
+    await message.getByRole('button', { name: 'Delete queued message' }).click();
+    await expect(message).toHaveCount(0);
+    state.activation.messages.find(item => item.id === 'ended-notice').status = 'consumed';
     await peer.evaluate(() => window.__teamFixtureEmit({ type: 'websocket-reconnected' }));
     await expect(peer.locator('[data-message-id="leader-question"]')).toHaveCount(0);
-    await expect(peer.locator('[data-message-id="expired-message"]')).toContainText('Invalidated, will not be sent');
-    await peer.locator('[data-message-id="expired-message"]').getByRole('button', { name: 'Delete message' }).click();
-    await expect(peer.locator('[data-message-id="expired-message"]')).toHaveCount(0);
-    await page.reload(); await expect(page.locator('[data-message-id="leader-question"]')).toHaveCount(0);
-    await expect(page.locator('[data-message-id="expired-message"]')).toHaveCount(0);
-    await screenshot(page, 'desktop-leader-inbox-after-delete.png'); await screenshot(peer, 'mobile-inbox-after-delete.png');
-    await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
-    await page.getByRole('button', { name: 'Team details', exact: true }).click();
-    await expect(page.getByRole('dialog').getByRole('heading', { name: 'Tasks', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('dialog').getByRole('heading', { name: 'Communication', exact: true })).toHaveCount(0);
+    await expect(peer.locator('[data-message-id="ended-notice"]')).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator('[data-message-id="leader-question"]')).toHaveCount(0);
+    await expect(page.locator('[data-message-id="ended-notice"]')).toHaveCount(0);
+    await openPanel(page);
+    await expect(card(page, leader.config.displayName)).toHaveCount(0);
+    await expect(page.locator('.team-interaction-teammate-card')).toHaveCount(2);
   } finally { await first.close(); await second.close(); }
 });
 
@@ -139,14 +151,22 @@ for (const options of [{ label: 'desktop-light-en', language: 'en', dark: false,
     await page.goto('/e2e/fixtures/team-interactions.html');
     const interactionsLabel = options.language === 'en' ? 'Team interactions' : '团队交互';
     const detailsLabel = options.language === 'en' ? 'Team details' : '团队详情';
+    const nextRequestLabel = options.language === 'en' ? 'Handled at the next model request' : '下次模型请求时处理';
+    const nextUserLabel = options.language === 'en' ? 'Treated as the next user message' : '视为下一则用户消息';
+    const tray = page.getByTestId('leader-composer');
+    await expect(tray.getByText(nextRequestLabel, { exact: true })).toHaveCount(2);
+    await expect(tray.getByText(nextUserLabel, { exact: true })).toBeVisible();
+    await expect(tray).not.toContainText('Should the release keep the old API?');
+    await expect(tray).not.toContainText('Code reviewer execution turn');
+    expect(await tray.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await screenshot(page, `${options.label}-pending-messages.png`);
     await expect(page.getByRole('button', { name: detailsLabel, exact: true })).toBeVisible();
     const entry = page.getByRole('button', { name: interactionsLabel, exact: true }); await expect(entry).toContainText('6'); await entry.click();
-    await expect(page.locator('.team-interaction-teammate-card')).toHaveCount(3);
-    await expect(page.locator('.team-interaction-section')).toHaveCount(9);
+    await expect(page.locator('.team-interaction-teammate-card')).toHaveCount(2);
+    await expect(page.locator('.team-interaction-section')).toHaveCount(8);
     const body = page.locator('.team-mode-dialog .team-mode-body').first();
     await expect(body).not.toContainText('fixture-provider'); await expect(body).not.toContainText('/fixture/project');
-    await expect(card(page, leader.config.displayName).locator('.team-interaction-section')).toHaveCount(1);
-    await expect(card(page, leader.config.displayName)).toContainText('Should the release keep the old API?');
+    await expect(card(page, leader.config.displayName)).toHaveCount(0);
     await expect(page.getByTestId('leader-chat')).toHaveText('Leader conversation remains separate.');
     await screenshot(page, `${options.label}-panel.png`);
     await openRow(page, 'Code reviewer', 'exit_plan_mode');

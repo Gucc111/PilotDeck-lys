@@ -1,12 +1,21 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatInterfaceV2 from './ChatInterfaceV2';
 
 const queueMocks = vi.hoisted(() => ({
   useSessionInputQueue: vi.fn(),
   useChatSessionState: vi.fn(),
+  useTeamMode: vi.fn(),
 }));
+
+vi.mock('../team-runtime/useTeamMode', () => ({ useTeamMode: queueMocks.useTeamMode }));
+vi.mock('../team-runtime/TeamModeControls', () => ({ default: () => null }));
+beforeEach(() => queueMocks.useTeamMode.mockReturnValue({
+  activation: null, selectedTeam: null, ready: true, history: [],
+  deleteMessage: vi.fn(), renewDraftRequest: vi.fn(),
+}));
+afterEach(cleanup);
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -146,6 +155,27 @@ describe('ChatInterfaceV2 queue integration', () => {
     }));
     expect(screen.getByRole('region', { name: 'Queued messages' })).toBeTruthy();
     expect(screen.getByText('Keep the main queue')).toBeTruthy();
+  });
+
+  it('mounts the Leader inbox even without user input and connects Team deletion', async () => {
+    queueMocks.useChatSessionState.mockReturnValue(createChatSessionState());
+    queueMocks.useSessionInputQueue.mockReturnValue(emptyQueue());
+    const message = { id: 'member', stopVersion: 0, senderId: 'worker', recipientId: 'leader',
+      text: 'Detailed teammate result', status: 'queued', createdAt: '2026-11-02T00:00:00Z' };
+    const deleteMessage = vi.fn().mockResolvedValue(undefined);
+    queueMocks.useTeamMode.mockReturnValue({ ready: true, history: [], deleteMessage, activation: {
+      id: 'activation', status: 'active', stopVersion: 0, messages: [message], participants: [
+        { id: 'leader', role: 'leader' }, { id: 'worker', role: 'teammate', profile: { config: { displayName: 'Reviewer' } } },
+      ],
+    } });
+    render(<ChatInterfaceV2 {...({ selectedProject: { name: 'PilotDeck', fullPath: '/workspace/PilotDeck' },
+      selectedSession: { id: 'web:s_queue' }, ws: { readyState: WebSocket.OPEN }, sendMessage: vi.fn() } as any)}/>);
+    expect(screen.getByRole('region', { name: 'Queued messages' })).toBeTruthy();
+    expect(screen.queryByText('Detailed teammate result')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Teammate · Reviewer/ }));
+    expect(screen.getByText('Detailed teammate result')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete queued message' }));
+    await waitFor(() => expect(deleteMessage).toHaveBeenCalledWith(message));
   });
 
   it('uses the workspace binding in the welcome greeting', () => {

@@ -32,22 +32,20 @@ function openRequest(name = /write_file/) { fireEvent.click(screen.getByRole('bu
 function detail() { return within(screen.getAllByRole('dialog').at(-1)!); }
 
 describe('TeamInteractionPanel', () => {
-  it('shows the Leader inbox without approval sections and keeps messages with their recipients', async () => {
+  it('keeps only Teammate cards and their received messages in the interaction panel', () => {
     const mode = makeMode();
     mode.activation!.participants.unshift({ id: 'leader', role: 'leader', profile: { config: { displayName: 'Leader name' } } } as any);
     mode.activation!.messages = [
       { id: 'received', senderId: 'teammate-1', recipientId: 'leader', intendedRecipientId: 'leader', text: 'Should I keep the old API?', status: 'queued', stopVersion: 0, createdAt: '2026-01-01T00:00:00Z' },
-      { id: 'notice', senderId: 'system', recipientId: 'teammate-1', intendedRecipientId: 'teammate-1', text: 'Round ended', kind: 'turn_ended', status: 'invalidated', stopVersion: 0, createdAt: '2026-01-01T00:00:00Z' },
+      { id: 'instruction', senderId: 'leader', recipientId: 'teammate-1', intendedRecipientId: 'teammate-1', text: 'Keep the old API', status: 'queued', stopVersion: 0, createdAt: '2026-01-01T00:00:00Z' },
     ];
     show(mode);
-    const leaderCard = screen.getByText('Leader name').closest('article')!;
-    expect(within(leaderCard).getByText('Should I keep the old API?')).toBeTruthy();
-    expect(within(leaderCard).queryByRole('button', { name: /工具调用权限询问/ })).toBeNull();
-    expect(within(leaderCard).queryByText('Round ended')).toBeNull();
-    expect(screen.getAllByRole('button', { name: '删除消息' })).toHaveLength(1);
-    expect(screen.getByText('已失效，不会发送')).toBeTruthy();
-    fireEvent.click(within(leaderCard).getByRole('button', { name: '删除消息' }));
-    await waitFor(() => expect(mode.deleteMessage).toHaveBeenCalledWith(mode.activation!.messages[0]));
+    expect(screen.queryByText('Should I keep the old API?')).toBeNull();
+    expect(screen.queryByText('Leader name', { selector: 'article > div > div > strong' })).toBeNull();
+    expect(screen.getByText('Keep the old API')).toBeTruthy();
+    expect(screen.getByText('Leader name')).toBeTruthy();
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /工具调用权限询问/ })).toBeTruthy();
   });
   it('retains a message and reports a failed delete', async () => {
     const mode = makeMode({ deleteMessage: vi.fn().mockRejectedValue(new Error('Already sent in a model request')) });

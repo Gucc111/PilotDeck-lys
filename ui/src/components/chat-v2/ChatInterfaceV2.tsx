@@ -332,7 +332,6 @@ function ChatInterfaceV2({
     handleTextareaInput,
     syncInputOverlayScroll,
     handleAbortSession,
-    restoreQueuedInput,
     recoveredInput,
     clearRecoveredInput,
     handlePermissionDecision,
@@ -775,7 +774,8 @@ function ChatInterfaceV2({
           onSteer={handleSteerQueuedInput}
           onDelete={handleDeleteQueuedInput}
           onMoveToFront={handleMoveQueuedInputToFront}
-          onRestore={itemId => { const item = inputQueue.queueState.items.find(entry => entry.id === itemId); if (item) { teamMode.renewDraftRequest(); restoreQueuedInput(item); } }}
+          teamActivation={teamMode.activation}
+          onDeleteTeamMessage={teamMode.deleteMessage}
         />
       </>)}
       input={input}

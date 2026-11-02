@@ -18,6 +18,9 @@
     "emptyDescription": "Reference a workspace file with @ when you want it included."
   },
   "inputQueue": {
+    "nextModelRequest": "Handled at the next model request",
+    "nextUserMessage": "Treated as the next user message",
+    "systemNotification": "System notification",
     "sending": "Sending",
     "label": "Queued messages",
     "resume": "Continue",

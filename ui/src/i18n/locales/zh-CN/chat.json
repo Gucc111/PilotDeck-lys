@@ -18,6 +18,9 @@
     "emptyDescription": "需要把文件加入上下文时，请用 @ 引用工作区文件。"
   },
   "inputQueue": {
+    "nextModelRequest": "下次模型请求时处理",
+    "nextUserMessage": "视为下一则用户消息",
+    "systemNotification": "系统通知",
     "sending": "发送中",
     "label": "排队消息",
     "resume": "继续",

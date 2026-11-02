@@ -133,7 +133,7 @@ export default function TeamInteractionPanel({ mode, onClose, onViewChat }: { mo
   const [selected, setSelected] = useState<string | null>(saved.selected || null);
   useEffect(() => { setFilter(saved.filter || 'all'); setSelected(saved.selected || null); }, [saved]);
   useEffect(() => saveView(stateKey, { filter, selected }), [stateKey, filter, selected]);
-  const participants = [...(mode.activation?.participants || [])].sort((a, b) => Number(b.role === 'leader') - Number(a.role === 'leader'));
+  const participants = (mode.activation?.participants || []).filter(participant => participant.role === 'teammate');
   const interactions = mode.interactions || [];
   const pendingCount = interactions.filter(item => item.status === 'pending').length;
   const selectedItem = interactions.find(item => item.id === selected);
@@ -148,7 +148,7 @@ export default function TeamInteractionPanel({ mode, onClose, onViewChat }: { mo
         <div className="team-interaction-filters" role="group" aria-label={t('teamInteractions.filterLabel')}>{(['all', 'pending', 'handled'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{t(`teamInteractions.filter.${value}`)}</button>)}</div>
         {mode.error && <div role="alert" className="team-mode-error">{mode.error}<button type="button" onClick={() => void mode.refresh()}>{t('teamMode.retry')}</button></div>}
         {!participants.length && <p className="team-mode-muted">{t('teamInteractions.noTeammates')}</p>}
-        {participants.map(participant => <ParticipantCard key={`${mode.activation?.id}:${participant.id}`} participant={participant} stateKey={`pilotdeck:team-interactions:${mode.activation?.id}:${participant.id}`} filter={filter} items={interactions.filter(item => item.participantId === participant.id)} messages={(mode.activation?.messages || []).filter(item => item.recipientId === participant.id && item.status !== 'deleted' && !item.deletedAt && (filter === 'all' || (filter === 'pending' ? ['queued', 'preparing', 'sending'].includes(item.status) : !['queued', 'preparing', 'sending'].includes(item.status))))} senderName={id => participants.find(item => item.id === id)?.profile.config.displayName || id} onDelete={mode.deleteMessage} status={participantStatus(participant.id)} onSelect={setSelected} onViewChat={onViewChat}/>)}
+        {participants.map(participant => <ParticipantCard key={`${mode.activation?.id}:${participant.id}`} participant={participant} stateKey={`pilotdeck:team-interactions:${mode.activation?.id}:${participant.id}`} filter={filter} items={interactions.filter(item => item.participantId === participant.id)} messages={(mode.activation?.messages || []).filter(item => item.recipientId === participant.id && item.status !== 'deleted' && !item.deletedAt && (filter === 'all' || (filter === 'pending' ? ['queued', 'preparing', 'sending'].includes(item.status) : !['queued', 'preparing', 'sending'].includes(item.status))))} senderName={id => mode.activation?.participants.find(item => item.id === id)?.profile.config.displayName || id} onDelete={mode.deleteMessage} status={participantStatus(participant.id)} onSelect={setSelected} onViewChat={onViewChat}/>)}
       </div>
     </TeamDialog>
     {selectedItem && <InteractionDialog key={selectedItem.id} item={selectedItem} onClose={() => setSelected(null)} onRespond={response => mode.respondInteraction(selectedItem, response)} />}
