@@ -8,7 +8,7 @@ const en = {
   edit: 'Edit', fork: 'Copy and edit (Fork)', delete: 'Delete', cancel: 'Cancel', close: 'Close', save: 'Save', saving: 'Saving…',
   saved: 'Configuration saved.', refreshFailed: 'Unable to load the team library.', retry: 'Retry',
   name: 'Display name', description: 'Description', prompt: 'System prompt', promptHelp: 'Describe responsibilities, working style and expected output for this role.',
-  model: 'Model', selectModel: 'Select a model', modelRequired: 'Choose a specific model.', defaultModel: 'Use system default', unavailable: 'Unavailable', workspace: 'Workspace', inheritedWorkspace: 'Use team default workspace', fixedWorkspace: 'Use a fixed project',
+  model: 'Model', selectModel: 'Select a model', modelRequired: 'Choose a specific model.', defaultModel: 'Use system default', unavailable: 'Unavailable', workspace: 'Workspace', inheritedWorkspace: 'Use team default workspace', fixedWorkspace: 'Use a fixed project', chooseDirectory: 'Choose directory', teammateWorkspaceHelp: 'Teammates can use any existing local absolute directory.', leaderWorkspaceHelp: 'Leaders must use a registered workspace.',
   selectProject: 'Select a registered project', projectMissing: 'No registered projects. Register a project to use it as a workspace.', createProject: 'Register project',
   tools: 'Tools', skills: 'Skills', mcp: 'MCP servers', capabilityHelp: 'Record the capabilities this role should be allowed to use. Tool access is separate from filesystem and command approval.',
   optional: 'Optional', required: 'Required', optionalHelp: 'Mark capabilities that are helpful but not required by this role.',
@@ -27,7 +27,7 @@ const en = {
   frozen: 'Uses the latest saved profile configuration.', noModel: 'Model catalog is unavailable. A specific model is required to save this profile.',
   details: 'Details', reasoning: 'Reasoning', speed: 'Speed', modelDefaultParameter: 'Model default', profileCreated: 'Profile saved and added to the team draft.',
   nameRequired: 'Enter a display name.', promptRequired: 'Enter a system prompt.', leaderRequired: 'Choose one Leader.', teammateRequired: 'Choose at least one Teammate.',
-  workspacesShared: 'Profiles may inherit this project or select their own fixed project. A workspace reference does not copy project files.',
+  workspacesShared: 'Profiles may inherit this project or select their own fixed workspace. Teammates can use any local directory; Leaders must use a registered workspace. A workspace reference does not copy project files.',
 } as const;
 const zh: Record<keyof typeof en, string> = {
   inventoryProject: '能力清单来源', globalCapabilities: '全局能力', inventoryProjectHelp: '仅切换下方展示的能力清单，角色工作区仍由 Team 提供。',
@@ -38,7 +38,7 @@ const zh: Record<keyof typeof en, string> = {
   edit: '编辑', fork: '复制并修改（Fork）', delete: '删除', cancel: '取消', close: '关闭', save: '保存', saving: '保存中…',
   saved: '配置已保存。', refreshFailed: '无法加载团队配置库。', retry: '重试',
   name: '显示名称', description: '描述', prompt: '系统提示词', promptHelp: '填写此角色的职责、工作方式和输出要求。',
-  model: '模型', selectModel: '选择模型', modelRequired: '请选择具体模型。', defaultModel: '使用系统默认模型', unavailable: '不可用', workspace: '工作区', inheritedWorkspace: '使用 Team 默认工作区', fixedWorkspace: '固定使用项目',
+  model: '模型', selectModel: '选择模型', modelRequired: '请选择具体模型。', defaultModel: '使用系统默认模型', unavailable: '不可用', workspace: '工作区', inheritedWorkspace: '使用 Team 默认工作区', fixedWorkspace: '固定使用项目', chooseDirectory: '选择目录', teammateWorkspaceHelp: 'Teammate 可使用本机任意已存在的绝对路径目录。', leaderWorkspaceHelp: 'Leader 仍须使用已登记工作区。',
   selectProject: '选择已登记项目', projectMissing: '尚无已登记项目。登记项目后可将其设为工作区。', createProject: '登记项目',
   tools: '工具', skills: '技能', mcp: 'MCP 服务', capabilityHelp: '配置此角色允许使用的能力。工具能力与文件、命令的操作审批分别配置。',
   optional: '可选', required: '必需', optionalHelp: '将有帮助但非此角色必需的能力标记为可选。', emptyCapabilities: '此工作区未发现可选条目。',
@@ -58,7 +58,7 @@ const zh: Record<keyof typeof en, string> = {
   frozen: '使用当前保存的最新角色配置。',
   details: '详情', reasoning: '推理强度', speed: '速度', modelDefaultParameter: '模型默认', profileCreated: '角色已保存并加入团队草稿。',
   nameRequired: '请填写显示名称。', promptRequired: '请填写系统提示词。', leaderRequired: '请选择一位 Leader。', teammateRequired: '请选择至少一位 Teammate。',
-  workspacesShared: '角色可继承此项目，也可固定使用其他项目。配置工作区仅保存引用，不复制项目文件。',
+  workspacesShared: '角色可继承此项目，也可固定使用其他工作区。Teammate 可使用本机任意目录，Leader 仍须使用已登记工作区。配置工作区仅保存引用，不复制项目文件。',
 };
 export function useTeamText() { const { i18n } = useTranslation(); const strings = i18n?.language?.startsWith('zh') ? zh : en; return (key: keyof typeof en) => strings[key]; }
 export type TeamText = ReturnType<typeof useTeamText>;

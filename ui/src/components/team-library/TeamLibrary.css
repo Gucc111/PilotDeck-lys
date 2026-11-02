@@ -46,6 +46,9 @@
 .dark .team-input option { background: #222; color: #eee; }
 .team-input:focus { outline: 2px solid #a3a3a3; outline-offset: 1px; }
 .team-input:disabled { opacity: .6; }
+.team-workspace-input { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
+.team-workspace-input .team-input { flex: 1; }
+.team-workspace-input .team-button { flex-shrink: 0; }
 textarea.team-input { resize: vertical; line-height: 1.6; }
 .team-section { border-top: 1px solid var(--team-border); padding-top: 16px; margin-top: 4px; }
 .team-section h3 { font-size: 14px; font-weight: 600; margin-bottom: 8px; }

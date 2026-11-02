@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({ fetch: vi.fn(), command: vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' }, t: (key: string) => key }) }));
 vi.mock('../../utils/api', () => ({ authenticatedFetch: mocks.fetch }));
 vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(), teamCommand: mocks.command }));
+vi.mock('../../auth/context/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test-user' } }) }));
 const profile = (id: string, role: 'leader' | 'teammate'): AgentProfile => ({ id, role, createdAt: '2026-10-22', updatedAt: '2026-10-22', config: { displayName: id, description: 'Research', systemPrompt: 'Study documents carefully.', model: { mode: 'default' }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' } });
 const leader = profile('Director', 'leader'), teammate = profile('Researcher', 'teammate');
 const team: TeamDefinition = { id: 'team-1', createdAt: '2026-10-22', updatedAt: '2026-10-22', config: { displayName: 'Reports', description: 'Monthly reports', instructions: '', defaultProjectKey: '/project', leader: { id: leader.id }, teammates: [{ id: teammate.id }] }, leader, teammates: [teammate] };
@@ -80,6 +81,20 @@ describe('team library workflow', () => {
     await waitFor(() => expect(mocks.command).toHaveBeenCalledWith(expect.objectContaining({ action: 'profile_save', config: expect.objectContaining({ displayName: 'Editor', capabilities: { tools: ['read_file'], skills: [], mcpServers: [] } }) })));
     const command = mocks.command.mock.calls.find(([arg]) => arg.action === 'profile_save')![0]; expect(command.id).toBeUndefined(); expect(command.requestToken).toBeTruthy(); expect(mocks.command.mock.calls.some(([arg]) => arg.action === 'start')).toBe(false);
   });
+  it('lets a Teammate enter any local directory while Leaders keep the registered project picker', async () => {
+    mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Teammates' })); click('New Teammate');
+    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'fixed' } });
+    const teammateInput = document.querySelector<HTMLInputElement>('.team-workspace-input input');
+    expect(teammateInput).toBeTruthy(); expect(teammateInput!.placeholder).toBe('/absolute/path/to/directory');
+    expect((screen.getByRole('button', { name: 'Choose directory' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(teammateInput!, { target: { value: '/arbitrary/team-directory' } });
+    await waitFor(() => expect(mocks.command).toHaveBeenCalledWith({ action: 'inventory', projectKey: '/arbitrary/team-directory' }));
+    cleanup(); mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Leaders' })); click('New Leader');
+    fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'fixed' } });
+    expect(screen.getByLabelText('Use a fixed project')).toHaveProperty('tagName', 'SELECT');
+    expect(screen.queryByRole('button', { name: 'Choose directory' })).toBeNull();
+  });
+
   it('browses project capabilities without pinning an inherited workspace', async () => {
     mount(); await loaded(); fireEvent.click(screen.getByRole('tab', { name: 'Leaders' })); click('New Leader');
     fireEvent.change(screen.getByLabelText('Browse capabilities from'), { target: { value: '/project' } });

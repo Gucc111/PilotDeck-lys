@@ -4,7 +4,7 @@ import { isOptionalFeatureEnabled } from "../pilot/config/optionalFeature.js";
 import { resolveWebSearchConfig } from "../pilot/config/webSearchConfig.js";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync, readFileSync, watchFile, unwatchFile } from "node:fs";
-import { dirname, resolve, join as joinPath } from "node:path";
+import { dirname, isAbsolute, resolve, join as joinPath } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { EdgeClawMemoryService } from "edgeclaw-memory-core";
@@ -380,16 +380,28 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     listProjects: dialogProjects.listProjectKeys,
     resolveProject: dialogProjects.resolveProjectKey,
   });
+  const teammateExecutionProject = async (key: string) => {
+    const result = resolve(key);
+    if (!isAbsolute(key)) throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Teammate workspace must be an absolute directory path.");
+    let directory: Awaited<ReturnType<typeof stat>>;
+    try { directory = await stat(result); }
+    catch { throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Teammate workspace must be an existing directory outside PilotDeck's general home."); }
+    if (resolve(result) === resolve(pilotHome) || !directory.isDirectory()) throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Teammate workspace must be an existing directory outside PilotDeck's general home.");
+    return result;
+  };
+  const validateTeammateWorkspace = async (key: string): Promise<void> => { await teammateExecutionProject(key); };
   const teamService = new TeamService({
     pilotHome,
+    validateTeammateWorkspace,
     inventory: async projectKey => {
       if (projectKey) {
-        projectKey = await dialogProjects.resolveProjectKey(projectKey);
-        if (resolve(projectKey) === resolve(pilotHome) || !(await stat(projectKey)).isDirectory()) {
-          throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Choose a registered project to inspect its available capabilities.");
-        }
+        const selected = isAbsolute(projectKey)
+          ? await teammateExecutionProject(projectKey)
+          : await dialogProjects.resolveProjectKey(projectKey);
+        if (resolve(selected) === resolve(pilotHome) || !(await stat(selected)).isDirectory()) throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Choose a registered project or local directory to inspect its available capabilities.");
+        return registry.teamInventory(selected);
       }
-      return registry.teamInventory(projectKey);
+      return registry.teamInventory();
     },
   });
   const teamRuntimeStore = new TeamRuntimeStore(pilotHome);
@@ -433,7 +445,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     resolveTeam: ref => teamService.resolveTeam(ref),
     validateSelection: async (probe, context) => {
       await resolveTeamStorageProject(context.sessionKey, context.storageProjectKey);
-      if (probe) for (const participant of probe.participants) await registeredExecutionProject(participant.projectKey);
+      if (probe) for (const participant of probe.participants) await (participant.role === "teammate" && participant.profile.config.workspace.mode === "fixed" ? teammateExecutionProject(participant.projectKey) : registeredExecutionProject(participant.projectKey));
     },
     probe: async (team, selectedProject, context) => {
       const storage = context?.sessionKey ? await resolveTeamStorageProject(context.sessionKey, context.storageProjectKey) : context?.storageProjectKey;
@@ -441,11 +453,11 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       const project = currentProject ?? selectedProject ?? team.config.defaultProjectKey ?? (team.leader.config.workspace.mode === "fixed" ? team.leader.config.workspace.projectKey : undefined);
       if (!project) throw new DialogGatewayError("TEAM_PROJECT_REQUIRED", "Select a registered project for Team execution.");
       if (currentProject && selectedProject && resolve(currentProject) !== resolve(selectedProject)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "The current conversation's project cannot be replaced by Team selection.");
-      return registry.probeTeam(team, await registeredExecutionProject(project), registeredExecutionProject);
+      return registry.probeTeam(team, await registeredExecutionProject(project), registeredExecutionProject, teammateExecutionProject);
     },
     refreshActivation: async activation => {
       const latest = await teamService.resolveTeam({ id: activation.team.id });
-      const checked = await registry.probeTeam(latest, activation.projectKey, registeredExecutionProject);
+      const checked = await registry.probeTeam(latest, activation.projectKey, registeredExecutionProject, teammateExecutionProject);
       if (checked.issues.some(issue => issue.severity === "error")) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.filter(issue => issue.severity === "error").map(issue => issue.message).join("\n"));
       return { team: latest, participants: checked.participants, probeFingerprint: teamHash({ team: latest, ...checked, storageProjectKey: activation.storageProjectKey }) };
     },
@@ -470,7 +482,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       await configStore.reload("team-participant-start");
       const frozen = structuredClone(input.activation.team);
       for (const profile of [frozen.leader, ...frozen.teammates]) profile.config.model = input.activation.participants.find(item => item.id === profile.id)!.model;
-      const checked = await registry.probeTeam(frozen, input.activation.projectKey, registeredExecutionProject);
+      const checked = await registry.probeTeam(frozen, input.activation.projectKey, registeredExecutionProject, teammateExecutionProject);
       if (checked.issues.some(issue => issue.severity === "error")) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.filter(issue => issue.severity === "error").map(issue => issue.message).join("\n"));
       for (const participant of input.activation.participants) if (teamHash(checked.participants.find(item => item.id === participant.id)?.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed before member execution. Recheck and select the Team again.");
       return registry.executeTeamParticipant(input);
@@ -649,7 +661,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       if (activation.status === "stopped") await router!.close(input.sessionKey);
       const frozenTeam = structuredClone(activation.team);
       for (const profile of [frozenTeam.leader, ...frozenTeam.teammates]) profile.config.model = activation.participants.find(item => item.id === profile.id)!.model;
-      const checked = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject);
+      const checked = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject, teammateExecutionProject);
       const errors = checked.issues.filter(item => item.severity === "error");
       if (errors.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", errors.map(item => item.message).join("\n"));
       for (const participant of activation.participants) {
@@ -1048,7 +1060,7 @@ class ProjectRuntimeRegistry {
     return { messages: active?.stream.snapshot() ?? [], streaming: Boolean(active), streamEpoch: this.teamStreamEpoch, revision: this.teamStreamRevision };
   }
 
-  async probeTeam(team: TeamDefinition, projectKey: string, resolveProject: (key: string) => Promise<string>) {
+  async probeTeam(team: TeamDefinition, projectKey: string, resolveProject: (key: string) => Promise<string>, resolveTeammateProject: (key: string) => Promise<string> = resolveProject) {
     const issues: TeamRuntimeIssue[] = [];
     const participants: TeamRuntimeParticipant[] = [];
     const fingerprints: unknown[] = [];
@@ -1057,7 +1069,7 @@ class ProjectRuntimeRegistry {
       const selectedProject = profile.config.workspace.mode === "fixed" ? profile.config.workspace.projectKey : projectKey;
       let actualProject = selectedProject;
       const issue = (severity: "error" | "warning", code: string, message: string) => issues.push({ severity, code, message: `${profile.config.displayName}: ${message}`, participantId: id });
-      try { actualProject = await resolveProject(selectedProject); }
+      try { actualProject = await (profile.role === "teammate" && profile.config.workspace.mode === "fixed" ? resolveTeammateProject(selectedProject) : resolveProject(selectedProject)); }
       catch (error) { issue("error", "TEAM_PROJECT_REQUIRED", (error as Error).message); }
       if (profile.role === "leader" && resolve(actualProject) !== resolve(projectKey)) issue("error", "TEAM_WORKSPACE_CONFLICT", "Leader workspace conflicts with the current conversation project.");
       const runtime = this.resolve(actualProject);

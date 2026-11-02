@@ -57,4 +57,5 @@ export type TeamCommandResult = TeamLibraryCommandResult | import('./runtimeType
 export type TeamServiceOptions = {
   pilotHome: string;
   inventory: (projectKey?: string) => Promise<TeamInventory>;
+  validateTeammateWorkspace?: (projectKey: string) => Promise<void>;
 };

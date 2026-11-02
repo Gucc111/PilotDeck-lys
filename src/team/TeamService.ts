@@ -17,7 +17,9 @@ export class TeamService {
     if (cmd.action === 'library') { const state = await this.store.read(); return clone({ profiles: Object.values(state.profiles), teams: Object.values(state.teams).map(team => this.materializeTeam(state, team)) }); }
     if (cmd.action === 'project_references') { const state = await this.store.read(); const fixed = (profile: AgentProfile) => profile.config.workspace.mode === 'fixed' && profile.config.workspace.projectKey === cmd.projectKey; const profileReference = Object.values(state.profiles).some(fixed); const teamReference = Object.values(state.teams).some(team => { const current = this.materializeTeam(state, team); return current.config.defaultProjectKey === cmd.projectKey || [current.leader, ...current.teammates].some(fixed); }); return { referenced: profileReference || teamReference }; }
     return this.store.locked(async () => {
-      const state = await this.store.read(); const requestHash = hash(cmd); const existingReceipt = 'requestToken' in cmd ? state.receipts.find(item => item.token === cmd.requestToken) : undefined;
+      const state = await this.store.read(); const requestHash = hash(cmd);
+      if (cmd.action === 'profile_save' && cmd.role === 'teammate' && cmd.config.workspace.mode === 'fixed') await this.options.validateTeammateWorkspace?.(cmd.config.workspace.projectKey);
+      const existingReceipt = 'requestToken' in cmd ? state.receipts.find(item => item.token === cmd.requestToken) : undefined;
       if (existingReceipt) { if (existingReceipt.hash !== requestHash) throw new TeamError('TEAM_TOKEN_CONFLICT', 'This request token was already used with different parameters. Start a new attempt.'); return clone(existingReceipt.result); }
       let result: AgentProfile | TeamDefinition;
       switch (cmd.action) {

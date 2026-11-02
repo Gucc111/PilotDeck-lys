@@ -261,6 +261,35 @@ test('first input selection is durable and duplicate retry/restart never calls m
   const conflict = await f.submit({ ...input, message: 'changed' }); assert.ok(conflict.some(event => event.type === 'error' && event.code === 'TEAM_INPUT_CONFLICT'));
 });
 
+test('Leader cannot run from an unregistered local absolute directory', async t => {
+  const f = await fixture(t, ['get_current_time'], 'bypassPermissions');
+  const leaderDirectory = join(f.workspace, '..', 'unregistered-leader'); await mkdir(leaderDirectory);
+  const saved = await f.gateway.teamCommand!({ action: 'profile_save', role: 'leader', requestToken: 'unregistered-leader', config: { ...f.leader.config, workspace: { mode: 'fixed', projectKey: leaderDirectory } } }) as AgentProfile;
+  const team = await f.gateway.teamCommand!({ action: 'team_save', requestToken: 'unregistered-leader-team', config: { ...f.team.config, leader: { id: saved.id } } }) as TeamDefinition;
+  await assert.rejects(f.gateway.teamCommand!({ action: 'runtime_select', sessionKey: f.sessionKey, team: { id: team.id }, requestToken: 'unregistered-leader-select' }), error => {
+    assert.equal((error as { code?: string }).code, 'TEAM_INCOMPATIBLE');
+    assert.match((error as Error).message, /Unknown projectKey/);
+    assert.match((error as Error).message, /Leader workspace conflicts/);
+    return true;
+  });
+  assert.equal(f.requests.length, 0);
+});
+
+test('Teammate can run from an unregistered local absolute directory', async t => {
+  const f = await fixture(t, ['get_current_time'], 'bypassPermissions');
+  const teammateDirectory = join(f.workspace, '..', 'unregistered-teammate'); await mkdir(teammateDirectory);
+  const saved = await f.gateway.teamCommand!({ action: 'profile_save', role: 'teammate', requestToken: 'unregistered-teammate', config: { ...f.worker.config, workspace: { mode: 'fixed', projectKey: teammateDirectory } } }) as AgentProfile;
+  const team = await f.gateway.teamCommand!({ action: 'team_save', requestToken: 'unregistered-team', config: { ...f.team.config, teammates: [{ id: saved.id }] } }) as TeamDefinition;
+  const selected = await f.gateway.teamCommand!({ action: 'runtime_select', sessionKey: f.sessionKey, team: { id: team.id }, requestToken: 'unregistered-select' }) as TeamRuntimeView;
+  const participant = selected.activation!.participants.find(item => item.id === saved.id)!;
+  assert.equal(participant.projectKey, teammateDirectory);
+  await (f.registry as any).teamRuntime.send({ sessionKey: f.sessionKey, activationId: selected.activation!.id, stopVersion: selected.activation!.stopVersion, participantId: f.leader.id }, { recipientId: saved.id, text: 'inspect directory', requestToken: 'unregistered-member' });
+  for (let i = 0; i < 100 && !f.broadcasts.some(item => item.name === 'team_runtime_event' && item.payload.event.type === 'turn_completed'); i++) await new Promise(resolve => setTimeout(resolve, 20));
+  const workerRequest = f.requests.find(request => request.model === 'worker');
+  assert.ok(workerRequest, JSON.stringify(f.broadcasts.map(item => item.payload.event))); assert.match(workerRequest.systemPrompt!, new RegExp(teammateDirectory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+});
+
 test('General conversation retains its transcript path while Team runs in registered project', async t => {
   const f = await fixture(t); const { activation } = await f.select(f.home);
   const events = await f.submit({ projectKey: f.home, teamActivationId: activation!.id, runId: 'general' }); assert.deepEqual(events.filter(event => event.type === 'error'), []);

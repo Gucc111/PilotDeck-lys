@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import test from 'node:test';
 import { createLocalGateway } from '../../src/cli/createLocalGateway.js';
 import { createModelRuntime } from '../../src/model/index.js';
@@ -48,6 +48,20 @@ router: { enabled: false }
   const fork = await command({ action: 'team_fork', source: { id: team.id }, requestToken: 'fork' }) as TeamDefinition;
   assert.notEqual(fork.id, team.id); assert.equal(fork.leader.id, leader.id);
   await command({ action: 'inventory', projectKey: project });
+  const arbitraryDirectory = join(base, 'teammate-directory'); await mkdir(arbitraryDirectory);
+  await command({ action: 'profile_save', role: 'teammate', requestToken: 'arbitrary-teammate', config: { ...config('Arbitrary teammate'), workspace: { mode: 'fixed', projectKey: arbitraryDirectory } } });
+  await command({ action: 'inventory', projectKey: arbitraryDirectory });
+  const invalidPaths = [
+    { path: relative(base, arbitraryDirectory), token: 'relative-teammate' },
+    { path: join(base, 'missing-teammate'), token: 'missing-teammate' },
+    { path: join(base, 'workspace-file'), token: 'file-teammate' },
+    { path: home, token: 'home-teammate' },
+  ];
+  await writeFile(join(base, 'workspace-file'), 'not a directory');
+  for (const invalid of invalidPaths) await assert.rejects(command({ action: 'profile_save', role: 'teammate', requestToken: invalid.token, config: { ...config('Invalid teammate'), workspace: { mode: 'fixed', projectKey: invalid.path } } }), error => {
+    assert.equal((error as { code?: string }).code, 'TEAM_PROJECT_REQUIRED');
+    return true;
+  });
   const library = await command({ action: 'library' }) as TeamLibrary;
   assert.deepEqual(Object.keys(library).sort(), ['profiles', 'teams']);
   const before = await readFile(join(home, 'team-library', 'state.json'), 'utf8');

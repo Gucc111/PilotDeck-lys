@@ -5,6 +5,7 @@ import { capabilityValues, modelSelectionId } from '../chat-v2/modelCapabilityOp
 import { normalizeProfileTools, PLAN_TOOL_GROUP, WRITE_TOOL_GROUP } from '../../../../src/team/profileTools';
 import { newRequestToken, teamCommand, type ProfileConfig, type TeamInventory } from './api';
 import type { ProfileDraft } from './drafts';
+import FolderBrowserModal from '../project-creation-wizard/components/FolderBrowserModal';
 import { Dialog, ErrorBox, Field, ProjectOptions } from './Shared';
 import { useTeamText } from './text';
 
@@ -13,7 +14,7 @@ export function ProfileEditor({ draft, projects, models, busy, error, onChange, 
   const t = useTeamText(); const config = draft.config;
   const [inventory, setInventory] = useState<TeamInventory>({ tools: [], skills: [], mcpServers: [] });
   const [inventoryError, setInventoryError] = useState<string | null>(null); const [generation, setGeneration] = useState(0); const [loading, setLoading] = useState(true);
-  const [inventoryProject, setInventoryProject] = useState('');
+  const [inventoryProject, setInventoryProject] = useState(''); const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const projectKey = config.workspace.mode === 'fixed' ? config.workspace.projectKey : inventoryProject || undefined;
   useEffect(() => { let current = true; setLoading(true); setInventoryError(null); void teamCommand<TeamInventory>({ action: 'inventory', ...(projectKey ? { projectKey } : {}) }).then(value => { if (current) setInventory(value); }).catch(err => { if (current) setInventoryError(String(err.message)); }).finally(() => { if (current) setLoading(false); }); return () => { current = false; }; }, [projectKey, generation]);
   const update = (patch: Partial<ProfileConfig>) => onChange({ ...draft, config: { ...config, ...patch } });
@@ -78,11 +79,14 @@ export function ProfileEditor({ draft, projects, models, busy, error, onChange, 
         return <Field key={key} label={t(key)}><select className="team-input" value={current ?? ''} disabled={locked} onChange={e => { if (config.model.mode !== 'model') return; const model = { ...config.model }; if (e.target.value === '') delete model[key]; else model[key] = Number(e.target.value); update({ model }); }}><option value="">{t('modelDefaultParameter')}</option>{options.map(value => <option value={value} key={value}>{value}</option>)}</select></Field>;
       })}</div>}
       <div className="team-columns"><Field label={t('workspace')}><select className="team-input" value={config.workspace.mode} disabled={locked} onChange={e => update({ workspace: e.target.value === 'team' ? { mode: 'team' } : { mode: 'fixed', projectKey: '' } })}><option value="team">{t('inheritedWorkspace')}</option><option value="fixed">{t('fixedWorkspace')}</option></select></Field>
-        {config.workspace.mode === 'fixed' && <Field label={t('fixedWorkspace')}><select className="team-input" required value={config.workspace.projectKey} disabled={locked} onChange={e => update({ workspace: { mode: 'fixed', projectKey: e.target.value } })}><option value="">{t('selectProject')}</option><ProjectOptions projects={projects} selected={config.workspace.projectKey}/></select></Field>}</div>
+        {config.workspace.mode === 'fixed' && (draft.role === 'teammate'
+          ? <Field label={t('fixedWorkspace')} hint={t('teammateWorkspaceHelp')}><div className="team-workspace-input"><input className="team-input" required value={config.workspace.projectKey} disabled={locked} placeholder="/absolute/path/to/directory" onChange={e => update({ workspace: { mode: 'fixed', projectKey: e.target.value } })}/><button type="button" className="team-button" disabled={locked} onClick={() => setShowFolderBrowser(true)}>{t('chooseDirectory')}</button></div></Field>
+          : <Field label={t('fixedWorkspace')} hint={t('leaderWorkspaceHelp')}><select className="team-input" required value={config.workspace.projectKey} disabled={locked} onChange={e => update({ workspace: { mode: 'fixed', projectKey: e.target.value } })}><option value="">{t('selectProject')}</option><ProjectOptions projects={projects} selected={config.workspace.projectKey}/></select></Field>)}</div>
       {projects.length === 0 && <div className="team-notice">{t('projectMissing')} <button type="button" className="team-button" onClick={onCreateProject}>{t('createProject')}</button></div>}
       <Field label={t('permission')}><select className="team-input" value={config.permissionMode} disabled={locked} onChange={e => update({ permissionMode: e.target.value as ProfileConfig['permissionMode'] })}><option value="default">{t('permissionDefault')}</option><option value="bypassPermissions">{t('permissionBypass')}</option></select></Field>
       {config.permissionMode === 'bypassPermissions' && <p className="team-notice team-warning">{t('bypassHelp')}</p>}
       <div>{config.workspace.mode === 'team' && projects.length > 0 && <Field label={t('inventoryProject')} hint={t('inventoryProjectHelp')}><select className="team-input" value={inventoryProject} disabled={locked} onChange={e => setInventoryProject(e.target.value)}><option value="">{t('globalCapabilities')}</option><ProjectOptions projects={projects}/></select></Field>}<p className="team-muted">{t('capabilityHelp')} {t('optionalHelp')}</p>{inventoryError && <div className="team-notice team-error">{t('capabilityLoadError')}<ErrorBox error={inventoryError}/><button type="button" className="team-button" onClick={() => setGeneration(n => n + 1)}>{t('retry')}</button></div>}{capabilities('tools', 'tool', t('tools'))}{capabilities('skills', 'skill', t('skills'))}{capabilities('mcpServers', 'mcp', t('mcp'))}</div>
+      {draft.role === 'teammate' && config.workspace.mode === 'fixed' && <FolderBrowserModal isOpen={showFolderBrowser} initialPath={config.workspace.projectKey} autoAdvanceOnSelect={false} onClose={() => setShowFolderBrowser(false)} onFolderSelected={path => { update({ workspace: { mode: 'fixed', projectKey: path } }); setShowFolderBrowser(false); }}/>}
       <p className="team-muted">{t('draftNotice')}</p><p className="team-id">{draft.id ? `${t('generatedId')}: ${draft.id}` : t('idHelp')}</p>
     </form>
   </Dialog>;
