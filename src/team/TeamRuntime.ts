@@ -136,8 +136,7 @@ export class TeamRuntime {
     if (activation?.status === 'stopping') fail('TEAM_STOPPING', 'The Team is still stopping. Wait for execution cleanup before continuing.');
     return activation;
   }
-  /** Refresh configuration before constructing a resumed session, without
-   * activating or reviving anything from the stopped generation. */
+  /** Refresh configuration after a stopped run, without reviving its old work. */
   async refreshStoppedActivation(sessionKey: string, activationId: string, expectedStopVersion: number): Promise<TeamRuntimeActivation> {
     const current = await this.assertActivation(sessionKey, activationId, expectedStopVersion);
     if (!current) fail('TEAM_ACTIVATION_CHANGED', 'This Team activation is no longer current.');
@@ -151,6 +150,30 @@ export class TeamRuntime {
       return clone(activation);
     });
   }
+
+  /**
+   * Resolve the latest Team only at the boundary of a new human-driven run.
+   * An active activation keeps its frozen snapshot while any work, message,
+   * interaction, or notification from that run remains outstanding.
+   */
+  async prepareHumanTurn(sessionKey: string, activationId: string, expectedStopVersion: number): Promise<{ activation: TeamRuntimeActivation; refreshed: boolean }> {
+    const current = await this.assertActivation(sessionKey, activationId, expectedStopVersion);
+    if (current === null) throw new TeamError('TEAM_ACTIVATION_CHANGED', 'This Team activation is no longer current.');
+    if (current.status === 'stopped') {
+      const refreshed = await this.refreshStoppedActivation(sessionKey, activationId, expectedStopVersion);
+      return { activation: refreshed, refreshed: refreshed !== current };
+    }
+    if (current.status !== 'active' || !this.options.refreshActivation || !this.isWholeTeamIdle(current, sessionKey)) return { activation: current, refreshed: false };
+    const latest = await this.options.refreshActivation(clone(current));
+    const updated = await this.mutate(state => {
+      const activation = this.activation(state, sessionKey, activationId);
+      if (activation.stopVersion !== expectedStopVersion) fail('TEAM_GENERATION_EXPIRED', 'This Team input belongs to an expired run. Send it again explicitly.');
+      if (activation.status !== 'active' || !this.isWholeTeamIdle(activation, sessionKey)) return clone(activation);
+      activation.team = clone(latest.team); activation.participants = clone(latest.participants); activation.probeFingerprint = latest.probeFingerprint; activation.updatedAt = now();
+      return clone(activation);
+    });
+    return { activation: updated, refreshed: updated.probeFingerprint !== current.probeFingerprint || hash(updated.team) !== hash(current.team) || hash(updated.participants) !== hash(current.participants) };
+  }
   /** Called only after a human input is accepted, using the current stop generation. */
   async onHumanTurn(sessionKey: string, activationId: string, expectedStopVersion: number): Promise<void> {
     await this.mutate(state => {
@@ -163,24 +186,18 @@ export class TeamRuntime {
     this.schedule(activationId);
   }
   async onLeaderIdle(sessionKey: string): Promise<void> {
+    // Finishing a Leader turn only makes the activation eligible for a future
+    // configuration check. The snapshot is changed by prepareHumanTurn,
+    // immediately before the next human-driven run is accepted.
     await this.onExecutionReady(sessionKey);
-    await this.refreshIfIdle(sessionKey);
   }
-  private async refreshIfIdle(sessionKey: string): Promise<void> {
-    if (this.disposed || !this.options.refreshActivation) return;
-    if (this.options.isLeaderBusy?.(sessionKey)) return;
-    const current = (await this.get(sessionKey)).activation;
-    if (!current || current.status !== 'active' || current.turns?.some(liveTurn) || current.messages.some(pendingMessage)) return;
-    if (this.disposed) return;
-    let refreshed: Awaited<ReturnType<NonNullable<TeamRuntimeOptions['refreshActivation']>>>;
-    try { refreshed = await this.options.refreshActivation(current); }
-    catch (error) { if (this.disposed) return; throw error; }
-    if (this.disposed) return;
-    await this.mutate(state => {
-      const activation = state.activations[current.id];
-      if (!activation || activation.status !== 'active' || activation.stopVersion !== current.stopVersion || activation.turns?.some(liveTurn) || activation.messages.some(pendingMessage)) return;
-      activation.team = clone(refreshed.team); activation.participants = clone(refreshed.participants); activation.probeFingerprint = refreshed.probeFingerprint; activation.updatedAt = now();
-    });
+  private isWholeTeamIdle(activation: TeamRuntimeActivation, sessionKey: string): boolean {
+    if (this.options.isLeaderBusy?.(sessionKey)) return false;
+    if (activation.turns?.some(liveTurn)) return false;
+    if (activation.messages.some(message => ['queued', 'preparing', 'sending', 'uncertain'].includes(message.status))) return false;
+    if (activation.interactions.some(interaction => interaction.status === 'pending')) return false;
+    if (activation.notifications.some(notification => !notification.deliveredAt && !notification.cancelledAt)) return false;
+    return true;
   }
   /** Recheck pending delivery when an execution reaches its mailbox-ready boundary. */
   async onExecutionReady(sessionKey: string): Promise<void> {
@@ -772,7 +789,7 @@ export class TeamRuntime {
         }
       }
     });
-    if (!error) await this.refreshIfIdle(claim.activation.sessionKey);
+    if (!error) await this.onExecutionReady(claim.activation.sessionKey);
   }
   /** Shutdown does not claim completion or replay a partially executed task. */
   async dispose(): Promise<void> {

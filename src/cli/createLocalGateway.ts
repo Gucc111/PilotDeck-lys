@@ -654,7 +654,13 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       if (!activation) return { input };
       if (!selection && (input.teamActivationId !== activation.id || !Number.isSafeInteger(input.teamStopVersion))) throw new DialogGatewayError("TEAM_GENERATION_REQUIRED", "Refresh the Team before sending this input.");
       if (isMeta && activation.status !== "active") throw new DialogGatewayError("TEAM_STOPPED", "Stopped Team work cannot restart itself.");
-      if (activation.status === "stopped") activation = await teamRuntime.refreshStoppedActivation(input.sessionKey, activation.id, activation.stopVersion);
+      const preparedTeam = await teamRuntime.prepareHumanTurn(input.sessionKey, activation.id, activation.stopVersion);
+      activation = preparedTeam.activation;
+      // A new human run may have adopted the latest Team snapshot. Recreate
+      // the cached Leader session so its prompt, model, tools and permissions
+      // all come from that same snapshot. Active runs never reach this branch
+      // until the whole Team is idle.
+      if (preparedTeam.refreshed && activation.status === "active") await router!.close(input.sessionKey);
       if (activation.storageProjectKey && resolve(activation.storageProjectKey) !== resolve(storageProjectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team conversation storage project cannot change.");
       const leader = activation.participants.find(item => item.role === "leader")!;
       if (input.workspaceCwd && resolve(input.workspaceCwd) !== resolve(leader.projectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team Leader workspace cannot be overridden by a chat request.");

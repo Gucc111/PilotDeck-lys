@@ -302,6 +302,37 @@ test('stopped configuration refresh happens before human acceptance without reac
   await f.runtime.onHumanTurn('web:main', activation.id, 1); assert.equal(refreshes, 1); assert.deepEqual(await f.runtime.pendingMessages(f.actor(refreshed)), []);
 });
 
+test('active configuration stays frozen until the next human run boundary', async t => {
+  let refreshes = 0;
+  const f = await fixture(t, { refreshActivation: async activation => {
+    refreshes++;
+    return { team: { ...activation.team, config: { ...activation.team.config, displayName: 'Latest team' } }, participants: activation.participants.map(participant => ({ ...participant, model: { mode: 'model', provider: 'mock', model: 'latest' } })), probeFingerprint: 'latest' };
+  } });
+  const activation = await f.activate();
+  await f.runtime.onLeaderIdle('web:main');
+  assert.equal(refreshes, 0);
+  assert.equal((await f.runtime.get('web:main')).activation!.team.config.displayName, 'Review Team');
+  const prepared = await f.runtime.prepareHumanTurn('web:main', activation.id, activation.stopVersion);
+  assert.equal(refreshes, 1);
+  assert.equal(prepared.refreshed, true);
+  assert.equal(prepared.activation.team.config.displayName, 'Latest team');
+  assert.equal(prepared.activation.participants[0]!.model.model, 'latest');
+});
+
+test('a busy active run keeps the old snapshot and does not resolve deleted or changed configuration', async t => {
+  let refreshes = 0;
+  const f = await fixture(t, { refreshActivation: async activation => {
+    refreshes++;
+    return { team: { ...activation.team, config: { ...activation.team.config, displayName: 'Should not apply yet' } }, participants: activation.participants, probeFingerprint: 'changed' };
+  } });
+  const activation = await f.activate();
+  holdLeader(f);
+  const prepared = await f.runtime.prepareHumanTurn('web:main', activation.id, activation.stopVersion);
+  assert.equal(refreshes, 0);
+  assert.equal(prepared.refreshed, false);
+  assert.equal(prepared.activation.team.config.displayName, 'Review Team');
+});
+
 test('Abort while preparing records interruption and cannot emit a late completion notice', async t => {
   let started = false;
   const f = await fixture(t, { executeParticipant: input => new Promise(resolve => { started = true; input.signal.addEventListener('abort', () => resolve({ result: result(input.turnId) }), { once: true }); }) });

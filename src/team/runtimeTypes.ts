@@ -135,7 +135,7 @@ export type TeamRuntimeOptions = {
   probe: (team: TeamDefinition, projectKey?: string, context?: { sessionKey?: string; storageProjectKey?: string }) => Promise<{
     projectKey: string; participants: TeamRuntimeParticipant[]; issues: TeamRuntimeIssue[]; environmentFingerprint: string;
   }>;
-  /** Re-resolve latest library configuration once an activation has no live work. */
+  /** Resolve latest library configuration at a new human-run boundary after the activation is idle. */
   refreshActivation?: (activation: TeamRuntimeActivation) => Promise<{ team: TeamDefinition; participants: TeamRuntimeParticipant[]; probeFingerprint: string }>;
   /** Recover only execution records proven by legacy transcript events. */
   readLegacyTurns?: (activation: TeamRuntimeActivation) => Promise<TeamRuntimeTurn[]>;
