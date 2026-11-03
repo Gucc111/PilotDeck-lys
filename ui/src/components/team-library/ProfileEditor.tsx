@@ -30,28 +30,23 @@ export function ProfileEditor({ draft, projects, models, busy, error, onChange, 
     if (config.model.mode === 'default' && firstModel) patch.model = { mode: 'model', provider: firstModel.provider, model: firstModel.model };
     if (config.permissionMode === 'plan') patch.permissionMode = 'default';
     const normalized = normalizeProfileTools(config);
-    if (JSON.stringify(normalized.capabilities) !== JSON.stringify(config.capabilities) || JSON.stringify(normalized.optionalCapabilities) !== JSON.stringify(config.optionalCapabilities)) Object.assign(patch, normalized);
+    if (JSON.stringify(normalized.capabilities) !== JSON.stringify(config.capabilities)) Object.assign(patch, normalized);
     if (Object.keys(patch).length) update(patch);
   });
   const capabilities = (key: keyof TeamInventory, kind: 'tool' | 'skill' | 'mcp', title: string) => {
     const available = inventory[key]; const selected = config.capabilities[key];
     const entries = [...available, ...selected.filter(name => !available.some(item => item.name === name)).map(name => ({ name, description: t('unavailable') }))];
     const writes = selected.includes('write_file');
+    const plans = PLAN_TOOL_GROUP.some(name => selected.includes(name));
     const renderEntry = (item: typeof entries[number], names = [item.name], nested = false) => {
       const label = names.join(' / ');
       const checked = names.every(name => selected.includes(name));
-      const optional = names.every(name => config.optionalCapabilities.some(cap => cap.kind === kind && cap.name === name));
-      const readDependency = kind === 'tool' && item.name === 'read_file' && writes;
-      return <div key={item.name} className={`team-capability${nested ? ' team-capability-child' : ''}`}><div className="team-capability-label"><label className="team-check"><input type="checkbox" checked={checked} disabled={locked || loading || Boolean(inventoryError) || readDependency || (nested && !writes)} onChange={e => {
+      const dependency = kind === 'tool' && ((item.name === 'read_file' && writes) || (item.name === 'todo_write' && plans));
+      return <div key={item.name} className={`team-capability${nested ? ' team-capability-child' : ''}`}><div className="team-capability-label"><label className="team-check"><input type="checkbox" checked={checked} disabled={locked || loading || Boolean(inventoryError) || dependency || (nested && !writes)} onChange={e => {
         const removed = !e.target.checked && names.includes('write_file') ? [...names, 'edit_notebook'] : names;
-        const next = { ...config, capabilities: { ...config.capabilities, [key]: e.target.checked ? [...new Set([...selected, ...names])] : selected.filter(name => !removed.includes(name)) }, optionalCapabilities: config.optionalCapabilities.filter(cap => cap.kind !== kind || !removed.includes(cap.name)) };
+        const next = { ...config, capabilities: { ...config.capabilities, [key]: e.target.checked ? [...new Set([...selected, ...names])] : selected.filter(name => !removed.includes(name)) } };
         update(kind === 'tool' ? normalizeProfileTools(next) : next);
-      }}/><span>{label}</span></label>{kind !== 'tool' && <p className="team-muted">{item.description}</p>}</div>
-        {checked && <label className="team-check"><input type="checkbox" aria-label={`${label} ${t('optional')}`} checked={optional} disabled={locked || readDependency} onChange={e => {
-          const optionalCapabilities = config.optionalCapabilities.filter(cap => cap.kind !== kind || !names.includes(cap.name));
-          if (e.target.checked) optionalCapabilities.push(...names.map(name => ({ kind, name })));
-          update({ optionalCapabilities });
-        }}/>{t('optional')}</label>}</div>;
+      }}/><span>{label}</span></label>{kind !== 'tool' && <p className="team-muted">{item.description}</p>}</div></div>;
     };
     const groupedNames = [...PLAN_TOOL_GROUP, ...WRITE_TOOL_GROUP, 'edit_notebook'];
     const toolEntries = entries.filter(item => !groupedNames.includes(item.name));
@@ -85,7 +80,7 @@ export function ProfileEditor({ draft, projects, models, busy, error, onChange, 
       {projects.length === 0 && <div className="team-notice">{t('projectMissing')} <button type="button" className="team-button" onClick={onCreateProject}>{t('createProject')}</button></div>}
       <Field label={t('permission')}><select className="team-input" value={config.permissionMode} disabled={locked} onChange={e => update({ permissionMode: e.target.value as ProfileConfig['permissionMode'] })}><option value="default">{t('permissionDefault')}</option><option value="bypassPermissions">{t('permissionBypass')}</option></select></Field>
       {config.permissionMode === 'bypassPermissions' && <p className="team-notice team-warning">{t('bypassHelp')}</p>}
-      <div>{config.workspace.mode === 'team' && projects.length > 0 && <Field label={t('inventoryProject')} hint={t('inventoryProjectHelp')}><select className="team-input" value={inventoryProject} disabled={locked} onChange={e => setInventoryProject(e.target.value)}><option value="">{t('globalCapabilities')}</option><ProjectOptions projects={projects}/></select></Field>}<p className="team-muted">{t('capabilityHelp')} {t('optionalHelp')}</p>{inventoryError && <div className="team-notice team-error">{t('capabilityLoadError')}<ErrorBox error={inventoryError}/><button type="button" className="team-button" onClick={() => setGeneration(n => n + 1)}>{t('retry')}</button></div>}{capabilities('tools', 'tool', t('tools'))}{capabilities('skills', 'skill', t('skills'))}{capabilities('mcpServers', 'mcp', t('mcp'))}</div>
+      <div>{config.workspace.mode === 'team' && projects.length > 0 && <Field label={t('inventoryProject')} hint={t('inventoryProjectHelp')}><select className="team-input" value={inventoryProject} disabled={locked} onChange={e => setInventoryProject(e.target.value)}><option value="">{t('globalCapabilities')}</option><ProjectOptions projects={projects}/></select></Field>}<p className="team-muted">{t('capabilityHelp')}</p>{inventoryError && <div className="team-notice team-error">{t('capabilityLoadError')}<ErrorBox error={inventoryError}/><button type="button" className="team-button" onClick={() => setGeneration(n => n + 1)}>{t('retry')}</button></div>}{capabilities('tools', 'tool', t('tools'))}{capabilities('skills', 'skill', t('skills'))}{capabilities('mcpServers', 'mcp', t('mcp'))}</div>
       {draft.role === 'teammate' && config.workspace.mode === 'fixed' && <FolderBrowserModal isOpen={showFolderBrowser} initialPath={config.workspace.projectKey} autoAdvanceOnSelect={false} onClose={() => setShowFolderBrowser(false)} onFolderSelected={path => { update({ workspace: { mode: 'fixed', projectKey: path } }); setShowFolderBrowser(false); }}/>}
       <p className="team-muted">{t('draftNotice')}</p><p className="team-id">{draft.id ? `${t('generatedId')}: ${draft.id}` : t('idHelp')}</p>
     </form>

@@ -3,6 +3,7 @@ import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises
 import path from 'node:path';
 import type { AgentProfile, TeamDefinition } from './types.js';
 import { TeamError } from './validation.js';
+import { normalizeProfileTools } from './profileTools.js';
 
 /** The library stores one current configuration per identity. Runtime snapshots are separate. */
 export type Receipt = { token: string; hash: string; result: AgentProfile | TeamDefinition };
@@ -29,7 +30,11 @@ async function atomicFile(file: string, contents: string): Promise<void> {
 type Ticket = { pid: number; choosing: boolean; number: number };
 function alive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; } }
 function cleanRef(value: { id: string }): { id: string } { return { id: value.id }; }
-function cleanProfile(value: any): AgentProfile { const { revision: _revision, archived: _archived, forkedFrom: _forkedFrom, ...profile } = value; return profile as AgentProfile; }
+function cleanProfile(value: any): AgentProfile {
+  const { revision: _revision, archived: _archived, forkedFrom: _forkedFrom, ...profile } = value;
+  const { optionalCapabilities: _optionalCapabilities, ...config } = profile.config;
+  return { ...profile, config: { ...config, ...normalizeProfileTools(config) } } as AgentProfile;
+}
 function cleanTeam(value: any): TeamDefinition { const { revision: _revision, archived: _archived, forkedFrom: _forkedFrom, ...team } = value; return { ...team, config: { ...team.config, leader: cleanRef(team.config.leader), teammates: team.config.teammates.map(cleanRef) }, leader: cleanProfile(team.leader), teammates: team.teammates.map(cleanProfile) } as TeamDefinition; }
 function latest<T>(value: T | T[]): T { return Array.isArray(value) ? value.at(-1)! : value; }
 function normalizeState(raw: any): LibraryState {
@@ -52,7 +57,7 @@ export class TeamStore {
     catch (error) { throw new TeamError('TEAM_STORE_CORRUPT', `Team library cannot be read: ${(error as Error).message}`); }
   }
   async read(): Promise<LibraryState> { const envelope = await this.readEnvelope(); return envelope?.state ?? { version: 2, profiles: {}, teams: {}, receipts: [] }; }
-  async write(state: LibraryState): Promise<void> { await atomicFile(this.stateFile, JSON.stringify({ checksum: hash(state), state: normalizeState(state) })); }
+  async write(state: LibraryState): Promise<void> { const normalized = normalizeState(state); await atomicFile(this.stateFile, JSON.stringify({ checksum: hash(normalized), state: normalized })); }
   async locked<T>(body: () => Promise<T>): Promise<T> {
     const locks = path.join(this.directory, 'locks'); await mkdir(locks, { recursive: true }); const id = randomUUID(), file = path.join(locks, `${id}.json`), ticket: Ticket = { pid: process.pid, choosing: true, number: 0 };
     const readTicket = async (name: string): Promise<Ticket | null> => { try { const other = JSON.parse(await readFile(path.join(locks, name), 'utf8')) as Ticket; if (!Number.isSafeInteger(other.pid) || other.pid < 1 || typeof other.choosing !== 'boolean' || !Number.isSafeInteger(other.number) || other.number < 0) throw new Error('invalid lock ticket'); if (!alive(other.pid)) { await unlink(path.join(locks, name)).catch(() => {}); return null; } return other; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw new TeamError('TEAM_LOCK_INVALID', `Team library lock cannot be read: ${(error as Error).message}`); } };

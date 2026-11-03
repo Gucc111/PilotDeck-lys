@@ -58,7 +58,7 @@ model:
   };
   let local = createLocalGateway(options);
   t.after(async () => { release.resolve(); await local.dispose(); await rm(base, { recursive: true, force: true }); });
-  const saveProfile = (role: 'leader' | 'teammate', model: string) => local.gateway.teamCommand!({ action: 'profile_save', role, requestToken: role, config: { displayName: role, description: '', systemPrompt: `Role ${role}`, model: { mode: 'model', provider: 'test', model }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'bypassPermissions' } }) as Promise<AgentProfile>;
+  const saveProfile = (role: 'leader' | 'teammate', model: string) => local.gateway.teamCommand!({ action: 'profile_save', role, requestToken: role, config: { displayName: role, description: '', systemPrompt: `Role ${role}`, model: { mode: 'model', provider: 'test', model }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, permissionMode: 'bypassPermissions' } }) as Promise<AgentProfile>;
   const leader = await saveProfile('leader', 'leader'), worker = await saveProfile('teammate', 'worker');
   const team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'team', config: { displayName: 'Lifecycle test', description: '', instructions: '', defaultProjectKey: workspace, leader: { id: leader.id }, teammates: [{ id: worker.id }] } }) as TeamDefinition;
   const sessionKey = 'web:lifecycle';

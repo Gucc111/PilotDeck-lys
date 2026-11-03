@@ -2,7 +2,7 @@ import type { AgentProfile, ProfileRef, TeamDefinition, TeamModel } from './type
 import type { AgentTurnResult } from '../agent/protocol/result.js';
 import type { CanonicalMessage } from '../model/index.js';
 
-export type TeamRuntimeIssue = { severity: 'error' | 'warning'; code: string; message: string; participantId?: string };
+export type TeamRuntimeIssue = { severity: 'error'; code: string; message: string; participantId?: string };
 export type TeamRuntimeParticipant = {
   id: string;
   role: 'leader' | 'teammate';

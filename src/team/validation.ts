@@ -40,7 +40,7 @@ export function profileRef(value: unknown, field: string): ProfileRef {
 
 export function profileConfig(value: unknown): ProfileConfig {
   const field = 'config';
-  const data = object(value, field, ['displayName', 'description', 'systemPrompt', 'model', 'workspace', 'capabilities', 'optionalCapabilities', 'permissionMode']);
+  const data = object(value, field, ['displayName', 'description', 'systemPrompt', 'model', 'workspace', 'capabilities', 'permissionMode']);
   const model = object(data.model, 'config.model', ['mode', 'provider', 'model', 'reasoning', 'speed']);
   let resolvedModel: ProfileConfig['model'];
   if (model.mode === 'default') {
@@ -61,19 +61,8 @@ export function profileConfig(value: unknown): ProfileConfig {
   } else fail('config.workspace.mode', 'must be team or fixed');
   const capabilities = object(data.capabilities, 'config.capabilities', ['tools', 'skills', 'mcpServers']);
   const resolvedCapabilities = { tools: strings(capabilities.tools, 'config.capabilities.tools'), skills: strings(capabilities.skills, 'config.capabilities.skills'), mcpServers: strings(capabilities.mcpServers, 'config.capabilities.mcpServers') };
-  if (!Array.isArray(data.optionalCapabilities) || data.optionalCapabilities.length > 1_500) fail('config.optionalCapabilities', 'must be an array');
-  const optionalCapabilities = data.optionalCapabilities.map((entry, i) => {
-    const itemField = `config.optionalCapabilities[${i}]`;
-    const item = object(entry, itemField, ['kind', 'name']);
-    if (item.kind !== 'tool' && item.kind !== 'skill' && item.kind !== 'mcp') fail(`${itemField}.kind`, 'must be tool, skill, or mcp');
-    const name = text(item.name, `${itemField}.name`, { max: 500 }).trim();
-    const available = item.kind === 'tool' ? resolvedCapabilities.tools : item.kind === 'skill' ? resolvedCapabilities.skills : resolvedCapabilities.mcpServers;
-    if (!available.includes(name)) fail(`${itemField}.name`, 'must reference a selected capability');
-    return { kind: item.kind as 'tool' | 'skill' | 'mcp', name };
-  });
-  if (new Set(optionalCapabilities.map(item => `${item.kind}:${item.name}`)).size !== optionalCapabilities.length) fail('config.optionalCapabilities', 'must not contain duplicates');
   if (data.permissionMode !== 'default' && data.permissionMode !== 'bypassPermissions') fail('config.permissionMode', 'must be default or bypassPermissions');
-  const config: ProfileConfig = { displayName: text(data.displayName, 'config.displayName', { max: 200 }).trim(), description: text(data.description, 'config.description', { empty: true, max: 10_000 }), systemPrompt: text(data.systemPrompt, 'config.systemPrompt'), model: resolvedModel, workspace: resolvedWorkspace, capabilities: resolvedCapabilities, optionalCapabilities, permissionMode: data.permissionMode };
+  const config: ProfileConfig = { displayName: text(data.displayName, 'config.displayName', { max: 200 }).trim(), description: text(data.description, 'config.description', { empty: true, max: 10_000 }), systemPrompt: text(data.systemPrompt, 'config.systemPrompt'), model: resolvedModel, workspace: resolvedWorkspace, capabilities: resolvedCapabilities, permissionMode: data.permissionMode };
   return { ...config, ...normalizeProfileTools(config) };
 }
 

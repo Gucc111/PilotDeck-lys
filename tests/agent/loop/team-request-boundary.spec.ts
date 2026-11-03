@@ -209,7 +209,7 @@ test("inspecting a pending inbox exposes message text while deletion prevents la
   const profile = (id: string, role: "leader" | "teammate"): AgentProfile => ({
     id, role, createdAt: "", updatedAt: "", config: {
       displayName: id, description: "", systemPrompt: "", model: { mode: "model", provider: "test", model: "controlled" },
-      workspace: { mode: "team" }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: "default",
+      workspace: { mode: "team" }, capabilities: { tools: [], skills: [], mcpServers: [] }, permissionMode: "default",
     },
   });
   const leader = profile("leader", "leader"), teammate = profile("teammate", "teammate");

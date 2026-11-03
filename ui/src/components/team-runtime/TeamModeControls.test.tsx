@@ -60,7 +60,7 @@ it('does not show the confirmation card while the Team probe is still running', 
   expect(screen.queryByRole('dialog')).toBeNull();
 });
 
-it('keeps the confirmation card for compatibility warnings and does not offer a project dropdown', () => {
+it('blocks selection when a required capability is missing', () => {
   const confirmChoice = vi.fn();
   const choice = {
     team: activation.team,
@@ -71,8 +71,8 @@ it('keeps the confirmation card for compatibility warnings and does not offer a 
     probe: {
       projectKey: '/work',
       participants: [],
-      issues: [{ severity: 'warning', code: 'TEAM_CAPABILITY_MISSING', message: 'Lead reviewer: skill research is unavailable.', participantId: 'leader-uuid' }],
-      compatible: true,
+      issues: [{ severity: 'error', code: 'TEAM_CAPABILITY_MISSING', message: 'Lead reviewer: skill research is unavailable.', participantId: 'leader-uuid' }],
+      compatible: false,
       fingerprint: 'fingerprint',
     },
   };
@@ -81,7 +81,7 @@ it('keeps the confirmation card for compatibility warnings and does not offer a 
   expect(screen.getByText('Lead reviewer: skill research is unavailable.')).toBeTruthy();
   expect(screen.queryByRole('combobox')).toBeNull();
   expect(confirmChoice).not.toHaveBeenCalled();
-  expect(screen.getByRole('button', { name: 'teamMode.confirmWarnings' })).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'teamMode.useTeam' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 it('resolves real runtime execution and message delivery keys to participant display names', () => {

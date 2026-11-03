@@ -9,7 +9,7 @@ const command = vi.hoisted(() => vi.fn());
 const socket = vi.hoisted(() => ({ listeners: new Set<(message: unknown) => void>(), subscribe: vi.fn((listener: (message: unknown) => void) => { socket.listeners.add(listener); return () => { socket.listeners.delete(listener); }; }) }));
 vi.mock('../../contexts/WebSocketContext', () => ({ useOptionalWebSocket: () => socket }));
 vi.mock('../team-library/api', async () => ({ ...(await vi.importActual('../team-library/api')), teamCommand: command }));
-const config = { displayName: 'Reviewer', description: '', systemPrompt: 'Review carefully', model: { mode: 'default' as const }, workspace: { mode: 'team' as const }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' as const };
+const config = { displayName: 'Reviewer', description: '', systemPrompt: 'Review carefully', model: { mode: 'default' as const }, workspace: { mode: 'team' as const }, capabilities: { tools: [], skills: [], mcpServers: [] }, permissionMode: 'default' as const };
 const leader = { id: 'leader', role: 'leader' as const, config, createdAt: '', updatedAt: '' };
 export const team: TeamDefinition = { id: 'team-one', config: { displayName: 'Release review', description: '', instructions: '', defaultProjectKey: '/work', leader: { id: 'leader' }, teammates: [{ id: 'reviewer' }] }, leader, teammates: [{ ...leader, id: 'reviewer', role: 'teammate' }], createdAt: '', updatedAt: '' };
 const project = { name: 'work', fullPath: '/work', path: '/work' } as Project;

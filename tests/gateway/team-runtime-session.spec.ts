@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, rm, writeFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createLocalGateway } from '../../src/cli/createLocalGateway.js';
 import { createProjectId } from '../../src/pilot/index.js';
 import { createModelRuntime, type CanonicalModelRequest, type CanonicalModelEvent, type ModelRuntimeOptions } from '../../src/model/index.js';
 import { createAgentProjectSessionStorage, readTranscript } from '../../src/session/index.js';
 import type { AgentProfile, ProfileConfig, TeamDefinition } from '../../src/team/types.js';
-import type { TeamRuntimeView } from '../../src/team/runtimeTypes.js';
+import type { TeamRuntimeProbe, TeamRuntimeView } from '../../src/team/runtimeTypes.js';
 import type { GatewayEvent, GatewaySubmitTurnInput } from '../../src/gateway/protocol/types.js';
 import { InProcessGateway } from '../../src/gateway/client/InProcessGateway.js';
 import { SessionRouter } from '../../src/gateway/SessionRouter.js';
@@ -49,7 +49,7 @@ model:
   t.after(async () => { await local.dispose(); await rm(base, { recursive: true, force: true }); });
   const profile = async (role: 'leader' | 'teammate', model: string) => local.gateway.teamCommand!({ action: 'profile_save', role, requestToken: role, config: {
     displayName: role, description: '', systemPrompt: `ROLE_MARKER_${role}`, model: { mode: 'model', provider: 'test', model }, workspace: { mode: 'team' },
-    capabilities: { tools, skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode,
+    capabilities: { tools, skills: [], mcpServers: [] }, permissionMode,
   } }) as Promise<AgentProfile>;
   const leader = await profile('leader', 'leader'), worker = await profile('teammate', 'worker');
   const team = await local.gateway.teamCommand!({ action: 'team_save', requestToken: 'team', config: { displayName: 'Release review', description: '', instructions: 'TEAM_MARKER', defaultProjectKey: workspace, leader: { id: leader.id }, teammates: [{ id: worker.id }] } }) as TeamDefinition;
@@ -87,7 +87,7 @@ test('Team binds current conversation with frozen persona/model/capabilities and
 for (const configured of [true, false]) test(`Plan tool visibility follows role capabilities for Leader and Teammate (configured=${configured})`, async t => {
   const f = await fixture(t, configured ? ['enter_plan_mode', 'exit_plan_mode'] : [], 'default');
   const checkTools = (request: CanonicalModelRequest) => {
-    for (const name of ['enter_plan_mode', 'exit_plan_mode']) {
+    for (const name of ['enter_plan_mode', 'exit_plan_mode', 'todo_write']) {
       assert.equal(request.tools?.some(tool => tool.name === name), configured, `${request.model}: ${name}`);
     }
   };
@@ -692,4 +692,66 @@ test('real member readonly transcript merges in-flight text, streams dedicated f
   const stoppedHistory = await f.gateway.teamParticipantMessages!({ ...query, stopVersion: stopped.activation!.stopVersion });
   assert.equal(stoppedHistory.streaming, false);
   assert.equal(stoppedHistory.messages.filter(message => JSON.stringify(message.content).includes('TEAM_PARTIAL TEAM_FINAL')).length, 1);
+});
+
+for (const fixedLeader of [false, true]) test(`Team checks required skills and MCP in each resolved workspace plus global configuration (fixed Leader=${fixedLeader})`, async t => {
+  const f = await fixture(t), teammateWorkspace = fixedLeader ? f.workspace : join(f.home, 'unregistered-teammate-workspace');
+  await mkdir(teammateWorkspace, { recursive: true });
+  const skill = async (root: string, name: string) => {
+    const directory = join(root, name); await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'SKILL.md'), `---
+name: ${name}
+description: Test capability ${name}
+---
+Use this skill to inspect evidence.
+`);
+  };
+  await skill(join(f.home, 'skills'), 'shared-skill');
+  await skill(join(f.workspace, '.pilotdeck', 'skills'), 'leader-skill');
+  await skill(join(teammateWorkspace, '.pilotdeck', 'skills'), 'worker-skill');
+  const spec = { command: process.execPath, args: [resolve('tests/mcp/fixtures/roundtrip-server.mjs')] };
+  await writeFile(join(f.home, 'mcp.json'), JSON.stringify({ mcpServers: { 'shared-mcp': spec } }));
+  await writeFile(join(f.workspace, '.pilotdeck', 'mcp.json'), JSON.stringify({ mcpServers: { 'leader-mcp': spec, ...(fixedLeader ? { 'worker-mcp': spec } : {}) } }));
+  if (!fixedLeader) await writeFile(join(teammateWorkspace, '.pilotdeck', 'mcp.json'), JSON.stringify({ mcpServers: { 'worker-mcp': spec } }));
+  const save = async (profile: AgentProfile, workspace: ProfileConfig['workspace'], skills: string[], mcpServers: string[], token: string) => {
+    await f.gateway.teamCommand!({ action: 'profile_save', id: profile.id, role: profile.role, config: { ...profile.config, workspace, capabilities: { ...profile.config.capabilities, skills, mcpServers } }, requestToken: token });
+  };
+  await save(f.leader, fixedLeader ? { mode: 'fixed', projectKey: f.workspace } : { mode: 'team' }, ['shared-skill', 'leader-skill'], ['shared-mcp', 'leader-mcp'], 'leader-capabilities');
+  await save(f.worker, fixedLeader ? { mode: 'team' } : { mode: 'fixed', projectKey: teammateWorkspace }, ['shared-skill', 'worker-skill'], ['shared-mcp', 'worker-mcp'], 'worker-capabilities');
+  const probe = () => f.gateway.teamCommand!({ action: 'runtime_probe', team: { id: f.team.id }, sessionKey: f.sessionKey, storageProjectKey: f.workspace }) as Promise<TeamRuntimeProbe>;
+  const available = await probe();
+  assert.deepEqual(available.issues, []); assert.equal(available.compatible, true);
+  assert.equal(available.participants.find(value => value.id === f.worker.id)!.projectKey, teammateWorkspace);
+  assert.equal(f.requests.length, 0);
+  if (!fixedLeader) {
+    // Capabilities installed only in the Leader workspace cannot satisfy a fixed Teammate's requirements.
+    await save(f.worker, { mode: 'fixed', projectKey: teammateWorkspace }, ['leader-skill'], ['leader-mcp'], 'worker-wrong-workspace');
+    const missing = await probe();
+    assert.equal(missing.compatible, false);
+    assert.deepEqual(missing.issues.map(value => [value.severity, value.code, value.participantId]).sort(), [
+      ['error', 'TEAM_CAPABILITY_MISSING', f.worker.id], ['error', 'TEAM_CAPABILITY_MISSING', f.worker.id],
+    ]);
+    await assert.rejects(f.gateway.teamCommand!({ action: 'runtime_select', team: { id: f.team.id }, sessionKey: f.sessionKey, storageProjectKey: f.workspace, requestToken: 'missing-workspace-capability', probeFingerprint: missing.fingerprint }), /leader-skill|leader-mcp/);
+  } else {
+    await f.select();
+    await rm(join(f.home, 'skills', 'shared-skill'), { recursive: true });
+    await writeFile(join(f.home, 'mcp.json'), JSON.stringify({ mcpServers: {} }));
+    const missing = await probe();
+    assert.equal(missing.compatible, false); assert.equal(missing.issues.length, 4);
+    assert.ok(missing.issues.every(value => value.severity === 'error' && value.code === 'TEAM_CAPABILITY_MISSING'));
+    await assert.rejects(f.gateway.teamCommand!({ action: 'runtime_select', team: { id: f.team.id }, sessionKey: 'web:missing-global', storageProjectKey: f.workspace, requestToken: 'missing-global' }), /shared-skill|shared-mcp/);
+    const events = await f.submit({ runId: 'lost-capabilities' });
+    assert.ok(events.some(event => event.type === 'error' && event.code === 'TEAM_INCOMPATIBLE'));
+  }
+  assert.equal(f.requests.length, 0);
+});
+
+test('Team rejects a configured MCP server that cannot connect without warning acceptance', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.home, 'mcp.json'), JSON.stringify({ mcpServers: { broken: { command: join(f.home, 'nonexistent-mcp-server') } } }));
+  await f.gateway.teamCommand!({ action: 'profile_save', id: f.worker.id, role: 'teammate', config: { ...f.worker.config, capabilities: { ...f.worker.config.capabilities, mcpServers: ['broken'] } }, requestToken: 'broken-mcp' });
+  const probe = await f.gateway.teamCommand!({ action: 'runtime_probe', team: { id: f.team.id }, sessionKey: f.sessionKey, storageProjectKey: f.workspace }) as TeamRuntimeProbe;
+  assert.equal(probe.compatible, false);
+  assert.ok(probe.issues.some(issue => issue.severity === 'error' && issue.code === 'TEAM_MCP_UNAVAILABLE' && issue.participantId === f.worker.id));
+  await assert.rejects(f.select(), /broken/); assert.equal(f.requests.length, 0);
 });

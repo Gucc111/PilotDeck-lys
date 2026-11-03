@@ -91,7 +91,7 @@ const local = createLocalGateway({
     async complete() { return { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Release review' }], finishReason: 'stop' as const }; },
   }),
 });
-const config = (displayName: string, model: string): ProfileConfig => ({ displayName, description: '', systemPrompt: `You are ${displayName}. Work carefully and return evidence.`, model: { mode: 'model', provider: 'test', model }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' });
+const config = (displayName: string, model: string): ProfileConfig => ({ displayName, description: '', systemPrompt: `You are ${displayName}. Work carefully and return evidence.`, model: { mode: 'model', provider: 'test', model }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, permissionMode: 'default' });
 const library = await local.gateway.teamCommand!({ action: 'library' });
 if ('teams' in library && library.teams.length) team = library.teams[0];
 else {

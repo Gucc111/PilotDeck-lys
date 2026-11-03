@@ -45,7 +45,7 @@ try {
       'empty-prompt': { ...leader.config, systemPrompt: '' },
       'default-model': { ...leader.config, model: { mode: 'default' } },
       'duplicate-tools': { ...leader.config, capabilities: { ...leader.config.capabilities, tools: ['read_file', 'read_file'] } },
-      'orphan-optional': { ...leader.config, optionalCapabilities: [{ kind: 'tool', name: 'not-selected' }] },
+      'retired-optional-field': { ...leader.config, optionalCapabilities: [{ kind: 'tool', name: 'not-selected' }] },
     };
     for (const [label, config] of Object.entries(invalidProfiles)) await call(label, 'teamCommand', { action: 'profile_save', role: 'leader', config, requestToken: randomUUID() });
     for (const [label, config] of Object.entries({ 'wrong-leader-role': { ...team.config, leader: { id: teammate.id } }, 'wrong-teammate-role': { ...team.config, teammates: [{ id: leader.id }] }, 'duplicate-members': { ...team.config, teammates: [{ id: teammate.id }, { id: teammate.id }] }, 'empty-members': { ...team.config, teammates: [] } })) await call(label, 'teamCommand', { action: 'team_save', config, requestToken: randomUUID() });
@@ -66,8 +66,8 @@ try {
     const base = library.teams.find(t => t.config.displayName === '发布评审团队');
     const missing = await call('missing-model-profile', 'teamCommand', { action: 'profile_save', role: 'leader', config: { ...base.leader.config, displayName: 'Case08 缺失模型', model: { mode: 'model', provider: 'acceptance-missing', model: 'missing-model' } }, requestToken: randomUUID() });
     await call('missing-model-team', 'teamCommand', { action: 'team_save', config: { ...base.config, displayName: 'Case08 必需模型缺失', leader: { id: missing.id } }, requestToken: randomUUID() });
-    const optional = await call('optional-skill-profile', 'teamCommand', { action: 'profile_save', role: 'leader', config: { ...base.leader.config, displayName: 'Case08 可选技能', capabilities: { ...base.leader.config.capabilities, tools: ['read_file', 'read_skill'], skills: ['release-checklist'] }, optionalCapabilities: [{ kind: 'skill', name: 'release-checklist' }] }, requestToken: randomUUID() });
-    await call('optional-skill-team', 'teamCommand', { action: 'team_save', config: { ...base.config, displayName: 'Case08 可选技能缺失', leader: { id: optional.id } }, requestToken: randomUUID() });
+    const required = await call('required-skill-profile', 'teamCommand', { action: 'profile_save', role: 'leader', config: { ...base.leader.config, displayName: 'Case08 必需技能', capabilities: { ...base.leader.config.capabilities, tools: ['read_file', 'read_skill'], skills: ['release-checklist'] } }, requestToken: randomUUID() });
+    await call('required-skill-team', 'teamCommand', { action: 'team_save', config: { ...base.config, displayName: 'Case08 必需技能缺失', leader: { id: required.id } }, requestToken: randomUUID() });
     const fixed = await call('fixed-P2-profile', 'teamCommand', { action: 'profile_save', role: 'leader', config: { ...base.leader.config, displayName: 'Case07 固定P2', workspace: { mode: 'fixed', projectKey: '/Users/gucc1/Codes/team-mode-acceptance/release-docs' } }, requestToken: randomUUID() });
     await call('fixed-P2-team', 'teamCommand', { action: 'team_save', config: { ...base.config, displayName: 'Case07 工作区冲突', leader: { id: fixed.id } }, requestToken: randomUUID() });
   } else if (mode === 'replay-independent-saves') {
@@ -106,7 +106,7 @@ try {
       '必需MCP缺失': { tools: ['read_file'], skills: [], mcpServers: ['case08-required-absent'] },
       '必需工具缺失': { tools: ['case08-required-absent'], skills: [], mcpServers: [] },
     })) {
-      const profile = await call(`${label}-profile`, 'teamCommand', { action: 'profile_save', role: 'leader', config: { ...base.leader.config, displayName: `Case08 ${label}`, capabilities, optionalCapabilities: [] }, requestToken: randomUUID() });
+      const profile = await call(`${label}-profile`, 'teamCommand', { action: 'profile_save', role: 'leader', config: { ...base.leader.config, displayName: `Case08 ${label}`, capabilities }, requestToken: randomUUID() });
       await call(`${label}-team`, 'teamCommand', { action: 'team_save', config: { ...base.config, displayName: `Case08 ${label}`, leader: { id: profile.id } }, requestToken: randomUUID() });
       const probe = await call(`${label}-probe`, 'teamCommand', { action: 'runtime_probe', team: { id: rows.at(-1).result.id }, projectKey: '/Users/gucc1/Codes/team-mode-acceptance/release-app' });
       if (probe) await call(`${label}-direct-select`, 'teamCommand', { action: 'runtime_select', team: { id: probe.team.id }, sessionKey: `web:s_${randomUUID()}`, projectKey: probe.projectKey, storageProjectKey: probe.projectKey, requestToken: randomUUID(), probeFingerprint: probe.fingerprint });

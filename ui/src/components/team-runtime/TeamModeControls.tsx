@@ -95,11 +95,11 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
         {!mode.registeredProjects.length && <div className="team-mode-warning"><p>{t('teamMode.noProjects')}</p>{onCreateProject && <button type="button" onClick={() => { mode.cancelChoice(); onCreateProject(); }}>{t('teamMode.registerProject')}</button>}</div>}
         <div className="team-mode-roster"><strong>Leader · {choice.team.leader.config.displayName}</strong><span>{choice.team.teammates.map(item => item.config.displayName).join(' · ')}</span></div>
         {choice.checking && <p role="status" className="team-mode-inline"><Loader2 size={14} className="animate-spin"/>{t('teamMode.checking')}</p>}
-        {choice.probe?.issues.map((issue, index) => <div key={`${issue.code}-${index}`} className={issue.severity === 'error' ? 'team-mode-error' : 'team-mode-warning'}>{issue.message}</div>)}
+        {choice.probe?.issues.map((issue, index) => <div key={`${issue.code}-${index}`} className="team-mode-error">{issue.message}</div>)}
         {choice.error && <div role="alert" className="team-mode-error">{choice.error}<button type="button" onClick={mode.retryProbe}>{t('teamMode.retry')}</button></div>}
-        {choice.probe?.compatible && <p className="team-mode-muted">{choice.probe.issues.some(issue => issue.severity === 'warning') ? t('teamMode.warningConsent') : t('teamMode.compatible')}</p>}
+        {choice.probe?.compatible && <p className="team-mode-muted">{t('teamMode.compatible')}</p>}
       </div>
-      <div className="team-mode-footer"><button type="button" disabled={mode.changing} onClick={mode.cancelChoice}>{t('teamMode.cancel')}</button><button type="button" className="team-mode-primary" disabled={!choice.probe?.compatible || choice.checking || mode.changing || mode.locked} onClick={() => void mode.confirmChoice()}>{mode.changing ? t('teamMode.switching') : choice.probe?.issues.some(issue => issue.severity === 'warning') ? t('teamMode.confirmWarnings') : t('teamMode.useTeam')}</button></div>
+      <div className="team-mode-footer"><button type="button" disabled={mode.changing} onClick={mode.cancelChoice}>{t('teamMode.cancel')}</button><button type="button" className="team-mode-primary" disabled={!choice.probe?.compatible || choice.checking || mode.changing || mode.locked} onClick={() => void mode.confirmChoice()}>{mode.changing ? t('teamMode.switching') : t('teamMode.useTeam')}</button></div>
     </TeamDialog>}
     {mode.panelOpen && panelTeam && <TeamDialog title={panelTeam.config.displayName} onClose={closePanel} side>
       <div className="team-mode-body">

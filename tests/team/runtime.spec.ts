@@ -21,7 +21,7 @@ async function until<T>(fn: () => Promise<T | undefined | false>, label = 'condi
 }
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 function profile(role: 'leader' | 'teammate', name: string): AgentProfile {
-  return { id: randomUUID(), role, createdAt: '', updatedAt: '', config: { displayName: name, description: `${name} role`, systemPrompt: `${name} private persona`, model: { mode: 'model', provider: 'mock', model: 'test' }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' } };
+  return { id: randomUUID(), role, createdAt: '', updatedAt: '', config: { displayName: name, description: `${name} role`, systemPrompt: `${name} private persona`, model: { mode: 'model', provider: 'mock', model: 'test' }, workspace: { mode: 'team' }, capabilities: { tools: [], skills: [], mcpServers: [] }, permissionMode: 'default' } };
 }
 function result(turnId: string, finalText = 'Formal final answer', extra: Partial<AgentTurnResult> = {}): AgentTurnResult {
   return { type: 'success', sessionId: 'private', turnId, stopReason: 'completed', usage: {}, permissionDenials: [], turns: 1, startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), finalMessage: { role: 'assistant', content: [{ type: 'text', text: finalText }] }, ...extra };
@@ -62,14 +62,22 @@ test('selection is idempotent, preserves its snapshot, and fences old activation
   await assert.rejects(f.runtime.send(f.actor(activation), { recipientId: f.a.id, text: 'Late', requestToken: 'late' }), /no longer current/);
 });
 
-test('compatibility warnings require the current probe and mandatory failures block selection', async t => {
-  const f = await fixture(t); let fingerprint = 'v1', warning = true;
-  f.options.probe = async () => ({ projectKey: 'project', participants: f.participants, environmentFingerprint: fingerprint, issues: [{ severity: warning ? 'warning' : 'error', code: 'MISSING', message: 'Search unavailable' }] });
-  const old = await f.runtime.probe({ id: f.team.id }); await assert.rejects(f.select(), /confirm/); fingerprint = 'v2';
+test('missing capabilities block selection even with the current probe fingerprint', async t => {
+  const f = await fixture(t);
+  f.options.probe = async () => ({ projectKey: 'project', participants: f.participants, environmentFingerprint: 'v1', issues: [{ severity: 'error', code: 'MISSING', message: 'Search unavailable' }] });
+  const probe = await f.runtime.probe({ id: f.team.id });
+  assert.equal(probe.compatible, false);
+  await assert.rejects(f.select(), /Search unavailable/);
+  await assert.rejects(f.runtime.select({ action: 'runtime_select', sessionKey: 'web:main', team: { id: f.team.id }, requestToken: 'confirmed', probeFingerprint: probe.fingerprint }), /Search unavailable/);
+});
+
+test('environment changes invalidate a successful probe', async t => {
+  const f = await fixture(t); let fingerprint = 'v1';
+  f.options.probe = async () => ({ projectKey: 'project', participants: f.participants, environmentFingerprint: fingerprint, issues: [] });
+  const old = await f.runtime.probe({ id: f.team.id }); fingerprint = 'v2';
   await assert.rejects(f.runtime.select({ action: 'runtime_select', sessionKey: 'web:main', team: { id: f.team.id }, requestToken: 'old', probeFingerprint: old.fingerprint }), /changed/);
   const fresh = await f.runtime.probe({ id: f.team.id });
-  await f.runtime.select({ action: 'runtime_select', sessionKey: 'web:main', team: { id: f.team.id }, requestToken: 'fresh', probeFingerprint: fresh.fingerprint }); warning = false;
-  await assert.rejects(f.runtime.select({ action: 'runtime_select', sessionKey: 'other', team: { id: f.team.id }, requestToken: 'bad' }), /Search unavailable/);
+  await f.runtime.select({ action: 'runtime_select', sessionKey: 'web:main', team: { id: f.team.id }, requestToken: 'fresh', probeFingerprint: fresh.fingerprint });
 });
 
 test('direct communication returns after durable queueing before environment preparation ends', async t => {

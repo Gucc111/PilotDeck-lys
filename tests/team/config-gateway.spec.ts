@@ -39,7 +39,7 @@ router: { enabled: false }
   });
   t.after(async () => { local.dispose(); await rm(base, { recursive: true, force: true }); });
   const command = local.gateway.teamCommand!.bind(local.gateway);
-  const config = (displayName: string): ProfileConfig => ({ displayName, description: '', systemPrompt: 'Saved role instructions', model: { mode: 'model', provider: 'test', model: 'default' }, workspace: { mode: 'team' }, capabilities: { tools: ['read_file'], skills: [], mcpServers: ['not-connected'] }, optionalCapabilities: [], permissionMode: 'default' });
+  const config = (displayName: string): ProfileConfig => ({ displayName, description: '', systemPrompt: 'Saved role instructions', model: { mode: 'model', provider: 'test', model: 'default' }, workspace: { mode: 'team' }, capabilities: { tools: ['read_file'], skills: [], mcpServers: ['not-connected'] }, permissionMode: 'default' });
   const leader = await command({ action: 'profile_save', role: 'leader', config: config('Leader'), requestToken: 'leader' }) as AgentProfile;
   const teammate = await command({ action: 'profile_save', role: 'teammate', config: config('Teammate'), requestToken: 'teammate' }) as AgentProfile;
   const saved = { action: 'team_save' as const, config: { displayName: 'Research', description: '', instructions: '', defaultProjectKey: project, leader: { id: leader.id }, teammates: [{ id: teammate.id }] }, requestToken: 'team' };

@@ -8,7 +8,6 @@ export type ProfileConfig = {
   model: { mode: "default" } | TeamModel;
   workspace: { mode: "team" } | { mode: "fixed"; projectKey: string };
   capabilities: { tools: string[]; skills: string[]; mcpServers: string[] };
-  optionalCapabilities: Array<{ kind: "tool" | "skill" | "mcp"; name: string }>;
   permissionMode: "default" | "plan" | "bypassPermissions";
 };
 /** A configuration identity. Profiles and Teams are latest-only records. */

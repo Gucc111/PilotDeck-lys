@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { hash } from '../../src/team/store.js';
 import { TeamService } from '../../src/team/TeamService.js';
 import type { AgentProfile, ProfileConfig, TeamDefinition, TeamInventory, TeamLibrary, TeamServiceOptions } from '../../src/team/types.js';
 
-const config = (displayName: string): ProfileConfig => ({ displayName, description: 'Reusable profile', systemPrompt: 'Inspect evidence before answering.', model: { mode: 'model', provider: 'test', model: 'large' }, workspace: { mode: 'team' }, capabilities: { tools: ['read'], skills: [], mcpServers: [] }, optionalCapabilities: [], permissionMode: 'default' });
+const config = (displayName: string): ProfileConfig => ({ displayName, description: 'Reusable profile', systemPrompt: 'Inspect evidence before answering.', model: { mode: 'model', provider: 'test', model: 'large' }, workspace: { mode: 'team' }, capabilities: { tools: ['read'], skills: [], mcpServers: [] }, permissionMode: 'default' });
 const inventory: TeamInventory = { tools: [{ name: 'read', description: 'Read files' }], skills: [], mcpServers: [] };
 
 async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
@@ -50,4 +51,41 @@ test('referenced profiles cannot be deleted, unreferenced profiles can', async t
 
 test('saving configuration does not create sessions or chat files', async t => {
   const f = await fixture(t); assert.deepEqual(await readdir(f.pilotHome, { recursive: true }), ['team-library', path.join('team-library', 'locks'), path.join('team-library', 'state.json')]);
+});
+
+for (const role of ['leader', 'teammate'] as const) {
+  for (const tools of [['enter_plan_mode'], ['exit_plan_mode'], ['todo_write']]) {
+    test(`${role} normalizes plan dependencies when saving ${tools.join(',')}`, async t => {
+      const f = await fixture(t);
+      const saved = await f.service.execute({ action: 'profile_save', role, config: { ...config('Plan dependency'), capabilities: { tools, skills: [], mcpServers: [] } }, requestToken: randomUUID() }) as AgentProfile;
+      assert.deepEqual(new Set(saved.config.capabilities.tools), new Set(tools[0] === 'todo_write' ? ['todo_write'] : ['enter_plan_mode', 'exit_plan_mode', 'todo_write']));
+      assert.equal('optionalCapabilities' in saved.config, false);
+    });
+  }
+}
+
+test('retired Optional configuration is rejected by the save API', async t => {
+  const f = await fixture(t);
+  const legacyConfig = { ...config('Old client'), optionalCapabilities: [] };
+  await assert.rejects(f.service.execute({ action: 'profile_save', role: 'leader', config: legacyConfig, requestToken: randomUUID() }), /optionalCapabilities/);
+});
+
+test('legacy stored profiles and embedded team profiles discard Optional and repair plan dependencies', async t => {
+  const f = await fixture(t), stateFile = path.join(f.pilotHome, 'team-library/state.json');
+  const envelope = JSON.parse(await readFile(stateFile, 'utf8'));
+  for (const profile of [envelope.state.profiles[f.leader.id], envelope.state.teams[f.team.id].leader]) {
+    profile.config.capabilities.tools = ['enter_plan_mode'];
+    profile.config.capabilities.skills = ['missing-legacy-skill'];
+    profile.config.optionalCapabilities = [{ kind: 'skill', name: 'missing-legacy-skill' }];
+  }
+  envelope.checksum = hash(envelope.state); await writeFile(stateFile, JSON.stringify(envelope));
+  const service = new TeamService(f.options);
+  const library = await service.execute({ action: 'library' }) as TeamLibrary;
+  for (const profile of [library.profiles.find(value => value.id === f.leader.id)!, library.teams[0]!.leader]) {
+    assert.equal('optionalCapabilities' in profile.config, false);
+    assert.deepEqual(profile.config.capabilities.tools, ['enter_plan_mode', 'exit_plan_mode', 'todo_write']);
+    assert.deepEqual(profile.config.capabilities.skills, ['missing-legacy-skill']);
+  }
+  await service.execute({ action: 'profile_save', role: 'teammate', config: config('After migration'), requestToken: randomUUID() });
+  await assert.doesNotReject(new TeamService(f.options).execute({ action: 'library' }));
 });

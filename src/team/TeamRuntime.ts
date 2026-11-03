@@ -93,7 +93,7 @@ export class TeamRuntime {
     if (projectKey !== undefined) text(projectKey, 'projectKey', { max: 500 });
     const team = await this.options.resolveTeam(teamRef);
     const result = await this.options.probe(clone(team), projectKey, context);
-    return { team, projectKey: result.projectKey, participants: result.participants, issues: result.issues, compatible: !result.issues.some(issue => issue.severity === 'error'), fingerprint: hash({ team, ...result, storageProjectKey: context?.storageProjectKey }) };
+    return { team, projectKey: result.projectKey, participants: result.participants, issues: result.issues, compatible: result.issues.length === 0, fingerprint: hash({ team, ...result, storageProjectKey: context?.storageProjectKey }) };
   }
   async get(sessionKey: string, cursor?: string, limit = 200): Promise<TeamRuntimeView> {
     await this.ready;
@@ -215,9 +215,8 @@ export class TeamRuntime {
     const cached = this.receipt(await this.store.read(), `selection:${command.sessionKey}`, command.requestToken, requestHash);
     if (cached !== undefined) return this.selectionReceipt(await this.store.read(), command.sessionKey, cached);
     const probe = command.team ? await this.probe(command.team, command.projectKey, command) : undefined;
-    if (probe && !probe.compatible) fail('TEAM_INCOMPATIBLE', probe.issues.filter(issue => issue.severity === 'error').map(issue => issue.message).join('\n'));
+    if (probe && !probe.compatible) fail('TEAM_INCOMPATIBLE', probe.issues.map(issue => issue.message).join('\n'));
     if (probe && command.probeFingerprint && command.probeFingerprint !== probe.fingerprint) fail('TEAM_PROBE_STALE', 'Team or environment changed. Check compatibility again.');
-    if (probe?.issues.some(issue => issue.severity === 'warning') && command.probeFingerprint !== probe.fingerprint) fail('TEAM_CONFIRMATION_REQUIRED', 'Review and confirm the compatibility warnings before selecting this Team.');
     // Project removal uses the same outer lock; committing a frozen reference cannot race deletion.
     return this.libraryLock.locked(async () => {
       if (probe) await this.options.validateSelection?.(probe, command);

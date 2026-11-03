@@ -458,7 +458,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
     refreshActivation: async activation => {
       const latest = await teamService.resolveTeam({ id: activation.team.id });
       const checked = await registry.probeTeam(latest, activation.projectKey, registeredExecutionProject, teammateExecutionProject);
-      if (checked.issues.some(issue => issue.severity === "error")) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.filter(issue => issue.severity === "error").map(issue => issue.message).join("\n"));
+      if (checked.issues.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.map(issue => issue.message).join("\n"));
       return { team: latest, participants: checked.participants, probeFingerprint: teamHash({ team: latest, ...checked, storageProjectKey: activation.storageProjectKey }) };
     },
     executeParticipant: async input => {
@@ -483,7 +483,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       const frozen = structuredClone(input.activation.team);
       for (const profile of [frozen.leader, ...frozen.teammates]) profile.config.model = input.activation.participants.find(item => item.id === profile.id)!.model;
       const checked = await registry.probeTeam(frozen, input.activation.projectKey, registeredExecutionProject, teammateExecutionProject);
-      if (checked.issues.some(issue => issue.severity === "error")) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.filter(issue => issue.severity === "error").map(issue => issue.message).join("\n"));
+      if (checked.issues.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.map(issue => issue.message).join("\n"));
       for (const participant of input.activation.participants) if (teamHash(checked.participants.find(item => item.id === participant.id)?.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed before member execution. Recheck and select the Team again.");
       return registry.executeTeamParticipant(input);
     },
@@ -668,7 +668,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       const frozenTeam = structuredClone(activation.team);
       for (const profile of [frozenTeam.leader, ...frozenTeam.teammates]) profile.config.model = activation.participants.find(item => item.id === profile.id)!.model;
       const checked = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject, teammateExecutionProject);
-      const errors = checked.issues.filter(item => item.severity === "error");
+      const errors = checked.issues;
       if (errors.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", errors.map(item => item.message).join("\n"));
       for (const participant of activation.participants) {
         if (teamHash(checked.participants.find(item => item.id === participant.id)!.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed. Recheck and select the Team again to confirm the current environment.");
@@ -1074,29 +1074,28 @@ class ProjectRuntimeRegistry {
       const id = profile.id;
       const selectedProject = profile.config.workspace.mode === "fixed" ? profile.config.workspace.projectKey : projectKey;
       let actualProject = selectedProject;
-      const issue = (severity: "error" | "warning", code: string, message: string) => issues.push({ severity, code, message: `${profile.config.displayName}: ${message}`, participantId: id });
+      const issue = (code: string, message: string) => issues.push({ severity: "error", code, message: `${profile.config.displayName}: ${message}`, participantId: id });
       try { actualProject = await (profile.role === "teammate" && profile.config.workspace.mode === "fixed" ? resolveTeammateProject(selectedProject) : resolveProject(selectedProject)); }
-      catch (error) { issue("error", "TEAM_PROJECT_REQUIRED", (error as Error).message); }
-      if (profile.role === "leader" && resolve(actualProject) !== resolve(projectKey)) issue("error", "TEAM_WORKSPACE_CONFLICT", "Leader workspace conflicts with the current conversation project.");
+      catch (error) { issue("TEAM_PROJECT_REQUIRED", (error as Error).message); }
+      if (profile.role === "leader" && resolve(actualProject) !== resolve(projectKey)) issue("TEAM_WORKSPACE_CONFLICT", "Leader workspace conflicts with the current conversation project.");
       const runtime = this.resolve(actualProject);
       const model = profile.config.model.mode === "default" ? { mode: "model" as const, provider: runtime.snapshot.config.agent.model.provider, model: runtime.snapshot.config.agent.model.model } : profile.config.model;
       try { validateExplicitModelSelection(actualProject, model, this.options.env); }
-      catch (error) { issue("error", "TEAM_MODEL_UNAVAILABLE", (error as Error).message); }
+      catch (error) { issue("TEAM_MODEL_UNAVAILABLE", (error as Error).message); }
       await runtime.pluginRuntime.refresh();
       const inventory = await this.teamInventory(actualProject);
-      const optional = (kind: "tool" | "skill" | "mcp", name: string) => profile.config.optionalCapabilities.some(value => value.kind === kind && value.name === name);
       const available = { tools: [] as string[], skills: [] as string[], mcpServers: [] as string[] };
       for (const [key, kind] of [["tools", "tool"], ["skills", "skill"], ["mcpServers", "mcp"]] as const) {
         for (const name of profile.config.capabilities[key]) {
           if (inventory[key].some(item => item.name === name)) available[key].push(name);
-          else issue(optional(kind, name) ? "warning" : "error", "TEAM_CAPABILITY_MISSING", `${kind} ${name} is unavailable.`);
+          else issue("TEAM_CAPABILITY_MISSING", `${kind} ${name} is unavailable.`);
         }
       }
       const mcp = new McpRuntime(this.teamMcpSpecs(runtime, available.mcpServers));
       try {
         for (const status of await mcp.start()) if (status.status !== "ready") {
           available.mcpServers = available.mcpServers.filter(name => name !== status.serverId);
-          issue(optional("mcp", status.serverId) ? "warning" : "error", "TEAM_MCP_UNAVAILABLE", `${status.serverId}: ${status.error ?? status.status}`);
+          issue("TEAM_MCP_UNAVAILABLE", `${status.serverId}: ${status.error ?? status.status}`);
         }
       } finally { await mcp.stop(); }
       participants.push({ id, role: profile.role, profile: structuredClone(profile), projectKey: actualProject, projectPath: actualProject, model, capabilities: available });
