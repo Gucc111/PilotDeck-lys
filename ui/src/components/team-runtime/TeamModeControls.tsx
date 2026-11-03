@@ -2,8 +2,6 @@ import { useCallback, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { UNSAFE_NavigationContext } from 'react-router-dom';
 import { Loader2, RefreshCw, Users } from 'lucide-react';
-import { projectDisplayName } from '../../lib/customNames';
-import { workspaceKey } from '../team-library/api';
 import type { TeamModeState } from './useTeamMode';
 import type { TeamRuntimeActivation } from '../../../../src/team/runtimeTypes';
 import TeamInteractionPanel from './TeamInteractionPanel';
@@ -29,7 +27,13 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
   // the status strip safe to render in an embedded host.  The browser-history
   // fallback still exposes a usable URL when no Router is present.
   const navigation = useContext(UNSAFE_NavigationContext);
-  const { choice } = mode;
+  const { choice, changing, locked, confirmChoice } = mode;
+  const choiceIsClean = Boolean(choice?.probe?.compatible && !choice.checking && !choice.probe.issues.length);
+  const choiceNeedsConfirmation = Boolean(choice && !choice.checking && (choice.error || !choice.probe?.compatible || choice.probe.issues.length));
+  useEffect(() => {
+    if (!choiceIsClean || changing || locked) return;
+    void confirmChoice();
+  }, [choiceIsClean, changing, locked, confirmChoice]);
   const [viewedActivationId, setViewedActivationId] = useState<string | null>(null);
   const [interactionPanelOpen, setInteractionPanelOpen] = useState(false);
   const activation = mode.history.find(item => item.id === viewedActivationId) || mode.activation || mode.history[0] || null;
@@ -86,15 +90,8 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
       {(mode.selectedTeam || mode.history.length > 0) && <button type="button" onClick={openInteractionPanel} aria-label={t('teamInteractions.title')}>{t('teamInteractions.title')}{(mode.interactions || []).filter(item => item.status === 'pending').length ? ` · ${(mode.interactions || []).filter(item => item.status === 'pending').length}` : ''}</button>}
       {mode.error && <div role="alert" className="team-mode-error">{mode.error}<button type="button" onClick={() => void mode.refresh()}>{t('teamMode.retry')}</button></div>}
     </div>}
-    {choice && <TeamDialog title={t('teamMode.enter', { name: choice.team.config.displayName })} onClose={mode.cancelChoice}>
+    {choiceNeedsConfirmation && choice && <TeamDialog title={t('teamMode.enter', { name: choice.team.config.displayName })} onClose={mode.cancelChoice}>
       <div className="team-mode-body">
-        <label className="team-mode-label">{t('teamMode.workspace')}
-          <select value={choice.projectKey} disabled={mode.projectIsFixed || mode.changing} onChange={event => mode.changeChoiceProject(event.target.value)}>
-            <option value="">{t('teamMode.chooseWorkspace')}</option>
-            {mode.registeredProjects.map(project => <option key={workspaceKey(project)} value={workspaceKey(project)}>{projectDisplayName(project)}</option>)}
-          </select>
-        </label>
-        {mode.projectIsFixed && <p className="team-mode-muted">{t('teamMode.fixedWorkspace')}</p>}
         {!mode.registeredProjects.length && <div className="team-mode-warning"><p>{t('teamMode.noProjects')}</p>{onCreateProject && <button type="button" onClick={() => { mode.cancelChoice(); onCreateProject(); }}>{t('teamMode.registerProject')}</button>}</div>}
         <div className="team-mode-roster"><strong>Leader · {choice.team.leader.config.displayName}</strong><span>{choice.team.teammates.map(item => item.config.displayName).join(' · ')}</span></div>
         {choice.checking && <p role="status" className="team-mode-inline"><Loader2 size={14} className="animate-spin"/>{t('teamMode.checking')}</p>}

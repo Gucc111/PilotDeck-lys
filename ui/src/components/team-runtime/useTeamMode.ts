@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Project } from '../../types/app';
 import { isGeneralProject } from '../app-shell/appShellSelection';
 import { teamCommand, newRequestToken, refOf, workspaceKey, type TeamDefinition, type TeamLibrary } from '../team-library/api';
@@ -47,6 +47,13 @@ function readDraft(projectKey: string): TeamDraft | null {
 }
 
 type Choice = { team: TeamDefinition; projectKey: string; requestToken: string; probe: TeamRuntimeProbe | null; checking: boolean; error: string | null };
+
+/** In a registered project, only Teams whose Leader can run in that project are offered. */
+export function teamAllowedInProject(team: TeamDefinition, projectKey: string) {
+  return !projectKey
+    || team.leader.config.workspace.mode === 'team'
+    || team.leader.config.workspace.projectKey === projectKey;
+}
 export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKey: string | null; project: Project | null; projects: Project[]; busy: boolean }) {
   const { t } = useTranslation('chat');
   const translateRef = useRef(t); translateRef.current = t;
@@ -301,13 +308,17 @@ export function useTeamMode({ sessionKey, project, projects, busy }: { sessionKe
     publishActivation({ ...latest, messages: latest.messages.map(item => item.id === message.id ? { ...item, status: 'deleted', deletedAt: new Date().toISOString() } : item) });
     await refresh();
   }, [publishActivation, refresh, t]);
-  return { teams, catalogLoading, catalogError, reloadCatalog: catalog, activation, history, draft, selectedTeam: activation?.team || draft?.team || null,
+  const currentProjectKey = project && !isGeneralProject(project) ? workspaceKey(project) : '';
+  const selectableTeams = useMemo(
+    () => currentProjectKey ? teams.filter(team => teamAllowedInProject(team, currentProjectKey)) : teams,
+    [currentProjectKey, teams],
+  );
+  return { teams, selectableTeams, catalogLoading, catalogError, reloadCatalog: catalog, activation, history, draft, selectedTeam: activation?.team || draft?.team || null,
     interactions, respondInteraction, deleteMessage,
     teamSelection: draft?.selection, teamDraftSessionId: draft?.sessionKey, teamActivationId: activation?.id ?? null, teamStopVersion: activation?.stopVersion, renewDraftRequest, loading, error, refresh,
     ready: !loading && !error && !changing && !choice && activation?.status !== 'stopping', locked, changing, choice, selectTeam, selectSolo, confirmChoice, cancelChoice,
-    changeChoiceProject: (projectKey: string) => { if (choice && !changing) void probe({ ...choice, projectKey, requestToken: newRequestToken() }); },
     retryProbe: () => { if (choice) void probe(choice); },
-    registeredProjects: projects.filter(item => !isGeneralProject(item)), projectIsFixed: Boolean(project && !isGeneralProject(project)),
+    registeredProjects: projects.filter(item => !isGeneralProject(item)),
     panelOpen, setPanelOpen, working: hasTeamWork(activation), stop };
 }
 export type TeamModeState = ReturnType<typeof useTeamMode>;

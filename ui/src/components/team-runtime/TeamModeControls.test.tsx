@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import TeamModeControls, { cleanupTarget } from './TeamModeControls';
 import type { TeamRuntimeActivation } from '../../../../src/team/runtimeTypes';
@@ -11,6 +11,78 @@ const activation = { id: 'activation-uuid', stopVersion: 4, status: 'stopping', 
   { id: 'leader-uuid', role: 'leader', profile: { config: { ...profile.config, displayName: 'Release lead' } }, model: profile.config.model, capabilities: profile.config.capabilities },
   { id: 'reviewer-uuid', role: 'teammate', profile, model: profile.config.model, capabilities: profile.config.capabilities },
 ], works: [], messages: [], cleanup: { startedAt: '', pending: ['activation-uuid:reviewer-uuid:3:messages', 'leader', 'activation-uuid:notifications', 'final resource cleanup'], timedOut: true } } as unknown as TeamRuntimeActivation;
+
+function choiceMode(overrides: Record<string, unknown>) {
+  return {
+    choice: null,
+    confirmChoice: vi.fn(),
+    cancelChoice: vi.fn(),
+    changing: false,
+    locked: false,
+    loading: false,
+    error: null,
+    history: [],
+    interactions: [],
+    panelOpen: false,
+    registeredProjects: [],
+    selectedTeam: null,
+    setPanelOpen: vi.fn(),
+    refresh: vi.fn(),
+    ...overrides,
+  } as unknown as TeamModeState;
+}
+
+it('automatically selects a clean Team without showing the confirmation card', async () => {
+  const confirmChoice = vi.fn();
+  const choice = {
+    team: activation.team,
+    projectKey: '/work',
+    requestToken: 'request',
+    checking: false,
+    error: null,
+    probe: { projectKey: '/work', participants: [], issues: [], compatible: true, fingerprint: 'fingerprint' },
+  };
+  render(<TeamModeControls mode={choiceMode({ choice, confirmChoice })}/>);
+  await waitFor(() => expect(confirmChoice).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('does not show the confirmation card while the Team probe is still running', () => {
+  const choice = {
+    team: activation.team,
+    projectKey: '/work',
+    requestToken: 'request',
+    checking: true,
+    error: null,
+    probe: null,
+  };
+  render(<TeamModeControls mode={choiceMode({ choice })}/>);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('keeps the confirmation card for compatibility warnings and does not offer a project dropdown', () => {
+  const confirmChoice = vi.fn();
+  const choice = {
+    team: activation.team,
+    projectKey: '/work',
+    requestToken: 'request',
+    checking: false,
+    error: null,
+    probe: {
+      projectKey: '/work',
+      participants: [],
+      issues: [{ severity: 'warning', code: 'TEAM_CAPABILITY_MISSING', message: 'Lead reviewer: skill research is unavailable.', participantId: 'leader-uuid' }],
+      compatible: true,
+      fingerprint: 'fingerprint',
+    },
+  };
+  render(<TeamModeControls mode={choiceMode({ choice, confirmChoice })}/>);
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  expect(screen.getByText('Lead reviewer: skill research is unavailable.')).toBeTruthy();
+  expect(screen.queryByRole('combobox')).toBeNull();
+  expect(confirmChoice).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'teamMode.confirmWarnings' })).toBeTruthy();
+});
 
 it('resolves real runtime execution and message delivery keys to participant display names', () => {
   for (const key of ['activation-uuid:reviewer-uuid:3', 'activation-uuid:reviewer-uuid:3:messages']) {

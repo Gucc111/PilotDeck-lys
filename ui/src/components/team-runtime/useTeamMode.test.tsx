@@ -20,6 +20,25 @@ const props = { sessionKey: null as string | null, project, projects: [project],
 beforeEach(() => { localStorage.clear(); socket.listeners.clear(); command.mockReset(); command.mockImplementation(async (input) => input.action === 'library' ? { teams: [team], profiles: [] } : input.action === 'runtime_probe' ? probe : { activation: null }); });
 afterEach(cleanup);
 
+describe('Team workspace filtering', () => {
+  it('offers only Teams whose Leader can run in the current registered project', async () => {
+    const fixedInCurrent = { ...team, id: 'fixed-current', leader: { ...team.leader, config: { ...team.leader.config, workspace: { mode: 'fixed' as const, projectKey: '/work' } } } };
+    const fixedElsewhere = { ...team, id: 'fixed-elsewhere', leader: { ...team.leader, config: { ...team.leader.config, workspace: { mode: 'fixed' as const, projectKey: '/other' } } } };
+    command.mockImplementation(async input => input.action === 'library' ? { teams: [team, fixedInCurrent, fixedElsewhere], profiles: [] } : { activation: null });
+    const hook = renderHook(() => useTeamMode(props));
+    await waitFor(() => expect(hook.result.current.catalogLoading).toBe(false));
+    expect(hook.result.current.selectableTeams.map(item => item.id)).toEqual([team.id, fixedInCurrent.id]);
+  });
+
+  it('keeps the full Team catalog for General conversations', async () => {
+    const fixedElsewhere = { ...team, id: 'fixed-elsewhere', leader: { ...team.leader, config: { ...team.leader.config, workspace: { mode: 'fixed' as const, projectKey: '/other' } } } };
+    command.mockImplementation(async input => input.action === 'library' ? { teams: [team, fixedElsewhere], profiles: [] } : { activation: null });
+    const hook = renderHook(() => useTeamMode({ ...props, project: general, projects: [general, project] }));
+    await waitFor(() => expect(hook.result.current.catalogLoading).toBe(false));
+    expect(hook.result.current.selectableTeams.map(item => item.id)).toEqual([team.id, fixedElsewhere.id]);
+  });
+});
+
 describe('Team mode current conversation selection', () => {
   it('selects a blank Team without starting runtime and preserves the root/token across reload', async () => {
     const hook = renderHook(() => useTeamMode(props));

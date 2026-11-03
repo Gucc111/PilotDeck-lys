@@ -837,7 +837,7 @@ function ChatInterfaceV2({
       isInputQueuePaused={inputQueue.queueState.paused}
       onResumeInputQueue={handleResumeInputQueue}
       tokenBudget={tokenBudget}
-      teamCatalog={teamMode.teams}
+      teamCatalog={teamMode.selectableTeams}
       selectedTeam={teamMode.selectedTeam}
       isTeamCatalogLoading={teamMode.catalogLoading}
       teamCatalogError={teamMode.catalogError}
