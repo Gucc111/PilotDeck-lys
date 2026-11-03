@@ -53,16 +53,16 @@ ID 由程序随机生成。配置库每个 ID 只保留当前配置，不记录�
 
 | 工具 | 作用 |
 | --- | --- |
-| `team_send_message({recipientId,text})` | 可靠保存后返回消息编号和 queued，不等待对方启动、回复或执行结束 |
-| `team_inspect` | 按明确视图查询成员状态、轮次或通信，不启动成员 |
+| `team_roster()` | 返回所有成员的 `id`、角色、显示名、当前有效状态和最新 turn ID；需要发消息时先用它获取成员 ID |
+| `team_send_message({recipientId,text})` | 可靠保存后返回 `{messageId,status:"queued"}`，不等待对方启动、回复或执行结束 |
+| `team_messages({messageId})` / `team_messages({cursor,limit})` | 精确读取一条消息，或按时间倒序分页读取消息；Leader 可读全队，Teammate 只能读自己发送或接收的消息 |
+| `team_turns({participantId,turnId})` / `team_turns({participantId,cursor,limit})` | 精确读取一个 Teammate turn，或分页读取该成员的 turn；分页默认 5 条并按最新优先 |
 
-`team_inspect` 默认 `view:"overview"` 返回全队名单、角色、状态、未消费数量和最新轮次，不含结果正文。`view:"turns"` 需要 `participantId`，返回轮次时间、结束原因和注入记录；Leader 可以查看成员，Teammate 仅自己。`view:"turn"` 必须同时指定 `participantId` 和 `turnId`，只有 Leader 能读取指定 Teammate 的本轮正式结果。`view:"messages"` 分页读取通信，可按成员过滤；Leader 可查全队，Teammate 只能查自己收发的消息。消息正文仅在实际发送模型后可查询；未发送、已失效和发送状态不确定的记录只返回编号、双方和状态等信息，防止正文通过查询结果提前进入模型历史。界面仍显示完整收件内容。旧委派、追问、收集、转发和等待工具不再提供，也没有别名。
+四个工具同时提供给 Leader 和 Teammate。查询工具不会启动执行，也不会触发发送授权询问。`team_messages` 的分页结果返回正常通信记录的完整正文和公开状态；已消费消息会附带处理它的 turn ID 和状态。删除、失效、发送不确定及其他异常状态的消息不出现在分页结果中，但指定 `messageId` 精确查询时仍会返回该记录的状态和完整正文。Leader 可以查询全部消息和所有 Teammate turn；Teammate 只能查询自己可见的消息，以及其他 Teammate 的 turn。任何成员都不能查询自己的 turn 或 Leader 的 turn。精确查询已结束 turn 时，如果存在可读的最终 assistant 文本，会返回 `finalMessage` 和 `finalResultAvailable:true`；活动 turn 或没有最终文本的终态 turn 不返回最终详情。工具发送身份来自服务端上下文，模型不能伪造发送方；四个工具之外没有旧查询别名。
 
 工具的发送身份来自服务端运行上下文，模型不能指定自己是另一个成员。目标必须属于当前 Team，且不能发给自己。成员只获得收到的消息和自己的历史，不自动读取 Leader 或其他成员历史。
 
-模型查询通信记录时，尚未消费、已失效或发送情况不确定的消息只返回编号、双方和状态等信息，不返回正文；只有已实际发送模型请求的消息可查询正文。这样不能通过查询工具提前读到待发送内容，也不会在用户删除后从工具结果或摘要中重新出现。人类收件面板仍能查看原文。
-
-Leader 可以发送工作要求、询问和补充要求。Teammate 使用同一工具沟通、询问、补充信息，最终工作成果写入本轮最终回答。程序保存正式结果后发送固定通知，让 Leader 调用 `team_inspect` 查询；通知不含成果正文。工具描述和提示词说明这个约定，不按正文猜测并拦截消息。发送消息不会授予文件、工具或审批权限。
+Leader 可以发送工作要求、询问和补充要求。Teammate 使用同一工具沟通、询问、补充信息，最终工作成果写入本轮最终回答。程序保存正式结果后发送固定通知，让 Leader 调用 `team_turns`，并指定 `participantId` 和 `turnId` 查询；通知不含成果正文。工具描述和提示词说明这个约定，不按正文猜测并拦截消息。发送消息不会授予文件、工具或审批权限。
 
 成员的模型执行上下文保存在内部运行目录，不是可单独发送消息的聊天。工具能力通过角色专属注册表执行；技能读取和提示列表使用同一允许集合；MCP 只连接选择的服务器。普通 `agent`、共享 `task_*` 和 Always-On 专用工具不作为 Team 基础能力提供。文件及命令仍使用 PilotDeck 的现有审批机制，这些能力设置不是操作系统沙箱。
 

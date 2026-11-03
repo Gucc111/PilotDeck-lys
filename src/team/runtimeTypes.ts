@@ -40,6 +40,8 @@ export type TeamRuntimeTurn = {
   turnId: string; participantId: string; stopVersion: number; trigger: 'human' | 'messages';
   status: 'preparing' | 'running' | 'waiting_approval' | 'ended' | 'interrupted' | 'stopped';
   startedAt: string; endedAt?: string; messageIds: string[]; requestIds: string[]; attemptIds?: string[]; pendingMessageIds?: string[];
+  /** Message ids present when the turn was created, plus messages consumed by a human turn. */
+  triggerMessageIds?: string[];
   resultType?: AgentTurnResult['type']; stopReason?: string; finalMessage?: CanonicalMessage; error?: string;
   owner?: { pid: number; instanceId: string; executionId?: string };
 };
@@ -47,7 +49,15 @@ export type TeamRuntimeDispatch = {
   requestId: string; attemptId?: string; participantId: string; turnId: string; stopVersion: number; messageIds: string[];
   status: 'sending' | 'consumed' | 'uncertain'; startedAt: string; dispatchedAt?: string; error?: string;
 };
-export type TeamInspectInput = { view?: 'overview' | 'turns' | 'turn' | 'messages'; participantId?: string; turnId?: string; cursor?: string; limit?: number };
+export type TeamMessagesInput = { messageId?: string; cursor?: string; limit?: number };
+export type TeamTurnsInput = { participantId: string; turnId?: string; cursor?: string; limit?: number };
+export type TeamRosterParticipant = { id: string; role: 'leader' | 'teammate'; displayName: string; status: 'idle' | 'preparing' | 'running' | 'waiting_approval' | 'ended' | 'interrupted' | 'stopped' | 'stopping' | 'closed'; latestTurnId: string | null };
+export type TeamRosterResult = { participants: TeamRosterParticipant[] };
+export type TeamMessageProjection = { id: string; senderId: string; recipientId: string; kind: 'member' | 'turn_ended' | 'message_deleted'; status: TeamRuntimeMessage['status']; text: string; createdAt: string; turn?: { turnId: string; status: TeamRuntimeTurn['status'] } };
+export type TeamFinalMessage = { role: 'assistant'; content: Array<{ type: 'text'; text: string }> };
+export type TeamTurnProjection = { turnId: string; status: TeamRuntimeTurn['status']; trigger: TeamRuntimeTurn['trigger']; startedAt: string; endedAt?: string; messages: TeamMessageProjection[]; finalMessage?: TeamFinalMessage };
+export type TeamMessagesResult = { message: TeamMessageProjection } | { items: TeamMessageProjection[]; nextCursor?: string };
+export type TeamTurnsResult = { turn: TeamTurnProjection; finalResultAvailable: boolean } | { participantId: string; items: Array<Omit<TeamTurnProjection, 'finalMessage'>>; nextCursor?: string };
 export type TeamMessageDeleteResult = { messageId: string; deleted: boolean };
 export type TeamRuntimeNotification = {
   id: string; stopVersion: number; kind: 'work_completed' | 'work_failed' | 'message';

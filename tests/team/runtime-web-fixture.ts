@@ -71,10 +71,10 @@ const local = createLocalGateway({
         let state;
         try { state = JSON.parse(await readFile(join(home, 'team-runtime', 'state.json'), 'utf8')).state; } catch { state = { activations: {} }; }
         const activation = Object.values(state.activations).find((value: any) => value.status === 'active') as any;
-        const inspected = outputs(request, 'team_inspect') as Array<{ turn?: { turnId?: string } }>;
+        const inspected = outputs(request, 'team_turns') as Array<{ turn?: { turnId?: string } }>;
         const ended = activation?.turns?.filter((turn: any) => turn.participantId !== activation.team.leader.id && turn.status === 'ended') ?? [];
         const next = ended.find((turn: any) => !inspected.some(item => item.turn?.turnId === turn.turnId));
-        if (next) { yield* call('team_inspect', { view: 'turn', participantId: next.participantId, turnId: next.turnId }); yield { type: 'message_end', finishReason: 'tool_call' }; return; }
+        if (next) { yield* call('team_turns', { participantId: next.participantId, turnId: next.turnId }); yield { type: 'message_end', finishReason: 'tool_call' }; return; }
         yield { type: 'text_delta', text: team.teammates.every(member => ended.some((turn: any) => turn.participantId === member.id)) ? 'Release review complete. I inspected the reviewer and tester execution results; the specialists communicated directly.' : 'The team is reviewing the release. I will inspect each saved execution result.' };
       } else if (request.model === 'tester') {
         if (!called('team_send_message')) {

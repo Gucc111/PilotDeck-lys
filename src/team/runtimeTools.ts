@@ -1,6 +1,6 @@
 import type { PilotDeckToolDefinition, PilotDeckToolRuntimeContext } from '../tool/protocol/types.js';
 import { TeamRuntime, type TeamRuntimeActor } from './TeamRuntime.js';
-import type { TeamInspectInput } from './runtimeTypes.js';
+import type { TeamMessagesInput, TeamTurnsInput } from './runtimeTypes.js';
 import { object, text } from './validation.js';
 import { randomUUID } from 'node:crypto';
 
@@ -9,7 +9,7 @@ type Property = { type: string; description: string; enum?: string[]; minimum?: 
 const stringProperty = (description: string): Property => ({ type: 'string', description });
 
 /** Caller identity is captured by the server, never accepted from model arguments. */
-export function createTeamRuntimeTools(runtime: TeamRuntime, actor: TeamRuntimeActor, role: 'leader' | 'teammate' = 'leader'): PilotDeckToolDefinition[] {
+export function createTeamRuntimeTools(runtime: TeamRuntime, actor: TeamRuntimeActor, _role: 'leader' | 'teammate' = 'leader'): PilotDeckToolDefinition[] {
   const tool = (name: string, description: string, properties: Record<string, Property>, required: string[], readOnly: boolean, execute: (input: Input, context: PilotDeckToolRuntimeContext) => Promise<unknown>): PilotDeckToolDefinition => ({
     name, description, kind: 'custom', alwaysLoad: true,
     inputSchema: { type: 'object', additionalProperties: false, properties, required },
@@ -25,22 +25,24 @@ export function createTeamRuntimeTools(runtime: TeamRuntime, actor: TeamRuntimeA
     },
   });
   return [
-    tool('team_send_message', role === 'leader'
-      ? 'Send instructions, questions, coordination or additional requirements directly to another Team participant. Asynchronous: after durable inbox acceptance this returns a message ID immediately, without waiting for execution or a reply. A busy recipient receives it before a later model request; an idle recipient starts one execution for the queued batch. Continue independent work or end your turn while waiting. This grants no tool permission or human approval.'
-      : 'Send questions, coordination or supplementary information directly to another Team participant. Do not put final work results or deliverables in this message: return those in your final answer, which the program saves and reports to the Leader for team_inspect. Asynchronous: returns after durable inbox acceptance, without waiting for a reply or execution. Continue independent work or end your turn while waiting. This grants no tool permission or human approval.',
-      { recipientId: stringProperty('Recipient participant ID from team_inspect.'), text: stringProperty('Complete message text.') }, ['recipientId', 'text'], false, async (input, context) => {
-        const message = await runtime.send(actor, { recipientId: text(input.recipientId, 'recipientId'), text: text(input.text, 'text'), requestToken: `${context.turnId}:${context.currentToolCallId ?? randomUUID()}:message` });
-        return { messageId: message.id, recipientId: message.recipientId, status: 'queued' };
-      }),
-    tool('team_inspect', 'Read Team state without starting execution. overview returns roster and execution status, never outputs. turns requires participantId and lists turn metadata only; Teammates may list only their own turns. turn requires participantId plus turnId: only the Leader may read a Teammate final output. messages returns paginated communication: the Leader sees the Team, Teammates only their own sent/received messages. Message bodies are available only after actual model dispatch; unsent, invalidated and uncertain records expose metadata only. No history or output is shared implicitly.',
-      { view: { type: 'string', enum: ['overview', 'turns', 'turn', 'messages'], description: 'Default overview.' }, participantId: stringProperty('Participant ID. Required for turns and turn.'), turnId: stringProperty('Exact execution turn ID, required only for turn.'), cursor: stringProperty('Pagination cursor from the previous result.'), limit: { type: 'integer', description: 'Page size, default 50.', minimum: 1, maximum: 200 } }, [], true, async input => {
-        const query: TeamInspectInput = {};
-        if (input.view !== undefined) query.view = text(input.view, 'view') as TeamInspectInput['view'];
-        if (input.participantId !== undefined) query.participantId = text(input.participantId, 'participantId');
-        if (input.turnId !== undefined) query.turnId = text(input.turnId, 'turnId');
-        if (input.cursor !== undefined) query.cursor = text(input.cursor, 'cursor');
-        if (input.limit !== undefined) query.limit = input.limit as number;
-        return runtime.inspect(actor, query);
-      }),
+    tool('team_roster', 'Read the current Team roster without starting execution. Returns only each participant id, role, display name, effective status and latest turn id. Use the participant id when sending a message or querying a Teammate turn.', {}, [], true, async () => runtime.roster(actor)),
+    tool('team_send_message', 'Send a message to another Team participant. The server supplies the sender identity. This asynchronous operation returns after durable queueing and does not wait for delivery, execution or a reply. Plan mode rejects this state-changing operation.', { recipientId: stringProperty('Recipient participant id from team_roster.'), text: stringProperty('Complete message text.') }, ['recipientId', 'text'], false, async (input, context) => {
+      const message = await runtime.send(actor, { recipientId: text(input.recipientId, 'recipientId'), text: text(input.text, 'text'), requestToken: `${context.turnId}:${context.currentToolCallId ?? randomUUID()}:message` });
+      return { messageId: message.id, status: 'queued' };
+    }),
+    tool('team_messages', 'Read Team messages without starting execution. Pass messageId for one exact message, or cursor and limit for a page. Pages default to 5 and return newest messages first. Leader can read all messages; Teammates can read only messages they sent or received. Pages show only normal communication records (queued, preparing, sending, consumed and delivered) and hide deleted, invalidated, uncertain and other abnormal statuses. Pass messageId to inspect one exact record, including its full body and abnormal status.', { messageId: stringProperty('Exact message id. Do not combine with cursor or limit.'), cursor: stringProperty('Opaque cursor returned by the previous page.'), limit: { type: 'integer', description: 'Page size, default 5.', minimum: 1, maximum: 200 } }, [], true, async input => {
+      const query: TeamMessagesInput = {};
+      if (input.messageId !== undefined) query.messageId = text(input.messageId, 'messageId');
+      if (input.cursor !== undefined) query.cursor = text(input.cursor, 'cursor');
+      if (input.limit !== undefined) query.limit = input.limit as number;
+      return runtime.messages(actor, query);
+    }),
+    tool('team_turns', 'Read Teammate turns without starting execution. participantId is required. Pass turnId for one exact turn, or cursor and limit for a page. Pages default to 5 and return newest turns first. Leader may read any Teammate; a Teammate may read another Teammate. No participant may read its own turn or a Leader turn. Exact ended turns may include the final assistant text; active turns never include finalMessage.', { participantId: stringProperty('Required Teammate participant id.'), turnId: stringProperty('Exact turn id. Do not combine with cursor or limit.'), cursor: stringProperty('Opaque cursor returned by the previous page.'), limit: { type: 'integer', description: 'Page size, default 5.', minimum: 1, maximum: 200 } }, ['participantId'], true, async input => {
+      const query: TeamTurnsInput = { participantId: text(input.participantId, 'participantId') };
+      if (input.turnId !== undefined) query.turnId = text(input.turnId, 'turnId');
+      if (input.cursor !== undefined) query.cursor = text(input.cursor, 'cursor');
+      if (input.limit !== undefined) query.limit = input.limit as number;
+      return runtime.turns(actor, query);
+    }),
   ];
 }

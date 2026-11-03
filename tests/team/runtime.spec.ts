@@ -222,47 +222,58 @@ test('pre-transport errors restore pending but unknown send failures become unce
   await assert.rejects(f.runtime.dispatchMessages(actor, { turnId: 'errors', requestId: 'uncertain', messageIds: [message.id] }, () => {}), /cannot be replayed/); await assert.rejects(f.runtime.deleteMessage(deletion(activation, message)), /cannot be deleted/);
 });
 
-test('inspect views protect final outputs and teammate communication is restricted to its own messages', async t => {
+test('roster, turn and message queries protect outputs and communication is restricted to visible records', async t => {
   const f = await fixture(t), activation = await f.activate(), leader = f.actor(activation), a = f.actor(activation, f.a.id), b = f.actor(activation, f.b.id); holdLeader(f);
   await f.runtime.send(leader, { recipientId: f.a.id, text: 'Review', requestToken: 'review' });
   const turn = await until(async () => (await f.runtime.get('web:main')).activation!.turns!.find(item => item.participantId === f.a.id && item.status === 'ended'));
-  const overview = await f.runtime.inspect(a); assert.equal(JSON.stringify(overview).includes('private persona'), false); assert.equal(JSON.stringify(overview).includes('Formal final'), false);
-  assert.equal(JSON.stringify(await f.runtime.inspect(a, { view: 'turns', participantId: f.a.id })).includes('Formal final'), false);
-  const output = await f.runtime.inspect(leader, { view: 'turn', participantId: f.a.id, turnId: turn.turnId }); assert.equal(output.finalResultAvailable, true); assert.match(JSON.stringify(output), /Formal final/);
-  await assert.rejects(f.runtime.inspect(leader, { view: 'turn' }), /participantId/); await assert.rejects(f.runtime.inspect(leader, { view: 'turn', participantId: f.a.id }), /turnId/);
-  await assert.rejects(f.runtime.inspect(a, { view: 'turn', participantId: f.a.id, turnId: turn.turnId }), /Only the Leader/); await assert.rejects(f.runtime.inspect(b, { view: 'turns', participantId: f.a.id }), /only its own/);
-  assert.deepEqual((await f.runtime.inspect(b, { view: 'messages' })).items, []); assert.equal(((await f.runtime.inspect(leader, { view: 'messages' })).items as unknown[]).length, 2);
+  const overview = await f.runtime.roster(a); assert.equal(JSON.stringify(overview).includes('private persona'), false); assert.equal(JSON.stringify(overview).includes('Formal final'), false); assert.equal(overview.participants[0]?.latestTurnId, null);
+  assert.equal(JSON.stringify(await f.runtime.turns(a, { participantId: f.b.id })).includes('Formal final'), false);
+  const output = await f.runtime.turns(leader, { participantId: f.a.id, turnId: turn.turnId }); assert.equal('finalResultAvailable' in output && output.finalResultAvailable, true); assert.match(JSON.stringify(output), /Formal final/);
+  await assert.rejects(f.runtime.turns(leader, {} as never), /participantId/); await assert.rejects(f.runtime.turns(leader, { participantId: f.a.id, turnId: 'missing' }), /not available/);
+  await assert.rejects(f.runtime.turns(a, { participantId: f.a.id, turnId: turn.turnId }), /own turn/); await assert.rejects(f.runtime.turns(b, { participantId: f.b.id }), /own turn/);
+  const bMessages = await f.runtime.messages(b); const leaderMessages = await f.runtime.messages(leader); assert.deepEqual('items' in bMessages ? bMessages.items : [], []); assert.equal(('items' in leaderMessages ? leaderMessages.items : []).length, 2);
 });
 
-test('model inspection exposes message bodies only after dispatch while the UI retains full inbox records', async t => {
+test('message pages hide abnormal records while exact queries expose their full bodies', async t => {
   const f = await fixture(t), activation = await f.activate(); holdLeader(f);
   const recipient = f.actor(activation, f.a.id), leader = f.actor(activation);
   await f.runtime.beginTurn(recipient, { turnId: 'recipient-busy', trigger: 'human' });
   await f.runtime.beginTurn(f.actor(activation, f.b.id), { turnId: 'sender-busy', trigger: 'human' });
   const statuses: TeamRuntimeMessage['status'][] = ['queued', 'preparing', 'sending', 'invalidated', 'uncertain', 'legacy_unknown', 'delivered', 'interrupted', 'stopped', 'deleted', 'consumed'];
+  const normalStatuses = new Set<TeamRuntimeMessage['status']>(['queued', 'preparing', 'sending', 'consumed', 'delivered']);
   const records = statuses.map((status): TeamRuntimeMessage => ({ id: `body-${status}`, stopVersion: activation.stopVersion, senderId: f.b.id, recipientId: f.a.id, intendedRecipientId: f.a.id, status, kind: 'member', text: `secret-body-${status}`, error: `secret-error-${status}`, createdAt: '' }));
   const store = new TeamRuntimeStore(f.pilotHome);
   await store.locked(async () => { const state = await store.read(); state.activations[activation.id]!.messages.push(...records); await store.write(state); });
   const context = { sessionId: 'web:main', turnId: 'inspect-turn', cwd: '/project', permissionMode: 'default' as const, permissionContext: createDefaultPermissionContext({ cwd: '/project', canPrompt: false }) };
   for (const [actor, role] of [[recipient, 'teammate'], [leader, 'leader']] as const) {
-    const inspected = await createTeamRuntimeTools(f.runtime, actor, role)[1]!.execute({ view: 'messages' }, context) as { data: { items: Array<Record<string, unknown>> } };
-    assert.equal(inspected.data.items.length, records.length - 1);
-    for (const item of inspected.data.items) {
-      assert.equal(item.bodyAvailable, item.status === 'consumed'); assert.equal('error' in item, false);
-      if (item.status === 'consumed') assert.equal(item.text, 'secret-body-consumed');
-      else { assert.equal('text' in item, false); assert.match(String(item.bodyUnavailableReason), /actual model dispatch/); }
+    const page = await createTeamRuntimeTools(f.runtime, actor, role)[2]!.execute({ limit: 200 }, context) as { data: { items: Array<Record<string, unknown>> } };
+    assert.deepEqual(new Set(page.data.items.map(item => item.status)), normalStatuses);
+    assert.equal(page.data.items.length, [...normalStatuses].length);
+    for (const item of page.data.items) {
+      assert.equal(typeof item.text, 'string'); assert.equal(item.text, `secret-body-${item.status}`);
     }
-    const serialized = JSON.stringify(inspected);
-    for (const status of statuses.filter(status => status !== 'consumed')) assert.ok(!serialized.includes(`secret-body-${status}`));
+    const serialized = JSON.stringify(page);
+    for (const status of normalStatuses) assert.ok(serialized.includes(`secret-body-${status}`));
+    for (const status of statuses.filter(status => !normalStatuses.has(status))) assert.ok(!serialized.includes(`secret-body-${status}`));
     assert.ok(!serialized.includes('secret-error-'));
+    for (const record of records) {
+      const exact = await createTeamRuntimeTools(f.runtime, actor, role)[2]!.execute({ messageId: record.id }, context) as { data: { message: Record<string, unknown> } };
+      assert.equal(exact.data.message.id, record.id);
+      assert.equal(exact.data.message.status, record.status);
+      assert.equal(exact.data.message.text, record.text);
+    }
   }
   const ui = await f.runtime.execute({ action: 'runtime_get', sessionKey: 'web:main' }) as { activation: TeamRuntimeActivation };
   for (const item of records.filter(item => item.status !== 'deleted')) assert.equal(ui.activation.messages.find(message => message.id === item.id)?.text, item.text);
   await f.runtime.dispatchMessages(recipient, { turnId: 'recipient-busy', requestId: 'consume-body', messageIds: ['body-queued'] }, accepted => { assert.equal(accepted[0]?.text, 'secret-body-queued'); });
-  const consumed = (await f.runtime.inspect(leader, { view: 'messages', participantId: f.a.id })).items as Array<Record<string, unknown>>;
+  const consumedResult = await f.runtime.messages(leader, { limit: 200 }); const consumed = ('items' in consumedResult ? consumedResult.items : []) as Array<Record<string, unknown>>;
   assert.equal(consumed.find(item => item.id === 'body-queued')?.text, 'secret-body-queued');
   await f.runtime.deleteMessage(deletion(activation, records.find(item => item.status === 'preparing')!));
-  assert.ok(!JSON.stringify(await f.runtime.inspect(recipient, { view: 'messages' })).includes('body-preparing'));
+  const deletedExact = await f.runtime.messages(recipient, { messageId: 'body-preparing' });
+  assert.equal('message' in deletedExact && deletedExact.message.status, 'deleted');
+  assert.equal('message' in deletedExact && deletedExact.message.text, 'secret-body-preparing');
+  const afterDeletePage = await f.runtime.messages(recipient, { limit: 200 });
+  assert.equal('items' in afterDeletePage && afterDeletePage.items.some(item => item.id === 'body-preparing'), false);
 });
 
 test('formal results precede one fixed notice and max-step endings preserve their real reason', async t => {
@@ -271,7 +282,7 @@ test('formal results precede one fixed notice and max-step endings preserve thei
   const notice = await until(async () => (await messages(f)).find(item => item.kind === 'turn_ended'));
   const disk = (await new TeamRuntimeStore(f.pilotHome).read()).activations[activation.id]!, turn = disk.turns![0]!;
   assert.equal(turn.resultType, 'max_turns'); assert.equal(turn.stopReason, 'max_turns'); assert.match(JSON.stringify(turn.finalMessage), /Saved result/);
-  assert.match(notice.text, /team_inspect/); assert.ok(!notice.text.includes('Saved result')); assert.ok(!notice.text.includes('工作已经完成'));
+  assert.match(notice.text, /team_turns/); assert.ok(!notice.text.includes('Saved result')); assert.ok(!notice.text.includes('工作已经完成'));
   await f.runtime.endTurn(f.actor(activation, f.a.id), turn.turnId, result(turn.turnId)); assert.equal((await messages(f)).filter(item => item.kind === 'turn_ended').length, 1);
 });
 
@@ -358,27 +369,27 @@ test('legacy migration retains history, restores proven turns and never treats d
   const recoveredTurn: TeamRuntimeTurn = { turnId: 'proven-turn', participantId: f.a.id, stopVersion: 0, trigger: 'messages', status: 'ended', startedAt: '', endedAt: '', messageIds: [], requestIds: [], finalMessage: result('proven-turn', 'Transcript final').finalMessage, resultType: 'success', stopReason: 'completed' };
   const restarted = new TeamRuntime({ ...f.options, readLegacyTurns: async () => [recoveredTurn] }); t.after(() => restarted.dispose());
   const migrated = (await restarted.get('web:main')).activation!; assert.equal((await store.read()).version, 3); assert.deepEqual(migrated.messages.map(item => item.status), ['invalidated', 'legacy_unknown']); assert.equal(migrated.works[0]?.result, 'Historic work');
-  assert.match(JSON.stringify(await restarted.inspect(f.actor(migrated), { view: 'turn', participantId: f.a.id, turnId: 'proven-turn' })), /Transcript final/);
+  assert.match(JSON.stringify(await restarted.turns(f.actor(migrated), { participantId: f.a.id, turnId: 'proven-turn' })), /Transcript final/);
 });
 
-test('only send and inspect are visible, descriptions differ by role and identities are server-owned', async t => {
+test('the four Team tools are visible to every role and identities are server-owned', async t => {
   const f = await fixture(t), activation = await f.activate(), actor = f.actor(activation, f.a.id); holdLeader(f);
   const tools = createTeamRuntimeTools(f.runtime, actor, 'teammate'), leaderTools = createTeamRuntimeTools(f.runtime, f.actor(activation), 'leader');
-  assert.deepEqual(tools.map(tool => tool.name), ['team_send_message', 'team_inspect']); assert.match(tools[0]!.description!, /Do not put final work results/); assert.match(leaderTools[0]!.description!, /instructions/); assert.match(tools[1]!.description!, /Message bodies are available only after actual model dispatch/);
-  const send = tools[0]!, context = { sessionId: 'web:main', turnId: 'tool-turn', cwd: '/project', permissionMode: 'default' as const, currentToolCallId: 'call-1', permissionContext: createDefaultPermissionContext({ cwd: '/project', canPrompt: false }) };
+  assert.deepEqual(tools.map(tool => tool.name), ['team_roster', 'team_send_message', 'team_messages', 'team_turns']); assert.deepEqual(leaderTools.map(tool => tool.name), tools.map(tool => tool.name));
+  const send = tools[1]!, context = { sessionId: 'web:main', turnId: 'tool-turn', cwd: '/project', permissionMode: 'default' as const, currentToolCallId: 'call-1', permissionContext: createDefaultPermissionContext({ cwd: '/project', canPrompt: false }) };
   for (const field of ['senderId', 'requestToken', 'replyTo', 'workId']) await assert.rejects(send.execute({ recipientId: f.leader.id, text: 'Question', [field]: 'spoof' }, context), /unsupported field/);
-  const sent = await send.execute({ recipientId: f.leader.id, text: 'Question' }, context) as { data: unknown }; assert.deepEqual(Object.keys(sent.data as object).sort(), ['messageId', 'recipientId', 'status']);
+  const sent = await send.execute({ recipientId: f.leader.id, text: 'Question' }, context) as { data: unknown }; assert.deepEqual(Object.keys(sent.data as object).sort(), ['messageId', 'status']);
   await assert.rejects(f.runtime.send(actor, { recipientId: actor.participantId, text: 'self', requestToken: 'self' }), /another participant/);
-  const permissions = new PermissionRuntime(); context.permissionContext.mode = 'plan'; assert.equal((await permissions.decide(send, {}, context, 'call')).type, 'deny'); assert.equal((await permissions.decide(tools[1]!, {}, context, 'call')).type, 'allow');
+  const permissions = new PermissionRuntime(); context.permissionContext.mode = 'plan'; assert.equal((await permissions.decide(send, {}, context, 'call')).type, 'deny'); assert.equal((await permissions.decide(tools[0]!, {}, context, 'call')).type, 'allow');
   context.permissionContext.mode = 'default'; context.permissionContext.rules.deny.push({ source: 'project', behavior: 'deny', toolName: 'team_send_message' }); assert.equal((await permissions.decide(send, {}, context, 'call')).type, 'deny');
 });
 
-test('runtime and inspect message lists paginate and reject invalid cursors', async t => {
+test('runtime and Team message lists paginate and reject invalid cursors', async t => {
   const f = await fixture(t), activation = await f.activate(); holdLeader(f);
   for (let i = 0; i < 3; i++) await f.runtime.send(f.actor(activation, f.a.id), { recipientId: f.leader.id, text: `Message ${i}`, requestToken: `page-${i}` });
   const first = await f.runtime.execute({ action: 'runtime_get', sessionKey: 'web:main', limit: 2 }) as { activation: TeamRuntimeActivation; messagesNextCursor?: string }; assert.equal(first.activation.messages.length, 2); assert.equal(first.messagesNextCursor, '2');
   const second = await f.runtime.execute({ action: 'runtime_get', sessionKey: 'web:main', limit: 2, messageCursor: first.messagesNextCursor }) as { activation: TeamRuntimeActivation }; assert.equal(second.activation.messages.length, 1); assert.equal(second.activation.messages[0]?.text, 'Message 2');
-  assert.equal((await f.runtime.inspect(f.actor(activation), { view: 'messages', limit: 1 })).nextCursor, '1');
+  const page = await f.runtime.messages(f.actor(activation), { limit: 1 }); assert.ok('nextCursor' in page && page.nextCursor);
   await f.runtime.beginTurn(f.actor(activation, f.a.id), { turnId: 'hold-delete-feedback', trigger: 'human' });
   await f.runtime.deleteMessage(deletion(activation, first.activation.messages[0]!));
   const afterDelete = await f.runtime.execute({ action: 'runtime_get', sessionKey: 'web:main', limit: 2, messageCursor: first.messagesNextCursor }) as { activation: TeamRuntimeActivation };

@@ -204,7 +204,7 @@ test("late human input capacity and persistence failures do not dispatch the req
   assert.equal(persistenceRun.result.result.type, "error");
 });
 
-test("inspecting a pending inbox cannot copy a deleted message into tool history or the next model request", async t => {
+test("inspecting a pending inbox exposes message text while deletion prevents later Team reinjection", async t => {
   const pilotHome = await mkdtemp(path.join(os.tmpdir(), "pilotdeck-inspect-boundary-"));
   const profile = (id: string, role: "leader" | "teammate"): AgentProfile => ({
     id, role, createdAt: "", updatedAt: "", config: {
@@ -241,8 +241,8 @@ test("inspecting a pending inbox cannot copy a deleted message into tool history
       await (await context.dispatchRequest({ request, start: async accepted => { requests.push(structuredClone(accepted)); } })).value;
       if (requests.length === 1) {
         pending = await runtime.send({ ...actor, participantId: leader.id }, { recipientId: teammate.id, text: secret, requestToken: "pending" });
-        yield { type: "tool_call_start", id: "inspect-call", name: "team_inspect" };
-        yield { type: "tool_call_end", toolCall: { id: "inspect-call", name: "team_inspect", input: { view: "messages" } } };
+        yield { type: "tool_call_start", id: "inspect-call", name: "team_messages" };
+        yield { type: "tool_call_end", toolCall: { id: "inspect-call", name: "team_messages", input: { limit: 200 } } };
       } else {
         yield { type: "message_start", role: "assistant" };
         yield { type: "text_delta", text: "done" };
@@ -259,8 +259,8 @@ test("inspecting a pending inbox cannot copy a deleted message into tool history
     const call = calls[0]!, startedAt = new Date().toISOString();
     const output = await registry.get(call.name)!.execute(call.input, context);
     inspected = true;
-    assert.doesNotMatch(JSON.stringify(output), new RegExp(secret));
-    assert.match(JSON.stringify(output), /bodyAvailable.*false/);
+    assert.match(JSON.stringify(output), new RegExp(secret));
+    assert.ok(!JSON.stringify(output).includes("bodyAvailable"));
     assert.equal((await runtime.get(actor.sessionKey)).activation!.messages.find(message => message.id === pending!.id)?.text, secret);
     return [{ type: "success", toolCallId: call.id, toolName: call.name, ...output, startedAt, completedAt: new Date().toISOString() }];
   } } }, context: { prepareForModel: async input => { auxiliary.push(structuredClone(input.messages)); return nullContext.prepareForModel(input); } },
@@ -285,7 +285,7 @@ test("inspecting a pending inbox cannot copy a deleted message into tool history
   while (!(await iterator.next()).done) {}
   assert.equal(inspected, true); assert.equal(removed, true); assert.equal(requests.length, 2);
   assert.ok(durable.some(message => message.content.some(block => block.type === "tool_result" && block.toolCallId === "inspect-call")));
-  assert.doesNotMatch(JSON.stringify({ requests, durable, auxiliary }), new RegExp(secret));
+  assert.match(JSON.stringify({ requests, durable, auxiliary }), new RegExp(secret));
   const stored = (await runtime.get(actor.sessionKey)).activation!;
   assert.equal(stored.messages.find(message => message.id === pending!.id)?.status, "deleted");
   assert.ok(stored.dispatches?.every(dispatch => !dispatch.messageIds.includes(pending!.id)));

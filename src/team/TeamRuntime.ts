@@ -5,7 +5,7 @@ import { TeamRuntimeStore, type RuntimeState } from './runtimeStore.js';
 import { normalizeTeamInteractionResponse, type NormalizedTeamResponse } from './humanInteraction.js';
 import type { ProfileRef } from './types.js';
 import type { AgentTurnResult } from '../agent/protocol/result.js';
-import type { TeamHumanInteraction, TeamHumanInteractionKind, TeamInspectInput, TeamMessageDeleteResult, TeamRuntimeActivation, TeamRuntimeCommand, TeamRuntimeCommandResult, TeamRuntimeInteractionResponse, TeamRuntimeMessage, TeamRuntimeOptions, TeamRuntimeParticipantMessages, TeamRuntimeProbe, TeamRuntimeTurn, TeamRuntimeView, TeamRuntimeWork } from './runtimeTypes.js';
+import type { TeamHumanInteraction, TeamHumanInteractionKind, TeamMessageDeleteResult, TeamMessagesInput, TeamMessageProjection, TeamMessagesResult, TeamRosterResult, TeamRuntimeActivation, TeamRuntimeCommand, TeamRuntimeCommandResult, TeamRuntimeInteractionResponse, TeamRuntimeMessage, TeamRuntimeOptions, TeamRuntimeParticipantMessages, TeamRuntimeProbe, TeamRuntimeTurn, TeamRuntimeView, TeamRuntimeWork, TeamTurnsInput, TeamTurnsResult, TeamTurnProjection } from './runtimeTypes.js';
 
 export type TeamRuntimeActor = { sessionKey: string; activationId: string; participantId: string; stopVersion: number };
 const now = () => new Date().toISOString();
@@ -319,48 +319,105 @@ export class TeamRuntime {
     } catch (error) { await update(error instanceof Error ? error.message : String(error)); }
   }
 
-  async inspect(actor: TeamRuntimeActor, input: TeamInspectInput = {}): Promise<Record<string, unknown>> {
+  async roster(actor: TeamRuntimeActor): Promise<TeamRosterResult> {
+    await this.ready;
+    const { activation } = this.actor(await this.store.read(), actor, false);
+    const participants: TeamRosterResult['participants'] = activation.participants.map(participant => {
+      const turns = (activation.turns ?? [])
+        .filter(turn => turn.participantId === participant.id)
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.turnId.localeCompare(b.turnId));
+      const active = turns.find(liveTurn);
+      return {
+        id: participant.id,
+        role: participant.role,
+        displayName: participant.profile.config.displayName,
+        status: activation.status !== 'active' ? activation.status : active?.status ?? 'idle',
+        latestTurnId: turns.at(-1)?.turnId ?? null,
+      };
+    });
+    return { participants };
+  }
+
+  async messages(actor: TeamRuntimeActor, input: TeamMessagesInput = {}): Promise<TeamMessagesResult> {
     await this.ready;
     const { activation, participant } = this.actor(await this.store.read(), actor, false);
-    const view = input.view ?? 'overview';
-    if (!['overview', 'turns', 'turn', 'messages'].includes(view)) fail('TEAM_INVALID_INPUT', 'Choose overview, turns, turn or messages.');
-    if (input.turnId && view !== 'turn') fail('TEAM_INVALID_INPUT', 'turnId is only accepted for the turn view.');
-    const limit = input.limit ?? 50;
+    if (input.messageId !== undefined && (input.cursor !== undefined || input.limit !== undefined)) fail('TEAM_INVALID_INPUT', 'messageId cannot be combined with pagination parameters.');
+    if (input.messageId !== undefined) text(input.messageId, 'messageId', { max: 500 });
+    const limit = input.limit ?? 5;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.');
-    const offset = input.cursor ? Number(input.cursor) : 0;
-    if (!Number.isSafeInteger(offset) || offset < 0) fail('TEAM_INVALID_INPUT', 'cursor is invalid.');
-    const target = input.participantId ? activation.participants.find(p => p.id === input.participantId) : undefined;
-    if (input.participantId && !target) fail('TEAM_RECIPIENT_INVALID', 'Choose a participant from this Team.');
-    const page = <T>(items: T[]) => ({ items: clone(items.slice(offset, offset + limit)), ...(offset + limit < items.length ? { nextCursor: String(offset + limit) } : {}) });
-    if (view === 'overview') {
-      if (input.turnId) fail('TEAM_INVALID_INPUT', 'Overview does not return execution output.');
-      return { view, participants: activation.participants.filter(p => !target || p.id === target.id).map(p => {
-        const turns = (activation.turns ?? []).filter(turn => turn.participantId === p.id);
-        const active = turns.find(liveTurn);
-        return { id: p.id, role: p.role, displayName: p.profile.config.displayName, description: p.profile.config.description, status: activation.status !== 'active' ? activation.status : active?.status ?? 'idle', latestTurnId: turns.at(-1)?.turnId, turnCount: turns.length, pendingMessageCount: activation.messages.filter(m => m.recipientId === p.id && pendingMessage(m)).length };
-      }) };
+    const visible = activation.messages.filter(message => participant.role === 'leader' || message.senderId === participant.id || message.recipientId === participant.id);
+    const sorted = visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    if (input.messageId !== undefined) {
+      const message = sorted.find(item => item.id === input.messageId);
+      if (!message) fail('TEAM_MESSAGE_NOT_FOUND', 'This message is not available.');
+      return { message: this.projectMessage(activation, message!) };
     }
-    if (view === 'messages') {
-      const result = page(activation.messages.filter(message => (participant.role === 'leader' || message.senderId === participant.id || message.recipientId === participant.id) && (!target || message.senderId === target.id || message.recipientId === target.id)));
-      const items = result.items.filter(message => message.status !== 'deleted').map(message => {
-        const { text: body, error: _error, owner: _owner, ...metadata } = message;
-        return message.status === 'consumed'
-          ? { ...metadata, text: body, bodyAvailable: true }
-          : { ...metadata, bodyAvailable: false, bodyUnavailableReason: 'Message body is available only after actual model dispatch.' };
-      });
-      return { view, ...result, items };
+    const boundary = input.cursor === undefined ? undefined : this.decodeCursor(input.cursor, 'message');
+    const candidates = sorted
+      .filter(message => ['queued', 'preparing', 'sending', 'consumed', 'delivered'].includes(message.status))
+      .filter(message => !boundary || message.createdAt < boundary.createdAt || message.createdAt === boundary.createdAt && message.id < boundary.id);
+    const page = candidates.slice(0, limit);
+    return { items: page.map(message => this.projectMessage(activation, message)), ...(page.length === limit && page.length < candidates.length ? { nextCursor: this.encodeCursor('message', page.at(-1)!) } : {}) };
+  }
+
+  async turns(actor: TeamRuntimeActor, input: TeamTurnsInput): Promise<TeamTurnsResult> {
+    await this.ready;
+    const { activation, participant } = this.actor(await this.store.read(), actor, false);
+    text(input.participantId, 'participantId', { max: 500 });
+    if (input.turnId !== undefined && (input.cursor !== undefined || input.limit !== undefined)) fail('TEAM_INVALID_INPUT', 'turnId cannot be combined with pagination parameters.');
+    const target = activation.participants.find(item => item.id === input.participantId);
+    if (!target || target.role !== 'teammate') fail('TEAM_TURN_FORBIDDEN', 'Only Teammate turns are available through team_turns.');
+    if (target!.id === participant.id) fail('TEAM_TURN_FORBIDDEN', 'A participant cannot query its own turn.');
+    if (input.turnId !== undefined) text(input.turnId, 'turnId', { max: 500 });
+    const targetTurns = (activation.turns ?? []).filter(turn => turn.participantId === target!.id).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.turnId.localeCompare(a.turnId));
+    if (input.turnId !== undefined) {
+      const turn = targetTurns.find(item => item.turnId === input.turnId);
+      if (!turn) fail('TEAM_TURN_NOT_FOUND', 'This execution turn is not available.');
+      const projected = this.projectTurn(activation, turn!, true);
+      const finalMessage = projected.finalMessage;
+      if (liveTurn(turn!) || !finalMessage) delete projected.finalMessage;
+      return { turn: projected, finalResultAvailable: !liveTurn(turn!) && !!finalMessage };
     }
-    if (!target) fail('TEAM_INVALID_INPUT', 'participantId is required to query execution turns.');
-    if (view === 'turns') {
-      if (participant.role !== 'leader' && target!.id !== participant.id) fail('TEAM_INSPECT_FORBIDDEN', 'A Teammate can list only its own execution turns.');
-      return { view, participantId: target!.id, ...page((activation.turns ?? []).filter(turn => turn.participantId === target!.id).map(({ finalMessage: _output, error: _error, owner: _owner, ...summary }) => summary)) };
+    const limit = input.limit ?? 5;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) fail('TEAM_INVALID_INPUT', 'limit must be between 1 and 200.');
+    const boundary = input.cursor === undefined ? undefined : this.decodeCursor(input.cursor, 'turn');
+    const candidates = targetTurns.filter(turn => !boundary || turn.startedAt < boundary.createdAt || turn.startedAt === boundary.createdAt && turn.turnId < boundary.id);
+    const page = candidates.slice(0, limit);
+    return { participantId: target!.id, items: page.map(turn => { const projected = this.projectTurn(activation, turn, false); delete projected.finalMessage; return projected; }), ...(page.length === limit && page.length < candidates.length ? { nextCursor: this.encodeCursor('turn', page.at(-1)!) } : {}) };
+  }
+
+  private encodeCursor(kind: 'message' | 'turn', item: TeamRuntimeMessage | TeamRuntimeTurn): string {
+    const value = { kind, createdAt: 'createdAt' in item ? item.createdAt : item.startedAt, id: 'createdAt' in item ? item.id : item.turnId };
+    return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+  }
+  private decodeCursor(cursor: string, kind: 'message' | 'turn'): { createdAt: string; id: string } {
+    let value: unknown;
+    try { value = JSON.parse(Buffer.from(text(cursor, 'cursor', { max: 500 }), 'base64url').toString('utf8')); } catch { fail('TEAM_INVALID_INPUT', 'cursor is invalid.'); }
+    if (!value || typeof value !== 'object' || (value as { kind?: unknown }).kind !== kind || typeof (value as { createdAt?: unknown }).createdAt !== 'string' || typeof (value as { id?: unknown }).id !== 'string') fail('TEAM_INVALID_INPUT', 'cursor is invalid.');
+    return value as { createdAt: string; id: string };
+  }
+  private projectMessage(activation: TeamRuntimeActivation, message: TeamRuntimeMessage): TeamMessageProjection {
+    const projected: TeamMessageProjection = { id: message.id, senderId: message.senderId, recipientId: message.recipientId, kind: message.kind ?? 'member', status: message.status, text: message.text, createdAt: message.createdAt };
+    if (message.turnId) {
+      const turn = activation.turns?.find(item => item.turnId === message.turnId);
+      if (turn) projected.turn = { turnId: turn.turnId, status: turn.status };
     }
-    if (participant.role !== 'leader' || target!.role !== 'teammate') fail('TEAM_INSPECT_FORBIDDEN', 'Only the Leader can read a Teammate execution result.');
-    if (!input.turnId) fail('TEAM_INVALID_INPUT', 'turnId is required to read an execution result.');
-    const turn = activation.turns?.find(item => item.participantId === target!.id && item.turnId === input.turnId);
-    if (!turn) fail('TEAM_TURN_NOT_FOUND', 'This execution turn is not available.');
-    const { owner: _owner, ...result } = turn!;
-    return clone({ view, turn: result, finalResultAvailable: !liveTurn(turn!) && !!turn!.finalMessage });
+    return projected;
+  }
+  private projectFinalMessage(message: AgentTurnResult['finalMessage']): import('./runtimeTypes.js').TeamFinalMessage | undefined {
+    if (!message || message.role !== 'assistant' || message.content.some(block => block.type === 'tool_call' || block.type === 'tool_result' || block.type === 'tool_result_reference')) return undefined;
+    const content = message.content.filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text' && block.text.length > 0).map(block => ({ type: 'text' as const, text: block.text }));
+    return content.length ? { role: 'assistant', content } : undefined;
+  }
+  private projectTurn(activation: TeamRuntimeActivation, turn: TeamRuntimeTurn, includeFinal: boolean): TeamTurnProjection {
+    const ids = [...new Set([...(turn.triggerMessageIds ?? turn.pendingMessageIds ?? []), ...turn.messageIds])];
+    const messages = ids.map(id => activation.messages.find(message => message.id === id)).filter((message): message is TeamRuntimeMessage => !!message).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).map(message => this.projectMessage(activation, message));
+    const projected: TeamTurnProjection = { turnId: turn.turnId, status: turn.status, trigger: turn.trigger, startedAt: turn.startedAt, ...(turn.endedAt ? { endedAt: turn.endedAt } : {}), messages };
+    if (includeFinal) {
+      const finalMessage = this.projectFinalMessage(turn.finalMessage);
+      if (finalMessage) projected.finalMessage = finalMessage;
+    }
+    return projected;
   }
   /** Persist a Teammate request before it is exposed to a host UI. */
   async createInteraction(input: {
@@ -528,7 +585,7 @@ export class TeamRuntime {
           if (input.trigger === 'human' && live.trigger === 'messages' && live.status === 'preparing' && this.drains.has(key)) return { wait: key };
           fail('TEAM_PARTICIPANT_BUSY', 'This participant already has an active execution.');
         }
-        const turn: TeamRuntimeTurn = { turnId: input.turnId, participantId: actor.participantId, stopVersion: actor.stopVersion, trigger: input.trigger, status: 'preparing', startedAt: now(), messageIds: [], requestIds: [], owner: { pid: process.pid, instanceId: this.instanceId, executionId: input.turnId } };
+        const turn: TeamRuntimeTurn = { turnId: input.turnId, participantId: actor.participantId, stopVersion: actor.stopVersion, trigger: input.trigger, status: 'preparing', startedAt: now(), messageIds: [], requestIds: [], triggerMessageIds: [], owner: { pid: process.pid, instanceId: this.instanceId, executionId: input.turnId } };
         (activation.turns ??= []).push(turn); activation.updatedAt = now();
         return { turn: clone(turn) };
       });
@@ -557,7 +614,7 @@ export class TeamRuntime {
       const emptyCancelled = !turn.requestIds.length && !turn.error && (!result || result.type === 'success');
       if (active && !options.retry && !emptyCancelled && participant?.role === 'teammate') {
         const leader = activation.participants.find(item => item.role === 'leader')!;
-        this.systemMessage(activation, leader.id, 'turn_ended', `${participant.profile.config.displayName} 的执行轮次 ${turnId} 已结束，原因：${turn.stopReason}。请调用 team_inspect，指定 view=turn、participantId=${participant.id}、turnId=${turnId} 查看工作结果。`, { sourceTurnId: turnId });
+        this.systemMessage(activation, leader.id, 'turn_ended', `${participant.profile.config.displayName} 的执行轮次 ${turnId} 已结束，原因：${turn.stopReason}。请调用 team_turns，并指定 participantId=${participant.id}、turnId=${turnId} 查看该 turn 的消息和最终回复。`, { sourceTurnId: turnId });
       }
       activation.updatedAt = now();
     });
@@ -588,6 +645,8 @@ export class TeamRuntime {
       if (!turn || !liveTurn(turn)) fail('TEAM_TURN_NOT_RUNNING', 'This execution is no longer active.');
       if (!accepted.length && turn!.trigger === 'messages' && !turn!.requestIds.length && !input.hasHumanInput) fail('TEAM_EMPTY_BATCH', 'The pending messages were removed before this execution could start.');
       turn!.pendingMessageIds = accepted.filter(pendingMessage).map(message => message.id);
+      (turn!.triggerMessageIds ??= []);
+      for (const message of accepted) if (!turn!.triggerMessageIds.includes(message.id)) turn!.triggerMessageIds.push(message.id);
       const dispatch = { requestId: input.requestId, attemptId, participantId: actor.participantId, turnId: input.turnId, stopVersion: actor.stopVersion, messageIds: accepted.map(message => message.id), status: 'sending' as const, startedAt: now() };
       (activation.dispatches ??= []).push(dispatch);
       const originalStatuses = new Map(accepted.map(message => [message.id, message.status]));
@@ -751,7 +810,7 @@ export class TeamRuntime {
       const turnId = randomUUID();
       const owner = { pid: process.pid, instanceId: this.instanceId, executionId: turnId };
       for (const message of messages) { message.status = 'preparing'; message.owner = owner; }
-      (activation.turns ??= []).push({ turnId, participantId, stopVersion, trigger: 'messages', status: 'preparing', startedAt: now(), messageIds: [], requestIds: [], pendingMessageIds: messages.map(message => message.id), owner });
+      (activation.turns ??= []).push({ turnId, participantId, stopVersion, trigger: 'messages', status: 'preparing', startedAt: now(), messageIds: [], requestIds: [], pendingMessageIds: messages.map(message => message.id), triggerMessageIds: messages.map(message => message.id), owner });
       const isolated = clone(activation);
       if (participant.role !== 'leader') {
         isolated.works = isolated.works.filter(work => work.participantId === participantId);

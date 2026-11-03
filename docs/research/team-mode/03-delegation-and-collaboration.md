@@ -27,7 +27,7 @@ Leader 会话里有 15 个以 `team_` 开头的工具。普通会话没有这些
 | `team_list_members` | 列出所有成员 | 每个成员的实例编号、模板、标签、状态、会话编号 |
 | `team_inspect_config` | 查看一个成员的生效配置 | 模型、工具、技能、外部服务、文件权限规则、当前治理模式、环境要求状态 |
 | `team_collect` | 查询已派出任务的结果（见第 4 节） | 每个任务：运行中 / 成功 / 失败 / 不可用 |
-| `team_inspect`（PilotDeck 对应入口） | 读取成员名单及当前角色可见的任务、消息 | 当前运行成员、任务与消息摘要；完整 PilotDeck 工具表见使用说明 |
+| `team_roster`、`team_messages`、`team_turns`（PilotDeck 对应入口） | 读取成员名单、消息和 Teammate 轮次 | PilotDeck 的四个 Team 工具及权限边界见使用说明 |
 
 ### 2.2 执行类（会改变团队状态）
 

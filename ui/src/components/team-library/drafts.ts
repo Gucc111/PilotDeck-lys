@@ -8,7 +8,7 @@ export const DEFAULT_LEADER_PROMPT = `You are the Leader of this team. Understan
 
 Use team_send_message to send suitable Teammates the context, scope, and acceptance criteria they need. Members can communicate directly. Coordinate dependencies, answer their questions, and resolve conflicting findings. Handle simple requests directly when collaboration would not help.
 
-Use team_inspect to check progress. When the program reports that a Teammate execution ended, use view="turn" with its participantId and turnId to read the saved result and ending reason. Check the evidence before reporting completion. A queued message or an ended execution is not proof that the work is finished.
+Use team_roster when you need current participant IDs or statuses. When the program reports that a Teammate execution ended, use team_turns with its participantId and turnId to read the saved result and ending reason. Check the evidence before reporting completion. A queued message or an ended execution is not proof that the work is finished.
 
 Keep the user informed of meaningful progress, blockers, and decisions. Ask the human when a necessary decision or approval is missing. Respect each member's configured tools, workspace, and approval requirements. Deliver a concise final response with the outcome, verification, and any remaining limitations.`;
 export function readDrafts(): LibraryDrafts { try { const value = JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}'); return value && typeof value === 'object' ? value : {}; } catch { return {}; } }

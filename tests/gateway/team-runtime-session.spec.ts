@@ -75,7 +75,7 @@ test('Team binds current conversation with frozen persona/model/capabilities and
   const request = f.requests[0]!;
   assert.equal(request.model, 'leader'); assert.match(request.systemPrompt!, /You are PilotDeck/); assert.match(request.systemPrompt!, /ROLE_MARKER_leader/); assert.match(request.systemPrompt!, /TEAM_MARKER/);
   assert.ok(request.tools?.some(tool => tool.name === 'team_send_message')); assert.ok(request.tools?.some(tool => tool.name === 'get_current_time'));
-  assert.deepEqual(request.tools?.filter(tool => tool.name.startsWith('team_')).map(tool => tool.name).sort(), ['team_inspect', 'team_send_message']);
+  assert.deepEqual(request.tools?.filter(tool => tool.name.startsWith('team_')).map(tool => tool.name).sort(), ['team_messages', 'team_roster', 'team_send_message', 'team_turns']);
   assert.ok(!request.tools?.some(tool => ['bash', 'agent', 'task_create', 'read_skill'].includes(tool.name)));
   await f.restart(); await f.submit({ runId: 'two' });
   assert.equal(f.requests.at(-1)!.model, 'leader'); assert.match(f.requests.at(-1)!.systemPrompt!, /ROLE_MARKER_leader/);
@@ -121,8 +121,8 @@ test('Leader enters Plan with configured tools, reads a member turn and cannot s
       } else if (planning) {
         call = [
           { name: 'enter_plan_mode', input: {} },
-          { name: 'team_inspect', input: {} },
-          { name: 'team_inspect', input: { view: 'turn', participantId: f.worker.id, turnId } },
+          { name: 'team_roster', input: {} },
+          { name: 'team_turns', input: { participantId: f.worker.id, turnId } },
           { name: 'team_send_message', input: { recipientId: f.worker.id, text: 'blocked' } },
         ][step++];
       }
@@ -144,10 +144,10 @@ test('Leader enters Plan with configured tools, reads a member turn and cannot s
   const events = await f.submit({ runId: 'plan-turn' });
   assert.deepEqual(events.filter(event => event.type === 'error'), []);
   const results = events.filter(event => event.type === 'tool_call_finished');
-  for (const name of ['enter_plan_mode', 'team_inspect']) {
+  for (const name of ['enter_plan_mode', 'team_turns']) {
     assert.ok(results.some(event => event.toolName === name && event.ok), `${name} succeeds`);
   }
-  assert.ok(results.some(event => event.toolName === 'team_inspect' && event.resultPreview?.includes('SAVED_TEAM_RESULT')));
+  assert.ok(results.some(event => event.toolName === 'team_turns' && event.resultPreview?.includes('SAVED_TEAM_RESULT')));
   for (const name of ['team_send_message']) {
     assert.ok(results.some(event => event.toolName === name && !event.ok && event.resultPreview?.includes('PLAN_MODE_VIOLATION')), `${name} stays blocked`);
   }
@@ -419,7 +419,7 @@ test('same-workspace member message reaches busy Leader before next LLM without 
       yield { type: 'tool_call_start', id: 'send', name: 'team_send_message' };
       yield { type: 'tool_call_end', toolCall: { id: 'send', name: 'team_send_message', input: { recipientId: f.worker.id, text: 'inspect' } } }; return;
     }
-    if (leaderCalls === 2) { leaderWaiting.resolve(); await releaseLeader.promise; yield { type: 'tool_call_start', id: 'overview', name: 'team_inspect' }; yield { type: 'tool_call_end', toolCall: { id: 'overview', name: 'team_inspect', input: {} } }; return; }
+    if (leaderCalls === 2) { leaderWaiting.resolve(); await releaseLeader.promise; yield { type: 'tool_call_start', id: 'overview', name: 'team_roster' }; yield { type: 'tool_call_end', toolCall: { id: 'overview', name: 'team_roster', input: {} } }; return; }
     yield { type: 'text_delta', text: 'leader continues' };
   });
   const { activation } = await f.select(); const events: GatewayEvent[] = [];
@@ -451,7 +451,7 @@ test('running member receives coordination in its current execution turn', async
   const f = await fixture(t, []); const workerWaiting = gate(), releaseWorker = gate(), allowMessage = gate(); let leaderCalls = 0, workerCalls = 0;
   f.setResponse(async function* (request) {
     if (request.model === 'worker') {
-      if (++workerCalls === 1) { workerWaiting.resolve(); await releaseWorker.promise; yield { type: 'tool_call_start', id: 'worker-overview', name: 'team_inspect' }; yield { type: 'tool_call_end', toolCall: { id: 'worker-overview', name: 'team_inspect', input: {} } }; return; }
+      if (++workerCalls === 1) { workerWaiting.resolve(); await releaseWorker.promise; yield { type: 'tool_call_start', id: 'worker-overview', name: 'team_roster' }; yield { type: 'tool_call_end', toolCall: { id: 'worker-overview', name: 'team_roster', input: {} } }; return; }
       yield {type:'text_delta',text:'member final'}; return;
     }
     if (++leaderCalls === 1) {
