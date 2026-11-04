@@ -82,12 +82,17 @@ export default function TeamModeControls({ mode, onCreateProject }: { mode: Team
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
   }, [mode.activation, navigation, interactionPanelKey]);
+  // Historical Team runs are evidence that a conversation used Team mode, but
+  // they do not make the current execution mode Team. Keep the strip tied to
+  // the current Team selection so switching back to a normal model restores
+  // the ordinary composer.
+  const teamSelected = Boolean(mode.selectedTeam);
   return <>
-    {(mode.selectedTeam || mode.history.length > 0 || mode.loading || mode.error) && <div className="team-mode-strip" aria-live="polite">
-      <Users size={14}/><span className="team-mode-strip-name">{mode.selectedTeam?.config.displayName || (mode.history.length ? t('teamMode.history') : t('teamMode.loading'))}</span>
-      <span>{!mode.selectedTeam && mode.history.length ? '' : mode.loading ? t('teamMode.loading') : mode.activation?.status === 'stopping' ? t('teamMode.stopping') : mode.activation?.stopReason === 'restart' && mode.activation.status === 'stopped' ? t('teamMode.restartInterrupted') : mode.working ? t('teamMode.working') : mode.activation?.status === 'stopped' ? t('teamMode.stopped') : t('teamMode.ready')}</span>
-      {(mode.selectedTeam || mode.history.length > 0) && <button type="button" onClick={() => { mode.setPanelOpen(true); void mode.refresh(); }}>{t('teamMode.details')}</button>}
-      {(mode.selectedTeam || mode.history.length > 0) && <button type="button" onClick={openInteractionPanel} aria-label={t('teamInteractions.title')}>{t('teamInteractions.title')}{(mode.interactions || []).filter(item => item.status === 'pending').length ? ` · ${(mode.interactions || []).filter(item => item.status === 'pending').length}` : ''}</button>}
+    {teamSelected && <div className="team-mode-strip" aria-live="polite">
+      <Users size={14}/>
+      <span>{mode.loading ? t('teamMode.loading') : mode.activation?.status === 'stopping' ? t('teamMode.stopping') : mode.activation?.stopReason === 'restart' && mode.activation.status === 'stopped' ? t('teamMode.restartInterrupted') : mode.working ? t('teamMode.working') : mode.activation?.status === 'stopped' ? t('teamMode.stopped') : t('teamMode.ready')}</span>
+      <button type="button" onClick={() => { mode.setPanelOpen(true); void mode.refresh(); }}>{t('teamMode.details')}</button>
+      <button type="button" onClick={openInteractionPanel} aria-label={t('teamInteractions.title')}>{t('teamInteractions.title')}{(mode.interactions || []).filter(item => item.status === 'pending').length ? ` · ${(mode.interactions || []).filter(item => item.status === 'pending').length}` : ''}</button>
       {mode.error && <div role="alert" className="team-mode-error">{mode.error}<button type="button" onClick={() => void mode.refresh()}>{t('teamMode.retry')}</button></div>}
     </div>}
     {choiceNeedsConfirmation && choice && <TeamDialog title={t('teamMode.enter', { name: choice.team.config.displayName })} onClose={mode.cancelChoice}>

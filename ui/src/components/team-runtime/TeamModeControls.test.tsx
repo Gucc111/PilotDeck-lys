@@ -105,6 +105,24 @@ it('shows both members as stopping and uses human names for actual pending execu
   expect(dialog.textContent).not.toContain('reviewer-uuid');
 });
 
+it('does not show Team controls for a normal session with historical Team runs', () => {
+  render(<TeamModeControls mode={choiceMode({ history: [activation] })}/>);
+
+  expect(document.querySelector('.team-mode-strip')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'teamMode.details' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'teamInteractions.title' })).toBeNull();
+  expect(screen.queryByText('teamMode.ready')).toBeNull();
+});
+
+it('shows Team status controls without duplicating the selected Team name', () => {
+  render(<TeamModeControls mode={choiceMode({ activation, history: [], selectedTeam: activation.team })}/>);
+
+  expect(document.querySelector('.team-mode-strip')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'teamMode.details' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'teamInteractions.title' })).toBeTruthy();
+  expect(screen.queryByText(activation.team.config.displayName)).toBeNull();
+});
+
 it('places Team interaction next to details and restores the panel after returning', () => {
   sessionStorage.clear();
   const mode = { activation, interactions: [], history: [], selectedTeam: activation.team, panelOpen: false, setPanelOpen: vi.fn(), refresh: vi.fn() } as unknown as TeamModeState;
