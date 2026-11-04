@@ -1,11 +1,6 @@
 ---
 name: pilotdeck-team-config
-description: >-
-  Create, inspect, validate, and edit PilotDeck Leader, Teammate, and Team
-  configurations through the local Gateway team_command API. Use when the user
-  asks to create a team, define or edit a Leader or Teammate, assemble roles
-  into a Team, review existing Team configuration, or validate a Team before
-  activation. Do not edit team-library/state.json directly.
+description: Create, inspect, validate, and edit PilotDeck Leader, Teammate, and Team configurations through the local Gateway team_command API. Use when the user asks to create a team, define or edit a Leader or Teammate, assemble roles into a Team, review existing Team configuration, or validate a Team before activation. Do not edit team-library/state.json directly.
 ---
 
 # PilotDeck Team Configuration
@@ -17,7 +12,8 @@ not be edited by hand.
 
 ## Operating rules
 
-- Work through Gateway RPC method `team_command`.
+- Save through Gateway RPC method `team_command`; use the helper discovery
+  actions below to find models and projects without reading secret files.
 - Use the bundled `scripts/team-command.mjs` helper for Gateway WebSocket calls.
 - Read the current library before editing an existing object. Match by `id`, not
   by display name.
@@ -40,23 +36,43 @@ not be edited by hand.
 
 ### 1. Understand the requested Team
 
-Extract or ask for these details when they are missing:
+Start from the user's purpose, work, and approximate member descriptions. A request
+such as “Create a document review team; arrange the members for me” is enough.
+Design the roster, responsibilities, role system prompts, coordination instructions,
+and deliverables yourself. Do not require the user to write system prompts,
+provide API fields, choose internal identifiers, or tell you to validate saves.
+Ask only about business choices that materially change the requested result.
 
-- Team display name, purpose, and coordination instructions.
-- Leader responsibilities and system prompt.
-- Each Teammate's display name, responsibility, system prompt, and expected
-  deliverables.
-- Model provider and model for each profile. Use the exact configured provider
-  and model identifiers.
-- Workspace mode: `team` to inherit the selected Team project, or `fixed` with
-  an existing absolute directory for a Teammate.
-- Tools, skills, and MCP servers each profile may use.
-- Team default project, as an absolute path or `null`.
+Discover defaults and capabilities with the helper, using one call per input:
 
-Do not silently choose a model, workspace, capability, or existing object when
-that choice changes behavior. If the user gives a clear creation request, the
-request authorizes the corresponding non-destructive saves; ask before
-replacing an unrelated existing Team or deleting anything.
+```json
+{"action":"models"}
+{"action":"projects"}
+{"action":"inventory"}
+```
+
+- `models` calls `model_catalog_list` and returns configured model identifiers
+  and `defaultSelection` without credentials. Unless the user requests a
+  particular model, use that default explicitly for each new profile. Never
+  select an arbitrary catalog model just because its name sounds suitable.
+  If the default is unavailable or is known to have failed in this conversation,
+  use the current conversation's successful model if its exact identifiers are
+  known and listed; otherwise ask for a model choice. Do not read `pilotdeck.yaml`,
+  token files, or provider secrets to discover models.
+- `projects` calls `list_projects`. Use the returned `projectKey` as the registered
+  Gateway project key; do not invent one from a directory slug. An absolute
+  directory is not necessarily a registered project. Do not inspect internal
+  project registries or source code to resolve a missing project.
+- Choose only capabilities returned by `inventory` that serve the requested
+  work. Do not assume a search tool or MCP server exists. Explain any material
+  limitation, such as a fact checker that cannot browse external sources.
+- Default workspace to `{"mode":"team"}`, permissions to `default`, and Team
+  `defaultProjectKey` to `null` when the user has not selected a project. Creating
+  a reusable Team in a general conversation does not require a project.
+
+A clear creation or editing request authorizes its non-destructive saves. Briefly
+explain the resulting member responsibilities and material defaults in your reply.
+Ask before replacing an unrelated Team or deleting anything.
 
 ### 2. Inspect the existing library
 
@@ -76,7 +92,8 @@ new Team, create new profiles unless they explicitly request reuse.
 ### 3. Create or edit profiles
 
 Use `profile_save`. Omit `id` to create a profile; include the existing `id`
-to edit it. A valid profile has this shape:
+to edit it. Saves replace the full configuration: on edits preserve every existing
+field that the user did not ask to change. A valid profile has this shape:
 
 ```json
 {
@@ -160,23 +177,37 @@ JSON
 Confirm the returned object by ID, display the resulting roster, and state
 whether the operation created or edited the profile/Team.
 
-When readiness matters, probe the Team against a project:
+Only probe when a registered project is selected and readiness matters. If the
+user only asked to create/edit a reusable Team in a general conversation, finish
+after readback and report that execution readiness has not been checked. Do not
+register a project or launch Team execution solely to complete configuration.
+If a probe returns a project error, stop probing and explain that a project must
+be selected before execution; do not retry guessed paths or keys.
+
+Probe against the registered project key returned by `projects`:
 
 ```bash
 node /absolute/path/to/pilotdeck-team-config/scripts/team-command.mjs <<'JSON'
 {
   "action": "runtime_probe",
   "team": {"id": "<team-id>"},
-  "projectKey": "/absolute/path/to/project"
+  "projectKey": "<registered-project-key>"
 }
 JSON
 ```
 
 Report every probe issue. In particular, distinguish missing capabilities,
 unavailable models, invalid workspaces, MCP configuration errors, and a clean
-probe. Do not call a Team ready merely because `team_save` succeeded.
+probe. A clean probe checks local configuration and credentials, not remote model
+service health or actual task execution. Do not call a Team operational merely
+because `team_save` or `runtime_probe` succeeded.
 
 ## API action guide
+
+Helper-only read actions (not `team_command` actions): `models` lists the safe
+model catalog and default; `projects` lists registered projects. Neither accepts
+additional fields.
+
 
 - `library`: list current profiles and Teams.
 - `profile_save`: create or edit a Leader or Teammate.

@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import WebSocket from "ws";
 
 const DEFAULT_URL = "ws://127.0.0.1:18789/ws";
-const PROTOCOL_VERSION = "1.0";
+const PROTOCOL_VERSION = "1.1";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 function usage(message) {
@@ -58,7 +58,7 @@ function waitForOpen(ws, timeoutMs = REQUEST_TIMEOUT_MS) {
     };
     const onOpen = () => { cleanup(); resolvePromise(); };
     const onError = () => { cleanup(); reject(new Error("Gateway WebSocket reported an error while opening.")); };
-    const onClose = (event) => { cleanup(); reject(new Error(`Gateway WebSocket closed before opening (${event.code || "unknown"}).`)); };
+    const onClose = (event) => { cleanup(); reject(new Error(`Gateway WebSocket closed before opening (${event.code || "unknown"}${event.reason ? `: ${event.reason}` : ""}).`)); };
     timer = setTimeout(() => { cleanup(); reject(new Error("Gateway WebSocket open timed out.")); }, timeoutMs);
     ws.addEventListener("open", onOpen);
     ws.addEventListener("error", onError);
@@ -84,7 +84,7 @@ function waitForMessage(ws, predicate, timeoutMs = REQUEST_TIMEOUT_MS) {
       resolvePromise(frame);
     };
     const onError = () => { cleanup(); reject(new Error("Gateway WebSocket reported an error.")); };
-    const onClose = (event) => { cleanup(); reject(new Error(`Gateway WebSocket closed (${event.code || "unknown"}).`)); };
+    const onClose = (event) => { cleanup(); reject(new Error(`Gateway WebSocket closed (${event.code || "unknown"}${event.reason ? `: ${event.reason}` : ""}).`)); };
     timer = setTimeout(() => { cleanup(); reject(new Error("Gateway request timed out.")); }, timeoutMs);
     ws.addEventListener("message", onMessage);
     ws.addEventListener("error", onError);
@@ -92,7 +92,7 @@ function waitForMessage(ws, predicate, timeoutMs = REQUEST_TIMEOUT_MS) {
   });
 }
 
-async function request(url, token, params) {
+async function request(url, token, method, params) {
   const ws = new WebSocket(url);
   try {
     await waitForOpen(ws);
@@ -100,18 +100,18 @@ async function request(url, token, params) {
     ws.send(JSON.stringify({
       type: "hello",
       protocolVersion: PROTOCOL_VERSION,
-      clientName: "pilotdeck-team-config-skill",
+      clientName: "cli",
       clientVersion: "1.0.0",
       token,
     }));
     await helloPromise;
     const id = randomUUID();
     const responsePromise = waitForMessage(ws, (frame) => frame?.type === "response" && frame.id === id);
-    ws.send(JSON.stringify({ type: "request", id, method: "team_command", params }));
+    ws.send(JSON.stringify({ type: "request", id, method, params }));
     const response = await responsePromise;
     if (!response.ok) {
       const error = response.error || {};
-      const failure = new Error(error.message || "Gateway rejected team_command.");
+      const failure = new Error(error.message || `Gateway rejected ${method}.`);
       failure.code = error.code;
       failure.details = error.details;
       throw failure;
@@ -127,7 +127,15 @@ async function main() {
   if (!options) return;
   const params = await readInput(options);
   if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("team_command input must be a JSON object.");
-  const result = await request(options.url, await readToken(options.tokenFile), params);
+  // These read-only discovery actions avoid exposing provider credentials or
+  // making agents reverse engineer internal project directories.
+  const discovery = { models: "model_catalog_list", projects: "list_projects" };
+  const method = Object.hasOwn(discovery, params.action) ? discovery[params.action] : "team_command";
+  const rpcParams = method === "team_command" ? params : {};
+  if (method !== "team_command" && Object.keys(params).some(key => key !== "action")) {
+    throw new Error(`${params.action} accepts only the action field.`);
+  }
+  const result = await request(options.url, await readToken(options.tokenFile), method, rpcParams);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
