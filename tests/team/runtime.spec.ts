@@ -237,8 +237,13 @@ test('roster, turn and message queries protect outputs and communication is rest
   const overview = await f.runtime.roster(a); assert.equal(JSON.stringify(overview).includes('private persona'), false); assert.equal(JSON.stringify(overview).includes('Formal final'), false); assert.equal(overview.participants[0]?.latestTurnId, null);
   assert.equal(JSON.stringify(await f.runtime.turns(a, { participantId: f.b.id })).includes('Formal final'), false);
   const output = await f.runtime.turns(leader, { participantId: f.a.id, turnId: turn.turnId }); assert.equal('finalResultAvailable' in output && output.finalResultAvailable, true); assert.match(JSON.stringify(output), /Formal final/);
+  const self = await f.runtime.turns(a, { participantId: f.a.id, turnId: turn.turnId }); assert.equal('finalResultAvailable' in self && self.finalResultAvailable, true); assert.match(JSON.stringify(self), /Formal final/);
+  const selfPage = await f.runtime.turns(a, { participantId: f.a.id }); assert.equal('items' in selfPage ? selfPage.items.length : 0, 1); assert.equal(JSON.stringify(selfPage).includes('Formal final'), false);
+  await assert.rejects(f.runtime.turns(a, { participantId: f.leader.id, turnId: 'leader-self' }), /A Teammate can read only its own turns/);
+  await f.runtime.beginTurn(leader, { turnId: 'leader-self', trigger: 'human' }); await f.runtime.endTurn(leader, 'leader-self', result('leader-self', 'Leader formal final'));
+  const leaderSelf = await f.runtime.turns(leader, { participantId: f.leader.id, turnId: 'leader-self' }); assert.equal('finalResultAvailable' in leaderSelf && leaderSelf.finalResultAvailable, true); assert.match(JSON.stringify(leaderSelf), /Leader formal final/);
   await assert.rejects(f.runtime.turns(leader, {} as never), /participantId/); await assert.rejects(f.runtime.turns(leader, { participantId: f.a.id, turnId: 'missing' }), /not available/);
-  await assert.rejects(f.runtime.turns(a, { participantId: f.a.id, turnId: turn.turnId }), /own turn/); await assert.rejects(f.runtime.turns(b, { participantId: f.b.id }), /own turn/);
+  await assert.rejects(f.runtime.turns(a, { participantId: f.leader.id }), /A Teammate can read only its own turns/);
   const bMessages = await f.runtime.messages(b); const leaderMessages = await f.runtime.messages(leader); assert.deepEqual('items' in bMessages ? bMessages.items : [], []); assert.equal(('items' in leaderMessages ? leaderMessages.items : []).length, 2);
 });
 

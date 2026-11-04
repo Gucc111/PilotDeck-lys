@@ -60,9 +60,9 @@ ID 由程序随机生成。配置库每个 ID 只保留当前配置，不记录�
 | `team_roster()` | 返回所有成员的 `id`、角色、显示名、当前有效状态和最新 turn ID；需要发消息时先用它获取成员 ID |
 | `team_send_message({recipientId,text})` | 可靠保存后返回 `{messageId,status:"queued"}`，不等待对方启动、回复或执行结束 |
 | `team_messages({messageId})` / `team_messages({cursor,limit})` | 精确读取一条消息，或按时间倒序分页读取消息；Leader 可读全队，Teammate 只能读自己发送或接收的消息 |
-| `team_turns({participantId,turnId})` / `team_turns({participantId,cursor,limit})` | 精确读取一个 Teammate turn，或分页读取该成员的 turn；分页默认 5 条并按最新优先 |
+| `team_turns({participantId,turnId})` / `team_turns({participantId,cursor,limit})` | 精确读取一个参与者的 turn，或分页读取该参与者的 turn；分页默认 5 条并按最新优先 |
 
-四个工具同时提供给 Leader 和 Teammate。查询工具不会启动执行，也不会触发发送授权询问。`team_messages` 的分页结果返回正常通信记录的完整正文和公开状态；已消费消息会附带处理它的 turn ID 和状态。失效消息会出现在分页结果中；删除、发送不确定及其他异常状态的消息不出现在分页结果中，但指定 `messageId` 精确查询时仍会返回该记录的状态和完整正文。Leader 可以查询全部消息和所有 Teammate turn；Teammate 只能查询自己可见的消息，以及其他 Teammate 的 turn。任何成员都不能查询自己的 turn 或 Leader 的 turn。精确查询已结束 turn 时，如果存在可读的最终 assistant 文本，会返回 `finalMessage` 和 `finalResultAvailable:true`；活动 turn 或没有最终文本的终态 turn 不返回最终详情。工具发送身份来自服务端上下文，模型不能伪造发送方；四个工具之外没有旧查询别名。
+四个工具同时提供给 Leader 和 Teammate。查询工具不会启动执行，也不会触发发送授权询问。`team_messages` 的分页结果返回正常通信记录的完整正文和公开状态；已消费消息会附带处理它的 turn ID 和状态。失效消息会出现在分页结果中；删除、发送不确定及其他异常状态的消息不出现在分页结果中，但指定 `messageId` 精确查询时仍会返回该记录的状态和完整正文。Leader 可以查询全部消息和全部参与者的 turn，包括自己的 Leader turn；Teammate 只能查询自己可见的消息，以及自己的 turn 或其他 Teammate 的 turn，但不能查询 Leader 的 turn。成员可借此找回自己的历史正式结果，例如上下文压缩后复查此前 turn 的 `finalMessage`。精确查询已结束 turn 时，如果存在可读的最终 assistant 文本，会返回 `finalMessage` 和 `finalResultAvailable:true`；活动 turn 或没有最终文本的终态 turn 不返回最终详情。工具发送身份来自服务端上下文，模型不能伪造发送方；四个工具之外没有旧查询别名。
 
 工具的发送身份来自服务端运行上下文，模型不能指定自己是另一个成员。目标必须属于当前 Team，且不能发给自己。成员只获得收到的消息和自己的历史，不自动读取 Leader 或其他成员历史。
 

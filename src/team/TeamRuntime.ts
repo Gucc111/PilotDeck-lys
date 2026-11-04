@@ -365,8 +365,7 @@ export class TeamRuntime {
     text(input.participantId, 'participantId', { max: 500 });
     if (input.turnId !== undefined && (input.cursor !== undefined || input.limit !== undefined)) fail('TEAM_INVALID_INPUT', 'turnId cannot be combined with pagination parameters.');
     const target = activation.participants.find(item => item.id === input.participantId);
-    if (!target || target.role !== 'teammate') fail('TEAM_TURN_FORBIDDEN', 'Only Teammate turns are available through team_turns.');
-    if (target!.id === participant.id) fail('TEAM_TURN_FORBIDDEN', 'A participant cannot query its own turn.');
+    if (!target || participant.role === 'teammate' && target.role !== 'teammate') fail('TEAM_TURN_FORBIDDEN', 'A Teammate can read only its own turns or another Teammate\'s turns.');
     if (input.turnId !== undefined) text(input.turnId, 'turnId', { max: 500 });
     const targetTurns = (activation.turns ?? []).filter(turn => turn.participantId === target!.id).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.turnId.localeCompare(a.turnId));
     if (input.turnId !== undefined) {
