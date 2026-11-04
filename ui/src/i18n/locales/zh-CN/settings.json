@@ -705,6 +705,7 @@
     }
   },
   "mcpConfig": {
+    "connectionAdvanced": "连接高级设置",
     "title": "MCP 服务器",
     "description": "编辑 PilotDeck MCP 配置。全局配置位于 ~/.pilotdeck/mcp.json；项目配置位于 .pilotdeck/mcp.json，同名服务器会覆盖全局配置。",
     "project": "项目级配置对应的项目",
@@ -768,10 +769,13 @@
       "args": "参数",
       "env": "环境变量",
       "envPassThrough": "环境变量传递",
-      "perSession": "每个会话独立启动",
-      "perSessionHelp": "每个 Agent 会话启动一个新的 MCP 进程，隔离会话内状态。",
+      "perSession": "为此连接创建临时浏览器目录",
+      "perSessionHelp": "仅适用于支持 --user-data-dir 参数的 MCP。目录归此连接持有。",
       "url": "URL",
-      "headers": "请求头"
+      "headers": "请求头",
+      "connection": "连接方式",
+      "usage": "调用方式",
+      "maxConnections": "最大活跃连接数"
     },
     "placeholders": {
       "key": "键",
@@ -783,7 +787,31 @@
       "addEnv": "添加环境变量",
       "addVariable": "添加变量",
       "addHeader": "添加请求头"
-    }
+    },
+    "separate": "每个 Agent 分别建立连接",
+    "shared": "多个 Agent 共用连接",
+    "concurrent": "允许并发调用",
+    "serial": "工具调用依次执行",
+    "isolationNote": "分别连接不会自动隔离账号、业务数据或浏览器环境。",
+    "serialNote": "依次执行只约束单次工具调用，多步操作之间仍可能插入其他 Agent 的调用。",
+    "unlimited": "不限制",
+    "stage": {"capacity": "连接名额", "connect": "建立连接", "tools": "加载工具", "call": "工具调用", "cleanup": "连接清理"},
+    "connections": "连接占用详情",
+    "release": "释放 MCP 连接",
+    "cancelWait": "取消等待或调用",
+    "resetUnknown": "已检查实际操作结果，重置执行状态",
+    "refreshConnections": "刷新连接状态",
+    "noConnections": "当前没有 MCP 连接或等待者",
+    "status": {
+      "connecting": "正在连接",
+      "waiting_capacity": "等待连接名额",
+      "waiting_call": "等待前一工具调用完成",
+      "ready": "已就绪",
+      "failed": "连接、工具加载或清理失败",
+      "unknown": "调用执行状态未知"
+    },
+    "holders": "占用者",
+    "waiter": "使用者或等待者"
   },
   "pilotDeckConfig": {
     "loading": "正在加载 PilotDeck 配置...",

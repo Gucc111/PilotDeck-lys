@@ -35,3 +35,13 @@ test("McpClient routes streamable_http fetches with bounded timeouts", async () 
   await transportFetch?.("https://mcp.example.test/mcp", { method: "POST" });
   assert.equal(calls.at(-1)?.timeoutMs, 12_345);
 });
+
+test('McpClient retains a failed local close for retry', async () => {
+  const client = new McpClient({ id: 'retry-close', transport: 'stdio', command: 'node' });
+  let attempts = 0;
+  const handle = { close: async () => { if (++attempts === 1) throw new Error('close failed'); } };
+  (client as any).client = handle;
+  await assert.rejects(client.close(), /close failed/);
+  assert.equal((client as any).client, handle);
+  await client.close(); assert.equal(attempts, 2); assert.equal((client as any).client, null);
+});

@@ -59,7 +59,10 @@ import {
   createGatewayPermissionHook,
 } from "../gateway/permission/createGatewayPermissionHook.js";
 import {
-  McpRuntime,
+  McpClient,
+  McpConnectionManager,
+  McpLease,
+  type McpOwner,
   createMcpToolDefinitionsFromRuntime,
   loadMcpServerConfig,
   parsePluginMcpServers,
@@ -349,6 +352,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
   router = new SessionRouter({
     createSession: (ctx) => registry.createSession(ctx),
     recreateSession: (ctx, session) => registry.recreateSession(ctx, session),
+    canRecreateSession: (ctx, reason) => reason === "mcp_released" || registry.canRecreateSession(ctx),
     listSessions: (input) => registry.listSessions(input),
     idleSessionTimeoutMs:
       (defaultRuntime.snapshot.config.gateway?.idleSessionTimeoutMinutes ?? 30) * 60_000,
@@ -408,6 +412,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
   const internalTeamTurns = new Map<string, import("../model/index.js").CanonicalMessage>();
   const teamTurnResults = new Map<string, AgentTurnResult>();
   const selectingTeamSessions = new Set<string>();
+  const preparingHumanTeamSessions = new Set<string>();
   const broadcastTeamEvent = (sessionKey: string, projectKey: string | undefined, event: import("../gateway/protocol/types.js").GatewayEvent) => {
     boundServer?.broadcastNotification("team_runtime_event", { sessionKey, projectKey, event });
   };
@@ -479,12 +484,8 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
           return { result: teamTurnResults.get(turnId) };
         } finally { internalTeamTurns.delete(turnId); teamTurnResults.delete(turnId); }
       }
-      await configStore.reload("team-participant-start");
-      const frozen = structuredClone(input.activation.team);
-      for (const profile of [frozen.leader, ...frozen.teammates]) profile.config.model = input.activation.participants.find(item => item.id === profile.id)!.model;
-      const checked = await registry.probeTeam(frozen, input.activation.projectKey, registeredExecutionProject, teammateExecutionProject);
-      if (checked.issues.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.map(issue => issue.message).join("\n"));
-      for (const participant of input.activation.participants) if (teamHash(checked.participants.find(item => item.id === participant.id)?.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed before member execution. Recheck and select the Team again.");
+      // The accepted activation already passed static checks. Rechecking live
+      // configuration here would silently break its frozen MCP snapshot.
       return registry.executeTeamParticipant(input);
     },
     readLegacyTurns: async activation => {
@@ -529,7 +530,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
         streaming: live.streaming, stopVersion: activation.stopVersion, streamEpoch: live.streamEpoch, revision: live.revision,
       };
     },
-    isLeaderBusy: sessionKey => !selectingTeamSessions.has(sessionKey) && router!.hasActiveTurn(sessionKey),
+    isLeaderBusy: sessionKey => !selectingTeamSessions.has(sessionKey) && !preparingHumanTeamSessions.has(sessionKey) && router!.hasActiveTurn(sessionKey),
     stopLeader: async sessionKey => {
       const current = (await teamRuntime.get(sessionKey)).activation;
       if (current) boundServer?.broadcastNotification("team_runtime_invalidated", { sessionKey, activationId: current.id, stopVersion: current.stopFromVersion, reason: "abort" });
@@ -654,7 +655,15 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       if (!activation) return { input };
       if (!selection && (input.teamActivationId !== activation.id || !Number.isSafeInteger(input.teamStopVersion))) throw new DialogGatewayError("TEAM_GENERATION_REQUIRED", "Refresh the Team before sending this input.");
       if (isMeta && activation.status !== "active") throw new DialogGatewayError("TEAM_STOPPED", "Stopped Team work cannot restart itself.");
-      const preparedTeam = await teamRuntime.prepareHumanTurn(input.sessionKey, activation.id, activation.stopVersion);
+      // beginTurn has reserved this chat for the incoming human input. That
+      // reservation is not work from the preceding Team run. Message-driven
+      // continuations must never trigger configuration adoption.
+      const preparedTeam = await (async () => {
+        if (isMeta) return { activation, refreshed: false };
+        preparingHumanTeamSessions.add(input.sessionKey);
+        try { return await teamRuntime.prepareHumanTurn(input.sessionKey, activation.id, activation.stopVersion); }
+        finally { preparingHumanTeamSessions.delete(input.sessionKey); }
+      })();
       activation = preparedTeam.activation;
       // A new human run may have adopted the latest Team snapshot. Recreate
       // the cached Leader session so its prompt, model, tools and permissions
@@ -665,13 +674,11 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       const leader = activation.participants.find(item => item.role === "leader")!;
       if (input.workspaceCwd && resolve(input.workspaceCwd) !== resolve(leader.projectKey)) throw new DialogGatewayError("TEAM_WORKSPACE_CONFLICT", "Team Leader workspace cannot be overridden by a chat request.");
       if (activation.status === "stopped") await router!.close(input.sessionKey);
-      const frozenTeam = structuredClone(activation.team);
-      for (const profile of [frozenTeam.leader, ...frozenTeam.teammates]) profile.config.model = activation.participants.find(item => item.id === profile.id)!.model;
-      const checked = await registry.probeTeam(frozenTeam, activation.projectKey, registeredExecutionProject, teammateExecutionProject);
-      const errors = checked.issues;
-      if (errors.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", errors.map(item => item.message).join("\n"));
-      for (const participant of activation.participants) {
-        if (teamHash(checked.participants.find(item => item.id === participant.id)!.capabilities) !== teamHash(participant.capabilities)) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "Team capabilities changed. Recheck and select the Team again to confirm the current environment.");
+      // Selection itself is not an execution. Validate once more before the
+      // first human run; subsequent work retains the accepted activation.
+      if (!activation.turns?.length) {
+        const checked = await registry.probeTeam(activation.team, activation.projectKey, registeredExecutionProject, teammateExecutionProject);
+        if (checked.issues.length) throw new DialogGatewayError("TEAM_INCOMPATIBLE", checked.issues.map(issue => issue.message).join("\n"));
       }
       await teamRuntime.assertActivation(input.sessionKey, activation.id, activation.stopVersion);
       const inputHash = teamHash({ message: input.message, attachments: input.attachments, uploadedAttachments: input.uploadedAttachments, activationId: activation.id, stopVersion: activation.stopVersion });
@@ -875,6 +882,30 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       }
       return { reloaded: true, changedPaths };
     },
+    async mcpManage(input) {
+      if (!input || typeof input !== "object") throw new Error("Invalid MCP management request");
+      if (input.action === "release" || input.action === "cancel") {
+        if (!input.owner || typeof input.owner.sessionKey !== "string") throw new Error("MCP owner required");
+        const owner = registry.mcpConnections.ownerList().find(item => teamHash(item) === teamHash(input.owner));
+        if (!owner && input.action === "cancel") throw new Error("MCP owner is no longer present");
+        const target = owner ?? input.owner;
+        if (input.action === "cancel") {
+          registry.mcpConnections.cancel(target);
+          // The cached lease has a cancelled lifetime signal. Rebuild it at
+          // the next execution rather than keeping a permanently aborted owner.
+          router!.markSessionDirty(target.sessionKey, "mcp_released");
+        } else {
+          if (router!.hasActiveTurn(target.sessionKey) || registry.isTeamParticipantActive(target.sessionKey)) throw new Error("Agent is executing or preparing a model request");
+          await registry.mcpConnections.release(target, true);
+          await registry.evictSessionMcp(target.sessionKey);
+          router!.markSessionDirty(target.sessionKey, "mcp_released");
+        }
+      } else if (input.action === "reset") {
+        if (typeof input.resourceId !== "string") throw new Error("MCP resource required");
+        registry.mcpConnections.reset(input.resourceId);
+      } else if (input.action !== "status") throw new Error("Unknown MCP management action");
+      return { statuses: registry.mcpConnections.snapshot().map(status => ({ ...status, busy: Boolean(status.owner && (router!.hasActiveTurn(status.owner.sessionKey) || registry.isTeamParticipantActive(status.owner.sessionKey))) })) };
+    },
     async reloadExtensions(input) {
       const changedPaths = input?.changedPaths ?? [];
       if (input?.projectKey) {
@@ -1032,21 +1063,7 @@ type ProjectRuntime = {
   /** Coalesced project-level memory maintenance loop. */
   memoryMaintenanceInFlight?: Promise<void>;
   memoryMaintenanceRequested?: boolean;
-  /**
-   * Lazily-started MCP runtime (C1). Built on first session creation by
-   * `ensureMcpReady()` because plugin refresh + connect is async.
-   * Only contains non-`perSession` servers (shared across sessions).
-   */
-  mcpRuntime?: McpRuntime;
-  /** Tracks the in-flight `ensureMcpReady` promise so concurrent sessions share it. */
-  mcpReady?: Promise<void>;
-  /**
-   * Server specs marked `perSession: true`. These are NOT started at the
-   * project level — each agent session creates its own `McpRuntime` from
-   * these specs so that e.g. browser-use gets an isolated process per
-   * session.  Populated during `ensureMcpReady()`.
-   */
-  perSessionServerSpecs?: import("../mcp/protocol/types.js").PilotDeckMcpServerSpec[];
+
 };
 
 const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 30_000;
@@ -1054,6 +1071,7 @@ const DEFAULT_BROWSER_NAVIGATION_TIMEOUT_MS = 90_000;
 
 class ProjectRuntimeRegistry {
   private teamRuntime?: TeamRuntime;
+  private readonly teamMcpSnapshots = new Map<string, import("../mcp/protocol/types.js").PilotDeckMcpServerSpec[]>();
   private readonly teamRoles = new Map<string, { activation: TeamRuntimeActivation; participant: TeamRuntimeParticipant }>();
   private readonly activeTeamParticipants = new Map<string, { session: AgentSession; turnId: string; executionId: string; stopVersion: number; stream: TeamParticipantStream }>();
   private readonly teamParticipantStatus = new Map<string, TeamParticipantExecution["updateStatus"]>();
@@ -1061,6 +1079,7 @@ class ProjectRuntimeRegistry {
   setTeamRuntime(runtime: TeamRuntime, emit: NonNullable<ProjectRuntimeRegistry["teamEvent"]>): void { this.teamRuntime = runtime; this.teamEvent = emit; }
   private readonly teamStreamEpoch = randomUUID();
   private teamStreamRevision = 0;
+  isTeamParticipantActive(sessionKey: string): boolean { return this.activeTeamParticipants.has(sessionKey); }
   teamParticipantSnapshot(activationId: string, participantId: string) {
     const active = this.activeTeamParticipants.get(`team-internal:${activationId}:${participantId}`);
     return { messages: active?.stream.snapshot() ?? [], streaming: Boolean(active), streamEpoch: this.teamStreamEpoch, revision: this.teamStreamRevision };
@@ -1088,28 +1107,44 @@ class ProjectRuntimeRegistry {
       for (const [key, kind] of [["tools", "tool"], ["skills", "skill"], ["mcpServers", "mcp"]] as const) {
         for (const name of profile.config.capabilities[key]) {
           if (inventory[key].some(item => item.name === name)) available[key].push(name);
-          else issue("TEAM_CAPABILITY_MISSING", `${kind} ${name} is unavailable.`);
+          else if (!(key === "mcpServers" && profile.config.capabilities.optionalMcpServers?.includes(name))) issue("TEAM_CAPABILITY_MISSING", `${kind} ${name} is unavailable.`);
         }
       }
-      const mcp = new McpRuntime(this.teamMcpSpecs(runtime, available.mcpServers));
-      try {
-        for (const status of await mcp.start()) if (status.status !== "ready") {
-          available.mcpServers = available.mcpServers.filter(name => name !== status.serverId);
-          issue("TEAM_MCP_UNAVAILABLE", `${status.serverId}: ${status.error ?? status.status}`);
-        }
-      } finally { await mcp.stop(); }
-      participants.push({ id, role: profile.role, profile: structuredClone(profile), projectKey: actualProject, projectPath: actualProject, model, capabilities: available });
-      fingerprints.push({ project: actualProject, model, inventory, available, specs: this.teamMcpSpecs(runtime, profile.config.capabilities.mcpServers) });
+      let specs: import("../mcp/protocol/types.js").PilotDeckMcpServerSpec[] = [];
+      try { specs = this.teamMcpSpecs(runtime, available.mcpServers); }
+      catch (error) { issue("TEAM_MCP_CONFIG_INVALID", (error as Error).message); }
+      const mcpConfigVersion = teamHash(specs);
+      // Connection secrets stay in Gateway memory, never in persisted Team views.
+      this.teamMcpSnapshots.set(mcpConfigVersion, structuredClone(specs));
+      participants.push({ id, role: profile.role, profile: structuredClone(profile), projectKey: actualProject, projectPath: actualProject, model, capabilities: available, mcpConfigVersion });
+      fingerprints.push({ project: actualProject, model, inventory, available, mcpConfigVersion });
     }
     return { projectKey, participants, issues, environmentFingerprint: teamHash(fingerprints) };
   }
 
-  private teamMcpSpecs(runtime: ProjectRuntime, allowed: string[]) {
+  private mcpSpecs(runtime: ProjectRuntime, allowed?: string[]) {
     const config = loadMcpServerConfig(runtime.projectRoot, this.options.pilotHome);
-    return parsePluginMcpServers({ ...runtime.pluginRuntime.mcpServers(), ...config.servers }).servers
-      .filter(spec => allowed.includes(spec.id))
-      .map(spec => patchProjectScopedMcpSpec(spec, runtime.projectRoot, this.options.pilotHome));
+    if (config.diagnostics.length) throw new Error(config.diagnostics.map(item => `MCP config ${item.path}: ${item.message}`).join("; "));
+    const raw = { ...runtime.pluginRuntime.mcpServers(), ...config.servers };
+    if (process.env.PILOTDECK_COMPUTER_USE_MCP_CONFIG) {
+      delete raw["pilotdeck-computer-use"];
+      if (config.servers["pilotdeck-computer-use"]) raw["pilotdeck-computer-use"] = config.servers["pilotdeck-computer-use"];
+    }
+    const selected = allowed ? Object.fromEntries(Object.entries(raw).filter(([id]) => allowed.includes(id))) : raw;
+    const parsed = parsePluginMcpServers(selected);
+    if (parsed.diagnostics.length) throw new Error(parsed.diagnostics.map(item => `MCP ${item.id}: ${item.message}`).join("; "));
+    if (allowed) for (const id of allowed) if (!parsed.servers.some(spec => spec.id === id)) throw new Error(`Authorized MCP ${id} is not configured`);
+    return parsed.servers.map(spec => {
+      const patched = patchProjectScopedMcpSpec(spec, runtime.projectRoot, this.options.pilotHome);
+      const effective = { ...patched, cwd: resolve(runtime.projectRoot, patched.cwd ?? ".") };
+      if (effective.transport === "stdio" && effective.id === "browser-use") {
+        const args = buildBrowserUseArgs(effective.args ?? [], "__PILOTDECK_CONNECTION_OUTPUT__", this.options.env, runtime.snapshot.config.proxy);
+        return { ...effective, args };
+      }
+      return effective;
+    });
   }
+  private teamMcpSpecs(runtime: ProjectRuntime, allowed: string[]) { return this.mcpSpecs(runtime, allowed); }
 
   async executeTeamParticipant(input: TeamParticipantExecution): Promise<{ result?: AgentTurnResult }> {
     const sessionKey = `team-internal:${input.activation.id}:${input.participant.id}`;
@@ -1120,7 +1155,7 @@ class ProjectRuntimeRegistry {
     let result: AgentTurnResult | undefined;
     try {
       const storage = this.teamParticipantStorage(input.activation.id, input.participant.id);
-      const context = { sessionKey, projectKey: input.participant.projectKey, channelKey: "team" };
+      const context = { sessionKey, projectKey: input.participant.projectKey, channelKey: "team", signal: input.signal };
       const prepared = await this.prepareSessionRuntime(context);
       const config = this.createAgentConfig(prepared.runtime, sessionKey);
       session = (await resumeAgentSession({ sessionId: sessionKey, config: { ...config, isSubagent: true }, dependencies: prepared.baseDependencies, projectStorage: prepared.runtime.projectStorage, storage, extendDependencies: prepared.extendDependencies, modelHistoryEntries: entries => teamModelHistory(entries, { activationId: input.activation.id, stopVersion: input.activation.stopVersion }), collectFileArtifacts: false })).session;
@@ -1198,13 +1233,26 @@ class ProjectRuntimeRegistry {
     { allow: PermissionRule[]; deny: PermissionRule[]; ask: PermissionRule[] }
   >();
 
-  /**
-   * Per-session MCP runtimes for `perSession: true` servers (e.g.
-   * browser-use).  Each entry owns one or more child processes and a temp
-   * directory.  Cleaned up by `evictSessionMcp()` when the SessionRouter
-   * evicts the session (idle sweep, explicit close, or dirty-recreate).
-   */
-  private readonly sessionMcpRuntimes = new Map<string, McpRuntime>();
+  /** Session leases reference the single Gateway manager; physical clients live there. */
+  readonly mcpConnections = new McpConnectionManager({
+    createClient: (spec, connectionId) => {
+      if (spec.transport === "stdio" && spec.id === "browser-use") {
+        const outDir = resolveBrowserUseOutputDir({ pilotHome: this.options.pilotHome, projectRoot: spec.cwd ?? process.cwd(), sessionKey: connectionId });
+        mkdirSyncFs(outDir, { recursive: true });
+        return new McpClient({ ...spec, args: (spec.args ?? []).map(arg => arg.replaceAll("__PILOTDECK_CONNECTION_OUTPUT__", outDir)) });
+      }
+      return new McpClient(spec);
+    },
+    onStatus: status => {
+      const event = { type: "mcp_status" as const, status };
+      if (status.owner) {
+        this.gateway?.emitForSession(status.owner.sessionKey, event);
+        const role = this.teamRoles.get(status.owner.sessionKey);
+        if (role) this.teamEvent?.(role.activation.sessionKey, role.activation.storageProjectKey, event);
+      }
+    },
+  });
+  private readonly sessionMcpRuntimes = new Map<string, McpLease>();
   private readonly sessionMcpClosures = new Map<string, Promise<void>>();
   private readonly runtimeCleanups = new Set<Promise<void>>();
 
@@ -1242,8 +1290,13 @@ class ProjectRuntimeRegistry {
 
   async awaitTeamMcpCleanup(activationId: string): Promise<void> {
     const prefix = `team-internal:${activationId}:`;
-    const keys = new Set([...this.sessionMcpRuntimes.keys(), ...this.sessionMcpClosures.keys()]);
-    await Promise.all([...keys].filter(key => key.startsWith(prefix)).map(key => this.evictSessionMcp(key)));
+    const owners = this.mcpConnections.ownerList().filter(owner => owner.activationId === activationId);
+    for (const owner of owners) this.mcpConnections.cancel(owner);
+    const keys = new Set([...this.sessionMcpRuntimes.keys(), ...this.sessionMcpClosures.keys(), ...owners.map(owner => owner.sessionKey)]);
+    await Promise.all([...keys].filter(key => key.startsWith(prefix) || owners.some(owner => owner.sessionKey === key)).map(key => this.evictSessionMcp(key)));
+    // Preparing owners may not have installed their lease yet. Their cancelled
+    // handshakes still hold physical slots until local cleanup actually ends.
+    await Promise.all(owners.map(owner => this.mcpConnections.release(owner)));
   }
 
   private trackRuntimeCleanup(operation: Promise<void>): void {
@@ -1254,6 +1307,9 @@ class ProjectRuntimeRegistry {
 
   async dispose(): Promise<void> {
     this.invalidate();
+    for (const owner of this.mcpConnections.ownerList()) this.mcpConnections.cancel(owner);
+    await Promise.all([...this.sessionMcpRuntimes.keys()].map(key => this.evictSessionMcp(key)));
+    await this.mcpConnections.close();
     await Promise.all([...this.sessionMcpClosures.values(), ...this.runtimeCleanups]);
   }
 
@@ -1337,26 +1393,18 @@ class ProjectRuntimeRegistry {
 
   /**
    * Drop cached runtimes so the next `resolve()` call rebuilds from
-   * a fresh `loadPilotConfig()` snapshot. Gracefully shuts down any
-   * active MCP connections (both shared and per-session) before
-   * discarding the entry.
+   * a fresh `loadPilotConfig()` snapshot. Existing session leases retain
+   * their connection version until the session refresh boundary.
    */
   invalidate(projectRoot?: string): void {
-    for (const sessionKey of this.sessionMcpRuntimes.keys()) void this.evictSessionMcp(sessionKey).catch(() => {});
 
     if (projectRoot) {
       const runtime = this.runtimes.get(projectRoot);
-      if (runtime?.mcpRuntime) {
-        this.trackRuntimeCleanup(runtime.mcpRuntime.stop());
-      }
       runtime?.memoryService?.close();
       if (runtime?.router) this.trackRuntimeCleanup(runtime.router.shutdown());
       this.runtimes.delete(projectRoot);
     } else {
       for (const [, runtime] of this.runtimes) {
-        if (runtime.mcpRuntime) {
-          this.trackRuntimeCleanup(runtime.mcpRuntime.stop());
-        }
         runtime.memoryService?.close();
         if (runtime.router) this.trackRuntimeCleanup(runtime.router.shutdown());
       }
@@ -1534,74 +1582,7 @@ class ProjectRuntimeRegistry {
     });
   }
 
-  /**
-   * Lazily start the MCP runtime for this project. Idempotent — concurrent
-   * callers share a single in-flight promise. Errors are swallowed (logged
-   * to stderr) so a misbehaving MCP server can't take the gateway down.
-   */
-  private ensureMcpReady(runtime: ProjectRuntime): Promise<void> {
-    if (runtime.mcpReady) return runtime.mcpReady;
-    runtime.mcpReady = (async () => {
-      try {
-        const configServers = loadMcpServerConfig(runtime.projectRoot, this.options.pilotHome);
-        for (const diagnostic of configServers.diagnostics) {
-          // eslint-disable-next-line no-console
-          console.warn(`[pilotdeck] Ignoring invalid MCP config ${diagnostic.path}: ${diagnostic.message}`);
-        }
-        const rawServers = {
-          ...runtime.pluginRuntime.mcpServers(),
-          ...configServers.servers,
-        };
-        if (process.env.PILOTDECK_COMPUTER_USE_MCP_CONFIG) {
-          delete rawServers['pilotdeck-computer-use'];
-          const managed = configServers.servers['pilotdeck-computer-use'];
-          if (managed) rawServers['pilotdeck-computer-use'] = managed;
-        }
-        const { servers: parsedServers } = parsePluginMcpServers(rawServers);
-        const servers = parsedServers.map((server) => patchProjectScopedMcpSpec(
-          server,
-          runtime.projectRoot,
-          this.options.pilotHome,
-        ));
-        if (servers.length === 0) return;
-
-        const sharedServers = servers.filter((s) => s.transport !== "stdio" || !s.perSession);
-        const perSessionServers = servers.filter((s) => s.transport === "stdio" && s.perSession);
-
-        runtime.perSessionServerSpecs = perSessionServers.length > 0 ? perSessionServers : undefined;
-
-        if (sharedServers.length > 0) {
-          const mcp = new McpRuntime(sharedServers);
-          runtime.mcpRuntime = mcp;
-          const statuses = await mcp.start();
-          for (const status of statuses) {
-            if (status.status === "error") {
-              // eslint-disable-next-line no-console
-              console.warn(
-                `[pilotdeck] ${status.serverId === "funasr" ? "ASR unavailable" : "MCP server unavailable"} ` +
-                `(server=${status.serverId}): ${status.error ?? "unknown error"}`,
-              );
-            }
-          }
-          const defs = await createMcpToolDefinitionsFromRuntime(mcp);
-          for (const def of defs) {
-            // Bundled component updates and global Driver configuration belong
-            // to the application release, never to model-selected MCP tools.
-            if (/^mcp__pilotdeck-computer-use__(check_for_update|install_extension|install_ffmpeg|set_config|get_config|replay_trajectory)$/.test(def.name)) continue;
-            if (!runtime.tools.has(def.name)) runtime.tools.register(def);
-          }
-        }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[pilotdeck] MCP runtime startup partial-failed for project ${runtime.projectRoot}:`,
-          (err as Error).message,
-        );
-      }
-    })();
-    return runtime.mcpReady;
-  }
-
+  /** Prepare this session through the Gateway manager before model execution. */
   async createSession(context: GatewaySessionContext) {
     const prepared = await this.prepareSessionRuntime(context);
     const role = this.teamRoles.get(context.sessionKey);
@@ -1616,6 +1597,11 @@ class ProjectRuntimeRegistry {
       collectFileArtifacts: this.shouldCollectFileArtifacts(prepared.runtime),
     });
     return resumed.session;
+  }
+
+  async canRecreateSession(context: GatewaySessionContext): Promise<boolean> {
+    const activation = (await this.teamRuntime?.get(context.sessionKey))?.activation;
+    return !activation || activation.status === "closed";
   }
 
   async recreateSession(context: GatewaySessionContext, previousSession: AgentSession) {
@@ -1664,75 +1650,46 @@ class ProjectRuntimeRegistry {
     const teamRole = this.teamRoles.get(context.sessionKey);
     const runtime = this.resolve(teamRole?.participant.projectKey ?? context.projectKey);
     await runtime.pluginRuntime.refresh();
-    if (!teamRole) await this.ensureMcpReady(runtime);
     const contributions = runtime.pluginRuntime.snapshotContributions();
 
-    // -- per-session MCP runtime (e.g. browser-use) --------------------
-    let sessionTools: ToolRegistry = runtime.tools;
-    if (teamRole) {
-      sessionTools = runtime.tools.clone();
+    let sessionTools = runtime.tools.clone();
+    for (const tool of sessionTools.list()) if (tool.kind === "mcp") sessionTools.unregister(tool.name);
+    await this.evictSessionMcp(context.sessionKey);
+    const version = teamRole?.participant.mcpConfigVersion;
+    const frozenSpecs = version ? this.teamMcpSnapshots.get(version) : undefined;
+    const specs = teamRole ? (frozenSpecs ?? this.teamMcpSpecs(runtime, teamRole.participant.capabilities.mcpServers)) : this.mcpSpecs(runtime);
+    if (version && !frozenSpecs && teamHash(specs) !== version) throw new Error("Team MCP configuration changed after Gateway restart. Start a new idle human run to refresh the Team configuration.");
+    const owner: McpOwner = {
+      sessionKey: context.sessionKey,
+      ...(teamRole ? { activationId: teamRole.activation.id, participantId: teamRole.participant.id, stopVersion: teamRole.activation.stopVersion } : {}),
+    };
+    const optionalIds = new Set(teamRole?.participant.profile.config.capabilities.optionalMcpServers ?? []);
+    const missingOptional = [...optionalIds].filter(id => !specs.some(spec => spec.id === id));
+    for (const id of missingOptional) this.mcpConnections.reportUnavailable(owner, id);
+    const lease = await this.mcpConnections.acquire(owner, specs, context.signal, optionalIds);
+    missingOptional.push(...lease.missing);
+    // Degradation is explicit in both the MCP status stream and model instructions.
+    const optionalNotice = missingOptional.length ? [{ serverName: "pilotdeck-mcp-availability", instructions: `Optional MCP capabilities unavailable: ${missingOptional.join(", ")}. Do not claim to have these tools; explain the limitation when relevant.` }] : [];
+
+    this.sessionMcpRuntimes.set(context.sessionKey, lease);
+    let refreshInstallation = false;
+    const installMcpTools = async () => {
+      const definitions = await createMcpToolDefinitionsFromRuntime(lease);
       for (const tool of sessionTools.list()) if (tool.kind === "mcp") sessionTools.unregister(tool.name);
-    }
-    const perSpecs = teamRole ? this.teamMcpSpecs(runtime, teamRole.participant.capabilities.mcpServers) : runtime.perSessionServerSpecs;
-    const maxInstances = runtime.snapshot.config.gateway?.maxPerSessionMcpInstances ?? 5;
-    if (perSpecs && perSpecs.length > 0 && (teamRole || this.sessionMcpRuntimes.size < maxInstances)) {
-      await this.evictSessionMcp(context.sessionKey);
-      const patchedPerSpecs = perSpecs.map((spec) => {
-        if (spec.transport === "stdio" && spec.id === "browser-use") {
-          const outDir = resolveBrowserUseOutputDir({
-            pilotHome: this.options.pilotHome,
-            projectRoot: runtime.projectRoot,
-            sessionKey: context.sessionKey,
-          });
-          mkdirSyncFs(outDir, { recursive: true });
-          return {
-            ...spec,
-            cwd: outDir,
-            args: buildBrowserUseArgs(spec.args ?? [], outDir, this.options.env, runtime.snapshot.config.proxy),
-          };
-        }
-        return spec;
-      });
-      const sessionMcp = new McpRuntime(patchedPerSpecs);
-      this.sessionMcpRuntimes.set(context.sessionKey, sessionMcp);
-      try {
-        const statuses = await sessionMcp.start();
-        if (teamRole && statuses.some(status => status.status !== "ready")) throw new DialogGatewayError("TEAM_COMPATIBILITY_CHANGED", "An authorized MCP server became unavailable. Recheck Team compatibility before continuing.");
-        for (const status of statuses) {
-          if (status.status === "error") {
-            // eslint-disable-next-line no-console
-            console.warn(
-              `[pilotdeck] ${status.serverId === "funasr" ? "ASR unavailable" : "Per-session MCP unavailable"} ` +
-              `(server=${status.serverId}, session=${context.sessionKey}): ${status.error ?? "unknown error"}`,
-            );
-          }
-        }
-        const defs = await createMcpToolDefinitionsFromRuntime(sessionMcp);
-        if (defs.length > 0) {
-          sessionTools = sessionTools.clone();
-          for (const def of defs) {
-            if (sessionTools.has(def.name)) {
-              sessionTools.replace(def);
-            } else {
-              sessionTools.register(def);
-            }
-          }
-        }
-      } catch (err) {
-        if (teamRole) { await this.evictSessionMcp(context.sessionKey); throw err; }
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[pilotdeck] Per-session MCP startup failed for ${context.sessionKey}:`,
-          (err as Error).message,
-        );
+      for (const definition of definitions) {
+        if (/^mcp__pilotdeck-computer-use__(check_for_update|install_extension|install_ffmpeg|set_config|get_config|replay_trajectory)$/.test(definition.name)) continue;
+        if (sessionTools.has(definition.name)) throw new Error(`MCP tool name collision: ${definition.name}`);
+        if (refreshInstallation && this._sessionOverrides?.get(context.sessionKey)?.excludeTools?.includes(definition.name)) continue;
+        const guarded = refreshInstallation && teamRole ? { ...definition, execute: async (input: unknown, toolContext: Parameters<typeof definition.execute>[1]) => {
+          const current = await this.teamRuntime!.assertActivation(teamRole.activation.sessionKey, teamRole.activation.id, teamRole.activation.stopVersion);
+          if (current?.status !== "active" || toolContext.abortSignal?.aborted) throw new DialogGatewayError("TEAM_STOPPED", "This Team execution is no longer active.");
+          return definition.execute(input, toolContext);
+        } } : definition;
+        sessionTools.register(guarded);
       }
-    } else if (perSpecs && perSpecs.length > 0) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[pilotdeck] Per-session MCP limit reached (${maxInstances}). ` +
-        `Session ${context.sessionKey} will not start: ${perSpecs.map((spec) => spec.id).join(", ")}.`,
-      );
-    }
+    };
+    try { await installMcpTools(); }
+    catch (error) { await this.evictSessionMcp(context.sessionKey); throw error; }
 
     // -- excludeTools filtering (unattended sessions) -------------------
     const override = this._sessionOverrides?.get(context.sessionKey);
@@ -1771,8 +1728,8 @@ class ProjectRuntimeRegistry {
     runtime.unavailableTools = availability.unavailable;
     if (teamRole) {
       sessionTools = sessionTools.clone();
-      const privateMcp = this.sessionMcpRuntimes.get(context.sessionKey);
-      const allowedMcpTools = new Set((await privateMcp?.listAllTools() ?? []).map(tool => tool.wireName));
+      const mcpLease = this.sessionMcpRuntimes.get(context.sessionKey);
+      const allowedMcpTools = new Set((await mcpLease?.listAllTools() ?? []).map(tool => tool.wireName));
       for (const tool of sessionTools.list()) if (!teamRole.participant.capabilities.tools.includes(tool.name) && !allowedMcpTools.has(tool.name)) sessionTools.unregister(tool.name);
       const allowedSkills = new Set(teamRole.participant.capabilities.skills);
       if (sessionTools.has("read_skill")) sessionTools.replace(createReadSkillTool({ loader: name => allowedSkills.has(name) ? runtime.pluginRuntime.loadSkillPrompt(name) : Promise.resolve(undefined), lister: () => runtime.pluginRuntime.getAllSkills().filter(skill => allowedSkills.has(skill.name)) }));
@@ -1884,13 +1841,12 @@ class ProjectRuntimeRegistry {
     }
     const lifecycle = new LifecycleRuntime(hookRuntime);
     const baseExtension = new PluginRuntimeExtensionResolver(runtime.pluginRuntime, () => [
-      ...(runtime.mcpRuntime?.getInstructions() ?? []),
       ...(this.sessionMcpRuntimes.get(context.sessionKey)?.getInstructions() ?? []),
     ].map(({ serverId, instructions }) => ({ serverName: serverId, instructions })));
     const extension = teamRole ? {
       listCommands: () => [],
       listSkills: () => baseExtension.listSkills().filter(skill => teamRole.participant.capabilities.skills.includes(skill.name)),
-      listMcpInstructions: () => (this.sessionMcpRuntimes.get(context.sessionKey)?.getInstructions() ?? []).filter(item => teamRole.participant.capabilities.mcpServers.includes(item.serverId)).map(item => ({ serverName: item.serverId, instructions: item.instructions })),
+      listMcpInstructions: () => [...(this.sessionMcpRuntimes.get(context.sessionKey)?.getInstructions() ?? []).filter(item => teamRole.participant.capabilities.mcpServers.includes(item.serverId)).map(item => ({ serverName: item.serverId, instructions: item.instructions })), ...optionalNotice],
     } : baseExtension;
     const projectRoot = runtime.projectRoot;
     const memoryResolver = runtime.memory;
@@ -1912,6 +1868,7 @@ class ProjectRuntimeRegistry {
 
     const baseDependencies: CreateAgentSessionOptions["dependencies"] = {
       router: sessionRouter,
+      prepareTools: async (signal) => { await lease.refresh(signal); refreshInstallation = true; await installMcpTools(); },
       tools: { registry: sessionTools },
       ...(teamRole ? { teamMessages: {
         prepare: async ({ turnId }: { turnId: string }) => {

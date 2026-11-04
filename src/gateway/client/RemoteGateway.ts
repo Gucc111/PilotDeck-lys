@@ -89,6 +89,9 @@ import { parseReloadConfigResult } from "../protocol/reloadConfigResult.js";
 export class RemoteGateway implements Gateway {
   constructor(private readonly client: GatewayWsClient) {}
 
+  async mcpManage(input: import("../protocol/types.js").McpManagementInput): Promise<import("../protocol/types.js").McpManagementResult> {
+    return await this.client.request("mcp_manage", input) as import("../protocol/types.js").McpManagementResult;
+  }
   async teamCommand(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult> {
     return await this.client.request("team_command", input) as import("../../team/types.js").TeamCommandResult;
   }

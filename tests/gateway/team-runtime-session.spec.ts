@@ -746,12 +746,58 @@ Use this skill to inspect evidence.
   assert.equal(f.requests.length, 0);
 });
 
-test('Team rejects a configured MCP server that cannot connect without warning acceptance', async t => {
+test('Team checks configuration without connecting and blocks only the member whose required MCP cannot connect', async t => {
   const f = await fixture(t);
   await writeFile(join(f.home, 'mcp.json'), JSON.stringify({ mcpServers: { broken: { command: join(f.home, 'nonexistent-mcp-server') } } }));
   await f.gateway.teamCommand!({ action: 'profile_save', id: f.worker.id, role: 'teammate', config: { ...f.worker.config, capabilities: { ...f.worker.config.capabilities, mcpServers: ['broken'] } }, requestToken: 'broken-mcp' });
   const probe = await f.gateway.teamCommand!({ action: 'runtime_probe', team: { id: f.team.id }, sessionKey: f.sessionKey, storageProjectKey: f.workspace }) as TeamRuntimeProbe;
-  assert.equal(probe.compatible, false);
-  assert.ok(probe.issues.some(issue => issue.severity === 'error' && issue.code === 'TEAM_MCP_UNAVAILABLE' && issue.participantId === f.worker.id));
-  await assert.rejects(f.select(), /broken/); assert.equal(f.requests.length, 0);
+  assert.equal(probe.compatible, true);
+  assert.deepEqual((await f.gateway.mcpManage!({ action: 'status' })).statuses, []);
+  await f.select();
+  await f.send('use broken MCP', 'start-broken');
+  await eventually(async () => (await f.view()).turns!.some(turn => turn.participantId === f.worker.id && turn.status === 'ended' && Boolean(turn.error)), 'member preparation failure');
+  assert.equal(f.requests.filter(request => request.model === 'worker').length, 0);
+  assert.ok((await f.gateway.mcpManage!({ action: 'status' })).statuses.some(status => status.serverId === 'broken' && status.state === 'failed'));
+});
+
+test('chat, Leader and worker share one physical MCP; active Team freezes config until the next idle human run', async t => {
+  const f = await fixture(t), log = join(f.home, 'managed.jsonl'), secret = 'PRIVATE_MCP_SNAPSHOT_SENTINEL';
+  const mcp = { command: process.execPath, args: [resolve('tests/mcp/fixtures/managed-server.mjs'), log, 'normal'], env: { SENTINEL: secret }, connection: 'shared', usage: 'serial' };
+  await writeFile(join(f.home, 'mcp.json'), JSON.stringify({ mcpServers: { managed: mcp } }));
+  for (const profile of [f.leader, f.worker]) await f.gateway.teamCommand!({ action: 'profile_save', id: profile.id, role: profile.role, config: { ...profile.config, capabilities: { ...profile.config.capabilities, mcpServers: ['managed'] } }, requestToken: `grant-${profile.id}` });
+  const selected = await f.select();
+  assert.ok(!JSON.stringify(selected).includes(secret));
+  await assert.rejects(stat(log), { code: 'ENOENT' });
+  const ordinary = [];
+  for await (const event of f.gateway.submitTurn({ sessionKey: 'ordinary-chat', projectKey: f.workspace, channelKey: 'test', message: 'hold MCP', basePermissionMode: 'bypassPermissions' })) ordinary.push(event);
+  assert.deepEqual(ordinary.filter(event => event.type === 'error'), []);
+  assert.deepEqual((await f.submit({ runId: 'initial-leader' })).filter(event => event.type === 'error'), []);
+  let called = false;
+  f.setResponse(async function* (request) {
+    if (request.model === 'worker' && !called) { called = true; yield { type: 'tool_call_start', id: 'read-shared', name: 'mcp__managed__read' }; yield { type: 'tool_call_end', toolCall: { id: 'read-shared', name: 'mcp__managed__read', input: {} } }; }
+    else yield { type: 'text_delta', text: 'done' };
+  });
+  // The Team run is already accepted. A newly woken member must still use its
+  // accepted snapshot even if the MCP settings now point to a broken command.
+  await writeFile(join(f.home, 'mcp.json'), JSON.stringify({ mcpServers: { managed: { ...mcp, command: join(f.home, 'missing-new-version') } } }));
+  await f.send('read using the accepted MCP', 'frozen-worker');
+  await eventually(async () => (await f.view()).turns!.some(turn => turn.participantId === f.worker.id && turn.status === 'ended'), 'frozen worker finishes');
+  const view = await f.view(); assert.ok(!view.turns!.find(turn => turn.participantId === f.worker.id)!.error);
+  assert.ok(called);
+  const { readFile } = await import('node:fs/promises');
+  const rows = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(rows.filter(row => row.event === 'spawn').length, 1);
+  for (const model of ['ordinary', 'leader', 'worker']) assert.ok(f.requests.some(request => request.model === model && request.tools?.some(tool => tool.name === 'mcp__managed__read')));
+  assert.ok(!(await readFile(join(f.home, 'team-runtime', 'state.json'), 'utf8')).includes(secret));
+  await eventually(async () => {
+    const current = await f.view();
+    return current.messages.every(message => ['consumed', 'deleted', 'failed', 'stale'].includes(message.status)) && !(f.gateway as any).router.hasActiveTurn(f.sessionKey) && current.notifications?.every(notification => notification.deliveredAt) !== false;
+  }, 'whole Team idle');
+  const before = f.requests.length;
+  const events = await f.submit({ runId: 'new-config-boundary' });
+  assert.ok(events.some(event => event.type === 'error'));
+  assert.equal(f.requests.length, before);
+  // Stopping this Team must leave the independent chat's shared client alive.
+  await f.gateway.teamCommand!({ action: 'runtime_stop', sessionKey: f.sessionKey, activationId: view.id, stopVersion: view.stopVersion });
+  assert.ok((await f.gateway.mcpManage!({ action: 'status' })).statuses.some(status => status.holders.some(owner => owner.sessionKey === 'ordinary-chat')));
 });

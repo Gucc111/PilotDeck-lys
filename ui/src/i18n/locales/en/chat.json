@@ -762,7 +762,7 @@
     "noProjects": "Register a project before using Team mode.",
     "registerProject": "Register project",
     "checking": "Checking models, workspaces and capabilities…",
-    "compatible": "Ready.",
+    "compatible": "Configuration check passed. Connections will be verified at execution time.",
     "cancel": "Cancel",
     "switching": "Switching…",
     "useTeam": "Use Team",

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 const en = {
+  optionalMcp: "Optional: continue without this MCP if unavailable",
   inventoryProject: 'Browse capabilities from', globalCapabilities: 'Global capabilities', inventoryProjectHelp: 'This only changes the list shown below. The profile still inherits the team workspace.',
   newAttempt: 'Edit as a new attempt',
   title: 'Teams',
@@ -29,6 +30,7 @@ const en = {
   workspacesShared: 'Profiles may inherit this project or select their own fixed workspace. Teammates can use any local directory; Leaders must use a registered workspace. A workspace reference does not copy project files.',
 } as const;
 const zh: Record<keyof typeof en, string> = {
+  optionalMcp: "可选：此 MCP 不可用时允许继续执行",
   inventoryProject: '能力清单来源', globalCapabilities: '全局能力', inventoryProjectHelp: '仅切换下方展示的能力清单，角色工作区仍由 Team 提供。',
   newAttempt: '作为新尝试继续编辑',
   title: '团队',

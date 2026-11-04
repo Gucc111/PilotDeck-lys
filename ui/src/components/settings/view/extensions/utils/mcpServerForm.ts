@@ -27,6 +27,10 @@ export function formFromRaw(name: string, value: unknown, id = newId()): McpServ
   return {
     id,
     name,
+    raw: { ...raw },
+    connection: raw.connection === "shared" ? "shared" : "separate",
+    usage: raw.usage === "serial" ? "serial" : "concurrent",
+    maxConnections: raw.maxConnections === undefined ? "" : String(raw.maxConnections),
     transport: typeof raw.command === "string" ? "stdio" : "http",
     command: typeof raw.command === "string" ? raw.command : "",
     args: Array.isArray(raw.args)
@@ -72,6 +76,14 @@ export function stringifyServers(servers: McpServerForm[]): string {
   for (const server of servers) {
     const name = server.name.trim();
     if (!name) continue;
+    const extra = { ...server.raw };
+    for (const key of ["command", "args", "env", "perSession", "url", "httpUrl", "headers", "connection", "usage", "maxConnections"]) delete extra[key];
+    const strategy = {
+      ...extra,
+      connection: server.connection ?? "separate",
+      usage: server.usage ?? "concurrent",
+      ...(server.connection !== "shared" && server.maxConnections?.trim() ? { maxConnections: Number(server.maxConnections) } : {}),
+    };
     if (server.transport === "stdio") {
       const env = Object.fromEntries([
         ...server.env
@@ -82,6 +94,7 @@ export function stringifyServers(servers: McpServerForm[]): string {
           .map((key) => [key.trim(), `\${env:${key.trim()}}`]),
       ]);
       mcpServers[name] = {
+        ...strategy,
         command: server.command,
         ...(server.args.filter(Boolean).length > 0
           ? { args: server.args.filter(Boolean) }
@@ -96,6 +109,7 @@ export function stringifyServers(servers: McpServerForm[]): string {
           .map((row) => [row.key.trim(), row.value]),
       );
       mcpServers[name] = {
+        ...strategy,
         url: server.url,
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
       };

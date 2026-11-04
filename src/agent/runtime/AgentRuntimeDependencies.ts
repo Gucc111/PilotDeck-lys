@@ -97,6 +97,8 @@ export type AgentTeamMessages = {
 };
 
 export type AgentRuntimeDependencies = {
+  /** Refresh external capability snapshots before building a model request. */
+  prepareTools?: (signal?: AbortSignal) => Promise<void>;
   router: AgentRouterRuntime;
   tools: {
     scheduler: PilotDeckToolScheduler;

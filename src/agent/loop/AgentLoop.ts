@@ -511,6 +511,7 @@ export class AgentLoop {
           return { result, messages };
         }
       }
+      await this.dependencies.prepareTools?.(input.abortSignal);
       const teamReservedTokens = new TokenBudgetManager().estimateMessagesTokens(pendingTeamMessages);
       let pendingContextBudget: TokenBudgetSnapshot | undefined;
       const ctx = this.dependencies.context;

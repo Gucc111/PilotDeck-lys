@@ -3,7 +3,15 @@
  * Mirrors the legacy contracts in `services/mcp/client.ts` (M1-M16).
  */
 
-export type PilotDeckMcpServerSpec =
+export type McpConnectionPolicy = {
+  connection?: "separate" | "shared";
+  usage?: "concurrent" | "serial";
+  maxConnections?: number;
+  /** Effective working directory also participates in HTTP connection identity. */
+  cwd?: string;
+};
+
+export type PilotDeckMcpServerSpec = McpConnectionPolicy & (
   | {
       id: string;
       transport: "stdio";
@@ -17,7 +25,7 @@ export type PilotDeckMcpServerSpec =
       concurrencySafe?: boolean;
       /**
        * When true, the MCP runtime injects a unique `--user-data-dir` per
-       * spawn so multiple concurrent sessions each get their own isolated
+       * connection so compatible MCP clients get their own temporary
        * browser profile on disk.  The temp directory is cleaned up when the
        * client closes.
        */
@@ -32,7 +40,7 @@ export type PilotDeckMcpServerSpec =
       callTimeoutMs?: number;
       /** False opts read-only tools out of parallel tool batches (not a session lock). */
       concurrencySafe?: boolean;
-    };
+    });
 
 export type PilotDeckMcpToolAnnotations = {
   readOnlyHint?: boolean;

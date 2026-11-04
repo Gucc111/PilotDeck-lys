@@ -85,12 +85,8 @@ export class McpRuntime {
     const out: PilotDeckMcpToolSpec[] = [];
     for (const client of this.clients.values()) {
       if (client.getStatus() !== "ready") continue;
-      try {
-        const tools = await client.listTools();
-        out.push(...tools);
-      } catch {
-        // skip — `start()` already recorded the error
-      }
+      const tools = await client.listTools();
+      out.push(...tools);
     }
     return out;
   }

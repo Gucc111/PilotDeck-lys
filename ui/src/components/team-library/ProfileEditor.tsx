@@ -45,8 +45,9 @@ export function ProfileEditor({ draft, projects, models, busy, error, onChange, 
       return <div key={item.name} className={`team-capability${nested ? ' team-capability-child' : ''}`}><div className="team-capability-label"><label className="team-check"><input type="checkbox" checked={checked} disabled={locked || loading || Boolean(inventoryError) || dependency || (nested && !writes)} onChange={e => {
         const removed = !e.target.checked && names.includes('write_file') ? [...names, 'edit_notebook'] : names;
         const next = { ...config, capabilities: { ...config.capabilities, [key]: e.target.checked ? [...new Set([...selected, ...names])] : selected.filter(name => !removed.includes(name)) } };
+        if (kind === 'mcp' && !e.target.checked) next.capabilities.optionalMcpServers = next.capabilities.optionalMcpServers?.filter(name => !removed.includes(name));
         update(kind === 'tool' ? normalizeProfileTools(next) : next);
-      }}/><span>{label}</span></label>{kind !== 'tool' && <p className="team-muted">{item.description}</p>}</div></div>;
+      }}/><span>{label}</span></label>{kind === 'mcp' && checked && <label className="team-check"><input type="checkbox" disabled={locked} checked={config.capabilities.optionalMcpServers?.includes(item.name) ?? false} onChange={event => update({ capabilities: { ...config.capabilities, optionalMcpServers: event.target.checked ? [...new Set([...(config.capabilities.optionalMcpServers ?? []), item.name])] : config.capabilities.optionalMcpServers?.filter(name => name !== item.name) } })}/><span>{t('optionalMcp')}</span></label>}{kind !== 'tool' && <p className="team-muted">{item.description}</p>}</div></div>;
     };
     const groupedNames = [...PLAN_TOOL_GROUP, ...WRITE_TOOL_GROUP, 'edit_notebook'];
     const toolEntries = entries.filter(item => !groupedNames.includes(item.name));

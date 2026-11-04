@@ -437,7 +437,7 @@ export class StandaloneComputerUseController {
     this.writeJson(this.mcpConfigPath, { mcpServers: ready ? { [SERVER_ID]: {
       command: this.binary, args: this.endpoint ? ['mcp', '--embedded', '--socket', this.endpoint] : ['mcp'],
       env: { CUA_DRIVER_EMBEDDED: this.endpoint ? '1' : '0', CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false', CUA_TELEMETRY_ENABLED: 'false' },
-      callTimeoutMs: 60_000, concurrencySafe: false,
+      callTimeoutMs: 60_000, concurrencySafe: false, connection: 'shared', usage: 'serial',
     } } : {} });
   }
 

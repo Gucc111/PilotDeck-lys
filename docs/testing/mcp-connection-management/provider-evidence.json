@@ -1,0 +1,651 @@
+{
+  "date": "2026-11-03",
+  "provider": "llmcenter-openai",
+  "model": "deepseek-v4.1-flash",
+  "description": "Actual provider and local stdio subprocess via isolated Gateway. Selected non-secret evidence only. Gateway recoverable timeout propagation and per-owner coalesced-handshake status were patched and regression-tested after this run.",
+  "events": [
+    {
+      "at": "2026-11-03T10:48:28.736Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-b",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "connecting",
+        "stage": "connect",
+        "owner": {
+          "sessionKey": "final-shared-b"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:28.961Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-b",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "connecting",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-shared-b"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:28.993Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-a",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-shared-a"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:28.993Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-b",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-shared-b"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:29.007Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-b",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-shared-b"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:29.717Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:29.730Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:33.029Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-a",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "call",
+        "owner": {
+          "sessionKey": "final-shared-a"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:33.030Z",
+      "event": "tool_call_finished",
+      "sessionKey": "final-shared-a",
+      "toolName": "mcp__managed__read",
+      "ok": true
+    },
+    {
+      "at": "2026-11-03T10:48:33.050Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:39.664Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-b",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "call",
+        "owner": {
+          "sessionKey": "final-shared-b"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:39.670Z",
+      "event": "tool_call_finished",
+      "sessionKey": "final-shared-b",
+      "toolName": "mcp__managed__read",
+      "ok": true
+    },
+    {
+      "at": "2026-11-03T10:48:39.685Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:41.856Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-a",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-shared-a"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:41.876Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:44.587Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-shared-a",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "call",
+        "owner": {
+          "sessionKey": "final-shared-a"
+        },
+        "connectionId": "2665226a-f39b-4c5b-908d-34a3c2749247",
+        "holders": [
+          {
+            "sessionKey": "final-shared-b"
+          },
+          {
+            "sessionKey": "final-shared-a"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:44.589Z",
+      "event": "tool_call_finished",
+      "sessionKey": "final-shared-a",
+      "toolName": "mcp__managed__read",
+      "ok": true
+    },
+    {
+      "at": "2026-11-03T10:48:44.618Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:46.677Z",
+      "event": "final_shared_summary",
+      "spawns": 1,
+      "errors": [],
+      "calls": [
+        {
+          "tool": "mcp__managed__read",
+          "ok": true
+        },
+        {
+          "tool": "mcp__managed__read",
+          "ok": true
+        },
+        {
+          "tool": "mcp__managed__read",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:46.695Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-holder",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "connecting",
+        "stage": "connect",
+        "owner": {
+          "sessionKey": "final-capacity-holder"
+        },
+        "connectionId": "9c48cdd0-6e9a-4dbe-a3e0-6b4a3cfa6207",
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:46.762Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-holder",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "connecting",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-capacity-holder"
+        },
+        "connectionId": "9c48cdd0-6e9a-4dbe-a3e0-6b4a3cfa6207",
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:46.765Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-holder",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-capacity-holder"
+        },
+        "connectionId": "9c48cdd0-6e9a-4dbe-a3e0-6b4a3cfa6207",
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:46.767Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-holder",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-capacity-holder"
+        },
+        "connectionId": "9c48cdd0-6e9a-4dbe-a3e0-6b4a3cfa6207",
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:46.780Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:48.956Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-holder",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "ready",
+        "stage": "call",
+        "owner": {
+          "sessionKey": "final-capacity-holder"
+        },
+        "connectionId": "9c48cdd0-6e9a-4dbe-a3e0-6b4a3cfa6207",
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:48.957Z",
+      "event": "tool_call_finished",
+      "sessionKey": "final-capacity-holder",
+      "toolName": "mcp__managed__read",
+      "ok": true
+    },
+    {
+      "at": "2026-11-03T10:48:48.981Z",
+      "event": "final_real_model_request",
+      "model": "deepseek-v4.1-flash",
+      "tools": [
+        "mcp__managed__read",
+        "mcp__managed__step"
+      ]
+    },
+    {
+      "at": "2026-11-03T10:48:55.057Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-waiter",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "waiting_capacity",
+        "stage": "capacity",
+        "owner": {
+          "sessionKey": "final-capacity-waiter"
+        },
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true,
+        "reason": "Waiting for connection capacity or the previous configuration version to be released"
+      }
+    },
+    {
+      "at": "2026-11-03T10:48:55.076Z",
+      "event": "final_capacity_status",
+      "value": {
+        "statuses": [
+          {
+            "serverId": "managed",
+            "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+            "state": "ready",
+            "stage": "call",
+            "owner": {
+              "sessionKey": "final-capacity-holder"
+            },
+            "connectionId": "9c48cdd0-6e9a-4dbe-a3e0-6b4a3cfa6207",
+            "holders": [
+              {
+                "sessionKey": "final-capacity-holder"
+              }
+            ],
+            "retryable": true,
+            "busy": false
+          },
+          {
+            "serverId": "managed",
+            "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+            "state": "waiting_capacity",
+            "stage": "capacity",
+            "owner": {
+              "sessionKey": "final-capacity-waiter"
+            },
+            "holders": [
+              {
+                "sessionKey": "final-capacity-holder"
+              }
+            ],
+            "retryable": true,
+            "reason": "Waiting for connection capacity or the previous configuration version to be released",
+            "busy": true
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-11-03T10:50:31.929Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-capacity-waiter",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+        "state": "failed",
+        "stage": "capacity",
+        "owner": {
+          "sessionKey": "final-capacity-waiter"
+        },
+        "holders": [
+          {
+            "sessionKey": "final-capacity-holder"
+          }
+        ],
+        "retryable": true,
+        "reason": "MCP preparation cancelled"
+      }
+    },
+    {
+      "at": "2026-11-03T10:50:31.930Z",
+      "event": "final_capacity_cancelled",
+      "errors": [
+        {
+          "type": "error",
+          "runId": "639bef8b-0566-49a8-98b9-46f4f90d4afa",
+          "code": "gateway_submit_failed",
+          "message": "MCP owner cancelled",
+          "recoverable": false,
+          "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs."
+        }
+      ]
+    },
+    {
+      "at": "2026-11-03T10:50:31.941Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-discovery-fail",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "0f290dd4ac2e9c31ac6dd93e706e1afc3cffa2976f8b9681beab2b20410afe2d",
+        "state": "connecting",
+        "stage": "connect",
+        "owner": {
+          "sessionKey": "final-discovery-fail"
+        },
+        "connectionId": "99d273af-717b-42db-a0f9-e62accc3684a",
+        "holders": [
+          {
+            "sessionKey": "final-discovery-fail"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:50:32.044Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-discovery-fail",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "0f290dd4ac2e9c31ac6dd93e706e1afc3cffa2976f8b9681beab2b20410afe2d",
+        "state": "connecting",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-discovery-fail"
+        },
+        "connectionId": "99d273af-717b-42db-a0f9-e62accc3684a",
+        "holders": [
+          {
+            "sessionKey": "final-discovery-fail"
+          }
+        ],
+        "retryable": true
+      }
+    },
+    {
+      "at": "2026-11-03T10:50:32.046Z",
+      "event": "gateway_mcp_status",
+      "sessionKey": "final-discovery-fail",
+      "status": {
+        "serverId": "managed",
+        "resourceId": "0f290dd4ac2e9c31ac6dd93e706e1afc3cffa2976f8b9681beab2b20410afe2d",
+        "state": "failed",
+        "stage": "tools",
+        "owner": {
+          "sessionKey": "final-discovery-fail"
+        },
+        "holders": [
+          {
+            "sessionKey": "final-discovery-fail"
+          }
+        ],
+        "retryable": true,
+        "reason": "MCP preparation failed (mcp_call_failed); retry after checking this server"
+      }
+    },
+    {
+      "at": "2026-11-03T10:50:32.050Z",
+      "event": "final_discovery_failure",
+      "errors": [
+        {
+          "type": "error",
+          "runId": "d2424535-fdc2-49d7-ab66-aad41995a56a",
+          "code": "mcp_call_failed",
+          "message": "MCP call failed (server=managed): MCP error -32603: Fixture discovery failure",
+          "recoverable": false,
+          "userHint": "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs."
+        }
+      ],
+      "status": {
+        "statuses": [
+          {
+            "serverId": "managed",
+            "resourceId": "bf79c94a1cde522db5c1904bb7e5b44197a734d5dba70af630208cdc905e8760",
+            "state": "failed",
+            "stage": "capacity",
+            "owner": {
+              "sessionKey": "final-capacity-waiter"
+            },
+            "holders": [],
+            "retryable": true,
+            "reason": "MCP preparation cancelled",
+            "busy": false
+          },
+          {
+            "serverId": "managed",
+            "resourceId": "0f290dd4ac2e9c31ac6dd93e706e1afc3cffa2976f8b9681beab2b20410afe2d",
+            "state": "failed",
+            "stage": "tools",
+            "owner": {
+              "sessionKey": "final-discovery-fail"
+            },
+            "holders": [],
+            "retryable": true,
+            "reason": "MCP preparation failed (mcp_call_failed); retry after checking this server",
+            "busy": false
+          }
+        ]
+      }
+    }
+  ]
+}

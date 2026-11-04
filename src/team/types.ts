@@ -7,7 +7,7 @@ export type ProfileConfig = {
   systemPrompt: string;
   model: { mode: "default" } | TeamModel;
   workspace: { mode: "team" } | { mode: "fixed"; projectKey: string };
-  capabilities: { tools: string[]; skills: string[]; mcpServers: string[] };
+  capabilities: { tools: string[]; skills: string[]; mcpServers: string[]; optionalMcpServers?: string[] };
   permissionMode: "default" | "plan" | "bypassPermissions";
 };
 /** A configuration identity. Profiles and Teams are latest-only records. */

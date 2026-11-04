@@ -1,3 +1,4 @@
+import { McpConnectionStatus } from "../mcp/McpConnectionStatus";
 import ErrorBoundary from '../main-content/view/ErrorBoundary';
 import { useContext } from 'react';
 import { SessionViewReadyContext } from '../app-shell/useSessionIndicators';
@@ -932,7 +933,8 @@ function ChatInterfaceV2({
   }
 
   return (
-    <div className="pd-chat-canvas grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white dark:bg-neutral-950">
+    <div className="pd-chat-canvas grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-white dark:bg-neutral-950">
+      <div><McpConnectionStatus sessionKey={watchedSessionId}/></div>
       <ErrorBoundary showDetails resetKeys={[selectedSession?.id, selectedProject?.name]}>
         <MessagesPaneV2
           scrollContainerRef={scrollContainerRef}

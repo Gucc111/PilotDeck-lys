@@ -21,6 +21,11 @@ export type KeyValueRow = {
 export type McpServerForm = {
   id: string;
   name: string;
+  connection: "separate" | "shared";
+  usage: "concurrent" | "serial";
+  maxConnections: string;
+  /** Preserve fields owned by plugins and advanced configuration. */
+  raw?: Record<string, unknown>;
   transport: "stdio" | "http";
   command: string;
   args: string[];

@@ -40,7 +40,7 @@ export type CreateToolDefinitionsOptions = {
 };
 
 export async function createMcpToolDefinitionsFromRuntime(
-  runtime: McpRuntime,
+  runtime: Pick<McpRuntime, "listAllTools"> & { getClient(serverId: string): Pick<McpClient, "spec" | "callTool"> | undefined },
   options: CreateToolDefinitionsOptions = {},
 ): Promise<PilotDeckToolDefinition[]> {
   const tools = await runtime.listAllTools();
@@ -49,7 +49,7 @@ export async function createMcpToolDefinitionsFromRuntime(
 
 function buildToolDefinition(
   spec: PilotDeckMcpToolSpec,
-  runtime: McpRuntime,
+  runtime: Pick<McpRuntime, "listAllTools"> & { getClient(serverId: string): Pick<McpClient, "spec" | "callTool"> | undefined },
   options: CreateToolDefinitionsOptions,
 ): PilotDeckToolDefinition {
   const annotations: PilotDeckMcpToolAnnotations = spec.annotations ?? {};
@@ -70,7 +70,7 @@ function buildToolDefinition(
     isDestructive: () => isDestructive,
     isOpenWorld: () => isOpenWorld,
     execute: async (input, context): Promise<PilotDeckToolExecutionOutput> => {
-      const client: McpClient | undefined = runtime.getClient(spec.serverId);
+      const client = runtime.getClient(spec.serverId);
       if (!client) {
         throw new PilotDeckToolRuntimeError(
           "unsupported_tool",

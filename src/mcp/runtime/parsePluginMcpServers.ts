@@ -38,9 +38,18 @@ export function parsePluginMcpServers(
       continue;
     }
     const v = value as Record<string, unknown>;
+    const policyError = validateMcpPolicy(v);
+    if (policyError) { diagnostics.push({ id, message: policyError }); continue; }
+    const policy = {
+      connection: (v.connection ?? "separate") as "separate" | "shared",
+      usage: (v.usage ?? "concurrent") as "concurrent" | "serial",
+      maxConnections: v.maxConnections as number | undefined,
+      cwd: typeof v.cwd === "string" ? expandMcpString(v.cwd) : undefined,
+    };
     const command = typeof v.command === "string" ? expandMcpString(v.command) : undefined;
     if (command && command.length > 0) {
       servers.push({
+        ...policy,
         id,
         transport: "stdio",
         command,
@@ -62,6 +71,7 @@ export function parsePluginMcpServers(
         : undefined;
     if (url) {
       servers.push({
+        ...policy,
         id,
         transport: "streamable_http",
         url: expandMcpString(url),
@@ -86,4 +96,12 @@ function isStringRecord(v: unknown): boolean {
 
 function positiveFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+export function validateMcpPolicy(value: Record<string, unknown>): string | undefined {
+  if (value.connection !== undefined && value.connection !== "separate" && value.connection !== "shared") return 'connection must be "separate" or "shared"';
+  if (value.usage !== undefined && value.usage !== "concurrent" && value.usage !== "serial") return 'usage must be "concurrent" or "serial"';
+  if (value.maxConnections !== undefined && (!Number.isSafeInteger(value.maxConnections) || (value.maxConnections as number) < 1)) return "maxConnections must be a positive integer";
+  if (value.connection === "shared" && value.maxConnections !== undefined && value.maxConnections !== 1) return "shared connections require maxConnections to be omitted or 1";
+  return undefined;
 }

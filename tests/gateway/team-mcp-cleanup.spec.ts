@@ -53,3 +53,16 @@ test('team cleanup awaits all of its members, retains failed cleanup for retry, 
   assert.equal(sessionMcpRuntimes.has('team-internal:activation:a'), false);
   assert.equal(sessionMcpRuntimes.has('team-internal:activation:b'), false);
 });
+
+test('Team cleanup waits for a cancelled handshake before a session lease is installed', async t => {
+  const { local } = await fixture(t), handshake = deferred(); let closed = false;
+  const manager = local.registry.mcpConnections;
+  (manager as any).options.createClient = (spec: any) => ({ spec, start: () => handshake.promise, listTools: async () => [], callTool: async () => ({ content: [] }), getInstructions: () => '', close: async () => { closed = true; } });
+  const acquiring = manager.acquire({ sessionKey: 'preparing', activationId: 'activation', participantId: 'worker', stopVersion: 0 }, [{ id: 'pending', transport: 'stdio', command: 'unused' }]);
+  const rejected = assert.rejects(acquiring);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  let finished = false; const cleanup = local.registry.awaitTeamMcpCleanup('activation').then(() => { finished = true; });
+  await rejected; await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(finished, false); assert.equal(closed, false);
+  handshake.resolve(); await cleanup; assert.equal(closed, true); assert.equal(finished, true);
+});

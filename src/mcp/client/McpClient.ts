@@ -86,7 +86,12 @@ export class McpClient {
   private listToolsCache: ListToolsCache | null = null;
   private serverInstructions = "";
   private connectPromise: Promise<void> | null = null;
-  private reconnectInFlight = false;
+  private recoveryPromise: Promise<void> | null = null;
+  private closingPromise: Promise<void> | null = null;
+  private generation = 0;
+  private cleanupDiagnostic?: string;
+  getGeneration(): number { return this.generation; }
+  getCleanupDiagnostic(): string | undefined { return this.cleanupDiagnostic; }
   private perSessionDir: string | null = null;
 
   constructor(
@@ -104,6 +109,7 @@ export class McpClient {
 
   /** M1 — memoized connect. */
   async start(): Promise<void> {
+    if (this.closingPromise) await this.closingPromise;
     if (this.connectPromise) return this.connectPromise;
     this.connectPromise = this.runConnect();
     try {
@@ -125,7 +131,7 @@ export class McpClient {
       // A stopped external server must not leave a memoized, dead connection.
       // Ignore late close events from clients already replaced by reconnect.
       if (this.client !== client) return;
-      this.recycleTransport();
+      void this.recycleTransport().catch(() => {});
     };
     const handshakeMs = this.options.handshakeTimeoutMs ?? 10_000;
     try {
@@ -141,7 +147,8 @@ export class McpClient {
       );
     } catch (err) {
       this.status = "error";
-      try { await client.close(); } catch { /* best effort cleanup of a failed handshake */ }
+      try { await client.close(); } catch { /* preserve the original handshake failure */ }
+      if (this.perSessionDir) { rmSync(this.perSessionDir, { recursive: true, force: true }); this.perSessionDir = null; }
       throw err instanceof McpClientError
         ? err
         : new McpClientError(
@@ -153,6 +160,7 @@ export class McpClient {
     this.client = client;
     this.transport = transport;
     this.status = "ready";
+    this.generation++;
     this.serverInstructions = client.getInstructions() ?? "";
   }
 
@@ -186,10 +194,13 @@ export class McpClient {
               ? this.options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
               : this.options.handshakeTimeoutMs ?? 10_000,
             retry: {
-              maxRetries: 1,
+              maxRetries: method === "POST" ? 0 : 1,
               baseDelayMs: 500,
               maxDelayMs: 5_000,
             },
+          }).then(response => {
+            if (method === "DELETE" && response.status === 405) this.cleanupDiagnostic = "HTTP MCP server does not support session termination; remote session release is unconfirmed.";
+            return response;
           });
         },
       });
@@ -211,13 +222,27 @@ export class McpClient {
     if (!this.client) {
       throw new McpClientError("Client not connected", "mcp_handshake_failed", this.spec.id);
     }
-    const sdkResult = await this.callWithReconnect(() =>
-      this.client!.listTools(undefined, {
-        timeout: this.options.callTimeoutMs ?? this.spec.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
-      }),
-    );
+    const tools = await this.callWithReconnect(async () => {
+      const result: PilotDeckMcpToolSpec[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = await this.client!.listTools(cursor ? { cursor } : undefined, {
+          timeout: this.options.callTimeoutMs ?? this.spec.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+        });
+        result.push(...page.tools.map(tool => this.toToolSpec(tool)));
+        cursor = page.nextCursor;
+        if (cursor && cursors.has(cursor)) throw new McpClientError("Repeated tools/list pagination cursor", "mcp_call_failed", this.spec.id);
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      const names = new Set<string>();
+      for (const tool of result) {
+        if (names.has(tool.wireName)) throw new McpClientError(`Tool name collision: ${tool.wireName}`, "mcp_call_failed", this.spec.id);
+        names.add(tool.wireName);
+      }
+      return result;
+    });
 
-    const tools = (sdkResult.tools ?? []).map((tool: unknown) => this.toToolSpec(tool));
     this.listToolsCache = {
       tools,
       expiresAt: Date.now() + LIST_TOOLS_CACHE_TTL_MS,
@@ -264,16 +289,17 @@ export class McpClient {
 
   /** Recover an expired session without blindly replaying a dispatched mutation. */
   private async callWithReconnect<T>(fn: () => Promise<T>, mayReplay: boolean | (() => Promise<boolean>) = true, signal?: AbortSignal): Promise<T> {
+    const dispatchedGeneration = this.generation;
     try {
       return await fn();
     } catch (err) {
       // The SDK can use its timeout error code for cancellation too. Preserve
       // the caller's abort rather than recycling a healthy transport or replaying.
       if (signal?.aborted) throw signal.reason ?? err;
-      if (this.isReconnectableError(err) && !this.reconnectInFlight) {
-        this.reconnectInFlight = true;
+      if (this.isReconnectableError(err)) {
         try {
-          await this.reconnect();
+          if (!this.recoveryPromise && (this.generation === dispatchedGeneration || !this.client)) this.recoveryPromise = this.reconnect().finally(() => { this.recoveryPromise = null; });
+          await this.recoveryPromise;
           signal?.throwIfAborted();
           // Retry only if both generations advertise a safe replay. The new
           // server may have removed the annotation while we were disconnected.
@@ -287,14 +313,16 @@ export class McpClient {
           }
           signal?.throwIfAborted();
           return await fn();
-        } finally {
-          this.reconnectInFlight = false;
+        } catch (recoveryError) {
+          if (signal?.aborted) throw signal.reason ?? recoveryError;
+          if (recoveryError instanceof McpClientError) throw recoveryError;
+          throw new McpClientError("MCP recovery or replay failed after dispatch; check the actual operation result.", "mcp_call_failed", this.spec.id);
         }
       }
       if (err instanceof McpClientError) throw err;
       const e = err as Error & { code?: number };
       if (e.code === -32001 || /timed out|timeout/i.test(e.message ?? "")) {
-        this.recycleTransport();
+        await this.recycleTransport();
         throw new McpClientError(
           `MCP call timed out (server=${this.spec.id}): ${e.message}`,
           "mcp_call_timeout",
@@ -318,75 +346,44 @@ export class McpClient {
       || (e.code === -32000 && /connection closed/i.test(e.message ?? ""));
   }
 
-  /**
-   * M5b — drop a closed or wedged transport so the next call spawns a fresh
-   * subprocess.
-   *
-   * `-32001` only cancels the client's wait; the server-side request often
-   * keeps running. For long-running stdio MCPs (notably `@playwright/mcp`
-   * blocked inside `page.goto` on a dead TCP connection) the subprocess
-   * stays stuck and every subsequent call from the same session also
-   * times out. We null out local refs synchronously — so any caller racing
-   * into `start()` opens a brand-new connection — and close + clean up
-   * the old transport asynchronously in the background.
+  /** Drop a wedged transport and await local cleanup before opening another.
+   * Client cancellation alone does not confirm termination of a remote action.
    */
-  private recycleTransport(): void {
-    const oldClient = this.client;
-    const oldDir = this.perSessionDir;
-    this.client = null;
-    this.transport = null;
-    this.connectPromise = null;
-    this.listToolsCache = null;
-    this.perSessionDir = null;
+  private recycleTransport(): Promise<void> {
+    if (this.closingPromise) return this.closingPromise;
     this.status = "error";
-    void (async () => {
+    this.listToolsCache = null;
+    const client = this.client, transport = this.transport, directory = this.perSessionDir;
+    this.client = null; this.transport = null; this.connectPromise = null; this.perSessionDir = null;
+    this.closingPromise = (async () => {
       try {
-        await oldClient?.close();
-      } catch {
-        // best effort — the subprocess may already be wedged
+        await client?.close();
+        if (!client) await transport?.close();
+        if (directory) rmSync(directory, { recursive: true, force: true });
+      } catch (error) {
+        // Retain the actual handles so a failed close can be retried without
+        // reporting a local release that never happened.
+        this.client = client; this.transport = transport; this.perSessionDir = directory;
+        throw error;
       }
-      if (oldDir) {
-        try {
-          rmSync(oldDir, { recursive: true, force: true });
-        } catch {
-          // best effort cleanup
-        }
-      }
-    })();
+    })().finally(() => { this.closingPromise = null; });
+    return this.closingPromise;
   }
 
-  /** M5 — close the existing client and reconnect. */
   private async reconnect(): Promise<void> {
-    this.status = "connecting";
-    this.listToolsCache = null;
-    try {
-      await this.client?.close();
-    } catch {
-      // ignore close errors during reconnect
-    }
-    this.client = null;
-    this.transport = null;
-    this.connectPromise = null;
+    await this.recycleTransport();
     await this.start();
   }
 
   async close(): Promise<void> {
-    try {
-      await this.client?.close();
-    } catch {
-      // best effort
+    if (this.closingPromise) await this.closingPromise;
+    this.cleanupDiagnostic = undefined;
+    if (this.transport instanceof StreamableHTTPClientTransport && this.transport.sessionId) {
+      try { await this.transport.terminateSession(); }
+      catch { this.cleanupDiagnostic = "HTTP MCP session termination was not confirmed by the server; the local transport is being closed."; }
     }
-    this.client = null;
-    this.transport = null;
-    this.connectPromise = null;
+    await this.recycleTransport();
     this.status = "idle";
-    this.listToolsCache = null;
-    if (this.perSessionDir) {
-      try {
-        rmSync(this.perSessionDir, { recursive: true, force: true });
-      } catch { /* best effort cleanup */ }
-      this.perSessionDir = null;
-    }
   }
 
   private toToolSpec(raw: unknown): PilotDeckMcpToolSpec {

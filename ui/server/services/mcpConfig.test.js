@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  normalizeMcpConfig,
   getGlobalMcpConfigPath,
   readMcpConfigFile,
   writeMcpConfigFile,
@@ -73,4 +74,12 @@ describe('MCP config writable paths', () => {
 
     expect(config.path).toBe(join(projectRoot, '.pilotdeck', 'mcp.json'));
   });
+});
+
+it.each([0, -1, 1.5, null, '2'])('rejects invalid connection limits %s', value => {
+  expect(() => normalizeMcpConfig({ mcpServers: { db: { command: 'node', maxConnections: value } } })).toThrow(/positive integer/);
+});
+it('rejects incompatible shared limits and invalid strategy names', () => {
+  expect(() => normalizeMcpConfig({ mcpServers: { db: { command: 'node', connection: 'shared', maxConnections: 2 } } })).toThrow(/shared/);
+  for (const patch of [{ connection: 'guess' }, { usage: 'guess' }]) expect(() => normalizeMcpConfig({ mcpServers: { db: { command: 'node', ...patch } } })).toThrow();
 });

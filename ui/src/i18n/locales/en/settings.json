@@ -705,6 +705,7 @@
     }
   },
   "mcpConfig": {
+    "connectionAdvanced": "Advanced connection settings",
     "title": "MCP Servers",
     "description": "Edit PilotDeck MCP config. Global config lives in ~/.pilotdeck/mcp.json; project config lives in .pilotdeck/mcp.json and overrides global servers with the same name.",
     "project": "Project for project-scoped config",
@@ -768,10 +769,13 @@
       "args": "Arguments",
       "env": "Environment variables",
       "envPassThrough": "Environment variable pass-through",
-      "perSession": "Per-session server",
-      "perSessionHelp": "Start a fresh MCP process for each agent session.",
+      "perSession": "Create a temporary browser directory for this connection",
+      "perSessionHelp": "Only for MCP servers supporting --user-data-dir. The directory belongs to this connection.",
       "url": "URL",
-      "headers": "Headers"
+      "headers": "Headers",
+      "connection": "Connection mode",
+      "usage": "Call scheduling",
+      "maxConnections": "Maximum active connections"
     },
     "placeholders": {
       "key": "Key",
@@ -783,7 +787,31 @@
       "addEnv": "Add environment variable",
       "addVariable": "Add variable",
       "addHeader": "Add header"
-    }
+    },
+    "separate": "Separate connection for each Agent",
+    "shared": "Share a connection across Agents",
+    "concurrent": "Allow concurrent calls",
+    "serial": "Execute tool calls serially",
+    "isolationNote": "Separate connections do not automatically isolate accounts, business data or browser environments.",
+    "serialNote": "Serial execution applies to individual tool calls. Other Agents can still interleave calls between steps.",
+    "unlimited": "Unlimited",
+    "stage": {"capacity": "Connection capacity", "connect": "Connection", "tools": "Tool discovery", "call": "Tool call", "cleanup": "Cleanup"},
+    "connections": "Connection usage",
+    "release": "Release MCP connections",
+    "cancelWait": "Cancel wait or call",
+    "resetUnknown": "Actual operation checked: reset execution state",
+    "refreshConnections": "Refresh connection status",
+    "noConnections": "No MCP connections or waiters",
+    "status": {
+      "connecting": "Connecting",
+      "waiting_capacity": "Waiting for capacity",
+      "waiting_call": "Waiting for the previous call",
+      "ready": "Ready",
+      "failed": "Connection, tool loading or cleanup failed",
+      "unknown": "Execution state unknown"
+    },
+    "holders": "Holders",
+    "waiter": "Owner or waiter"
   },
   "pilotDeckConfig": {
     "loading": "Loading PilotDeck config...",

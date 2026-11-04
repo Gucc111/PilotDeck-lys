@@ -85,12 +85,12 @@ async function fixture(t: test.TestContext, responseText = 'ok') {
     }),
   };
   let local = createLocalGateway(options);
-  t.after(async () => { local.dispose(); await rm(home, { recursive: true, force: true }); });
+  t.after(async () => { await local.dispose(); await rm(home, { recursive: true, force: true }); });
   return {
     home, requests,
     get gateway() { return local.gateway; },
     fail() { failZeta = true; },
-    restart() { local.dispose(); local = createLocalGateway(options); },
+    async restart() { await local.dispose(); local = createLocalGateway(options); },
     async seedSaved(selection: SessionModelSelection) {
       const storage = createAgentProjectSessionStorage({ projectRoot: home, pilotHome: home, sessionId: 'web:model-choice' });
       await storage.transcript.recordSessionMetadata('web:model-choice', 'model-selection', { modelSelection: selection });
@@ -138,7 +138,7 @@ test('special token literals in replayed history remain sendable when switching 
   const firstEvents = await f.submit(A);
   assert.deepEqual(firstEvents.filter((event) => event.type === 'error'), []);
   assert.ok(firstEvents.some((event) => event.type === 'turn_completed' && event.finishReason === 'completed'));
-  f.restart();
+  await f.restart();
 
   for (const selection of [B, A]) {
     const events = await f.submit(selection);
@@ -173,7 +173,7 @@ test('first-turn choice and parameters are durable at acceptance and survive gat
   const entries = (await readTranscript(storage.transcriptPath)).entries;
   const acceptedOnly = entries.filter((e) => e.type === 'accepted_input');
   assert.deepEqual(replayTranscriptEntries(acceptedOnly).metadata.modelSelection, B, 'crash before metadata snapshot retains the choice');
-  f.restart();
+  await f.restart();
   assert.deepEqual(await f.saved(), B);
   await f.submit();
   assert.equal(f.requests.at(-1)!.provider, B.provider);
@@ -187,7 +187,7 @@ test('explicit Auto replaces saved concrete choice; one-turn overrides do not ch
   await f.submit({ mode: 'auto' });
   assert.equal(f.requests.at(-1)!.provider, B.provider);
   assert.deepEqual(await f.saved(), { mode: 'auto' });
-  f.restart();
+  await f.restart();
   await f.submit();
   assert.equal(f.requests.at(-1)!.provider, B.provider);
   await f.submit(A);
@@ -205,7 +205,7 @@ test('concrete choices fail without silently falling back, while Auto retains fa
   assert.ok(f.requests.length > 0);
   assert.deepEqual([...new Set(f.requests.map((r) => r.provider))], ['zeta']);
   f.requests.length = 0;
-  f.restart();
+  await f.restart();
   await f.submit({ mode: 'auto' });
   assert.deepEqual([...new Set(f.requests.map((r) => r.provider))], ['zeta', 'alpha']);
   assert.deepEqual(await f.saved(), { mode: 'auto' });
@@ -238,7 +238,7 @@ test('global model catalog needs no project registration and ignores legacy proj
 test('a new explicit snapshot overrides an old session preference after restart', async (t) => {
   const f = await fixture(t);
   await f.submit(A);
-  f.restart();
+  await f.restart();
   await f.submit(B);
   assert.equal(f.requests.at(-1)!.provider, B.provider);
   assert.equal(f.requests.at(-1)!.model, B.model);
@@ -250,7 +250,7 @@ test('response model survives transcript replay and differs from the next submit
   const aEvents = await f.submit(A);
   assert.ok(aEvents.some((event) => event.type === 'assistant_text_delta' && event.model === A.model));
   await f.submit(B);
-  f.restart();
+  await f.restart();
   const history = await readWebSessionMessages({ projectKey: f.home, sessionKey: 'web:model-choice' }, { projectRoot: f.home, pilotHome: f.home });
   assert.deepEqual(history.messages.filter((message) => message.role === 'assistant' && message.kind === 'text').map((message) => message.model), [A.model, B.model]);
 });
@@ -272,7 +272,7 @@ for (const reasoning of [0, 0.2]) {
   test(`restored legacy reasoning=${reasoning} falls back to Default without an explicit client selection`, async (t) => {
     const f = await fixture(t);
     await f.seedSaved({ ...B, reasoning });
-    f.restart();
+    await f.restart();
     const { reasoning: _reasoning, ...expected } = B;
     const restored = await f.gateway.sessionModelGet!({ projectKey: f.home, sessionKey: 'web:model-choice' });
     assert.deepEqual(restored.saved, expected);
@@ -298,7 +298,7 @@ for (const thinking of [
     const f = await fixture(t);
     await f.submit(B);
     await f.configureThinking(thinking);
-    f.restart();
+    await f.restart();
     f.requests.length = 0;
     const events = await f.submit();
     assert.deepEqual(events.filter(event => event.type === 'error'), []);
@@ -315,7 +315,7 @@ test('new invalid reasoning is still rejected through selection, override and se
   const f = await fixture(t);
   await f.submit(A);
   await f.configureThinking('{ state: enabled, efforts: [low] }');
-  f.restart();
+  await f.restart();
   f.requests.length = 0;
   for (const reasoning of [0, 0.2, 0.8]) {
     const invalid = { ...B, reasoning };

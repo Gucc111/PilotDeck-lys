@@ -90,6 +90,18 @@ export default function McpServerFormCard({
       </header>
 
       <div className={cn("mcp-server-editor", editing ? "editing" : "readonly")}>
+        <Field label={t("mcpConfig.fields.connection")}>
+          <select aria-label={t("mcpConfig.fields.connection")} disabled={!editing} value={server.connection} onChange={event => onChange({ connection: event.target.value as "separate" | "shared", maxConnections: "" })}>
+            <option value="separate">{t("mcpConfig.separate")}</option><option value="shared">{t("mcpConfig.shared")}</option>
+          </select>
+        </Field>
+        <Field label={t("mcpConfig.fields.usage")}>
+          <select aria-label={t("mcpConfig.fields.usage")} disabled={!editing} value={server.usage} onChange={event => onChange({ usage: event.target.value as "concurrent" | "serial" })}>
+            <option value="concurrent">{t("mcpConfig.concurrent")}</option><option value="serial">{t("mcpConfig.serial")}</option>
+          </select>
+        </Field>
+        <p role="note">{t("mcpConfig.isolationNote")}<br/>{t("mcpConfig.serialNote")}</p>
+        {server.connection !== "shared" && <details><summary>{t("mcpConfig.connectionAdvanced")}</summary><Field label={t("mcpConfig.fields.maxConnections")}><input aria-label={t("mcpConfig.fields.maxConnections")} type="number" min="1" step="1" value={server.maxConnections} disabled={!editing} placeholder={t("mcpConfig.unlimited")} onChange={event => onChange({ maxConnections: event.target.value })}/></Field></details>}
         {server.transport === "stdio" ? (
           <>
             <Field label={t("mcpConfig.fields.command")}>

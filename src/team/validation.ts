@@ -59,8 +59,11 @@ export function profileConfig(value: unknown): ProfileConfig {
   } else if (workspace.mode === 'fixed') {
     resolvedWorkspace = { mode: 'fixed', projectKey: text(workspace.projectKey, 'config.workspace.projectKey', { max: 500 }) };
   } else fail('config.workspace.mode', 'must be team or fixed');
-  const capabilities = object(data.capabilities, 'config.capabilities', ['tools', 'skills', 'mcpServers']);
+  const capabilities = object(data.capabilities, 'config.capabilities', ['tools', 'skills', 'mcpServers', 'optionalMcpServers']);
   const resolvedCapabilities = { tools: strings(capabilities.tools, 'config.capabilities.tools'), skills: strings(capabilities.skills, 'config.capabilities.skills'), mcpServers: strings(capabilities.mcpServers, 'config.capabilities.mcpServers') };
+  const optionalMcpServers = capabilities.optionalMcpServers === undefined ? undefined : strings(capabilities.optionalMcpServers, 'config.capabilities.optionalMcpServers');
+  if (optionalMcpServers?.some(name => !resolvedCapabilities.mcpServers.includes(name))) fail('config.capabilities.optionalMcpServers', 'must be a subset of mcpServers');
+  if (optionalMcpServers) Object.assign(resolvedCapabilities, { optionalMcpServers });
   if (data.permissionMode !== 'default' && data.permissionMode !== 'bypassPermissions') fail('config.permissionMode', 'must be default or bypassPermissions');
   const config: ProfileConfig = { displayName: text(data.displayName, 'config.displayName', { max: 200 }).trim(), description: text(data.description, 'config.description', { empty: true, max: 10_000 }), systemPrompt: text(data.systemPrompt, 'config.systemPrompt'), model: resolvedModel, workspace: resolvedWorkspace, capabilities: resolvedCapabilities, permissionMode: data.permissionMode };
   return { ...config, ...normalizeProfileTools(config) };

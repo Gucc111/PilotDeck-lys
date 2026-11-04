@@ -7,6 +7,8 @@ export type GatewaySessionContext = {
   sessionKey: string;
   projectKey?: string;
   channelKey: string;
+  /** Cancellation is per preparation, never retained as the cached session lifetime. */
+  signal?: AbortSignal;
 };
 
 export type GatewaySessionFactory = (context: GatewaySessionContext) => AgentSession | Promise<AgentSession>;
@@ -18,6 +20,8 @@ export type GatewaySessionRecreator = (
 export type SessionRouterOptions = {
   createSession: GatewaySessionFactory;
   recreateSession?: GatewaySessionRecreator;
+  /** Active Team snapshots defer dirty recreation until their idle refresh boundary. */
+  canRecreateSession?: (context: GatewaySessionContext, reason: string) => boolean | Promise<boolean>;
   listSessions?: (input: ListSessionsInput) => Promise<ListSessionsResult>;
   idleSessionTimeoutMs?: number;
   idleSweepIntervalMs?: number;
@@ -27,7 +31,7 @@ export type SessionRouterOptions = {
    * idle sweep, explicit close, or dirty-recreate. Use this to clean up
    * per-session resources (e.g. per-session MCP runtimes / browser processes).
    */
-  onSessionEvict?: (sessionKey: string) => void;
+  onSessionEvict?: (sessionKey: string) => void | Promise<void>;
   onSessionIdleEvict?: (sessionKey: string, record: SessionEvictionSnapshot) => void;
 };
 
@@ -81,9 +85,9 @@ export class SessionRouter {
     const cached = this.sessions.get(context.sessionKey);
     if (cached) {
       cached.context = mergeSessionContext(cached.context, context);
-      if (cached.dirtyReason && this.options.recreateSession) {
+      if (cached.dirtyReason && this.options.recreateSession && (await this.options.canRecreateSession?.(context, cached.dirtyReason) ?? true)) {
         await this.emitSessionEvict(context.sessionKey, cached, "dirty_recreate");
-        const recreated = await this.createTrackedSession(cached.context, () => this.options.recreateSession!(cached.context, cached.session));
+        const recreated = await this.createTrackedSession(cached.context, () => this.options.recreateSession!({ ...cached.context, signal: context.signal }, cached.session));
         if (generation !== this.projectGenerations.get(context.projectKey ?? "")) {
           await recreated.dispose?.();
           throw new Error("Project was closed while recreating the session.");
@@ -209,6 +213,11 @@ export class SessionRouter {
     }
   }
 
+  markSessionDirty(sessionKey: string, reason = "runtime_changed"): void {
+    const record = this.sessions.get(sessionKey);
+    if (record) record.dirtyReason = reason;
+  }
+
   markAllDirty(reason = "runtime_changed"): number {
     let count = 0;
     for (const record of this.sessions.values()) {
@@ -317,7 +326,7 @@ export class SessionRouter {
     record: SessionRecord,
     reason: "idle" | "closed" | "dirty_recreate" | "shutdown",
   ): Promise<void> {
-    const disposed = (record.session.dispose?.() ?? Promise.resolve()).finally(() => {
+    const disposed = Promise.all([record.session.dispose?.(), this.options.onSessionEvict?.(sessionKey)]).then(() => {}).finally(() => {
       if (this.closingSessions.get(sessionKey) === disposed) {
         this.closingSessions.delete(sessionKey);
         this.closingProjects.delete(sessionKey);
@@ -325,7 +334,6 @@ export class SessionRouter {
     });
     this.closingSessions.set(sessionKey, disposed);
     this.closingProjects.set(sessionKey, record.context.projectKey);
-    this.options.onSessionEvict?.(sessionKey);
     if (reason === "idle") {
       this.options.onSessionIdleEvict?.(sessionKey, snapshotEvictedSession(sessionKey, record));
     }

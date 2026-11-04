@@ -139,6 +139,7 @@ export type InProcessGatewayOptions = {
   /** Read an interaction without consuming it, used for duplicate/reconnect responses. */
   teamInteractionLookup?: (input: GatewayTeamInteractionResponseInput) => Promise<import("../../team/runtimeTypes.js").TeamHumanInteraction | undefined>;
   onTeamInteractionUpdated?: (input: GatewayTeamInteractionResponseInput, result: GatewayTeamInteractionResponseResult) => void;
+  mcpManage?: (input: import("../protocol/types.js").McpManagementInput) => Promise<import("../protocol/types.js").McpManagementResult>;
   teamParticipantMessages?: (input: GatewayTeamParticipantMessagesInput) => Promise<GatewayTeamParticipantMessagesResult>;
   repositoryOperation?: (input: import("../../session/repository/operations.js").RepositoryOperationInput) => Promise<unknown>;
   /** Absolute command used by the model to install bundled FunASR assets. */
@@ -359,6 +360,10 @@ export class InProcessGateway implements Gateway {
       this.options.onTeamInteractionUpdated?.(input, result);
       return result;
     } finally { if (this.teamResponseOperations.get(key) === operation) this.teamResponseOperations.delete(key); }
+  }
+  async mcpManage(input: import("../protocol/types.js").McpManagementInput): Promise<import("../protocol/types.js").McpManagementResult> {
+    if (!this.options.mcpManage) throw new Error("MCP management unavailable");
+    return this.options.mcpManage(input);
   }
   async teamParticipantMessages(input: GatewayTeamParticipantMessagesInput): Promise<GatewayTeamParticipantMessagesResult> {
     if (!this.options.teamParticipantMessages) throw new DialogGatewayError("CAPABILITY_UNAVAILABLE", "Team participant messages are unavailable on this Gateway.");
@@ -668,6 +673,7 @@ export class InProcessGateway implements Gateway {
           sessionKey: input.sessionKey,
           projectKey: input.projectKey,
           channelKey: input.channelKey,
+          signal: turnAbort.signal,
         });
         markTiming("sessionMs");
         if (input.timeoutMs !== undefined && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0) {
@@ -894,7 +900,7 @@ export class InProcessGateway implements Gateway {
             runId,
             code,
             message,
-            recoverable: false,
+            recoverable: Boolean(error && typeof error === "object" && "retryable" in error && error.retryable === true),
             userHint: "PilotDeck failed before the agent turn could finish. Retry this message; if it repeats, check the gateway logs.",
           };
           this.recordActiveTurnEvent(input.sessionKey, gatewayEvent);
@@ -1095,6 +1101,7 @@ export class InProcessGateway implements Gateway {
       ...(this.options.repositoryOperation ? ["repository_operation" as const] : []),
       ...(this.options.teamCommand ? ["team_command" as const] : []),
       ...(this.options.teamInteractionRespond ? ["team_interaction_respond" as const] : []),
+      ...(this.options.mcpManage ? ["mcp_manage" as const] : []),
       ...(this.options.teamParticipantMessages ? ["team_participant_messages" as const] : []),
       ...(this.options.listProjects ? ["project_files_list" as const] : []),
       ...(this.options.commandsList ? ["commands_list" as const] : []),

@@ -23,6 +23,15 @@ function spawnCli(command, args, options = {}) {
   return spawn(prepared.command, prepared.args, prepared.options);
 }
 
+router.get('/connections', async (_req, res) => {
+  try { const gateway = await getPilotDeckGateway(); res.json(await gateway.mcpManage({ action: 'status' })); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+router.post('/connections', async (req, res) => {
+  try { const gateway = await getPilotDeckGateway(); res.json(await gateway.mcpManage(req.body)); }
+  catch (error) { res.status(409).json({ error: error.message }); }
+});
+
 router.get('/config', async (req, res) => {
   try {
     const projectPath = typeof req.query.projectPath === 'string' ? req.query.projectPath : undefined;

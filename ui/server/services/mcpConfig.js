@@ -35,6 +35,10 @@ export function normalizeMcpConfig(input) {
     if (typeof server.command !== 'string' && typeof server.url !== 'string' && typeof server.httpUrl !== 'string') {
       throw new Error(`Server "${name}" must define command, url, or httpUrl.`);
     }
+    if (server.connection !== undefined && !['separate', 'shared'].includes(server.connection)) throw new Error(`Server "${name}" connection must be separate or shared.`);
+    if (server.usage !== undefined && !['concurrent', 'serial'].includes(server.usage)) throw new Error(`Server "${name}" usage must be concurrent or serial.`);
+    if (server.maxConnections !== undefined && (!Number.isSafeInteger(server.maxConnections) || server.maxConnections < 1)) throw new Error(`Server "${name}" maxConnections must be a positive integer.`);
+    if (server.connection === 'shared' && server.maxConnections !== undefined && server.maxConnections !== 1) throw new Error(`Server "${name}" shared connections require maxConnections to be omitted or 1.`);
     if (server.args !== undefined && (!Array.isArray(server.args) || !server.args.every((arg) => typeof arg === 'string'))) {
       throw new Error(`Server "${name}" args must be an array of strings.`);
     }

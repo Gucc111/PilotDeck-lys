@@ -10,6 +10,7 @@ export type TeamRuntimeParticipant = {
   projectKey: string;
   projectPath?: string;
   model: TeamModel;
+  mcpConfigVersion?: string;
   capabilities: { tools: string[]; skills: string[]; mcpServers: string[] };
 };
 export type TeamRuntimeProbe = {

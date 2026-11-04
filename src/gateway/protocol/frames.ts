@@ -18,6 +18,7 @@ export type WsHelloOk = {
 };
 
 export type WsGatewayMethod =
+  | "mcp_manage"
   | "team_command"
   | "team_interaction_respond"
   | "team_participant_messages"

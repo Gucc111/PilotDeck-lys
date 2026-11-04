@@ -43,3 +43,5 @@ export type {
   PilotDeckMcpToolAnnotations,
   PilotDeckMcpToolSpec,
 } from "./protocol/types.js";
+
+export { McpConnectionManager, McpLease, McpSchedulingError, type McpOwner, type McpStatus } from "./runtime/McpConnectionManager.js";

@@ -1,3 +1,4 @@
+import { McpConnectionStatus } from "../mcp/McpConnectionStatus";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Loader2, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -103,6 +104,7 @@ export default function TeamTeammateRouteView() {
   const rendered = useMemo(() => participantChatMessages(messages), [messages]);
   const title = t('title', { name: participant?.profile.config.displayName || participantId });
   return <FindShortcutProvider activeScope="chat"><main className="team-mode-route-page" aria-label={title}>
+    <McpConnectionStatus activationId={activationId} participantId={participantId} />
     <div className="team-mode-dialog team-teammate-chat-dialog">
       <div className="team-mode-header"><button type="button" onClick={() => navigate(`/session/${encodeURIComponent(rootSessionKey)}`)} aria-label={t('back')}><ArrowLeft size={16}/></button><h2>{title}</h2>{streaming && <span className="team-mode-muted">{t('streaming')}</span>}<button type="button" onClick={() => void load()} aria-label={t('refresh')}><RefreshCw size={15}/></button></div>
       {loading && !rendered.length && <div className="team-teammate-chat-empty"><Loader2 size={18} className="animate-spin"/></div>}

@@ -238,7 +238,7 @@ export class ComputerUseController {
   private publishConnection(ready: boolean): void {
     const servers = ready && this.endpoint ? { [COMPUTER_USE_SERVER_ID]: {
       command: this.binary, args: ['mcp', '--embedded', '--socket', this.endpoint, '--host-bundle-id', this.options.bundleId],
-      env: { CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false' }, callTimeoutMs: 60_000, concurrencySafe: false,
+      env: { CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false' }, callTimeoutMs: 60_000, concurrencySafe: false, connection: 'shared', usage: 'serial',
     } } : {};
     this.writeJson(this.mcpConfigPath, { mcpServers: servers });
   }

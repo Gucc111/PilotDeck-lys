@@ -744,7 +744,7 @@
     "noProjects": "使用团队模式前，请先登记一个项目。",
     "registerProject": "登记项目",
     "checking": "正在检查模型、工作区和基础能力…",
-    "compatible": "检查通过。",
+    "compatible": "配置检查通过，连接将在执行时验证",
     "cancel": "取消",
     "switching": "正在切换…",
     "useTeam": "使用团队",

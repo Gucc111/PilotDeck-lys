@@ -200,6 +200,8 @@ export class GatewayWsConnection {
 
   private dispatchRequest(frame: WsRequestFrame): Promise<unknown> {
     switch (frame.method) {
+      case "mcp_manage":
+        return this.requireCapability("mcp_manage", "mcpManage", frame.params);
       case "team_command":
         return this.requireCapability("team_command", "teamCommand", frame.params);
       case "team_interaction_respond":
@@ -340,7 +342,7 @@ export class GatewayWsConnection {
 
   private requireCapability(
     capability: string,
-    method: "teamCommand" | "teamInteractionRespond" | "teamParticipantMessages" | "projectFilesList" | "commandsList" | "modelCatalogList" | "sessionModelGet" | "sessionModelSet" | "sessionModelClear",
+    method: "mcpManage" | "teamCommand" | "teamInteractionRespond" | "teamParticipantMessages" | "projectFilesList" | "commandsList" | "modelCatalogList" | "sessionModelGet" | "sessionModelSet" | "sessionModelClear",
     params: unknown,
   ): Promise<unknown> {
     const handler = this.options.gateway[method] as ((input: never) => Promise<unknown>) | undefined;

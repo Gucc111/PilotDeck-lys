@@ -1,3 +1,4 @@
+import { McpConnectionStatus } from "../../../mcp/McpConnectionStatus";
 import { ConfirmDialog } from '../../../ui/ConfirmDialog';
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -593,6 +594,7 @@ export default function McpServersSection({
           </div>
         </section>
 
+        <McpConnectionStatus management/>
         <section
           className="mcp-raw-config-card"
           aria-label={t("mcpConfig.advanced")}

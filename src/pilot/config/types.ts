@@ -123,12 +123,6 @@ export type PilotGatewayConfig = {
   idleSweepIntervalSeconds: number;
   memoryDiagnostics: boolean;
   staticAssetsPath?: string;
-  /**
-   * Maximum number of concurrent per-session MCP instances (e.g. browser-use
-   * browser processes).  When the limit is reached, new sessions fall back
-   * to the shared project-level MCP runtime.  Default 5.
-   */
-  maxPerSessionMcpInstances?: number;
 };
 
 export type PilotWebSearchProvider = import("./webSearchProviders.js").WebSearchProvider;

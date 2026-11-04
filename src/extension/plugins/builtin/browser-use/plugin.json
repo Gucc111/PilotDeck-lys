@@ -12,7 +12,9 @@
         "chromium",
         "--allow-unrestricted-file-access"
       ],
-      "perSession": true
+      "perSession": true,
+      "connection": "separate",
+      "usage": "serial"
     }
   }
 }

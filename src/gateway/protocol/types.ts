@@ -240,6 +240,7 @@ export type GatewayEvent = GatewayTurnScopedEventMetadata & (
     }
   | { type: "tool_result_detail_available"; toolCallId: string; resultPath?: string; fullText?: string }
   | { type: "permission_request"; requestId: string; toolName: string; payload: unknown }
+  | { type: "mcp_status"; status: import("../../mcp/runtime/McpConnectionManager.js").McpStatus }
   | { type: "team_interaction"; interaction: import("../../team/runtimeTypes.js").TeamHumanInteraction }
   | { type: "team_interaction_updated"; interaction: import("../../team/runtimeTypes.js").TeamHumanInteraction; delivered: boolean }
   | { type: "team_participant_message"; activationId: string; stopVersion: number; participantId: string; streamEpoch: string; revision: number; messages: import("../../team/runtimeTypes.js").TeamParticipantMessage[]; streaming: boolean; reload?: boolean }
@@ -425,6 +426,7 @@ export type GatewayServerInfo = {
 };
 
 export type GatewayCapability =
+  | "mcp_manage"
   | "repository_operation"
   | "team_command"
   | "team_interaction_respond"
@@ -609,7 +611,10 @@ export type AlwaysOnRerunPlanResult = {
   error?: { code: string; message: string };
 };
 
+export type { McpManagementInput, McpManagementResult } from "../../mcp/protocol/management.js";
+import type { McpManagementInput, McpManagementResult } from "../../mcp/protocol/management.js";
 export interface Gateway {
+  mcpManage?(input: McpManagementInput): Promise<McpManagementResult>;
   /** Reusable Leader, Teammate, and Team configuration. */
   teamCommand?(input: import("../../team/types.js").TeamCommand): Promise<import("../../team/types.js").TeamCommandResult>;
   teamInteractionRespond?(input: GatewayTeamInteractionResponseInput): Promise<GatewayTeamInteractionResponseResult>;
