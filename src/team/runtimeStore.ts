@@ -60,7 +60,7 @@ export class TeamRuntimeStore {
           }
         }
         if (activation.works.some(work => !['queued', 'running', 'waiting_information', 'waiting_approval', 'completed', 'failed', 'interrupted', 'stopped'].includes(work.status))) throw new Error('invalid work status');
-        if (activation.messages.some(message => !['queued', 'preparing', 'sending', 'consumed', 'invalidated', 'deleted', 'uncertain', 'legacy_unknown', 'delivered', 'interrupted', 'stopped'].includes(message.status))) throw new Error('invalid message status');
+        if (activation.messages.some(message => !['queued', 'preparing', 'sending', 'consumed', 'invalidated', 'deleted', 'uncertain'].includes(message.status))) throw new Error('invalid message status');
         const member = (id: string) => activation.participants.some(participant => participant.id === id);
         const generation = (version: number) => Number.isSafeInteger(version) && version >= 0 && version <= (activation.stopVersion ?? 0);
         const ids = (values: unknown) => Array.isArray(values) && values.every(value => typeof value === 'string' && value.length > 0) && new Set(values).size === values.length;

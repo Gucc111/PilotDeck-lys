@@ -30,7 +30,7 @@ export type TeamRuntimeWork = {
 export type TeamRuntimeMessage = {
   id: string; stopVersion: number; senderId: string; recipientId: string; intendedRecipientId: string; text: string;
   replyTo?: string; relayOf?: string; workId?: string; createdAt: string;
-  status: 'queued' | 'preparing' | 'sending' | 'consumed' | 'invalidated' | 'deleted' | 'uncertain' | 'legacy_unknown' | 'delivered' | 'interrupted' | 'stopped'; deliveredAt?: string; invalidatedAt?: string;
+  status: 'queued' | 'preparing' | 'sending' | 'consumed' | 'invalidated' | 'deleted' | 'uncertain'; invalidatedAt?: string;
   kind?: 'member' | 'turn_ended' | 'message_deleted';
   consumedAt?: string; deletedAt?: string; requestId?: string; attemptId?: string; turnId?: string; error?: string;
   sourceMessageId?: string; sourceTurnId?: string;

@@ -62,7 +62,7 @@ ID 由程序随机生成。配置库每个 ID 只保留当前配置，不记录�
 | `team_messages({messageId})` / `team_messages({cursor,limit})` | 精确读取一条消息，或按时间倒序分页读取消息；Leader 可读全队，Teammate 只能读自己发送或接收的消息 |
 | `team_turns({participantId,turnId})` / `team_turns({participantId,cursor,limit})` | 精确读取一个 Teammate turn，或分页读取该成员的 turn；分页默认 5 条并按最新优先 |
 
-四个工具同时提供给 Leader 和 Teammate。查询工具不会启动执行，也不会触发发送授权询问。`team_messages` 的分页结果返回正常通信记录的完整正文和公开状态；已消费消息会附带处理它的 turn ID 和状态。删除、失效、发送不确定及其他异常状态的消息不出现在分页结果中，但指定 `messageId` 精确查询时仍会返回该记录的状态和完整正文。Leader 可以查询全部消息和所有 Teammate turn；Teammate 只能查询自己可见的消息，以及其他 Teammate 的 turn。任何成员都不能查询自己的 turn 或 Leader 的 turn。精确查询已结束 turn 时，如果存在可读的最终 assistant 文本，会返回 `finalMessage` 和 `finalResultAvailable:true`；活动 turn 或没有最终文本的终态 turn 不返回最终详情。工具发送身份来自服务端上下文，模型不能伪造发送方；四个工具之外没有旧查询别名。
+四个工具同时提供给 Leader 和 Teammate。查询工具不会启动执行，也不会触发发送授权询问。`team_messages` 的分页结果返回正常通信记录的完整正文和公开状态；已消费消息会附带处理它的 turn ID 和状态。失效消息会出现在分页结果中；删除、发送不确定及其他异常状态的消息不出现在分页结果中，但指定 `messageId` 精确查询时仍会返回该记录的状态和完整正文。Leader 可以查询全部消息和所有 Teammate turn；Teammate 只能查询自己可见的消息，以及其他 Teammate 的 turn。任何成员都不能查询自己的 turn 或 Leader 的 turn。精确查询已结束 turn 时，如果存在可读的最终 assistant 文本，会返回 `finalMessage` 和 `finalResultAvailable:true`；活动 turn 或没有最终文本的终态 turn 不返回最终详情。工具发送身份来自服务端上下文，模型不能伪造发送方；四个工具之外没有旧查询别名。
 
 工具的发送身份来自服务端运行上下文，模型不能指定自己是另一个成员。目标必须属于当前 Team，且不能发给自己。成员只获得收到的消息和自己的历史，不自动读取 Leader 或其他成员历史。
 
@@ -103,7 +103,7 @@ Teammate 的权限询问、`ask_user_question` 和 `exit_plan_mode` 不属于普
 
 Gateway 的 `team_command` 保留配置管理操作，以及 `runtime_probe`、`runtime_select`、`runtime_get`、`runtime_stop`、`runtime_message_delete`。删除必须带会话、运行段、原消息代次、接收者和消息编号。人类交互和成员 transcript 另提供 `team_interaction_respond`、`team_participant_messages` 专用命令。Web `/api/team-library` 使用相同运行 action。普通 `submit_turn` 携带独立的 `teamSelection`，或者已绑定会话的 `teamActivationId` 与 `teamStopVersion`，不把 Team 伪装成模型名称。已绑定会话的 steer 和停止请求也需要原始运行代次；`runtime_stop` 使用 `activationId` 与 `stopVersion`。
 
-运行日志升级为 v3，保留旧任务和 transcript，不恢复旧 pending。可从正式 transcript 证明的真实轮次恢复查询，旧 delivered 不追认为实际发送，标记为未知。损坏记录明确报错，不静默恢复运行。消息、轮次和交互列表可分页。`runtime_get` 返回持久化记录，`team_interaction_respond` 校验 Team/activation/participant/request owner 后定向返回原 Teammate，`team_participant_messages` 只读返回成员 transcript。
+运行日志升级为 v3，保留旧任务和 transcript，不恢复旧 pending。可从正式 transcript 证明的真实轮次恢复查询。损坏记录明确报错，不静默恢复运行。消息、轮次和交互列表可分页。`runtime_get` 返回持久化记录，`team_interaction_respond` 校验 Team/activation/participant/request owner 后定向返回原 Teammate，`team_participant_messages` 只读返回成员 transcript。
 
 旧过渡版本的独立成员聊天不会恢复。旧配置库第一次修改前保留原始备份；旧启动收据和成员聊天绑定不参与当前运行。
 

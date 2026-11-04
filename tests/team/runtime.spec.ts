@@ -242,27 +242,27 @@ test('roster, turn and message queries protect outputs and communication is rest
   const bMessages = await f.runtime.messages(b); const leaderMessages = await f.runtime.messages(leader); assert.deepEqual('items' in bMessages ? bMessages.items : [], []); assert.equal(('items' in leaderMessages ? leaderMessages.items : []).length, 2);
 });
 
-test('message pages hide abnormal records while exact queries expose their full bodies', async t => {
+test('message pages include invalidated records while exact queries expose full bodies', async t => {
   const f = await fixture(t), activation = await f.activate(); holdLeader(f);
   const recipient = f.actor(activation, f.a.id), leader = f.actor(activation);
   await f.runtime.beginTurn(recipient, { turnId: 'recipient-busy', trigger: 'human' });
   await f.runtime.beginTurn(f.actor(activation, f.b.id), { turnId: 'sender-busy', trigger: 'human' });
-  const statuses: TeamRuntimeMessage['status'][] = ['queued', 'preparing', 'sending', 'invalidated', 'uncertain', 'legacy_unknown', 'delivered', 'interrupted', 'stopped', 'deleted', 'consumed'];
-  const normalStatuses = new Set<TeamRuntimeMessage['status']>(['queued', 'preparing', 'sending', 'consumed', 'delivered']);
+  const statuses: TeamRuntimeMessage['status'][] = ['queued', 'preparing', 'sending', 'invalidated', 'uncertain', 'deleted', 'consumed'];
+  const pagedStatuses = new Set<TeamRuntimeMessage['status']>(['queued', 'preparing', 'sending', 'consumed', 'invalidated']);
   const records = statuses.map((status): TeamRuntimeMessage => ({ id: `body-${status}`, stopVersion: activation.stopVersion, senderId: f.b.id, recipientId: f.a.id, intendedRecipientId: f.a.id, status, kind: 'member', text: `secret-body-${status}`, error: `secret-error-${status}`, createdAt: '' }));
   const store = new TeamRuntimeStore(f.pilotHome);
   await store.locked(async () => { const state = await store.read(); state.activations[activation.id]!.messages.push(...records); await store.write(state); });
   const context = { sessionId: 'web:main', turnId: 'inspect-turn', cwd: '/project', permissionMode: 'default' as const, permissionContext: createDefaultPermissionContext({ cwd: '/project', canPrompt: false }) };
   for (const [actor, role] of [[recipient, 'teammate'], [leader, 'leader']] as const) {
     const page = await createTeamRuntimeTools(f.runtime, actor, role)[2]!.execute({ limit: 200 }, context) as { data: { items: Array<Record<string, unknown>> } };
-    assert.deepEqual(new Set(page.data.items.map(item => item.status)), normalStatuses);
-    assert.equal(page.data.items.length, [...normalStatuses].length);
+    assert.deepEqual(new Set(page.data.items.map(item => item.status)), pagedStatuses);
+    assert.equal(page.data.items.length, [...pagedStatuses].length);
     for (const item of page.data.items) {
       assert.equal(typeof item.text, 'string'); assert.equal(item.text, `secret-body-${item.status}`);
     }
     const serialized = JSON.stringify(page);
-    for (const status of normalStatuses) assert.ok(serialized.includes(`secret-body-${status}`));
-    for (const status of statuses.filter(status => !normalStatuses.has(status))) assert.ok(!serialized.includes(`secret-body-${status}`));
+    for (const status of pagedStatuses) assert.ok(serialized.includes(`secret-body-${status}`));
+    for (const status of statuses.filter(status => !pagedStatuses.has(status))) assert.ok(!serialized.includes(`secret-body-${status}`));
     assert.ok(!serialized.includes('secret-error-'));
     for (const record of records) {
       const exact = await createTeamRuntimeTools(f.runtime, actor, role)[2]!.execute({ messageId: record.id }, context) as { data: { message: Record<string, unknown> } };
@@ -369,14 +369,14 @@ test('restart invalidates unsent input, preserves uncertain sends, and never rep
   await restarted.onHumanTurn('web:main', activation.id, 1); await restarted.onExecutionReady('web:main'); await pause(30); assert.equal(executions, 0);
 });
 
-test('legacy migration retains history, restores proven turns and never treats delivered as sent', async t => {
+test('legacy migration retains history and restores proven turns', async t => {
   const f = await fixture(t), activation = await f.activate(), store = new TeamRuntimeStore(f.pilotHome); await f.runtime.dispose(); const state = await store.read(); state.version = 2;
   const old = state.activations[activation.id]!; delete old.turns; delete old.dispatches; delete old.runtimeOwner;
   old.works.push({ id: 'old-task', participantId: f.a.id, stopVersion: 0, task: 'Old task', status: 'completed', result: 'Historic work', createdAt: '' });
-  for (const status of ['queued', 'delivered'] as const) old.messages.push({ id: randomUUID(), stopVersion: 0, senderId: f.a.id, recipientId: f.leader.id, intendedRecipientId: f.leader.id, text: status, status, createdAt: '' }); await store.write(state);
+  old.messages.push({ id: randomUUID(), stopVersion: 0, senderId: f.a.id, recipientId: f.leader.id, intendedRecipientId: f.leader.id, text: 'queued', status: 'queued', createdAt: '' }); await store.write(state);
   const recoveredTurn: TeamRuntimeTurn = { turnId: 'proven-turn', participantId: f.a.id, stopVersion: 0, trigger: 'messages', status: 'ended', startedAt: '', endedAt: '', messageIds: [], requestIds: [], finalMessage: result('proven-turn', 'Transcript final').finalMessage, resultType: 'success', stopReason: 'completed' };
   const restarted = new TeamRuntime({ ...f.options, readLegacyTurns: async () => [recoveredTurn] }); t.after(() => restarted.dispose());
-  const migrated = (await restarted.get('web:main')).activation!; assert.equal((await store.read()).version, 3); assert.deepEqual(migrated.messages.map(item => item.status), ['invalidated', 'legacy_unknown']); assert.equal(migrated.works[0]?.result, 'Historic work');
+  const migrated = (await restarted.get('web:main')).activation!; assert.equal((await store.read()).version, 3); assert.deepEqual(migrated.messages.map(item => item.status), ['invalidated']); assert.equal(migrated.works[0]?.result, 'Historic work');
   assert.match(JSON.stringify(await restarted.turns(f.actor(migrated), { participantId: f.a.id, turnId: 'proven-turn' })), /Transcript final/);
 });
 

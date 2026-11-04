@@ -353,7 +353,7 @@ export class TeamRuntime {
     }
     const boundary = input.cursor === undefined ? undefined : this.decodeCursor(input.cursor, 'message');
     const candidates = sorted
-      .filter(message => ['queued', 'preparing', 'sending', 'consumed', 'delivered'].includes(message.status))
+      .filter(message => ['queued', 'preparing', 'sending', 'consumed', 'invalidated'].includes(message.status))
       .filter(message => !boundary || message.createdAt < boundary.createdAt || message.createdAt === boundary.createdAt && message.id < boundary.id);
     const page = candidates.slice(0, limit);
     return { items: page.map(message => this.projectMessage(activation, message)), ...(page.length === limit && page.length < candidates.length ? { nextCursor: this.encodeCursor('message', page.at(-1)!) } : {}) };
@@ -552,7 +552,7 @@ export class TeamRuntime {
       if (!message) fail('TEAM_MESSAGE_NOT_FOUND', 'This message is not available.');
       if (message!.kind && message!.kind !== 'member') fail('TEAM_SYSTEM_MESSAGE', 'System notifications cannot be deleted.');
       if (message!.status === 'deleted') return { messageId: message!.id, deleted: true };
-      if (['sending', 'uncertain', 'legacy_unknown', 'delivered'].includes(message!.status)) fail('TEAM_MESSAGE_SEND_UNCERTAIN', 'This message may already have been sent; its sending status is uncertain and it cannot be deleted.');
+      if (['sending', 'uncertain'].includes(message!.status)) fail('TEAM_MESSAGE_SEND_UNCERTAIN', 'This message may already have been sent; its sending status is uncertain and it cannot be deleted.');
       if (message!.status === 'consumed') fail('TEAM_MESSAGE_ALREADY_SENT', 'This message has already been sent to a model request and cannot be deleted.');
       const notify = activation.status === 'active' && message!.stopVersion === activation.stopVersion && pendingMessage(message!);
       message!.status = 'deleted'; message!.deletedAt = now(); delete message!.owner;
@@ -673,7 +673,7 @@ export class TeamRuntime {
       if (!turn!.requestIds.includes(input.requestId)) turn!.requestIds.push(input.requestId);
       (turn!.attemptIds ??= []).push(attemptId);
       for (const message of accepted) {
-        message.status = 'consumed'; message.consumedAt ??= dispatchedAt; message.deliveredAt ??= dispatchedAt; message.requestId ??= input.requestId; message.attemptId ??= attemptId; message.turnId ??= input.turnId; delete message.error;
+        message.status = 'consumed'; message.consumedAt ??= dispatchedAt; message.requestId ??= input.requestId; message.attemptId ??= attemptId; message.turnId ??= input.turnId; delete message.error;
         if (!turn!.messageIds.includes(message.id)) turn!.messageIds.push(message.id);
       }
       activation.updatedAt = dispatchedAt;
@@ -756,11 +756,7 @@ export class TeamRuntime {
             const restored = await this.options.readLegacyTurns(clone(activation));
             for (const turn of restored) if (!activation.turns.some(existing => existing.participantId === turn.participantId && existing.turnId === turn.turnId)) activation.turns.push(clone(turn));
           }
-          for (const message of activation.messages) {
-            message.kind ??= 'member';
-            if (message.status === 'delivered') message.status = 'legacy_unknown';
-            else if (pendingMessage(message) || message.status === 'stopped' || message.status === 'interrupted') { message.status = 'invalidated'; message.invalidatedAt ??= now(); }
-          }
+          for (const message of activation.messages) message.kind ??= 'member';
           for (const work of activation.works) if (pending(work)) { work.status = 'interrupted'; work.error = 'Legacy task execution is no longer resumed.'; work.endedAt = now(); delete work.owner; }
           for (const notification of activation.notifications) notification.cancelledAt ??= now();
         }
