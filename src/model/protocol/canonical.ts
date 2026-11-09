@@ -147,6 +147,8 @@ export type CanonicalMessageMetadata = {
   teamActivationId?: string;
   teamStopVersion?: number;
   teamEventIds?: string[];
+  /** Stable identity for one Team injection batch across live and history. */
+  teamBatchId?: string;
   teamMessages?: Array<{ id: string; senderId: string; sender: string; text: string }>;
   /** Set only after the request containing the message entered the transport. */
   teamConsumed?: boolean;

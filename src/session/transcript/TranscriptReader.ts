@@ -49,6 +49,7 @@ export async function readTranscript(path: string, options: ReadTranscriptOption
   const entries: AgentTranscriptEntry[] = [];
   const diagnostics: AgentTranscriptDiagnostic[] = [];
   const lines = content.split(/\r?\n/);
+  let physicalOrder = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (!line.trim()) {
@@ -58,7 +59,8 @@ export async function readTranscript(path: string, options: ReadTranscriptOption
     try {
       const parsed = JSON.parse(line) as unknown;
       if (isTranscriptEntry(parsed)) {
-        entries.push(parsed);
+        physicalOrder += 1;
+        entries.push({ ...parsed, transcriptOrder: physicalOrder });
       } else {
         diagnostics.push({
           code: "transcript_entry_invalid",
@@ -77,9 +79,20 @@ export async function readTranscript(path: string, options: ReadTranscriptOption
     }
   }
 
+  // New transcripts have a unique monotonic sequence. Legacy transcripts can
+  // contain sequence resets from short-lived writers; in that case the
+  // physical append order is the only trustworthy display order. Keep the
+  // original sequence and entry references intact for replay/diagnostics.
+  let previousSequence: number | undefined;
+  const sequenceIsMonotonic = entries.every((entry) => {
+    const valid = previousSequence === undefined || entry.sequence > previousSequence;
+    previousSequence = entry.sequence;
+    return valid;
+  });
   entries.sort((left, right) => {
+    if (!sequenceIsMonotonic) return (left.transcriptOrder ?? 0) - (right.transcriptOrder ?? 0);
     if (left.sequence !== right.sequence) return left.sequence - right.sequence;
-    return left.createdAt.localeCompare(right.createdAt);
+    return (left.transcriptOrder ?? 0) - (right.transcriptOrder ?? 0);
   });
   return { entries, diagnostics };
 }

@@ -117,7 +117,7 @@ import { createDialogProjectRegistry } from "../gateway/dialog/projectRegistry.j
 import { TeamService } from "../team/TeamService.js";
 import type { TeamInventory, TeamDefinition, ProfileRef } from "../team/types.js";
 import { TeamRuntime } from "../team/TeamRuntime.js";
-import { TeamParticipantStream, projectParticipantTranscript } from "../team/participantStream.js";
+import { TeamParticipantStream, compareParticipantMessages, projectParticipantTranscript } from "../team/participantStream.js";
 import { validateRuntimeCommand } from "../team/TeamRuntime.js";
 import { object as teamObject } from "../team/validation.js";
 import { createTeamRuntimeTools } from "../team/runtimeTools.js";
@@ -517,7 +517,7 @@ export function createLocalGateway(options: CreateLocalGatewayOptions = {}): Cre
       const live = registry.teamParticipantSnapshot(activation.id, participant.id);
       const merged = new Map(projectParticipantTranscript(transcript.entries).map(message => [message.id, message]));
       for (const message of live.messages) merged.set(message.id, message);
-      const projected = [...merged.values()];
+      const projected = [...merged.values()].sort(compareParticipantMessages);
       const pageSize = limit ?? 100;
       const offset = cursor ? Math.max(0, Number.parseInt(cursor, 10) || 0) : 0;
       const messages = projected.slice(offset, offset + pageSize);
@@ -1024,9 +1024,13 @@ type ProjectRuntimeRegistryOptions = {
 };
 
 function teamCoordinationMessage(activation: TeamRuntimeActivation, messages: TeamRuntimeMessage[], origin: "human" | "messages", mode: "start" | "during"): import("../model/index.js").CanonicalMessage {
+  const teamEventIds = messages.map(message => message.id);
+  // Message ids are durable Team identities, so the batch marker is stable
+  // across prepare/dispatch, live events and transcript replay.
+  const teamBatchId = `team:batch:${teamEventIds.join(":")}`;
   return {
-    role: "user", content: [{ type: "text", text: "Team messages (internal context, not human approval):\n" + messages.map(({ id, senderId, recipientId, text }) => JSON.stringify({ id, senderId, sender: senderId === "system" ? "System" : activation.participants.find(item => item.id === senderId)?.profile.config.displayName ?? senderId, recipientId, text })).join("\n") }],
-    metadata: { synthetic: true, purpose: "team_runtime", teamActivationId: activation.id, teamStopVersion: activation.stopVersion, teamTurnOrigin: origin, teamInjectionMode: mode, teamEventIds: messages.map(message => message.id), teamMessages: messages.map(message => ({ id: message.id, senderId: message.senderId, sender: message.senderId === "system" ? "系统" : activation.participants.find(item => item.id === message.senderId)?.profile.config.displayName ?? message.senderId, text: message.text })) },
+    role: "user", content: [{ type: "text", blockId: teamBatchId, text: "Team messages (internal context, not human approval):\n" + messages.map(({ id, senderId, recipientId, text }) => JSON.stringify({ id, senderId, sender: senderId === "system" ? "System" : activation.participants.find(item => item.id === senderId)?.profile.config.displayName ?? senderId, recipientId, text })).join("\n") }],
+    metadata: { synthetic: true, purpose: "team_runtime", teamBatchId, teamActivationId: activation.id, teamStopVersion: activation.stopVersion, teamTurnOrigin: origin, teamInjectionMode: mode, teamEventIds, teamMessages: messages.map(message => ({ id: message.id, senderId: message.senderId, sender: message.senderId === "system" ? "系统" : activation.participants.find(item => item.id === message.senderId)?.profile.config.displayName ?? message.senderId, text: message.text })) },
   };
 }
 function teamAcceptedInputReplay(transcript: Awaited<ReturnType<typeof readTranscript>>, input: import("../gateway/protocol/types.js").GatewaySubmitTurnInput, running = false): import("../gateway/protocol/types.js").GatewayEvent[] | undefined {

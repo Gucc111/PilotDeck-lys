@@ -114,8 +114,14 @@ export type WebMessage = {
   queueItemId?: string;
   teamInjectionMode?: 'start' | 'during';
   teamMessageIds?: string[];
+  /** Stable identity for one Team injection batch. */
+  teamBatchId?: string;
   /** Transcript ordering sequence for deterministic history reconciliation. */
   sequence?: number;
+  /** Physical append position in the effective JSONL transcript. */
+  transcriptOrder?: number;
+  /** Physical position of the accepted_input that owns this turn. */
+  turnOrder?: number;
   toolCallId?: string;
   toolName?: string;
   requestId?: string;

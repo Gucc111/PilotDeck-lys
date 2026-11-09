@@ -64,7 +64,7 @@ describe('read-only Teammate route', () => {
   it('rejects mismatched paginated owner data instead of displaying another members transcript', async () => {
     mock.command.mockImplementation(async (input: any) => input.action === 'runtime_get' ? { activation } : input.cursor ? page([block('Private other')], { participantId: 'other' }) : page([], { nextCursor: '200' }));
     await mount();
-    await screen.findByRole('alert');
+    await screen.findByText('The Team run changed while loading. Refresh to try again.');
     expect(screen.queryByText('Private other')).toBeNull();
   });
 });

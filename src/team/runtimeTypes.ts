@@ -131,6 +131,10 @@ export type TeamParticipantMessage = {
   isStreaming?: boolean;
   turnId?: string;
   metadata?: Record<string, unknown>;
+  sequence?: number;
+  transcriptOrder?: number;
+  turnOrder?: number;
+  timeline?: import("../model/protocol/timeline.js").TimelinePosition;
 };
 export type TeamRuntimeParticipantMessages = { sessionKey: string; activationId: string; participantId: string; messages: TeamParticipantMessage[]; nextCursor?: string; streaming?: boolean; stopVersion?: number; streamEpoch?: string; revision?: number };
 export type TeamExecutionSelection = { team: ProfileRef; projectKey?: string; requestToken: string; probeFingerprint?: string };

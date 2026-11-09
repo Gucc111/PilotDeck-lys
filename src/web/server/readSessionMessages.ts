@@ -65,6 +65,8 @@ export async function readWebSessionMessages(
   const entryIds = webReplay.entryIds;
   const entryTurnIds = webReplay.turnIds;
   const entrySequences = webReplay.sequences;
+  const entryTranscriptOrders = webReplay.transcriptOrders;
+  const entryTurnOrders = webReplay.turnOrders;
   const incompleteTurnIds = extractIncompleteTurnIds(entries);
 
   const flattenedPerMessage: WebMessage[][] = webReplay.messages
@@ -76,11 +78,15 @@ export async function readWebSessionMessages(
         now: options.now,
         entryTimestamp: entryTimestamps[index],
         entryId: entryIds[index],
+        transcriptOrder: entryTranscriptOrders[index],
+        turnOrder: entryTurnOrders[index],
         forkUnsupportedContent: webReplay.forkUnsupportedContents[index],
       }).map((webMessage) => ({
         ...webMessage,
         turnId: entryTurnIds[index],
         sequence: entrySequences[index],
+        transcriptOrder: entryTranscriptOrders[index],
+        turnOrder: entryTurnOrders[index],
       })),
     );
 
@@ -103,6 +109,7 @@ export async function readWebSessionMessages(
     allMessages.push(createIncompleteTurnStatusMessage(input, incompleteTurnIds, options));
   }
 
+  allMessages.sort(compareWebMessages);
   const offset = parseCursor(input.cursor);
   const limit = input.limit ?? allMessages.length;
   const sliceEnd = limit === 0 ? allMessages.length : offset + limit;
@@ -502,6 +509,10 @@ type ProjectionContext = {
   entryTimestamp?: string;
   /** Transcript entry id for fork targeting. */
   entryId?: string;
+  /** Physical append position in the effective JSONL transcript. */
+  transcriptOrder?: number;
+  /** Physical position of this turn's accepted_input entry. */
+  turnOrder?: number;
   /** True when this entry cannot be fork-prefilled losslessly by the web UI. */
   forkUnsupportedContent?: boolean;
 };
@@ -526,10 +537,13 @@ export function flattenCanonicalMessage(
   const stamp = context.entryTimestamp ?? (context.now ?? (() => new Date()))().toISOString();
   if (message.metadata?.purpose === 'team_runtime') {
     if (!message.metadata.teamConsumed) return [];
-    return [{ id: `team:${String(message.metadata.teamRequestId || message.metadata.queueItemId || context.entryId || context.index)}`,
+    const teamBatchId = typeof message.metadata.teamBatchId === "string" ? message.metadata.teamBatchId : undefined;
+    const timeline = message.content.find(block => block.type === "text" || block.type === "thinking")?.timeline;
+    return [{ id: `team:${teamBatchId || String(message.metadata.teamRequestId || message.metadata.queueItemId || context.entryId || context.index)}`,
       sessionKey: context.sessionKey, projectKey: context.projectKey, createdAt: stamp, provider: 'pilotdeck', role: 'system', kind: 'team_message',
-      text: '', teamInjectionMode: message.metadata.teamInjectionMode === 'start' && message.metadata.teamTurnOrigin !== 'human' ? 'start' : 'during',
+      text: '', teamBatchId, timeline, teamInjectionMode: message.metadata.teamInjectionMode === 'start' && message.metadata.teamTurnOrigin !== 'human' ? 'start' : 'during',
       teamMessageIds: Array.isArray(message.metadata.teamEventIds) ? message.metadata.teamEventIds as string[] : [],
+      transcriptOrder: context.transcriptOrder, turnOrder: context.turnOrder,
       ...(context.turnId ? { turnId: context.turnId } : {}),
       ...(context.entryId ? { entryId: context.entryId } : {}), source: 'history' }];
   }
@@ -794,6 +808,8 @@ type CompactBoundaryInfo = {
   timestamp: string;
   turnId: string;
   sequence: number;
+  transcriptOrder?: number;
+  turnOrder?: number;
   entryId?: string;
   metadata?: Record<string, unknown>;
 };
@@ -840,6 +856,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
   entryIds: Array<string | undefined>;
   turnIds: string[];
   sequences: number[];
+  transcriptOrders: number[];
+  turnOrders: number[];
   forkUnsupportedContents: boolean[];
   compactBoundaries: CompactBoundaryInfo[];
 } {
@@ -848,8 +866,14 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
   const entryIds: Array<string | undefined> = [];
   const turnIds: string[] = [];
   const sequences: number[] = [];
+  const transcriptOrders: number[] = [];
+  const turnOrders: number[] = [];
   const forkUnsupportedContents: boolean[] = [];
   const compactBoundaries: CompactBoundaryInfo[] = [];
+  const turnOrderByTurn = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.type === "accepted_input") turnOrderByTurn.set(entry.turnId, entry.transcriptOrder ?? entry.sequence);
+  }
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
@@ -872,6 +896,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
             entryIds.push(entry.entryId);
             turnIds.push(entry.turnId);
             sequences.push(entry.sequence);
+            transcriptOrders.push(entry.transcriptOrder ?? entry.sequence);
+            turnOrders.push(turnOrderByTurn.get(entry.turnId) ?? entry.transcriptOrder ?? entry.sequence);
             forkUnsupportedContents.push(entryForkUnsupported);
           }
         }
@@ -890,6 +916,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
         entryIds.push(entry.entryId);
         turnIds.push(entry.turnId);
         sequences.push(entry.sequence);
+        transcriptOrders.push(entry.transcriptOrder ?? entry.sequence);
+        turnOrders.push(turnOrderByTurn.get(entry.turnId) ?? entry.transcriptOrder ?? entry.sequence);
         forkUnsupportedContents.push(false);
         break;
       case "control_boundary": {
@@ -898,6 +926,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
             timestamp: entry.createdAt,
             turnId: entry.turnId,
             sequence: entry.sequence,
+            transcriptOrder: entry.transcriptOrder,
+            turnOrder: turnOrderByTurn.get(entry.turnId) ?? entry.transcriptOrder,
             entryId: entry.entryId,
             metadata: compactBoundaryMetadata(entry),
           });
@@ -913,6 +943,8 @@ function extractWebVisibleMessages(entries: AgentTranscriptEntry[]): {
     entryIds,
     turnIds,
     sequences,
+    transcriptOrders,
+    turnOrders,
     forkUnsupportedContents,
     compactBoundaries,
   };
@@ -999,6 +1031,8 @@ function injectCompactBoundaryMessages(
       ...(boundary.metadata?.timeline ? { timeline: boundary.metadata.timeline as WebMessage["timeline"] } : {}),
       turnId: boundary.turnId,
       sequence: boundary.sequence,
+      transcriptOrder: boundary.transcriptOrder,
+      turnOrder: boundary.turnOrder,
       text: "Context compacted",
       payload: boundary.metadata ?? {},
       source: "history",
@@ -1008,27 +1042,67 @@ function injectCompactBoundaryMessages(
   }
 }
 
+function acceptedInputOrders(entries: AgentTranscriptEntry[]): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.type === "accepted_input") result.set(entry.turnId, entry.transcriptOrder ?? entry.sequence);
+  }
+  return result;
+}
+
+function entryDisplayOrder(entry: AgentTranscriptEntry, turns: Map<string, number>): Pick<WebMessage, "transcriptOrder" | "turnOrder"> {
+  return {
+    transcriptOrder: entry.transcriptOrder ?? entry.sequence,
+    turnOrder: turns.get(entry.turnId) ?? entry.transcriptOrder ?? entry.sequence,
+  };
+}
+
+function compareWebMessages(left: WebMessage, right: WebMessage): number {
+  const leftTurn = left.turnId ?? "";
+  const rightTurn = right.turnId ?? "";
+  if (left.turnOrder !== undefined && right.turnOrder !== undefined && left.turnOrder !== right.turnOrder) {
+    return left.turnOrder - right.turnOrder;
+  }
+
+  if (leftTurn && leftTurn === rightTurn) {
+    const leftTimeline = left.timeline;
+    const rightTimeline = right.timeline;
+    if (leftTimeline && rightTimeline && leftTimeline.order !== rightTimeline.order) {
+      return leftTimeline.order - rightTimeline.order;
+    }
+    // A normal user input starts a turn before protocol blocks. Status/error
+    // rows without a timeline stay at their physical append position instead
+    // of becoming an anchor that moves the whole turn to the top.
+    if (!leftTimeline && rightTimeline) {
+      if (left.role === "user") return -1;
+    }
+    if (leftTimeline && !rightTimeline) {
+      if (right.role === "user") return 1;
+    }
+  }
+
+  if (left.transcriptOrder !== undefined && right.transcriptOrder !== undefined && left.transcriptOrder !== right.transcriptOrder) {
+    return left.transcriptOrder - right.transcriptOrder;
+  }
+  if (left.sequence !== undefined && right.sequence !== undefined && left.sequence !== right.sequence) {
+    return left.sequence - right.sequence;
+  }
+  const leftTime = Date.parse(left.createdAt);
+  const rightTime = Date.parse(right.createdAt);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  // When legacy rows have no durable coordinate, keep their physical projection
+  // order. An id tie-breaker can move a later Team marker above earlier text.
+  return 0;
+}
+
 function insertWebMessageByTranscriptOrder(
   allMessages: WebMessage[],
   message: WebMessage,
 ): void {
-  if (Number.isFinite(message.sequence)) {
-    const insertAt = allMessages.findIndex((candidate) =>
-      Number.isFinite(candidate.sequence) && candidate.sequence! > message.sequence!,
-    );
-    allMessages.splice(insertAt === -1 ? allMessages.length : insertAt, 0, message);
-    return;
-  }
-
-  let insertAt = allMessages.length;
-  for (let index = allMessages.length - 1; index >= 0; index -= 1) {
-    if (allMessages[index].createdAt <= message.createdAt) {
-      insertAt = index + 1;
-      break;
-    }
-    if (index === 0) insertAt = 0;
-  }
-  allMessages.splice(insertAt, 0, message);
+  allMessages.push(message);
+  allMessages.sort(compareWebMessages);
 }
 
 /**
@@ -1101,6 +1175,7 @@ function recoverCompletedSubagentToolResults(
       kind: "tool_result",
       turnId: toolUse.turnId ?? entry.turnId,
       sequence: entry.sequence,
+      ...entryDisplayOrder(entry, acceptedInputOrders(entries)),
       toolCallId: toolUse.toolCallId,
       toolName: toolUse.toolName,
       ok: true,
@@ -1119,6 +1194,7 @@ function injectFileArtifactMessages(
   projectKey?: string,
 ): void {
   const artifactMessages: WebMessage[] = [];
+  const turnOrders = acceptedInputOrders(entries);
   const turnsWithToolResults = new Set(
     entries
       .filter((entry) =>
@@ -1144,6 +1220,7 @@ function injectFileArtifactMessages(
       kind: "file_artifacts",
       turnId: entry.turnId,
       sequence: entry.sequence,
+      ...entryDisplayOrder(entry, turnOrders),
       artifacts,
       payload: { turnId: entry.turnId },
       source: "history",
@@ -1172,6 +1249,7 @@ function injectErrorTurnMessages(
   sessionKey: string,
   projectKey?: string,
 ): void {
+  const turnOrders = acceptedInputOrders(entries);
   const visibleFailureStatusTurnIds = new Set(
     entries
       .filter((entry) =>
@@ -1199,6 +1277,7 @@ function injectErrorTurnMessages(
       kind: "error",
       turnId: entry.turnId,
       sequence: entry.sequence,
+      ...entryDisplayOrder(entry, turnOrders),
       text,
       payload: { code: entry.result.stopReason, recoverable: false },
       source: "history",
@@ -1218,6 +1297,7 @@ function injectAgentStatusMessages(
   projectKey?: string,
 ): void {
   const statusMessages: WebMessage[] = [];
+  const turnOrders = acceptedInputOrders(entries);
   for (const entry of entries) {
     if (entry.type !== "agent_status_message") continue;
     statusMessages.push({
@@ -1230,6 +1310,7 @@ function injectAgentStatusMessages(
       kind: entry.kind,
       turnId: entry.turnId,
       sequence: entry.sequence,
+      ...entryDisplayOrder(entry, turnOrders),
       text: entry.text,
       ...(isI18nDescriptor(entry.detail?.messageI18n) ? { contentI18n: entry.detail.messageI18n } : {}),
       ...(isI18nDescriptor(entry.detail?.userHintI18n) ? { userHintI18n: entry.detail.userHintI18n } : {}),

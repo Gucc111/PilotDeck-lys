@@ -170,7 +170,9 @@ export class SessionTimeline {
   }
 
   values(subagentId?: string | null): NormalizedMessage[] {
-    return [...this.blocks.values()].filter(m => subagentId === null || detailAgent(m) === subagentId).map(message => {
+    const messages = [...this.blocks.values()].filter(m => subagentId === null || detailAgent(m) === subagentId);
+    messages.sort(compareTimelineRows);
+    return messages.map(message => {
       const closed = message.isFinal || this.isTerminal(message)
         || message.timeline!.order <= (this.closedThrough.get(scope(message)) ?? -1);
       if (!isContent(message)) return message;
@@ -190,6 +192,30 @@ export class SessionTimeline {
     const id = key(message);
     return { ...message, id, renderKey: id, turnId: message.timeline!.turnId, timeline: { ...message.timeline!, offset: undefined } };
   }
+}
+
+
+function compareTimelineRows(left: NormalizedMessage, right: NormalizedMessage): number {
+  const leftTurn = turn(left);
+  const rightTurn = turn(right);
+  if (left.turnOrder !== undefined && right.turnOrder !== undefined && left.turnOrder !== right.turnOrder) return left.turnOrder - right.turnOrder;
+  if (leftTurn && leftTurn === rightTurn) {
+    const leftTimeline = left.timeline;
+    const rightTimeline = right.timeline;
+    if (leftTimeline && rightTimeline && leftTimeline.order !== rightTimeline.order) return leftTimeline.order - rightTimeline.order;
+    if (!leftTimeline && rightTimeline && left.role === 'user') return -1;
+    if (leftTimeline && !rightTimeline && right.role === 'user') return 1;
+  }
+  if (left.transcriptOrder !== undefined && right.transcriptOrder !== undefined && left.transcriptOrder !== right.transcriptOrder) return left.transcriptOrder - right.transcriptOrder;
+  if (left.sequence !== undefined && right.sequence !== undefined && left.sequence !== right.sequence) return left.sequence - right.sequence;
+  const leftTime = Date.parse(left.timestamp);
+  const rightTime = Date.parse(right.timestamp);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+  // When no durable or timeline coordinate exists, preserve the caller's
+  // stable order. The caller may be merging an older session whose only
+  // trustworthy position is arrival/append order; comparing ids here would
+  // move later Team rows to the top.
+  return 0;
 }
 
 /** Turn identity locates a transcript section; protocol order locates its blocks.
@@ -214,9 +240,23 @@ export function mergeTimeline(legacy: NormalizedMessage[], rows: NormalizedMessa
     // block protocol. Keep them inside their turn instead of inserting the
     // whole turn before its first dispatch marker.
     const index = items.findIndex(row => {
-      if (marker.teamInjectionMode === 'start') return true;
       if (row.kind === 'team_message') return false;
-      if (Number.isFinite(marker.sequence) && Number.isFinite(row.sequence)) return marker.sequence! < row.sequence!;
+      // A consumed Team batch receives a timeline slot before the model request
+      // starts. Prefer that slot over timestamps, which can be identical for a
+      // whole busy-time batch and are not a stable ordering signal.
+      if (marker.timeline && row.timeline && marker.timeline.turnId === row.timeline.turnId
+          && marker.timeline.order !== row.timeline.order) {
+        return marker.timeline.order < row.timeline.order;
+      }
+      if (Number.isFinite(marker.transcriptOrder) && Number.isFinite(row.transcriptOrder)
+          && marker.transcriptOrder !== row.transcriptOrder) {
+        return marker.transcriptOrder! < row.transcriptOrder!;
+      }
+      if (Number.isFinite(marker.sequence) && Number.isFinite(row.sequence)
+          && marker.sequence !== row.sequence) {
+        return marker.sequence! < row.sequence!;
+      }
+      if (marker.teamInjectionMode === 'start') return true;
       const markerTime = Date.parse(String(marker.timestamp));
       const rowTime = Date.parse(String(row.timestamp));
       return Number.isFinite(markerTime) && Number.isFinite(rowTime) && markerTime < rowTime;

@@ -1,5 +1,6 @@
 import type { CanonicalContentBlock } from '../../../../src/model/protocol/canonical';
 import type { TeamParticipantMessage } from '../../../../src/team/runtimeTypes';
+import { compareParticipantMessages } from '../../../../src/team/participantStream';
 import type { ChatMessage, ToolResult } from '../chat/types/types';
 
 function teamDisplayText(message: TeamParticipantMessage, fallback: string): string {
@@ -14,7 +15,7 @@ export function participantChatMessages(messages: TeamParticipantMessage[]): Cha
   const result: ChatMessage[] = [];
   const tools = new Map<string, ChatMessage>();
   const outputs = new Map<string, ToolResult>();
-  for (const message of messages) {
+  for (const message of [...messages].sort(compareParticipantMessages)) {
     const blocks: CanonicalContentBlock[] = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.text ?? (typeof message.content === 'string' ? message.content : '') }];
     for (const [index, block] of blocks.entries()) {
       const base = { id: blocks.length === 1 ? message.id : `${message.id}:${index}`, turnId: message.turnId,
@@ -47,6 +48,12 @@ export function participantChatMessages(messages: TeamParticipantMessage[]): Cha
 
 export function mergeParticipantMessages(previous: TeamParticipantMessage[], updates: TeamParticipantMessage[]) {
   const merged = new Map(previous.map(message => [message.id, message]));
-  for (const message of updates) merged.set(message.id, message);
-  return [...merged.values()];
+  for (const message of updates) {
+    const old = merged.get(message.id);
+    const oldRevision = old?.timeline?.revision;
+    const nextRevision = message.timeline?.revision;
+    if (typeof oldRevision === 'number' && typeof nextRevision === 'number' && oldRevision > nextRevision) continue;
+    merged.set(message.id, message);
+  }
+  return [...merged.values()].sort(compareParticipantMessages);
 }

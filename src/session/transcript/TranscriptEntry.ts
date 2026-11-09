@@ -24,6 +24,8 @@ export type AgentTranscriptEntryBase = {
   createdAt: string;
   entryId?: string;
   parentEntryId?: string | null;
+  /** Physical append order used to recover legacy transcripts with bad sequence values. */
+  transcriptOrder?: number;
 };
 
 export type AgentAcceptedInputTranscriptEntry = AgentTranscriptEntryBase & {

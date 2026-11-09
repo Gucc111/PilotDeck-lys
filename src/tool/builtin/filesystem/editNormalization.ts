@@ -8,10 +8,10 @@ const RIGHT_DOUBLE_CURLY_QUOTE = "\u201D";
  */
 export function normalizeQuotes(str: string): string {
   return str
-    .replaceAll(LEFT_SINGLE_CURLY_QUOTE, "'")
-    .replaceAll(RIGHT_SINGLE_CURLY_QUOTE, "'")
-    .replaceAll(LEFT_DOUBLE_CURLY_QUOTE, '"')
-    .replaceAll(RIGHT_DOUBLE_CURLY_QUOTE, '"');
+    .replace(/\u2018/g, "'")
+    .replace(/\u2019/g, "'")
+    .replace(/\u201C/g, '"')
+    .replace(/\u201D/g, '"');
 }
 
 /**

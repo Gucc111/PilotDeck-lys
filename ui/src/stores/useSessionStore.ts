@@ -70,6 +70,8 @@ export interface NormalizedMessage {
   /** Stable identity of a queued input after it has been applied to a turn. */
   queueItemId?: string;
   teamInjectionMode?: 'start' | 'during';
+  /** Stable identity shared by the live and persisted representation of one Team batch. */
+  teamBatchId?: string;
   teamMessageIds?: string[];
   /** True for a user direction injected at a model boundary during a running turn. */
   isSteer?: boolean;
@@ -171,6 +173,10 @@ export interface NormalizedMessage {
   isFinal?: boolean;
   // Cursor-specific ordering
   sequence?: number;
+  /** Physical append position in the effective transcript JSONL. */
+  transcriptOrder?: number;
+  /** Position of the accepted-input turn in the transcript. */
+  turnOrder?: number;
   rowid?: number;
   /** Transcript entry id for history fork targeting. */
   entryId?: string;
