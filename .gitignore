@@ -220,3 +220,8 @@ CLAUDE.md
 # Native dependencies prepared for both Web and desktop runtimes
 resources/cua-driver/
 resources/.cua-driver-download-*/
+
+# Local testing reports and evidence
+# Keep generated acceptance artifacts out of Git to avoid platform-invalid paths.
+docs/testing/reports/
+docs/testing/mcp-connection-management/

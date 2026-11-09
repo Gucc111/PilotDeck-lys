@@ -1,3 +1,0 @@
-Browser tab: 1, Title: "PilotDeck", URL: "http://127.0.0.1:3002/session/web:s_0c7a9333-7a79-48ed-aff5-3b2d8a3e4f33".
-There has been no change in the accessibility tree.
-The focused UI element is 198 button (expanded) View tool input, Secondary Actions: Collapse

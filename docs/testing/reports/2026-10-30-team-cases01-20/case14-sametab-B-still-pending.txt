@@ -1,4 +1,0 @@
-Browser tab: 2, Title: "PilotDeck", URL: "http://127.0.0.1:3002/session/web:s_0c7a9333-7a79-48ed-aff5-3b2d8a3e4f33".
-The following is a diff from the previous accessibility tree with ~ and + representing changed and added elements, respectively. Removed elements are summarized by ID range.
-~				138 text Processed 2m 1s
-The focused UI element is 102 button Stop

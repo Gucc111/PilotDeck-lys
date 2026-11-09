@@ -1,3 +1,0 @@
-Browser tab: 1, Title: "PilotDeck", URL: "http://127.0.0.1:3002/session/web:s_16241076-50ef-4c6f-a63f-d2585bd9672d".
-There has been no change in the accessibility tree.
-The focused UI element is 1 AXWebArea PilotDeck, URL: 127.0.0.1:3002/session/web:s_16241076-50ef-4c6f-a63f-d2585bd9672d
